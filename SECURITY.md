@@ -1,25 +1,42 @@
-# Security Policy
+# Security Policy (DSO)
 
-## Overview
-DSO (Docker Secret Operator) is designed with a "Security-First" architecture, ensuring that sensitive data is managed with minimal exposure and strictly follows the principle of least privilege.
+## 1. Security Principles
+The Docker Secret Operator (DSO) is built on three core security pillars:
+- **Zero-Persistence on Host Storage**: Plaintext secrets are never written to the host's physical filesystem. Intermediate data exists only in volatile memory (RAM) or kernel-managed `tmpfs` mounts.
+- **Least Privilege**: Secret files are injected with the minimum required permissions (`0400`) and assigned specific `UID/GID` owners to ensure application-level isolation.
+- **Volatile Secret Lifecycle**: Secrets are ephemeral; they are wiped from the host RAM upon provider rotation or agent shutdown.
 
-## Secret Lifecycle
-The lifecycle of a secret in DSO is ephemeral and volatile:
+## 2. Secret Lifecycle
+DSO manages the transition of sensitive data through the following security stages:
+1. **Fetch & Cache**: The **DSO Agent** retrieves secrets from an external provider (e.g., HashiCorp Vault) over a TLS-encrypted connection directly into its process RAM cache.
+2. **Orchestration**: The **Reloader Controller** renames the target container to `<service_name>_old_dso` for backup and creates a new instance in a stopped state.
+3. **In-Memory Tar Streaming**: Secrets are archived into an in-memory buffer and streamed by the **Tar Streamer** to the container's `tmpfs` mount via the Docker Engine API.
+4. **Validation**: The container starts, and DSO performs `ExecProbes` to verify secret availability before finalizing the rotation.
+5. **Cleanup**: Upon success, the old container and its associated `tmpfs` are destroyed by the kernel, and the **DSO Agent** clears any ephemeral rotation state.
 
-1. **Fetch**: The DSO Agent retrieves the secret from a secure provider (e.g., HashiCorp Vault) directly into memory.
-2. **In-Memory Cache**: Secrets are stored in a non-persistent, RAM-only cache. They are never written to the host's physical disk.
-3. **Transport**:
-   - For **`env`** mode: Secrets are metadata-injected into the container's environment configuration before start.
-   - For **`file`** mode: Secrets are packed into an in-memory `tar` archive and streamed directly into the container's `tmpfs` mount via the Docker API.
-4. **Injection**: Secrets become available to the application process at runtime.
-5. **Rotation/Cleanup**:
-   - On rotation: The old container is removed, and its associated `tmpfs` is wiped by the kernel.
-   - On shutdown: The DSO Agent clears its RAM cache. No forensic traces remain on the host disk.
+## 3. Security Controls
+- **File Permissions**: Injected files default to `0400` (read-only by owner).
+- **Identity Injection**: Supports configurable `UID` and `GID` for file ownership inside the container.
+- **Log Redaction**: All DSO output is passed through a global redaction utility that masks secret values before they hit `stdout`, `stderr`, or external observability stacks.
 
-## Security Guarantees
-- **Zero-Disk Leaks**: Secrets never touch the host filesystem in plaintext.
-- **Redaction by Default**: All DSO logs are filtered through a centralized redaction utility to prevent sensitive data from reaching observability stacks.
-- **Isolated Injection**: File-based secrets are injected into kernel-managed `tmpfs` mounts with `0400` (read-only) permissions.
+### Threat Actors
+- **Unprivileged host users**
+- **Compromised containers**
+- **Malicious sidecar processes**
 
-## Reporting Vulnerabilities
-Please report any security vulnerabilities via GitHub Issues with the `security` label, or contact the maintainers directly.
+## 4. Trust Boundaries
+- **Trusted Docker Daemon**: DSO assumes the Docker Engine is running a secure, uncompromised version and is governed by appropriate access controls.
+- **Secure Host Environment**: The operator assumes the host kernel, RAM, and DSO Agent process space are protected from unauthorized inspection or memory scraping.
+
+## 5. Explicit Limitations
+DSO does **not** protect against the following scenarios:
+- **Container Compromise**: If an attacker gains code execution within a target container, they can read any secrets injected into that specific container.
+- **Root-Level Host Access**: An attacker with root privileges on the host can inspect the DSO process memory or `docker exec` into any container.
+- **Docker Socket exposure**: If the `/var/run/docker.sock` is exposed to untrusted users, those users can bypass DSO and manually inspect container configurations.
+
+## 6. Responsible Disclosure
+We take security seriously. If you find a vulnerability, please do NOT create a public issue. Instead, report it to the maintainers via:
+- **Email**: [security@docker-secret-operator.io](mailto:security@docker-secret-operator.io) (Placeholder)
+- **GPG**: [Key ID: 0xREDACTED] (Placeholder)
+
+We aim to acknowledge reports within 48 hours and provide a fix within 14 days.

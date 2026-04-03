@@ -1,3 +1,4 @@
+# Sample configuration — DO NOT use in production
 provider: aws
 
 config:
@@ -17,7 +18,7 @@ agent:
     grace_period: 20s
 
 secrets:
-  - name: <secrets-arn>
+  - name: arn:aws:secretsmanager:REGION:ACCOUNT:secret:YOUR_SECRET_NAME
     inject: env
     rotation: true          # 🔥 Must be 'true' for the Watcher to track this secret
     reload_strategy:

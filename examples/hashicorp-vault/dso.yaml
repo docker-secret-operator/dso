@@ -1,10 +1,9 @@
+# Sample configuration — DO NOT use in production
 provider: vault
 
 config:
-  # 'host.docker.internal' works on Mac/Windows and some Linux distros. 
-  # Linux users may need to use '172.17.0.1' or their host IP.
-  address: http://host.docker.internal:8200
-  token: root
+  address: http://example.com:8200
+  token: YOUR_VAULT_TOKEN
   mount: secret
 
 agent:

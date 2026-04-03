@@ -10,11 +10,11 @@ permalink: /
 **Kubernetes-grade secret management for Docker and Docker Compose — no Kubernetes required.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![Release: v2.0.0](https://img.shields.io/badge/Release-v2.0.0-blueviolet.svg)](https://github.com/umairmd385/docker-secret-operator/releases)
-[![Architecture: Trigger Engine](https://img.shields.io/badge/Architecture-Trigger%20Engine-black.svg?logo=apache&logoColor=white)](https://github.com/umairmd385/docker-secret-operator)
+[![Release: v2.0.0](https://img.shields.io/badge/Release-v2.0.0-blueviolet.svg)](https://github.com/docker-secret-operator/dso/releases)
+[![Architecture: Trigger Engine](https://img.shields.io/badge/Architecture-Trigger%20Engine-black.svg?logo=apache&logoColor=white)](https://github.com/docker-secret-operator/dso)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub Stars](https://img.shields.io/github/stars/umairmd385/docker-secret-operator?style=social)](https://github.com/umairmd385/docker-secret-operator/stargazers)
-[![CI Status](https://github.com/umairmd385/docker-secret-operator/actions/workflows/lint-test.yml/badge.svg)](https://github.com/umairmd385/docker-secret-operator/actions)
+[![GitHub Stars](https://img.shields.io/github/stars/docker-secret-operator/dso?style=social)](https://github.com/docker-secret-operator/dso/stargazers)
+[![CI Status](https://github.com/docker-secret-operator/dso/actions/workflows/lint-test.yml/badge.svg)](https://github.com/docker-secret-operator/dso/actions)
 [![Docker Support](https://img.shields.io/badge/Docker-V2%20Secret%20Driver-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/engine/extend/)
 
 ---
@@ -105,7 +105,7 @@ Follow the [Prerequisites](#prerequisites) section above.
 ### Step 2 — Install DSO
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/umairmd385/docker-secret-operator/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/install.sh | sudo bash
 ```
 
 During install you will be asked which cloud provider plugins to build. Press **Enter** to accept, type `n` to skip.
@@ -194,7 +194,7 @@ graph TD
 ### Automated (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/umairmd385/docker-secret-operator/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/install.sh | sudo bash
 ```
 
 **What the installer does:**
@@ -217,7 +217,7 @@ curl -fsSL https://raw.githubusercontent.com/umairmd385/docker-secret-operator/m
 ### Manual Build
 
 ```bash
-git clone https://github.com/umairmd385/docker-secret-operator.git
+git clone https://github.com/docker-secret-operator/dso.git
 cd docker-secret-operator
 
 # Build CLI and agent (CGO_ENABLED=0 = fully static, no dynamic library dependencies)
@@ -235,7 +235,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/lib/dso/plugins/dso-provid
 ### Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/umairmd385/docker-secret-operator/main/uninstall.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/uninstall.sh | sudo bash
 ```
 
 ---

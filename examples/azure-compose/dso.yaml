@@ -1,7 +1,8 @@
+# Sample configuration — DO NOT use in production
 provider: azure
 
 config:
-  vault_url: "https://dev-kv.vault.azure.net/"   # Replace with your vault URL
+  vault_url: "https://YOUR_VAULT_NAME.vault.azure.net/"   # Replace with your vault URL
 
 agent:
   cache: true
