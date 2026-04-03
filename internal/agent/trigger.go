@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -25,14 +23,20 @@ type TriggerEngine struct {
 	secretHashes  sync.Map
 	lastRotations sync.Map
 	Server        *AgentServer
+	Config        *config.Config
 }
 
-func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger) *TriggerEngine {
+func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config) *TriggerEngine {
+	if rw != nil {
+		rw.Cache = cache
+		rw.Config = cfg
+	}
 	return &TriggerEngine{
 		Cache:    cache,
 		Store:    storeManager,
 		Reloader: rw,
 		Logger:   logger,
+		Config:   cfg,
 	}
 }
 
@@ -73,38 +77,16 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		t.Server.Emit(msg)
 	}
 
-		if sec.Inject == "file" {
-			basePath := filepath.Join("/var/run/dso/secrets", secretName)
-			if err := os.MkdirAll(basePath, 0700); err != nil {
-				t.Logger.Error("Failed to create secret directory", zap.Error(err))
-			} else {
-				for key, val := range secretData {
-					mapKey := key
-					if mappedTo, ok := sec.Mappings[key]; ok {
-						mapKey = mappedTo
-					}
-					targetFile := filepath.Join(basePath, mapKey)
-					tmpFile := targetFile + ".tmp"
-					_ = os.WriteFile(tmpFile, []byte(val), 0400)
-					_ = os.Rename(tmpFile, targetFile)
-				}
-
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-					defer cancel()
-					_ = t.Reloader.TriggerReload(ctx, secretName)
-				}()
+		// Handle injection via the Reloader (re-injection or rotation)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			
+			if t.Server != nil {
+				t.Server.Emit(fmt.Sprintf("Triggering rotation for %s (mode: %s)", secretName, sec.Inject))
 			}
-		} else if sec.Inject == "env" {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				if t.Server != nil {
-					t.Server.Emit(fmt.Sprintf("Triggering re-injection for %s", secretName))
-				}
-				_ = t.Reloader.TriggerReload(ctx, secretName)
-			}()
-	}
+			_ = t.Reloader.TriggerReload(ctx, secretName)
+		}()
 }
 
 func (t *TriggerEngine) StartPolling(providerName string, provConfig map[string]string, sec config.SecretMapping, baseInterval time.Duration) error {

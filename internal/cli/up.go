@@ -51,6 +51,10 @@ func NewUpCmd() *cobra.Command {
 					dryRun = true
 					continue
 				}
+				if arg == "--debug" {
+					core.SetDebug(true)
+					continue
+				}
 				dockerArgs = append(dockerArgs, arg)
 			}
 
