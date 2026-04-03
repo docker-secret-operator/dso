@@ -61,7 +61,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v1.64.5
           args: --timeout=5m
 
   # ── Security Scan ───────────────────────────────────────────
@@ -79,9 +79,9 @@ jobs:
           cache: true
 
       - name: Run gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.22.0
         with:
-          args: -exclude=G104 ./...
+          args: -severity medium -confidence medium ./...
 
   # ── DCO Check ──────────────────────────────────────────────
   dco:

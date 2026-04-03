@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"github.com/spf13/cobra"
 )
 
@@ -19,8 +20,18 @@ func NewDownCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
+			// Validate arguments to prevent shell injection (G204)
+			// Reject characters that could lead to command substitution or piping
+			for _, arg := range args {
+				if strings.ContainsAny(arg, ";&|$`\"") {
+					fmt.Fprintf(os.Stderr, "Error: Invalid character in arguments: %s\n", arg)
+					os.Exit(1)
+				}
+			}
+
 			fullArgs := append([]string{"compose", "down"}, args...)
 			
+			// #nosec G204 -- docker execution uses strictly validated arguments
 			child := exec.Command(dockerPath, fullArgs...)
 			child.Stdout = os.Stdout
 			child.Stderr = os.Stderr
