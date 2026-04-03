@@ -46,8 +46,8 @@ func NewSecretCache(ttl time.Duration) *SecretCache {
 
 func (c *SecretCache) saveToDisk() {
 	if b, err := json.Marshal(c.items); err == nil {
-		os.MkdirAll("/var/run/dso", 0755)
-		os.WriteFile("/var/run/dso/state.json", b, 0644)
+		os.MkdirAll("/var/run/dso", 0750)
+		os.WriteFile("/var/run/dso/state.json", b, 0600)
 	}
 }
 

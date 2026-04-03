@@ -2,6 +2,7 @@ package observability
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -64,8 +65,9 @@ func StartMetricsServer(addr string, logger *zap.Logger) {
 	logger.Info("Starting Prometheus metrics server", zap.String("addr", addr))
 
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second, // prevent slowloris attacks
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

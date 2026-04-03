@@ -23,8 +23,8 @@ func NewEventStore(limit int, hub *Hub) *EventStore {
 		hub:    hub,
 	}
 
-	os.MkdirAll("/var/run/dso", 0755)
-	f, err := os.OpenFile("/var/run/dso/events.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	os.MkdirAll("/var/run/dso", 0750)
+	f, err := os.OpenFile("/var/run/dso/events.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err == nil {
 		store.logFile = f
 	}
