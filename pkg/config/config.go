@@ -48,6 +48,8 @@ type SecretMapping struct {
 	Name           string            `yaml:"name"`
 	Inject         string            `yaml:"inject"` // "file", "env", "socket"
 	Path           string            `yaml:"path,omitempty"`
+	UID            int               `yaml:"uid,omitempty"`
+	GID            int               `yaml:"gid,omitempty"`
 	Rotation       bool              `yaml:"rotation"`
 	ReloadStrategy ReloadStrategy    `yaml:"reload_strategy"`
 	Mappings       map[string]string `yaml:"mappings"`

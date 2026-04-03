@@ -1,38 +1,25 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Overview
+DSO (Docker Secret Operator) is designed with a "Security-First" architecture, ensuring that sensitive data is managed with minimal exposure and strictly follows the principle of least privilege.
 
-If you've found a security issue in DSO, we appreciate you letting us know responsibly. Please don't open a public GitHub issue for security vulnerabilities.
+## Secret Lifecycle
+The lifecycle of a secret in DSO is ephemeral and volatile:
 
-Instead:
+1. **Fetch**: The DSO Agent retrieves the secret from a secure provider (e.g., HashiCorp Vault) directly into memory.
+2. **In-Memory Cache**: Secrets are stored in a non-persistent, RAM-only cache. They are never written to the host's physical disk.
+3. **Transport**:
+   - For **`env`** mode: Secrets are metadata-injected into the container's environment configuration before start.
+   - For **`file`** mode: Secrets are packed into an in-memory `tar` archive and streamed directly into the container's `tmpfs` mount via the Docker API.
+4. **Injection**: Secrets become available to the application process at runtime.
+5. **Rotation/Cleanup**:
+   - On rotation: The old container is removed, and its associated `tmpfs` is wiped by the kernel.
+   - On shutdown: The DSO Agent clears its RAM cache. No forensic traces remain on the host disk.
 
-1. **Email us** at [umairmd385@gmail.com](mailto:umairmd385@gmail.com) with the subject line: `SECURITY: <brief description>`
-2. Include as much detail as you can — what the issue is, how to reproduce it, and what impact you think it has
-3. We'll acknowledge your report within **48 hours** and work with you on a fix
-4. Once fixed, we'll coordinate a disclosure timeline with you
+## Security Guarantees
+- **Zero-Disk Leaks**: Secrets never touch the host filesystem in plaintext.
+- **Redaction by Default**: All DSO logs are filtered through a centralized redaction utility to prevent sensitive data from reaching observability stacks.
+- **Isolated Injection**: File-based secrets are injected into kernel-managed `tmpfs` mounts with `0400` (read-only) permissions.
 
-You can also use [GitHub Security Advisories](https://github.com/docker-secret-operator/dso/security/advisories) if you prefer.
-
-## Supported versions
-
-| Version | Supported |
-|---------|-----------|
-| v3.x    | ✅ Active |
-| v2.x    | ⚠️ Security fixes only |
-| < v2.0  | ❌ End of life |
-
-## What we commit to
-
-- Responding to reports within 48 hours
-- Providing a fix timeline within 7 days for confirmed issues
-- Coordinating disclosure with the reporter
-- Crediting reporters in release notes (unless they prefer to stay anonymous)
-- Keeping dependencies updated to minimize known vulnerabilities
-
-## Scope
-
-This policy covers the DSO agent, CLI plugin, provider binaries, and any code in this repository. It does not cover third-party cloud provider APIs.
-
----
-
-Thank you for helping keep DSO secure.
+## Reporting Vulnerabilities
+Please report any security vulnerabilities via GitHub Issues with the `security` label, or contact the maintainers directly.
