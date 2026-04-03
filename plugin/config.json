@@ -1,6 +1,6 @@
 {
   "description": "Docker Secret Operator - External Secret Driver",
-  "documentation": "https://github.com/umairmd385/docker-secret-operator",
+  "documentation": "https://github.com/docker-secret-operator/dso",
   "interface": {
     "types": [
       "docker.secret_driver/1.0"

@@ -1,167 +1,114 @@
-<div align="center">
-  <img src="./docs/assets/dso-logo.png" width="300" alt="DSO logo"/>
+# Docker Secret Operator (DSO)
 
-  # Docker Secret Operator (DSO)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Security Audited](https://img.shields.io/badge/Security-Hardened-orange.svg)](SECURITY.md)
 
-  **A reconciliation engine that syncs cloud secrets into Docker containers.**
-
-  [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
-  [![Version](https://img.shields.io/badge/Version-v3.0.0-blueviolet.svg)](https://github.com/docker-secret-operator/dso/releases)
-  [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-</div>
+Docker Secret Operator (DSO) is a production-grade orchestration engine designed to securely manage the lifecycle of secrets in non-Kubernetes Docker environments. It bridges the security gap between enterpise secret providers (HashiCorp Vault, AWS, Azure) and standalone Docker 엔진 or Docker Compose stacks.
 
 ---
 
-## What is DSO?
+## 1. Project Overview
+DSO provides a centralized, event-driven mechanism to fetch, inject, and rotate secrets dynamically. It ensures that sensitive data is handled with minimal exposure, strictly following the principles of least privilege and zero-persistence on host storage via In-Memory Tar Streaming.
 
-DSO is a lightweight agent that connects your Docker containers to cloud secret managers like AWS Secrets Manager, Azure Key Vault, and HashiCorp Vault.
+## 2. Problem Statement
+Securing secrets in standard Docker environments remains a significant "last-mile" challenge in the cloud-native ecosystem:
+- **Persistence of `.env` Files**: Traditional environment files are often leaked via process inspection, version control history, or insecure CI/CD artifacts.
+- **Static Secret Lifecycle**: Native Docker secrets are immutable by design and do not support dynamic rotation without full container redeployment.
+- **Tooling Gap**: Enterprise-grade secret management often requires Kubernetes (e.g., External Secrets Operator), leaving standalone engines and edge devices underserved.
 
-It works like this: you define which secrets your containers need in a simple YAML file, and DSO fetches them at runtime and injects them directly into the container environment. No `.env` files on disk. No hardcoded credentials. The secrets stay in memory.
+## 3. Solution & Value Proposition
+DSO implements a reconciliation pattern for Docker secrets. It monitors the desired state defined in secret providers and ensures the running state of Docker containers matches that definition.
+- **In-Memory Tar Streaming**: Secrets are processed entirely in RAM and streamed directly to containers, bypassing the host's physical disk.
+- **Automated Lifecycle**: Rotates containers automatically using blue/green (restart) or signal-based strategies.
+- **Provider Unification**: Offers a single interface to manage multiple providers concurrently via a unified `dso.yaml` configuration.
 
-When a secret changes in your cloud provider, DSO detects the change automatically (using hash comparison), and updates the running containers — either by signaling them, restarting them, or performing a zero-downtime rolling swap. You don't have to do anything manually.
+## 4. Key Features
+- **Dual Injection Modes**:
+  - **`env`**: Direct environment variable injection.
+  - **`file`**: In-Memory Tar Streaming to `tmpfs` mounts (no env transport).
+- **Atomic Rotation with Rollback**: 3-retry idempotent logic to ensure stable recovery during rotation failures.
+- **Secure File Permissions**: File-based secrets are injected with `0400` (read-only) permissions and configurable UID/GID ownership.
+- **Global Log Redaction**: Automatic masking of sensitive data in all observability streams.
+- **Service-Level Concurrency Locking**: Prevents race conditions during simultaneous secret updates.
 
-It runs as a native Docker CLI plugin, so the commands feel like regular Docker:
+## Quick Start (2 Minutes)
 
-```bash
-docker dso up -d
-```
+1. Start HashiCorp Vault in dev mode
+2. Create a sample secret
+3. Run the provided docker-compose.agent.yml
+4. Verify secret injection inside the container
 
-That's it. Your Compose stack is running with cloud secrets injected.
+## 5. How It Works
+DSO manages the secret lifecycle through an atomic state machine:
+1. **Fetch & Cache**: Secret data is retrieved from providers and stored in the **DSO Agent's** volatile RAM cache.
+2. **Reconcile**: The **Watcher Engine** detects state differences between the provider and the running containers.
+3. **Trigger**: Upon change detection, the **Reloader Controller** executes the rotation strategy.
+4. **Rename**: The stable container is renamed to `<service_name>_old_dso` for backup.
+5. **Create**: A new container is created in a stopped state.
+6. **Inject**: The **Tar Streamer** performs In-Memory Tar Streaming directly to the new container's address space.
+7. **Start**: Container begins execution with the new secret state.
+8. **Validate**: Post-deployment `ExecProbes` (`test -s`) verify data integrity before removing the backup.
 
----
+## 6. Architecture Summary
+DSO consists of a lightweight Go-based **DSO Agent**, a **Watcher Engine**, and a **Reloader Controller**. These components interact with the Docker Socket and Secret Providers via the **Tar Streamer** to enforce the desired secret state. For detailed diagrams, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Why does this exist?
+## 7. Trust Boundaries
+DSO assumes a trusted host and Docker daemon. It focuses on mitigating **passive leaks** and **metadata exposure**:
+- **Encrypted in Transit**: Communications with providers are TLS-encrypted.
+- **Encrypted in RAM**: Secrets are cached in memory and wiped immediately on agent shutdown.
+- **In-Memory Tar Streaming**: Direct injection to `tmpfs` avoids leaving plaintext traces on physical storage.
+- Detailed analysis can be found in [THREAT_MODEL.md](THREAT_MODEL.md).
 
-Docker doesn't have a built-in way to manage secrets from cloud providers — unless you're using Docker Swarm (which most teams aren't) or you migrate everything to Kubernetes (which is often overkill for smaller stacks).
+## 8. Limitations
+- **Docker Socket Access**: DSO requires privileged access to `/var/run/docker.sock` to manage container lifecycles.
+- **Trusted Daemon**: Project assumes the underlying Docker daemon and host kernel are not compromised.
+- **Container Breakout**: DSO does not protect against an attacker who has already gained root-level breakout access to the host or daemon.
+- **Provider Authentication**: The operator depends on the security of its own authentication credentials to the configured secret provider.
 
-The result is that most Docker users end up with `.env` files sitting on disk, getting committed to git, shared over Slack, and silently failing compliance audits.
+## 9. Quick Start
+### 1. Install
+Download the latest binary from the [Releases](https://github.com/docker-secret-operator/dso/releases) page.
 
-DSO was built to fix this specific gap. It brings the reconciliation pattern that Kubernetes uses for secret management — the idea of "desired state vs actual state, continuously reconciled" — to plain Docker and Docker Compose environments.
-
-No cluster required. No Kubernetes. Just Docker.
-
----
-
-## Quick Start
-
-**1. Install**
-```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/install.sh | sudo bash
-```
-
-**2. Configure (`/etc/dso/dso.yaml`)**
+### 2. Configure (`dso.yaml`)
 ```yaml
-provider: aws
+provider: vault
+config:
+  address: "https://vault.example.com:8200"
 secrets:
-  - name: production-db-credentials
-    inject: env
-    mappings:
-      DB_PASS: DB_PASS
+  - name: production/mysql/password
+    inject: file
+    path: "/run/secrets/db_password"
+    uid: 1001
+    gid: 1001
 ```
 
-**3. Run**
+### 3. Run
 ```bash
-docker dso up -d
+dso up -d
 ```
 
-Your containers now have cloud secrets injected at runtime.
+## 10. Use Cases
+- **Local Development**: Replicate production-like secret injection in local `docker-compose` stacks.
+- **Secure CI/CD**: Inject dynamic build-time keys without exposing them in ephemeral runner logs.
+- **Edge Computing**: Manage secrets on remote Docker engines at scale without the overhead of Kubernetes.
+
+## Non-Goals
+
+- Not a Kubernetes replacement
+- Not a secret storage system
+- Not a policy engine (future roadmap)
+
+## 11. Documentation Links
+- [Architecture Overview](ARCHITECTURE.md)
+- [Security Policy](SECURITY.md)
+- [Threat Model](THREAT_MODEL.md)
+- [Project Governance](GOVERNANCE.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Configuration Reference](docs/CONFIGURATION.md)
+- [Provider Guide](docs/PROVIDERS.md)
 
 ---
-
-## How it works
-
-When you run `docker dso up -d`, here's what happens:
-
-1. **Reads config** — DSO parses your `docker-compose.yml` and `/etc/dso/dso.yaml`
-2. **Authenticates** — Connects to your cloud vault using machine-level roles (IAM Instance Profiles, Managed Identity, etc.). No static keys.
-3. **Fetches secrets** — Retrieves the values and holds them in memory only
-4. **Injects** — Passes the secrets into the container's environment or mounts them via tmpfs
-5. **Starts the stack** — Hands off to Docker Engine natively
-
-After the stack is running, the reconciliation loop kicks in:
-
-- Polls the cloud provider at a configurable interval
-- Computes a SHA-256 hash of the current secret values
-- Compares against the previously stored hash
-- If there's a change → triggers the configured update strategy (signal, restart, or rolling swap)
-- If nothing changed → does nothing (idempotent by design)
-
----
-
-## Demo
-
-### Deploying a Compose stack with secrets
-![demo-up](./docs/assets/demo-up.gif)
-
-### Automatic secret rotation
-![demo-rotation](./docs/assets/demo-rotation.gif)
-
-### Intelligent strategy selection
-![demo-strategy](./docs/assets/demo-strategy.gif)
-
----
-
-## Key design decisions
-
-- **In-memory only** — Secrets are never written to disk. They live in the agent's process memory and are injected via environment variables or tmpfs mounts.
-- **Plugin-based providers** — Each cloud provider (AWS, Azure, Vault, Huawei) runs as a separate binary, loaded via HashiCorp's go-plugin RPC framework. A crash in one provider doesn't take down the agent.
-- **Hash-based reconciliation** — The trigger engine uses SHA-256 hashing to detect actual changes. Combined with a cooldown window, this prevents unnecessary restarts and ensures idempotent behavior.
-- **Strategy engine** — Before rotating a container, DSO inspects its metadata (port bindings, statefulness, health checks) and automatically chooses the safest update strategy: rolling, restart, or signal.
-- **Docker-native CLI** — Ships as a Docker CLI plugin. No wrapper scripts. Just `docker dso <cmd>`.
-
----
-
-## Architecture
-
-For a detailed walkthrough of the internals, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
-```
-┌─────────────────┐     ┌──────────────┐     ┌──────────────────┐
-│  Cloud Provider  │────▶│  DSO Agent   │────▶│  Docker Engine   │
-│  (AWS/Azure/etc) │     │  (systemd)   │     │  (containers)    │
-└─────────────────┘     └──────────────┘     └──────────────────┘
-        ▲                      │
-        │                      ▼
-        │               ┌──────────────┐
-        └───────────────│  Trigger     │
-                        │  Engine      │
-                        │  (reconcile) │
-                        └──────────────┘
-```
-
----
-
-## Supported providers
-
-| Provider | Status |
-|----------|--------|
-| AWS Secrets Manager | ✅ Stable |
-| Azure Key Vault | ✅ Stable |
-| HashiCorp Vault | ✅ Stable |
-| Huawei Cloud CSMS | ✅ Stable |
-| Local file / env | ✅ Built-in |
-
----
-
-## Who uses this?
-
-See [ADOPTERS.md](ADOPTERS.md) for a list of organizations using DSO in production.
-
----
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
-
----
-
-## Security
-
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
-
----
-
-## License
-
-Apache License 2.0 — see [LICENSE](LICENSE).
+### License
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for more details.

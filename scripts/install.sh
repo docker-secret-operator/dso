@@ -9,7 +9,7 @@
 set -e
 
 # Configuration
-REPO_URL="https://github.com/umairmd385/docker-secret-operator"
+REPO_URL="https://github.com/docker-secret-operator/dso"
 INSTALL_DIR="/usr/local/bin"
 LIB_DIR="/usr/local/lib/dso"
 PLUGIN_NAME="dso-secret-driver"
@@ -188,7 +188,7 @@ if [ ! -f /etc/dso/dso.yaml ]; then
 
     cat << EOF > /etc/dso/dso.yaml
 # Docker Secret Operator (DSO) Configuration
-# Full docs: https://github.com/umairmd385/docker-secret-operator
+# Full docs: https://github.com/docker-secret-operator/dso
 
 provider: aws
 
@@ -295,7 +295,7 @@ echo -e "  - Native CLI:   ${BLUE}docker dso up -d${NC}"
 echo -e "  - Legacy CLI:   ${BLUE}dso compose up -d${NC}"
 echo -e ""
 echo -e "Refer to ${REPO_URL} for advanced configuration (dso.yaml)."
-echo -e "To uninstall, run: curl -fsSL ${REPO_URL}/raw/main/uninstall.sh | sudo bash"
+echo -e "To uninstall, run: curl -fsSL ${REPO_URL}/raw/main/scripts/uninstall.sh | sudo bash"
 echo -e "${BLUE}================================================================${NC}"
 
 # Cleanup
