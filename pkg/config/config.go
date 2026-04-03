@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,12 +61,46 @@ type Config struct {
 	Secrets  []SecretMapping   `yaml:"secrets"`
 }
 
+// IsSafePath validates that a user-provided path does not escape the base directory
+// and is not absolute.
+func IsSafePath(baseDir, userPath string) (string, error) {
+	clean := filepath.Clean(userPath)
+
+	// Reject absolute paths
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("absolute paths not allowed: %s", userPath)
+	}
+
+	// If no baseDir is provided, at least reject ".."
+	if baseDir == "" {
+		if strings.Contains(clean, "..") {
+			return "", fmt.Errorf("path traversal attempt: %s", userPath)
+		}
+		return clean, nil
+	}
+
+	fullPath := filepath.Join(baseDir, clean)
+
+	// Ensure no directory escape
+	if !strings.HasPrefix(fullPath, baseDir) {
+		return "", fmt.Errorf("path traversal detected: %s", userPath)
+	}
+
+	return fullPath, nil
+}
+
 func LoadConfig(cfgFile string) (*Config, error) {
 	if cfgFile == "" {
 		cfgFile = "dso.yaml"
 	}
 
-	data, err := os.ReadFile(cfgFile)
+	// Standard validation for config file path
+	safePath, err := IsSafePath("", cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("invalid config path: %w", err)
+	}
+
+	data, err := os.ReadFile(safePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", cfgFile, err)
 	}

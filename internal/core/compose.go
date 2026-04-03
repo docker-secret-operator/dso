@@ -69,9 +69,15 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		finalEnvs = append(finalEnvs, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	data, err := os.ReadFile(filename)
+	// G304: Ensure the filename is safe and does not escape the workspace
+	safePath, err := config.IsSafePath("", filename)
 	if err != nil {
-		return fmt.Errorf("failed to read %s: %w", filename, err)
+		return fmt.Errorf("invalid compose file path: %w", err)
+	}
+
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		return fmt.Errorf("failed to read compose file %s: %w", filename, err)
 	}
 
 	var parsed ComposeFile

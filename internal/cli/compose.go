@@ -35,6 +35,30 @@ func splitEnv(e string) (string, string) {
 	return e, ""
 }
 
+func validateDockerArgs(args []string) error {
+	allowedCmds := map[string]bool{
+		"up": true, "down": true, "ps": true, "logs": true,
+		"stop": true, "restart": true, "pull": true,
+	}
+
+	foundCmd := false
+	for _, arg := range args {
+		// Reject shell metacharacters (G204)
+		if strings.ContainsAny(arg, ";&|$`\"") {
+			return fmt.Errorf("invalid character in arguments: %s", arg)
+		}
+
+		// The first non-flag argument should be an allowed subcommand
+		if !foundCmd && !strings.HasPrefix(arg, "-") {
+			if !allowedCmds[arg] {
+				return fmt.Errorf("unsupported docker compose command: %s", arg)
+			}
+			foundCmd = true
+		}
+	}
+	return nil
+}
+
 func NewComposeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "compose [args...]",
@@ -44,6 +68,12 @@ func NewComposeCmd() *cobra.Command {
 			configPath := extractConfigFromArgs(os.Args)
 			if configPath == "" {
 				configPath = ResolveConfig()
+			}
+
+			// Validate arguments before any processing
+			if err := validateDockerArgs(args); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
 			}
 
 			var dockerArgs []string
@@ -107,6 +137,7 @@ func NewComposeCmd() *cobra.Command {
 			}
 
 			fullArgs := append([]string{"docker", "compose"}, dockerArgs...)
+			// #nosec G204 -- docker execution uses strictly validated arguments
 			if err := syscall.Exec(dockerPath, fullArgs, finalEnvs); err != nil {
 				fmt.Fprintf(os.Stderr, "Exec failed: %v\n", err)
 				os.Exit(1)

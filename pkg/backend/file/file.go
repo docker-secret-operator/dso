@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/pkg/api"
+	"github.com/docker-secret-operator/dso/pkg/config"
 )
 
 type FileProvider struct {
@@ -28,7 +29,13 @@ func (p *FileProvider) GetSecret(name string) (map[string]string, error) {
 		path = path + ".json"
 	}
 
-	content, err := os.ReadFile(path)
+	// G304: Ensure the path is safe and does not escape the intended boundary
+	safePath, err := config.IsSafePath(p.basePath, path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file path: %w", err)
+	}
+
+	content, err := os.ReadFile(safePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read secret file %s: %w", path, err)
 	}

@@ -39,12 +39,19 @@ func NewExportCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-            f, err := os.Create(output)
-            if err != nil {
-                 fmt.Fprintf(os.Stderr, "Failed to create output file %s: %v\n", output, err)
-                 os.Exit(1)
-            }
-            defer f.Close()
+			// G304: Ensure the output path is safe and does not escape the current directory
+			safePath, err := config.IsSafePath("", output)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			f, err := os.Create(safePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create output file %s: %v\n", output, err)
+				os.Exit(1)
+			}
+			defer f.Close()
 
             fmt.Fprintln(os.Stderr, "⚠️ WARNING: You are exporting secrets to local disk. Ensure this file is gitignored!")
 

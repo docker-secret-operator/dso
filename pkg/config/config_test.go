@@ -29,7 +29,18 @@ secrets:
 		t.Fatalf("Failed to write temp config file: %v", err)
 	}
 
-	cfg, err := LoadConfig(tempFile)
+	// Change working directory to temp dir so we can use relative paths
+	// This respects the new security rule that forbids absolute paths
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Failed to change working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	cfg, err := LoadConfig("dso.yaml")
 	if err != nil {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}

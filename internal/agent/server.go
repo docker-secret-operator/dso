@@ -107,6 +107,9 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	// Ensure permissive permissions so containers mounted can read it
+	// #nosec G302 -- required for container access across namespaces.
+	// Unix socket is local-only (not exposed over network).
+	// Risk accepted: any local process can connect.
 	_ = os.Chmod(socketPath, 0666)
 
 	go func() {
