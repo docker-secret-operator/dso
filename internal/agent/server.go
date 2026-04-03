@@ -182,5 +182,14 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	_ = os.Chmod(socketPath, 0666)
-	return http.Serve(listener, server)
+
+	httpServer := &http.Server{
+		Handler:           server,
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
+	return httpServer.Serve(listener)
 }

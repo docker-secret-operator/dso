@@ -166,7 +166,8 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	// and causes container naming conflicts.
 	projectName := filepath.Base(filepath.Dir(absPath))
 	args := append([]string{"compose", "-p", projectName, "-f", transformedFilename, "up"}, extraArgs...)
-	cmd := exec.Command("docker", args...)
+	// G204: The 'docker' command is a constant. Args are built from project metadata and transformed configuration.
+	cmd := exec.Command("docker", args...) // #nosec G204
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

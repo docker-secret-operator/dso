@@ -57,6 +57,19 @@ func validatePluginPath(path string) error {
 	return nil
 }
 
+// isValidProviderName ensures the provider name is strictly alphanumeric to prevent path traversal
+func isValidProviderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // sanitizeEnv returns a safe environment for plugin execution
 func sanitizeEnv() []string {
 	return []string{
@@ -87,14 +100,20 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	if pluginDir == "" {
 		pluginDir = "/usr/local/lib/dso/plugins"
 	}
+	if !isValidProviderName(providerName) {
+		return nil, nil, fmt.Errorf("invalid provider name: %s", providerName)
+	}
+
 	pluginName := fmt.Sprintf("dso-provider-%s", providerName)
-	pluginPath := filepath.Join(pluginDir, pluginName)
+	pluginPath := filepath.Join(filepath.Clean(pluginDir), pluginName)
 
 	if err := validatePluginPath(pluginPath); err != nil {
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
 	}
 
-	cmd := exec.Command(pluginPath)
+	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.
+	// This is a plugin-based architecture where the command must be dynamic.
+	cmd := exec.Command(pluginPath) // #nosec G702 G204
 	cmd.Env = sanitizeEnv()
 
 	client := plugin.NewClient(&plugin.ClientConfig{
