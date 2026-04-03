@@ -1,0 +1,29 @@
+provider: vault
+
+config:
+  # 'host.docker.internal' works on Mac/Windows and some Linux distros. 
+  # Linux users may need to use '172.17.0.1' or their host IP.
+  address: http://host.docker.internal:8200
+  token: root
+  mount: secret
+
+agent:
+  cache: true
+  watch:
+    mode: polling
+    polling_interval: 20s
+  
+  restart_strategy:
+    type: rolling
+    grace_period: 10s
+
+secrets:
+  - name: mysql
+    inject: env
+    rotation: true
+    reload_strategy:
+      type: restart
+    mappings:
+      # Key in Vault (field) → Environment Variable name in Container
+      username: DB_USER
+      password: DB_PASS

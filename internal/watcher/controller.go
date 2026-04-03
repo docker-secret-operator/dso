@@ -12,13 +12,20 @@ import (
 	"github.com/docker-secret-operator/dso/internal/core"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/strategy"
+	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
+
+type lockInfo struct {
+	startTime   time.Time
+	serviceName string
+}
 
 type TargetContainer struct {
 	ID          string
@@ -27,11 +34,19 @@ type TargetContainer struct {
 	Secrets     []string // List of secrets this container depends on
 }
 
+type SecretCache interface {
+	Get(key string) (map[string]string, bool)
+}
+
 type ReloaderController struct {
 	Logger  *zap.Logger
 	Targets sync.Map // map[string]*TargetContainer (key: containerID)
 	cli     *client.Client
 	Server  interface{}
+	Cache         SecretCache
+	Config        *dsoConfig.Config
+	rotationLocks sync.Map // map[string]*lockInfo (key: service name)
+	degraded      sync.Map // map[string]string (key: service name, val: error)
 }
 
 func NewReloaderController(logger *zap.Logger) (*ReloaderController, error) {
@@ -146,6 +161,38 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			return true
 		}
 
+		// EXTRACT SERVICE NAME FOR LOCKING
+		serviceName := strings.TrimPrefix(target.ID, "/") 
+		inspect, err := r.cli.ContainerInspect(ctx, target.ID)
+		if err == nil {
+			if sn, ok := inspect.Config.Labels["com.docker.compose.service"]; ok {
+				serviceName = sn
+			}
+		}
+
+		// STALE LOCK RECOVERY (5 MINUTED)
+		if val, busy := r.rotationLocks.Load(serviceName); busy {
+			info := val.(*lockInfo)
+			if time.Since(info.startTime) > 5*time.Minute {
+				r.Logger.Warn("Reclaiming stale rotation lock", zap.String("service", serviceName))
+				r.rotationLocks.Delete(serviceName)
+			} else {
+				r.Logger.Debug("Rotation already in progress, skipping", zap.String("service", serviceName))
+				return true
+			}
+		}
+		
+		r.rotationLocks.Store(serviceName, &lockInfo{startTime: time.Now(), serviceName: serviceName})
+		
+		defer func() {
+			// Lock cleanup is handled in goroutines for background tasks
+		}()
+
+		// Helper to release lock in background goroutines
+		releaseLock := func() {
+			r.rotationLocks.Delete(serviceName)
+		}
+
 		activeStrategy := target.Strategy
 		if activeStrategy == "auto" || activeStrategy == "" {
 			inspect, err := r.cli.ContainerInspect(ctx, target.ID)
@@ -176,6 +223,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 				err := core.RunComposeUpWithEnv(target.ComposePath, []string{"-d"}, "", false)
+				releaseLock()
 				if err != nil {
 					r.Logger.Error("Background rotation failed", zap.Error(err))
 				} else {
@@ -202,6 +250,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 
 				err := rs.Execute(ctx, target.ID, map[string]string{}, 30*time.Second)
+				releaseLock()
 				if err != nil {
 					r.Logger.Error("Rolling rotation failed, triggering fallback", zap.Error(err))
 					if r.Server != nil {
@@ -218,17 +267,194 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}()
 
 		} else if activeStrategy == "restart" {
-			r.Logger.Info("Restarting container", zap.String("id", target.ID))
+			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
 			
 			if r.Server != nil {
 				if as, ok := r.Server.(interface{ Emit(string) }); ok {
-					as.Emit("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart\nStopping container → injecting new secrets → starting container")
+					as.Emit("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart\nStopping container → removing → recreating with new secrets → starting")
 				}
 			}
-			timeout := 10
-			_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &timeout})
-			_ = r.cli.ContainerStart(ctx, target.ID, container.StartOptions{})
+
+			go func() {
+				// 1. Inspect original container
+				inspect, err := r.cli.ContainerInspect(ctx, target.ID)
+				if err != nil {
+					r.Logger.Error("Failed to inspect container for restart", zap.Error(err))
+					releaseLock()
+					return
+				}
+
+				originalName := strings.TrimPrefix(inspect.Name, "/")
+				tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
+
+				// 2. Fetch latest environment variables from Cache
+				newEnvs := make(map[string]string)
+				if r.Cache != nil && r.Config != nil {
+					for _, sec := range r.Config.Secrets {
+						containerUsesSecret := false
+						for _, ts := range target.Secrets {
+							if ts == sec.Name {
+								containerUsesSecret = true
+								break
+							}
+						}
+						
+						if containerUsesSecret {
+							cacheKey := fmt.Sprintf("%s:%s", r.Config.Provider, sec.Name)
+							if data, found := r.Cache.Get(cacheKey); found {
+								for _, envName := range sec.Mappings {
+									if val, ok := data[envName]; ok {
+										newEnvs[envName] = val
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// 3. Rename old to clear path
+				if err := r.cli.ContainerRename(ctx, target.ID, tempOldName); err != nil {
+					r.Logger.Error("Failed to rename original container", zap.Error(err))
+					releaseLock()
+					return
+				}
+
+				// 4. Prepare new config
+				config := inspect.Config
+				// Clean up state that shouldn't be copied
+				config.Hostname = "" 
+				
+				// Merge new envs
+				for k, v := range newEnvs {
+					found := false
+					for i, e := range config.Env {
+						if strings.HasPrefix(e, k+"=") {
+							config.Env[i] = fmt.Sprintf("%s=%s", k, v)
+							found = true
+							break
+						}
+					}
+					if !found {
+						config.Env = append(config.Env, fmt.Sprintf("%s=%s", k, v))
+					}
+				}
+
+				// 5. Create new instance with ORIGINAL name (STOPPED)
+				networkingConfig := &network.NetworkingConfig{
+					EndpointsConfig: inspect.NetworkSettings.Networks,
+				}
+				created, err := r.cli.ContainerCreate(ctx, config, inspect.HostConfig, networkingConfig, nil, originalName)
+				if err != nil {
+					r.Logger.Error("Failed to create new container, rolling back name", zap.Error(err))
+					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+					releaseLock()
+					return
+				}
+
+				// 5.1 PRE-START SECRET INJECTION (TAR STREAMING)
+				for _, secretName := range target.Secrets {
+					var targetMapping *dsoConfig.SecretMapping
+					for _, sm := range r.Config.Secrets {
+						if sm.Name == secretName {
+							targetMapping = &sm
+							break
+						}
+					}
+					
+					if targetMapping != nil && targetMapping.Inject == "file" {
+						cacheKey := fmt.Sprintf("%s:%s", r.Config.Provider, secretName)
+						if data, found := r.Cache.Get(cacheKey); found {
+							if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, targetMapping.Path, data, targetMapping.UID, targetMapping.GID); err != nil {
+								r.Logger.Error("Secret injection failed", zap.Error(err))
+							}
+						}
+					}
+				}
+
+				// 6. Stop old and Start new
+				stopTimeout := 10
+				_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
+				
+				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
+					
+					// ROLLBACK WITH 3 RETRIES
+					for i := 0; i < 3; i++ {
+						_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+						if err := r.cli.ContainerStart(ctx, target.ID, container.StartOptions{}); err == nil {
+							r.Logger.Info("Rollback successful", zap.Int("attempt", i+1))
+							releaseLock()
+							return
+						}
+						time.Sleep(time.Duration(i+1) * time.Second)
+					}
+					
+					r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
+					r.Logger.Error("CRITICAL: Rollback failed for service", zap.String("service", serviceName))
+					releaseLock()
+					return
+				}
+
+				// 7. Health Check & Finalize
+				healthTimeout := 60 * time.Second
+				if r.Config != nil && r.Config.Agent.Rotation.HealthCheckTimeout != "" {
+					if d, err := time.ParseDuration(r.Config.Agent.Rotation.HealthCheckTimeout); err == nil {
+						healthTimeout = d
+					}
+				}
+
+				if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
+					r.Logger.Error("New container unhealthy, rolling back with retries", zap.Error(err))
+					// Rollback logic (already there)
+					_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
+					goto ROLLBACK
+				}
+
+				// 7.1 EXEC PROBE FOR SECRET EXISTENCE
+				for _, secretName := range target.Secrets {
+					var targetMapping *dsoConfig.SecretMapping
+					for _, sm := range r.Config.Secrets {
+						if sm.Name == secretName {
+							targetMapping = &sm
+							break
+						}
+					}
+					if targetMapping != nil && targetMapping.Inject == "file" {
+						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Path, 15*time.Second, 3); err != nil {
+							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Path))
+							_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
+							goto ROLLBACK
+						}
+					}
+				}
+
+				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
+				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
+				r.degraded.Delete(serviceName)
+				goto FINISH
+
+ROLLBACK:
+				for i := 0; i < 3; i++ {
+					_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+					if err := r.cli.ContainerStart(ctx, target.ID, container.StartOptions{}); err == nil {
+						r.Logger.Info("Rollback successful", zap.Int("attempt", i+1))
+						goto FINISH
+					}
+					time.Sleep(time.Duration(i+1) * time.Second)
+				}
+				
+				r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
+				r.Logger.Error("CRITICAL: New container failed and rollback failed", zap.String("service", serviceName))
+
+FINISH:
+				releaseLock()
+			}()
+		} else {
+			// If we skipped all strategies (e.g. signal), release lock immediately
+			releaseLock()
 		}
 		return true
 	})

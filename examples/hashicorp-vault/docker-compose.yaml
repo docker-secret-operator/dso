@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  mysql_db:
+    container_name: mysql-vault-demo
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      # DSO will inject these values from Vault at runtime
+      - DB_USER
+      - DB_PASS
+      - MYSQL_ROOT_PASSWORD=${DB_PASS}
+      - MYSQL_USER=${DB_USER}
+      - MYSQL_PASSWORD=${DB_PASS}
+    restart: always
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:

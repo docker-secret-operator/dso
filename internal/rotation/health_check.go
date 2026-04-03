@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -31,8 +32,6 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 		} else {
 			// Fallback: If no health check defined, just wait for 'running' state
 			if inspect.State.Running && !inspect.State.Restarting {
-				// Give it a small 5s grace period as a safety buffer
-				time.Sleep(5 * time.Second)
 				return nil
 			}
 		}
@@ -41,4 +40,48 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 	}
 
 	return fmt.Errorf("rotation timed out after %v without health confirmation", timeout)
+}
+
+// ExecProbe runs a specific command inside the container to verify state (e.g. secret existence).
+func ExecProbe(ctx context.Context, cli *client.Client, containerID string, path string, timeout time.Duration, retries int) error {
+	if retries <= 0 {
+		retries = 3
+	}
+	interval := timeout / time.Duration(retries)
+
+	for i := 0; i < retries; i++ {
+		execConfig := container.ExecOptions{
+			Cmd:          []string{"test", "-s", path},
+			AttachStdout: true,
+			AttachStderr: true,
+		}
+		
+		response, err := cli.ContainerExecCreate(ctx, containerID, execConfig)
+		if err != nil {
+			return err
+		}
+
+		err = cli.ContainerExecStart(ctx, response.ID, container.ExecStartOptions{})
+		if err != nil {
+			return err
+		}
+
+		// Check exit code
+		inspect, err := cli.ContainerExecInspect(ctx, response.ID)
+		if err != nil {
+			return err
+		}
+
+		if inspect.ExitCode == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+
+	return fmt.Errorf("exec probe failed for %s after %d retries", path, retries)
 }

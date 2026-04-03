@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"os"
 	"sync"
 	"time"
 )
@@ -29,27 +28,12 @@ type SecretCache struct {
 }
 
 func NewSecretCache(ttl time.Duration) *SecretCache {
-	c := &SecretCache{
+	return &SecretCache{
 		items: make(map[string]CacheItem),
 		ttl:   ttl,
 	}
-
-	if data, err := os.ReadFile("/var/run/dso/state.json"); err == nil {
-		var state map[string]CacheItem
-		if err := json.Unmarshal(data, &state); err == nil {
-			c.items = state
-		}
-	}
-
-	return c
 }
 
-func (c *SecretCache) saveToDisk() {
-	if b, err := json.Marshal(c.items); err == nil {
-		os.MkdirAll("/var/run/dso", 0750)
-		os.WriteFile("/var/run/dso/state.json", b, 0600)
-	}
-}
 
 func (c *SecretCache) Get(key string) (map[string]string, bool) {
 	c.mu.RLock()
@@ -76,15 +60,12 @@ func (c *SecretCache) Set(key string, data map[string]string) {
 		Hash:      ComputeHash(data),
 		ExpiresAt: time.Now().Add(c.ttl),
 	}
-
-	c.saveToDisk()
 }
 
 func (c *SecretCache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.items, key)
-	c.saveToDisk()
 }
 
 // ListKeys returns all keys currently in the cache
