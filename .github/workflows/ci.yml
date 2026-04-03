@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Build & Test ────────────────────────────────────────────
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "❌ go.mod or go.sum is not tidy. Run 'go mod tidy' and commit the changes."
+            git diff go.mod go.sum
+            exit 1
+          fi
+          echo "✅ go.mod is tidy"
+
+      - name: Build
+        run: |
+          go build ./...
+          echo "✅ Build passed"
+
+      - name: Test
+        run: |
+          go test -v -race -count=1 ./...
+          echo "✅ Tests passed"
+
+  # ── Lint ────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # ── Security Scan ───────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          args: -exclude=G104 ./...
+
+  # ── DCO Check ──────────────────────────────────────────────
+  dco:
+    name: DCO Sign-off
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off
+        run: |
+          echo "Checking commits for DCO sign-off..."
+          
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          FAILED=0
+          while IFS= read -r sha; do
+            # Skip merge commits
+            PARENTS=$(git cat-file -p "$sha" | grep -c "^parent")
+            if [ "$PARENTS" -gt 1 ]; then
+              continue
+            fi
+            
+            MSG=$(git log --format='%B' -n 1 "$sha")
+            if ! echo "$MSG" | grep -qiE "^Signed-off-by:"; then
+              echo "❌ Commit $sha is missing DCO sign-off"
+              echo "   Message: $(git log --format='%s' -n 1 "$sha")"
+              echo ""
+              echo "   Fix: git commit --amend -s"
+              FAILED=1
+            else
+              echo "✅ $sha — signed"
+            fi
+          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+          
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "──────────────────────────────────────────────"
+            echo "All commits must include a Signed-off-by line."
+            echo "Use: git commit -s -m 'your message'"
+            echo "See: CONTRIBUTING.md"
+            echo "──────────────────────────────────────────────"
+            exit 1
+          fi
+          
+          echo "✅ All commits have DCO sign-off"
