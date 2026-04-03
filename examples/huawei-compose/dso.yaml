@@ -1,8 +1,9 @@
+# Sample configuration — DO NOT use in production
 provider: huawei
 
 config:
   region: ap-southeast-2
-  project_id: 98176f42176505f83584d83fd6baedf
+  project_id: YOUR_PROJECT_ID
 
 agent:
   refresh_interval: 5s
@@ -15,7 +16,7 @@ agent:
 # ──────────────────────────────────────────────────────────────────────────────
 
 secrets:
-  - name: localhost-sm              # Exact name of the secret in Huawei CSMS
+  - name: YOUR_SECRET_NAME              # Exact name of the secret in Huawei CSMS
     inject: env
     mappings:
       MYSQL_ROOT_PASSWORD: MYSQL_ROOT_PASSWORD  # JSON key → container ENV var

@@ -1,42 +1,60 @@
 # DSO Threat Model
 
-## 1. Scope and Trust Boundaries
-DSO (Docker Secret Operator) operates as a privileged agent on a Docker host. The trust boundaries are:
+## 1. Attacker Profiles
 
-- **Boundary A: DSO Agent & Provider APIs**: DSO communicates with external secret providers (e.g., Vault, AWS).
-- **Boundary B: Docker Daemon**: DSO interacts with the Docker Engine to manage container lifecycles.
-- **Boundary C: In-Memory Secret Cache**: DSO stores secrets in its private RAM at runtime.
-- **Boundary D: Container Environment/Volumes**: Target containers receive secrets via `env` or `tmpfs`.
+### Unprivileged Host User
+- **Capability**: Can read/write to the host's physical and temporary directories (e.g., `/tmp`).
+- **DSO Mitigation**: DSO's zero-disk policy and `tmpfs` mounts prevent unprivileged host users from scraping plaintext secret data from the filesystem.
 
-## 2. Attacker Capabilities & Scenarios
+### Compromised Target Container
+- **Capability**: Attacker has achieved code execution inside an application container and can read anything in its RAM or volume-mounts.
+- **DSO Mitigation**: DSO uses `0400` permissions (read-only) for secrets, preventing an attacker from rewriting or tampering with their own configuration files. However, DSO does **not** protect against a compromised process reading its *own* secrets.
 
-### Attacker A: Compromised Target Container
-- **Vector**: An application process is compromised.
-- **Capability**: Attacker can read anything in the container's RAM or mounted volumes (`env` or `/run/secrets`).
-- **DSO Protection**: DSO minimizes the blast radius by using `0400` read-only permissions for secret files. It does *not* protect against a compromised process reading its *own* secrets.
+### Malicious Insider (Privileged)
+- **Capability**: Attacker has administrative rights on the host or access to the Docker socket.
+- **DSO Mitigation**: DSO is not designed to protect secrets against a root-level host compromise. An administrative user can still `docker exec` into any container or scrape the DSO process memory.
 
-### Attacker B: Host-Level Access (Non-Privileged)
-- **Vector**: Attacker has shells access to the host machine.
-- **Capability**: Attacker can inspect the filesystem and environment of processes.
-- **DSO Protection**: DSO uses **Zero-Disk** logic. Secrets never exist in plaintext on the host filesystem. Even if the attacker inspects the host's `/proc` or `/tmp` directories, they will not find DSO secrets.
+### Network Attacker
+- **Capability**: Attacker can intercept network traffic between DSO and the Secret Provider.
+- **DSO Mitigation**: DSO mandates TLS for all provider communications. It verifies certificates to prevent Man-in-the-Middle (MitM) attacks.
 
-### Attacker C: Docker Socket Access (Privileged)
-- **Vector**: Attacker has access to the Docker Socket (`/var/run/docker.sock`).
-- **Capability**: Attacker can inspect any container's configuration and variables.
-- **DSO Protection**: DSO supports **file-based injection** (via `tmpfs`) over **env-based injection**. This ensures that secrets are *not* visible via `docker inspect`. However, if an attacker has full Docker socket access, they can still `docker exec` into target containers. DSO focuses on mitigating *passive* leaks in logs and metadata.
+---
 
-## 3. Assumptions and Dependencies
-- **Docker Daemon Security**: DSO assumes the Docker daemon is correctly configured and not compromised.
-- **Host Memory Integrity**: DSO assumes the host's RAM is not readable by malicious actors (e.g., no memory scraping).
+## 2. Trust Boundaries
 
-## 4. Guarantees vs. Limitations
+- **DSO Agent**: Privileged boundary. DSO assumes its own process memory and configuration are secure.
+- **Docker Daemon API**: Trusted boundary. DSO relies on the Docker daemon to correctly isolate containers and manage volumes.
+- **External Secret Providers (Vault/AWS)**: Trusted boundary. DSO trusts that the provider securely authenticates the agent and provides authorized data.
+- **Container Environment (Untrusted)**: Data in target containers is considered "at rest" and is susceptible to leakage if the container is compromised.
 
-### What DSO Protects Against
-- [x] Accidental secret leakage in Docker config metadata (`docker inspect`).
-- [x] Accidental secret leakage in logs (via redaction).
-- [x] Residual secret data on the host disk after rotation (via `tmpfs`).
+---
 
-### What DSO Does NOT Protect Against
-- [!] Compromise of the DSO Agent's own authentication tokens (to providers).
-- [!] Host-level root compromise where the attacker can scrape RAM.
-- [!] Misconfigurations in the secret provider's access policies.
+## 3. Attack Scenarios and Mitigations
+
+| Attack Scenario | Mitigation |
+| :--- | :--- |
+| **Secret Leakage via Logs** | Centralized log redaction utility (`pkg/observability`) ensures secrets are masked before hitting any observability stack. |
+| **Filesystem Scraping** | Zero-persistence model ensures secrets live in RAM or `tmpfs` mounts, which are destroyed upon container removal. |
+| **Container Escape** | DSO assumes total host compromise if container escape is achieved. Does not mitigate escapes, but minimizes the blast radius of secrets available *to* the escaping process. |
+| **Docker Socket Abuse** | DSO requires strict host-level permissions on `/var/run/docker.sock` and assumes access is limited to the **DSO Agent** and authorized administrators. |
+
+---
+
+## 4. Guarantees and Limitations
+
+### DSO Protects Against
+- [x] Unintentional persistent storage of secrets on the host engine.
+- [x] Metadata-level secret exposure (e.g., `docker inspect` for file injection).
+- [x] Residual secret data after container deletion or agent shutdown.
+- [x] Insecure file permissions within target containers.
+
+### DSO Does NOT Protect Against
+- [!] Host-level root compromise where an attacker can inspect RAM or system calls.
+- [!] Compromised secret provider (if Vault itself is breached, DSO cannot mitigate).
+- [!] Misconfigurations in the target container's application (e.g., app logs its own secrets).
+
+---
+
+## 5. Residual Risks
+- **RAM Scraping**: Secrets exist in the DSO Agent process RAM and the target container's address space. High-skill attackers with root host access can still retrieve them.
+- **Socket Hijacking**: Exposure of the Docker socket to untrusted users remains the single greatest risk vector for Docker-native operators.

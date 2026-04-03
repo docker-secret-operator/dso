@@ -1,4 +1,51 @@
+# Binaries and build artifacts
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+dso-agent
+dso-provider-*
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE/Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.classpath
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+reports/
+coverage.out
+
+# Environment variables and secrets
+.env
+.env.*
+secrets/
 test_local_secret
-.gitingore
+
+# Dependencies
+vendor/
+node_modules/
+
+# Local testing and tools
 ffmpeg-*
-node_modules
+.gitingore
