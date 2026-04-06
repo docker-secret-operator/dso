@@ -1,24 +1,27 @@
-# Sample configuration — DO NOT use in production
-provider: huawei
-
-config:
-  region: ap-southeast-2
-  project_id: YOUR_PROJECT_ID
+# DSO Example: Huawei Cloud CSMS (V2)
+providers:
+  huawei-prod:
+    type: huawei
+    region: ap-southeast-2
+    project_id: YOUR_PROJECT_ID
 
 agent:
-  refresh_interval: 5s
+  refresh_interval: 1m
   cache: true
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # No access_key / secret_key needed when using IAM Agency on ECS.
-# Temporary credentials are fetched from the ECS metadata service and placed
-# in /etc/dso/agent.env — see README.md Step 4 for detailed instructions.
+# Temporary credentials are fetched from the ECS metadata service.
 # ──────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  inject:
+    type: env
 
 secrets:
   - name: YOUR_SECRET_NAME              # Exact name of the secret in Huawei CSMS
-    inject: env
+    provider: huawei-prod
     mappings:
-      MYSQL_ROOT_PASSWORD: MYSQL_ROOT_PASSWORD  # JSON key → container ENV var
+      MYSQL_ROOT_PASSWORD: MYSQL_ROOT_PASSWORD
       MYSQL_USER: MYSQL_USER
       MYSQL_USER_PASSWORD: MYSQL_PASSWORD

@@ -33,7 +33,32 @@ func NewFetchCmd() *cobra.Command {
 			}
 
 			secretName := args[0]
-			data, err := client.FetchSecret(cfg.Provider, cfg.Config, secretName)
+			var secMapping *config.SecretMapping
+			for _, s := range cfg.Secrets {
+				if s.Name == secretName {
+					secMapping = &s
+					break
+				}
+			}
+
+			pName := ""
+			var pCfg config.ProviderConfig
+			if secMapping != nil {
+				pName = secMapping.Provider
+			}
+
+			if pName == "" {
+				// Default to first provider if none specified
+				for k, v := range cfg.Providers {
+					pName = k
+					pCfg = v
+					break
+				}
+			} else {
+				pCfg = cfg.Providers[pName]
+			}
+
+			data, err := client.FetchSecret(pName, pCfg.Config, secretName)
 			if err != nil {
 				fmt.Printf("Error fetching secret: %v\n", err)
 				os.Exit(1)

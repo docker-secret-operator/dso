@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v3.1.0] - Production Ready
+### Added
+- **Global CLI Migration**: Completed the transition to `docker dso` as the primary interface.
+- **Multi-Provider V3.1 Schema**: Introduced the `providers` map and structured `defaults`/`rotation` blocks.
+- **Reliability Enhancements**: Exponential backoff with jitter and checksum-based rotation are now standard.
+
 ## [v3.0.0] - Docker-Native Era
 ### Added
 - **Docker CLI Plugin**: Renamed binary to `docker-dso` and added `docker-cli-plugin-metadata` compliance.

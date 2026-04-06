@@ -13,9 +13,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build DSO Agent
+# Build DSO Core
 # Use -ldflags to reduce binary size and remove symbol tables
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o dso-agent cmd/docker-dso/main.go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o docker-dso cmd/docker-dso/main.go
 
 # Build Secret Provider Plugins
 RUN mkdir -p /app/plugins
@@ -34,7 +34,7 @@ RUN addgroup -S dso-group && adduser -S dso-user -G dso-group -u 10001
 WORKDIR /home/dso-user
 
 # Copy binaries from builder
-COPY --from=builder /app/dso-agent /usr/local/bin/dso-agent
+COPY --from=builder /app/docker-dso /usr/local/bin/docker-dso
 
 # Set up plugin directory
 RUN mkdir -p /usr/local/lib/dso/plugins && \
@@ -44,7 +44,7 @@ RUN mkdir -p /usr/local/lib/dso/plugins && \
 COPY --from=builder /app/plugins/ /usr/local/lib/dso/plugins/
 
 # Ensure binaries are executable and owned by the dso-user
-RUN chmod +x /usr/local/bin/dso-agent && \
+RUN chmod +x /usr/local/bin/docker-dso && \
     chmod +x /usr/local/lib/dso/plugins/*
 
 # Switch to non-root user
@@ -54,5 +54,5 @@ USER dso-user
 VOLUME ["/var/run", "/etc/dso"]
 
 # Default entrypoint
-ENTRYPOINT ["dso-agent"]
-CMD ["--help"]
+ENTRYPOINT ["docker-dso"]
+CMD ["agent"]

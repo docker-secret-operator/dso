@@ -19,30 +19,6 @@ builds:
       - amd64
       - arm64
 
-  - id: dso
-    main: ./cmd/dso
-    binary: dso
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
-  - id: dso-agent
-    main: ./cmd/dso-agent
-    binary: dso-agent
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-    goarch:
-      - amd64
-      - arm64
 
   - id: dso-provider-aws
     main: ./cmd/plugins/dso-provider-aws

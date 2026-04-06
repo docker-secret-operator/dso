@@ -85,77 +85,110 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		return fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
-	// Step 1: Inject rotation management labels and secrets into all services
+	// Step 1: Inject rotation management labels into each service
 	absPath, _ := filepath.Abs(filename)
 	for name, svcRaw := range parsed.Services {
 		svc, ok := svcRaw.(map[string]interface{})
 		if !ok {
 			continue
 		}
+		var tmpfsMounts []string
 
-		// 1.1 Inject Labels
-		labels := make(map[string]interface{})
-		if existingLabels, ok := svc["labels"].(map[string]interface{}); ok {
-			labels = existingLabels
-		} else if existingLabels, ok := svc["labels"].([]interface{}); ok {
-			for _, l := range existingLabels {
-				parts := strings.SplitN(fmt.Sprintf("%v", l), "=", 2)
-				if len(parts) == 2 {
-					labels[parts[0]] = parts[1]
-				} else {
-					labels[parts[0]] = ""
-				}
-			}
-		}
-
-		labels["dso.reloader"] = "true"
-		labels["dso.compose.path"] = absPath
-
-		var used []string
-		if cfg != nil {
-			for _, s := range cfg.Secrets {
-				used = append(used, s.Name)
-			}
-		}
-		if len(used) > 0 {
-			labels["dso.secrets"] = strings.Join(used, ",")
-		}
-		svc["labels"] = labels
-
-		// 1.2 Inject Secrets based on Mode (env/file)
-		envSection := make(map[string]interface{})
-		if existingEnv, ok := svc["environment"].(map[string]interface{}); ok {
-			envSection = existingEnv
-		} else if existingEnv, ok := svc["environment"].([]interface{}); ok {
-			for _, e := range existingEnv {
-				parts := strings.SplitN(fmt.Sprintf("%v", e), "=", 2)
-				if len(parts) == 2 {
-					envSection[parts[0]] = parts[1]
-				}
-			}
-		}
-
-		var tmpfsMounts []interface{}
-		if existingTmpfs, ok := svc["tmpfs"].([]interface{}); ok {
-			tmpfsMounts = existingTmpfs
-		} else if existingTmpfs, ok := svc["tmpfs"].(string); ok {
-			tmpfsMounts = append(tmpfsMounts, existingTmpfs)
-		}
-
+		// Step 1: Filter services by Targets (STRICT mode)
 		if cfg != nil {
 			for _, sec := range cfg.Secrets {
-				if sec.Inject == "file" && sec.Path != "" {
-					// For file mode, we ONLY mount tmpfs. 
-					// Data is injected LATER via direct tar streaming by the agent/watcher.
-					tmpfsMounts = append(tmpfsMounts, sec.Path)
+				// Check if this service is a target for this secret
+				isTarget := false
+				
+				// 1.1 Explicit container naming
+				if len(sec.Targets.Containers) > 0 {
+					for _, targetName := range sec.Targets.Containers {
+						if targetName == name {
+							isTarget = true
+							break
+						}
+					}
+				}
+				
+				// 1.2 Label-based matching (Exact match V1)
+				if !isTarget && len(sec.Targets.Labels) > 0 {
+					svcLabels := make(map[string]string)
+					if labelsRaw, ok := svc["labels"].(map[string]interface{}); ok {
+						for k, v := range labelsRaw {
+							svcLabels[k] = fmt.Sprintf("%v", v)
+						}
+					}
+					
+					matchesAll := true
+					for k, v := range sec.Targets.Labels {
+						if svcLabels[k] != v {
+							matchesAll = false
+							break
+						}
+					}
+					if matchesAll {
+						isTarget = true
+					}
+				}
+
+				// 1.3 Fallback to Legacy Discovery (if no targets defined)
+				if len(sec.Targets.Containers) == 0 && len(sec.Targets.Labels) == 0 {
+					// In legacy mode, we check if the service has 'dso.reloader=true'
+					// and manually check if it was intended. 
+					// For 'docker dso up', we usually inject into ALL unless specified.
+					isTarget = true 
+				}
+
+				if !isTarget {
 					continue
 				}
 
-				// Standard ENV mode
-				for _, envName := range sec.Mappings {
-					if val, ok := injectedSecrets[envName]; ok {
-						envSection[envName] = val
+				// 2. Inject Labels for the Agent to discover
+				labels := make(map[string]interface{})
+				if existingLabels, ok := svc["labels"].(map[string]interface{}); ok {
+					labels = existingLabels
+				}
+				labels["dso.reloader"] = "true"
+				labels["dso.compose.path"] = absPath
+				
+				// Track secrets for this service
+				existingSecrets := ""
+				if s, ok := labels["dso.secrets"].(string); ok {
+					existingSecrets = s
+				}
+				if existingSecrets == "" {
+					labels["dso.secrets"] = sec.Name
+				} else if !strings.Contains(existingSecrets, sec.Name) {
+					labels["dso.secrets"] = existingSecrets + "," + sec.Name
+				}
+				svc["labels"] = labels
+
+				// 3. Inject Values based on Mode (env/file)
+				injectConfig := sec.Inject
+				// Apply defaults
+				if injectConfig.Type == "" {
+					injectConfig = cfg.Defaults.Inject
+				}
+
+				if injectConfig.Type == "file" && injectConfig.Path != "" {
+					// Mount tmpfs for file mode
+					tmpfsMounts = append(tmpfsMounts, injectConfig.Path)
+				} else {
+					// Standard ENV mode
+					envSection := make(map[string]interface{})
+					if existingEnv, ok := svc["environment"].(map[string]interface{}); ok {
+						envSection = existingEnv
 					}
+					
+					for keyInProvider, envName := range sec.Mappings {
+						if val, ok := injectedSecrets[envName]; ok {
+							envSection[envName] = val
+						} else if val, ok := injectedSecrets[keyInProvider]; ok {
+							// Support mapping by provider key if env name is not found
+							envSection[envName] = val
+						}
+					}
+					svc["environment"] = envSection
 				}
 			}
 		}
@@ -163,7 +196,6 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		if len(tmpfsMounts) > 0 {
 			svc["tmpfs"] = tmpfsMounts
 		}
-		svc["environment"] = envSection
 		parsed.Services[name] = svc
 	}
 

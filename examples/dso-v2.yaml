@@ -1,0 +1,55 @@
+# DSO Production Reference (V2)
+# Features: Multi-provider, structured injection, exact targeting.
+
+providers:
+  aws-prod:
+    type: aws
+    region: us-east-1
+    auth:
+      method: iam_role
+    retry:
+      attempts: 5
+      backoff: 5s
+
+  local-backup:
+    type: file
+    config:
+      path: "/var/lib/dso/secrets"
+
+defaults:
+  inject:
+    type: env
+  rotation:
+    enabled: true
+    strategy: restart
+
+logging:
+  level: info
+  format: json
+
+secrets:
+  # 1. Database Credentials from AWS
+  - name: "prod/db/credentials"
+    provider: aws-prod
+    mappings:
+      username: DB_USER
+      password: DB_PASS
+    targets:
+      containers:
+        - api-server
+        - worker-node
+
+  # 2. Legacy API Key (File injection)
+  - name: "api/legacy-key"
+    provider: local-backup
+    inject:
+      type: file
+      path: "/run/secrets/api.key"
+      uid: 1000
+      gid: 1000
+    rotation:
+      strategy: signal
+      signal: SIGHUP
+    targets:
+      labels:
+        dso.injection: "enabled"

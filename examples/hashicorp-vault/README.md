@@ -72,7 +72,7 @@ make up
 make setup-vault
 
 # 3. Deploy the MySQL stack with DSO injection
-docker dso compose up -d
+docker dso up -d
 ```
 
 ---
@@ -192,7 +192,7 @@ DB_PORT=3306
 
 ## 10. How DSO Works (Under the Hood)
 
-When you run `docker dso compose up`, the following happens:
+When you run `docker dso up`, the following happens:
 
 1. **Config Read**: DSO reads `dso.yaml` to identify the provider (Vault).
 2. **Fetch**: DSO connects to Vault using the provided token and fetches the secret at `mysql`.
@@ -205,16 +205,21 @@ When you run `docker dso compose up`, the following happens:
 ## 11. Configure DSO Vault Provider (`dso.yaml`)
 
 ```yaml
-provider: vault
+# DSO Example: HashiCorp Vault (V3.1)
+providers:
+  dev-vault:
+    type: vault
+    address: http://host.docker.internal:8200
+    token: root
+    mount: secret
 
-config:
-  address: http://host.docker.internal:8200
-  token: root
-  mount: secret
+defaults:
+  inject:
+    type: env
 
 secrets:
   - name: mysql
-    inject: env
+    provider: dev-vault
     mappings:
       username: DB_USER
       password: DB_PASS
@@ -232,7 +237,7 @@ secrets:
 Execute the deployment using the `docker dso` wrapper:
 
 ```bash
-docker dso compose up -d
+docker dso up -d
 ```
 
 ### Expected Output

@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/pkg/api"
+	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
 )
@@ -20,6 +21,7 @@ type AgentServer struct {
 	Cache  *SecretCache
 	Store  *providers.SecretStoreManager
 	Logger *zap.Logger
+	Config *config.Config
 	Events []string // Simple in-memory event log for 'watch'
 	mu     sync.Mutex
 }
@@ -62,7 +64,29 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	// slow path provider lookup
 	timer := observability.SecretFetchLatency.WithLabelValues(req.Provider)
 	start := time.Now()
-	prov, err := s.Store.GetProvider(req.Provider, req.Config)
+	
+	// Find the provider config in the global config
+	pName := req.Provider
+	if pName == "" {
+		// Fallback to legacy default if only one provider exists
+		if len(s.Config.Providers) == 1 {
+			for name := range s.Config.Providers {
+				pName = name
+				break
+			}
+		}
+	}
+
+	pCfg, ok := s.Config.Providers[pName]
+	if !ok {
+		// If not found in map, check if it's a legacy one-off request
+		pCfg = config.ProviderConfig{
+			Type:   pName,
+			Config: req.Config,
+		}
+	}
+
+	prov, err := s.Store.GetProvider(pName, pCfg)
 	if err != nil {
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
 		observability.BackendFailuresTotal.WithLabelValues(req.Provider, "load_fail").Inc()
@@ -86,17 +110,25 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	return nil
 }
 
-func StartSocketServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger) (*AgentServer, error) {
+func StartSocketServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) (*AgentServer, error) {
 	server := &AgentServer{
 		Cache:  cache,
 		Store:  store,
 		Logger: logger,
+		Config: cfg,
 	}
 
 	_ = rpc.RegisterName("Agent", server)
 
-	// Remove old socket if exists
+	// Pre-bind check: is there another agent already running?
 	if _, err := os.Stat(socketPath); err == nil {
+		conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil, fmt.Errorf("another DSO agent is already responsive on %s", socketPath)
+		}
+		// Stale socket, remove it
+		logger.Warn("Removing stale Unix socket", zap.String("path", socketPath))
 		_ = os.Remove(socketPath)
 	}
 
@@ -167,11 +199,12 @@ func (s *AgentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func StartDriverServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger) error {
+func StartDriverServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) error {
 	server := &AgentServer{
 		Cache:  cache,
 		Store:  store,
 		Logger: logger,
+		Config: cfg,
 	}
 
 	if _, err := os.Stat(socketPath); err == nil {

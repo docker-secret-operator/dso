@@ -9,7 +9,7 @@ This example demonstrates using **Docker Secret Operator (DSO)** to inject MySQL
 | Component | Role |
 | :--- | :--- |
 | **AWS Secrets Manager** | Stores `MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD` |
-| **dso-agent** | Fetches the secret from AWS and caches it in memory |
+| **DSO Agent** | Fetches the secret from AWS and caches it in memory |
 | **docker dso** | Injects the secret values into docker compose at startup |
 | **mysql_db** | MySQL container receives credentials via environment variables |
 | **phpmyadmin** | phpMyAdmin connects to MySQL without needing credentials in the compose file |
@@ -57,30 +57,24 @@ sudo chmod 600 /etc/dso/dso.yaml
 **`dso.yaml`** — connects to AWS and maps secret keys to ENV vars:
 
 ```yaml
-provider: aws
+# DSO Example: AWS Secrets Manager (V3.1)
+providers:
+  aws-prod:
+    type: aws
+    region: us-east-2    # Change to your AWS region
+    auth:
+      method: iam_role
 
-config:
-  region: us-east-2    # Change to your AWS region
-
-agent:
-  cache: true
-  # New v3 Watcher Configuration
-  watch:
-    mode: polling           # Options: polling, event (via webhook), hybrid
-    polling_interval: 5m    # Frequency of cloud provider checks
-  
-  # New v3 Restart Strategy for all connected containers
-  restart_strategy:
-    type: rolling           # Seamlessly swap containers without downtime
-    health_check_timeout: 45s
-    grace_period: 20s
+defaults:
+  inject:
+    type: env
+  rotation:
+    enabled: true
+    strategy: restart
 
 secrets:
-  - name: <secrets-arn>
-    inject: env
-    rotation: true          # 🔥 Must be 'true' for the Watcher to track this secret
-    reload_strategy:
-      type: restart         # Automatically restart container when secret rotates
+  - name: arn:aws:secretsmanager:REGION:ACCOUNT:secret:YOUR_SECRET_NAME
+    provider: aws-prod
     mappings:
       MYSQL_ROOT_PASSWORD: MYSQL_ROOT_PASSWORD
       MYSQL_USER: MYSQL_USER
@@ -94,8 +88,8 @@ secrets:
 ## Step 3 — Start the DSO Agent
 
 ```bash
-sudo systemctl start dso-agent
-sudo systemctl status dso-agent
+sudo systemctl start DSO Agent
+sudo systemctl status DSO Agent
 
 # Confirm it can reach your secret:
 docker dso fetch local_secret
@@ -165,7 +159,7 @@ DSO securely injecting secrets for docker-compose.yaml...
 
 DSO will:
 1. Load `/etc/dso/dso.yaml`
-2. Connect to `dso-agent` over the Unix socket
+2. Connect to `DSO Agent` over the Unix socket
 3. Fetch `MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD` from `local_secret`
 4. Inject them into the environment
 5. Run `docker compose up -d` with the enriched environment

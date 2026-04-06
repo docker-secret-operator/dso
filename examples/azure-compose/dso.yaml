@@ -1,30 +1,35 @@
-# Sample configuration — DO NOT use in production
-provider: azure
-
-config:
-  vault_url: "https://YOUR_VAULT_NAME.vault.azure.net/"   # Replace with your vault URL
+# DSO Example: Azure Key Vault (V2)
+providers:
+  azure-prod:
+    type: azure
+    config:
+      vault_url: "https://YOUR_VAULT_NAME.vault.azure.net/"
 
 agent:
   cache: true
-  refresh_interval: 5s
+  refresh_interval: 1m # Check every minute
 
 # ── Azure Key Vault note ───────────────────────────────────────────────────────
 # Azure secrets are plain strings (not JSON). DSO wraps each value internally
 # as {"value": "<secret-string>"}, so the mapping key is always "value".
 # ──────────────────────────────────────────────────────────────────────────────
 
+defaults:
+  inject:
+    type: env
+
 secrets:
   - name: MYSQL-ROOT-PASSWORD    # Exact secret name in Azure Key Vault
-    inject: env
+    provider: azure-prod
     mappings:
-      value: MYSQL_ROOT_PASSWORD  # "value" key → container ENV var
+      value: MYSQL_ROOT_PASSWORD
 
   - name: MYSQL-USER             # Exact secret name in Azure Key Vault
-    inject: env
+    provider: azure-prod
     mappings:
       value: MYSQL_USER
 
   - name: MYSQL-PASSWORD         # Exact secret name in Azure Key Vault
-    inject: env
+    provider: azure-prod
     mappings:
       value: MYSQL_PASSWORD
