@@ -11,7 +11,7 @@ import (
 func NewValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate",
-		Short: "Validate the dso configuration file",
+		Short: "Validate the DSO configuration file",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfgPath := ResolveConfig()
 			_, err := config.LoadConfig(cfgPath)

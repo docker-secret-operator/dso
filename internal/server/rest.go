@@ -119,14 +119,14 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) {
-	if s.Config == nil || !s.Config.Agent.Webhook.Enabled {
+	if s.Config == nil || !s.Config.Agent.Watch.Webhook.Enabled {
 		http.Error(w, "Webhooks are disabled", http.StatusForbidden)
 		return
 	}
 
 	authHeader := r.Header.Get("Authorization")
-	expectedToken := "Bearer " + s.Config.Agent.Webhook.AuthToken
-	if s.Config.Agent.Webhook.AuthToken != "" && authHeader != expectedToken {
+	expectedToken := "Bearer " + s.Config.Agent.Watch.Webhook.AuthToken
+	if s.Config.Agent.Watch.Webhook.AuthToken != "" && authHeader != expectedToken {
 		observability.BackendFailuresTotal.WithLabelValues("webhook", "unauthorized").Inc()
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -153,7 +153,24 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := s.TriggerEngine.HandleWebhook(payload.Provider, s.Config.Config, *targetSecret, payload.Timestamp)
+	pName := payload.Provider
+	if pName == "" {
+		pName = targetSecret.Provider
+	}
+	if pName == "" {
+		// Default to first provider
+		for k := range s.Config.Providers {
+			pName = k
+			break
+		}
+	}
+	pCfg, ok := s.Config.Providers[pName]
+	if !ok {
+		http.Error(w, "Provider not found", http.StatusBadRequest)
+		return
+	}
+
+	err := s.TriggerEngine.HandleWebhook(pName, pCfg, *targetSecret, payload.Timestamp)
 	if err != nil {
 		s.Logger.Error("Webhook execution failed", zap.Error(err), zap.String("secret", targetSecret.Name))
 		http.Error(w, "Internal rotation failure", http.StatusInternalServerError)

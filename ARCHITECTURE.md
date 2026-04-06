@@ -1,148 +1,107 @@
-# DSO Architecture
+# DSO System Architecture (V3.1)
 
-## 1. System Overview
-The Docker Secret Operator (DSO) is a reconciliation-based secret management engine for standalone Docker and Docker Compose environments. It implements a secure-by-default, zero-persistence model to ensure sensitive data is fetched from trusted providers and injected into containers without ever being written to the host's physical disk.
+The Docker Secret Operator (DSO) is a reconciliation engine designed for standalone Docker and Docker Compose environments. It implements a **zero-persistence model** to ensure sensitive data is fetched from trusted providers and injected into containers without ever being written to the host's physical disk.
 
-## 2. Core Components
+---
 
-### 2.1 DSO Agent
-The primary long-running process that orchestrates the entire secret lifecycle. It handles authentication with providers, maintains the in-memory cache, and executes the core reconciliation loops.
+## 🏗️ Core Components
 
-### 2.2 Watcher Engine
+### 1. DSO Agent
+The primary long-running orchestration process. It manages authentication with secret providers, maintains an in-memory RAM cache, and executes the core reconciliation loops.
+
+### 2. Multi-Provider Layer
+A pluggable system that connects to various secret backends (HashiCorp Vault, AWS, Azure, Huawei, File). V3.1 allows **simultaneous** connection to multiple backends via the `providers` map.
+
+### 3. Watcher Engine
 An event-driven component that monitors:
-- **Docker Socket**: Listens for container lifecycle events (start, die, stop).
-- **Secret Providers**: Polls or receives webhooks from secret backends to detect updates.
+- **Docker Socket**: Real-time listening for container lifecycle events (`start`, `die`, `stop`).
+- **Secret Providers**: Periodic polling (configurable) or webhook-based detection of secret updates.
 
-### 2.3 Reloader Controller
-Responsible for the atomic rotation of target containers. It manages the blue/green swap sequence, ensuring that a stable container is only replaced once the new version is verified as healthy and correctly injected. The Tar Streamer is a logical component within the Reloader Controller responsible for packaging secrets into an in-memory tar archive and securely injecting them into the target container via the Docker API.
-
-### 2.4 Secret Providers
-Pluggable backend connectors (Vault, AWS, Azure, Local) that implement the logic for authenticating and retrieving secret data in its native format.
-
-### 2.5 In-Memory Cache
-A volatile, non-persistent RAM storage facility. Secrets are cached to reduce latency and provider API load, but are wiped immediately upon agent termination.
+### 4. Reloader Controller
+Responsible for the atomic rotation of target containers. In V2, it incorporates **Smart Checksum Comparison** to only trigger rotations when actual secret data changes.
 
 ---
 
-## 3. End-to-End Secret Lifecycle
-Note: The lifecycle stages described here map to internal controller operations but are abstracted for clarity and documentation purposes.
+## 🔄 Data Flow Execution
 
-1. **Fetch**: The Agent retrieves secrets from the provider via TLS-encrypted connections.
-2. **Cache**: Secrets are stored in RAM; hashes are computed to detect subsequent changes.
-3. **Trigger**: Upon change detection, the Reloader Controller begins a transition.
-4. **Rename**: The current running container is renamed to a backup name pattern: `<service_name>_old_dso`.
-5. **Create**: A new container is created in a **stopped** state.
-6. **Inject**: In-Memory Tar Streaming is performed by the Tar Streamer, sending secrets directly from the DSO Agent's RAM into the new container's `tmpfs` mounts via the Docker API.
-7. **Start**: The new container is started.
-8. **Validate**: Post-start `ExecProbes` verify that the secrets are correctly mounted and readable.
-9. **Finalize**: If healthy, the `<service_name>_old_dso` container is removed; otherwise, a rollback is triggered.
+DSO follows a precise, deterministic sequence for every secret reconciliation event:
+
+1. **Load Configuration**: The CLI/Agent resolves the `dso.yaml` through the `ResolveConfig` utility, performing a high-speed schema validation.
+2. **Initialize Providers**: The provider registry invokes the required RPC-based plugins (AWS, Vault, etc.) and establishes secure authentication sessions.
+3. **Fetch & Decrypt**: Secret data is retrieved over TLS and decrypted into the Agent's volatile RAM. 
+4. **Compare Checksum**: The `TriggerEngine` computes a SHA-256 hash of the new secret and compares it with the cached version. If identical, the process silently terminates to avoid container churn.
+5. **Prepare Tar Stream**: If a change is detected, the `TarStreamer` packages the secret into an in-memory tar archive, ensuring no plaintext data hits the physical disk.
+6. **Trigger Rotation**:
+    - **Backup**: The `Reloader` renames the active container to a backup name.
+    - **Inject**: The tar stream is uploaded to the new container's `tmpfs` via the Docker API.
+    - **Start**: The new container starts; the old one is removed only after a successful health check pass.
 
 ---
 
-## 4. Sequence Diagram (Rotation & Rollback)
+## 📉 Failure Flow & Resilience
 
-```mermaid
-sequenceDiagram
-    participant P as Secret Provider
-    participant A as DSO Agent
-    participant D as Docker Daemon
-    participant C_Old as Stable Container (Old)
-    participant C_New as Target Container (New)
+DSO is designed for high availability, ensuring that transient provider failures do not impact running containers.
 
-    P->>A: Secret Updated
-    A->>P: Fetch Latest Secrets
-    A->>A: Update RAM Cache
+1. **Detection**: If a provider call (e.g., AWS Secrets Manager) fails due to network timeout or expired credentials, the Agent catches the error.
+2. **Retry with Backoff + Jitter**: DSO immediately triggers an exponential backoff loop. It waits for a base interval (default 2s) which doubles with each failure, adding a random jitter to prevent "thundering herd" syndrome on your secret backend.
+3. **Max Attempts & Thresholds**: If the failure persists beyond the maximum retry count (default 5 attempts), the Agent ceases active retries for that specific reconciliation cycle.
+4. **Resilient Skip**: DSO **never** removes or overwrites a secret if the fetch fails. It retains the last known-good secret in the RAM cache and logs a structured `ERROR` with the specific provider failure details for external alerting systems.
 
-    A->>D: Rename C_Old to <name>_old_dso
-    A->>D: Create C_New (Stopped)
-    A->>D: In-Memory Tar Streaming (via Tar Streamer)
-    A->>D: Start C_New
+### 👤 User Impact
+In the event of a provider outage or sync failure, the system falls back to a "safe state":
+- **No Deletion**: Secrets are **never** removed from target containers.
+- **No Restarts**: Containers are **not** restarted or rotated if a fetch occurs in a failure state.
+- **Continuity**: The application continues to run using its last-known-good secret configuration while the operator continues to retry the provider in the background.
 
-    alt Health Check & ExecProbe PASS
-        A->>D: Remove <name>_old_dso
-    else Health Check FAIL
-        A->>D: Stop & Remove C_New
-        A->>D: Rename <name>_old_dso to C_Old
-        A->>D: Start C_Old (Rollback)
-    end
+---
+
+##  diagrama Flow Diagram (ASCII)
+
+```text
+  [Secret Providers]
+          ↓
+  [DSO Multi-Provider Map] -- (Retry + Jitter)
+          ↓
+  [In-Memory RAM Cache] -- (Checksum Check)
+          ↓
+  [DSO Reconciliation Engine] -- (Target Selection)
+          ↓
+  [Docker API (Socket)]
+          ↓
+  [In-Memory Tar Streaming]
+          ↓
+  [Target Container (tmpfs)]
 ```
 
 ---
 
-## 5. Data Flow Diagram
+## 🛡️ Security Design Decisions
 
-```mermaid
-flowchart LR
-    subgraph "Secret Provider (Cloud/Vault)"
-        SP["Encrypted Data"]
-    end
-
-    subgraph "DSO Agent (Privileged Host Process)"
-        A["In-Memory Cache (RAM)"]
-        T["Tar Streamer (In-Process)"]
-    end
-
-    subgraph "Docker Engine"
-        D["Docker Daemon (Socket API)"]
-    end
-
-    subgraph "Target Container"
-        TMP["tmpfs mount (/run/secrets)"]
-        ENV["Environment Variables"]
-    end
-
-    SP -- "TLS" --> A
-    A -- "RAM-to-RAM" --> T
-    T -- "In-Memory Tar Streaming" --> D
-    D -- "In-Memory Copy" --> TMP
-    A -- "Metadata Injection" --> D
-    D -- "Process Env" --> ENV
-```
+- **In-Memory Tar Streaming**: DSO packages secrets into a tar archive in RAM and uploads them directly to the container's `tmpfs` mounts via the Docker API, bypassing the host's filesystem entirely.
+- **Service-Level Concurrency Locking**: DSO prevents race conditions by ensuring only one rotation is active per service at any time.
+- **Log Redaction**: Centralized redaction logic ensures that sensitive values are masked before reaching any output stream.
+- **Strict Targeting**: V2's `targets` block ensures that secrets are only delivered to explicitly authorized containers, even if labels are accidentally applied elsewhere.
 
 ---
 
-## 6. Trust Boundaries
+## 🏗️ Why This Design?
 
-### 6.1 Host System (Trusted)
-DSO assumes the underlying host machine and its physical RAM are trusted. If the host is compromised at the root level, the DSO process memory could be scraped.
+### 🔄 Checksum-based Rotation
+**The Problem**: Traditional operators often restart containers every time a sync occurs, even if the secret hasn't changed, leading to unnecessary downtime.
+**The DSO Solution**: DSO calculates a SHA-256 checksum of the fetched secret. We only trigger the Docker rotation logic if the checksum differs from the last successful injection.
 
-### 6.2 Docker Daemon (Privileged Boundary)
-DSO requires access to the Docker Socket (`/var/run/docker.sock`). This is a privileged boundary. DSO is designed to reside in this boundary to manage other containers safely.
+### 📡 Multi-Provider Map
+**The Problem**: Many organizations use multiple secret stores (e.g., Vault for DBs, AWS for infrastructure). Switching between them usually requires different agents.
+**The DSO Solution**: The V2 `providers` map allows a single DSO instance to bridge multiple backends simultaneously, providing a unified injection interface.
 
-### 6.3 Containers (Untrusted for Secret Exposure)
-Target containers are considered untrusted environments where secrets can be leaked via logs or inspection. DSO mitigates this by:
-- Using `tmpfs` to keep secrets out of persistent storage.
-- Injecting secrets with `0400` permissions so only the owner can read them.
-- Redacting secret data from DSO's own logs.
-
----
-
-## 7. Secret Injection Flow
-
-### 7.1 Tar Streaming via Docker API
-DSO uses the `CopyToContainer` API to upload an in-memory `tar` stream. By constructing the archive in a RAM buffer, DSO ensures no plaintext secrets are ever written to the host filesystem during the transport process.
-
-### 7.2 Injection Timing vs Start
-Secrets are injected into containers **after** they are created but **before** they are started. This timing ensures that the application's entrypoint script—which often requires these secrets to initialize—has immediate access to the necessary data the moment the process begins.
+### 🎯 Label-based Targeting
+**The Problem**: Hardcoding container names in configuration files is fragile and doesn't scale with dynamic stacks.
+**The DSO Solution**: By using Docker labels (`dso.inject: "true"`), DSO can automatically discover and inject secrets into any container that matches the selector, making it ideal for elastic environments.
 
 ---
 
-## 8. Failure Handling
+## 📈 Roadmap
 
-### 8.1 Injection Failure
-If the In-Memory Tar Streaming process by the Tar Streamer fails, the container creation is aborted. The stable container remains running under its original name, and the error is logged with redaction.
-
-### 8.2 Health Check Failure
-If the new container starts but fails its Docker `HEALTHCHECK` or the DSO-specific `ExecProbe` (e.g., `test -s /run/secrets/key`), the system triggers an automatic rollback.
-
-### 8.3 Rollback Failure (Degraded State)
-DSO attempts rollout rollback up to 3 times with exponential backoff. If the rollback itself fails (e.g., due to Docker Engine issues), the service is marked as **Degraded**. No further automated rotations will be attempted for that service until manual intervention occurs, preventing a cascading failure loop.
-
----
-
-## 9. Security Considerations
-
-- **Zero-Persistence Model**: No secrets are written to host disk.
-- **Volatile State**: All intermediate data exists in process RAM only.
-- **Log Redaction**: Centralized filtering ensures that even if a developer enables `--debug`, secret values are never printed to the logs.
-- **Least Privilege**: Injected files are owned by configurable `UID/GID` pairs with `0400` permissions in the `tmpfs` volume.
+- **Advanced Selectors**: Integration with Prometheus-style label selectors.
+- **Kubernetes Edge**: Support for lightweight K3s/K8s environments.
+- **Extended Providers**: Google Secret Manager, CyberArk, and custom gRPC plugins.

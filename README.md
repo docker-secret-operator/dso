@@ -1,114 +1,256 @@
-# Docker Secret Operator (DSO)
+# Docker Secret Operator (DSO) 🚀
+
+> **DSO brings Kubernetes-style secret management to Docker environments.**
 
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Security Audited](https://img.shields.io/badge/Security-Hardened-orange.svg)](SECURITY.md)
 
-Docker Secret Operator (DSO) is a production-grade orchestration engine designed to securely manage the lifecycle of secrets in non-Kubernetes Docker environments. It bridges the security gap between enterpise secret providers (HashiCorp Vault, AWS, Azure) and standalone Docker 엔진 or Docker Compose stacks.
+**Docker Secret Operator (DSO)** is a production-grade orchestration engine designed to securely manage the lifecycle of secrets in standalone Docker and Docker Compose environments. **DSO is a Docker CLI plugin — no Kubernetes required.**
+
+DSO bridges the gap between enterprise secret providers (AWS, Vault, Azure) and your running containers by providing **In-Memory Tar Streaming**, **Deterministic Targeting**, and **Automated Rotation**.
 
 ---
 
-## 1. Project Overview
-DSO provides a centralized, event-driven mechanism to fetch, inject, and rotate secrets dynamically. It ensures that sensitive data is handled with minimal exposure, strictly following the principles of least privilege and zero-persistence on host storage via In-Memory Tar Streaming.
+## 🎯 Who is this for?
 
-## 2. Problem Statement
-Securing secrets in standard Docker environments remains a significant "last-mile" challenge in the cloud-native ecosystem:
-- **Persistence of `.env` Files**: Traditional environment files are often leaked via process inspection, version control history, or insecure CI/CD artifacts.
-- **Static Secret Lifecycle**: Native Docker secrets are immutable by design and do not support dynamic rotation without full container redeployment.
-- **Tooling Gap**: Enterprise-grade secret management often requires Kubernetes (e.g., External Secrets Operator), leaving standalone engines and edge devices underserved.
+- 🐳 **Docker-based Microservices**: Teams running traditional Docker or Docker Compose who need enterprise-grade secret security.
+- 🏗️ **Non-Kubernetes Environments**: Edge devices, CI/CD runners, or small-to-medium stacks where K8s is overkill.
+- 🛡️ **Lightweight Secret Management**: Users who want the security of Vault or AWS Secrets Manager without the complexity of a full service mesh.
 
-## 3. Solution & Value Proposition
-DSO implements a reconciliation pattern for Docker secrets. It monitors the desired state defined in secret providers and ensures the running state of Docker containers matches that definition.
-- **In-Memory Tar Streaming**: Secrets are processed entirely in RAM and streamed directly to containers, bypassing the host's physical disk.
-- **Automated Lifecycle**: Rotates containers automatically using blue/green (restart) or signal-based strategies.
-- **Provider Unification**: Offers a single interface to manage multiple providers concurrently via a unified `dso.yaml` configuration.
+---
 
-## 4. Key Features
-- **Dual Injection Modes**:
-  - **`env`**: Direct environment variable injection.
-  - **`file`**: In-Memory Tar Streaming to `tmpfs` mounts (no env transport).
-- **Atomic Rotation with Rollback**: 3-retry idempotent logic to ensure stable recovery during rotation failures.
-- **Secure File Permissions**: File-based secrets are injected with `0400` (read-only) permissions and configurable UID/GID ownership.
-- **Global Log Redaction**: Automatic masking of sensitive data in all observability streams.
-- **Service-Level Concurrency Locking**: Prevents race conditions during simultaneous secret updates.
+## 💡 Real-World Use Cases
 
-## Quick Start (2 Minutes)
+- **API Security**: Securely inject Database credentials into your API containers directly from AWS Secrets Manager—secrets never touch the host disk.
+- **Safe Rotation**: Automatically rotate API keys across 50+ containers without a single manual restart or container image rebuild.
 
-1. Start HashiCorp Vault in dev mode
-2. Create a sample secret
-3. Run the provided docker-compose.agent.yml
-4. Verify secret injection inside the container
+---
 
-## 5. How It Works
-DSO manages the secret lifecycle through an atomic state machine:
-1. **Fetch & Cache**: Secret data is retrieved from providers and stored in the **DSO Agent's** volatile RAM cache.
-2. **Reconcile**: The **Watcher Engine** detects state differences between the provider and the running containers.
-3. **Trigger**: Upon change detection, the **Reloader Controller** executes the rotation strategy.
-4. **Rename**: The stable container is renamed to `<service_name>_old_dso` for backup.
-5. **Create**: A new container is created in a stopped state.
-6. **Inject**: The **Tar Streamer** performs In-Memory Tar Streaming directly to the new container's address space.
-7. **Start**: Container begins execution with the new secret state.
-8. **Validate**: Post-deployment `ExecProbes` (`test -s`) verify data integrity before removing the backup.
+## 🔥 Key Features (V3.1)
 
-## 6. Architecture Summary
-DSO consists of a lightweight Go-based **DSO Agent**, a **Watcher Engine**, and a **Reloader Controller**. These components interact with the Docker Socket and Secret Providers via the **Tar Streamer** to enforce the desired secret state. For detailed diagrams, see [ARCHITECTURE.md](ARCHITECTURE.md).
+- 📡 **Multi-Provider Support**: Manage AWS, HashiCorp Vault, Azure, and Local Files simultaneously via a unified `providers` map.
+- 🔄 **Smart Checksum Rotation**: Containers are only restarted if the secret value has actually changed, reducing unnecessary downtime.
+- 🛡️ **Zero-Persistence Injection**: Secrets are streamed directly into container RAM (via `tmpfs`) without ever touching the host's physical disk.
+- 🎯 **Deterministic Targeting**: Precisely control which containers receive specific secrets using explicit service names or label selectors.
+- 📈 **Production-Grade Reliability**: Built-in exponential backoff with jitter for provider API calls and atomic rollbacks for failed rotations.
 
-## 7. Trust Boundaries
-DSO assumes a trusted host and Docker daemon. It focuses on mitigating **passive leaks** and **metadata exposure**:
-- **Encrypted in Transit**: Communications with providers are TLS-encrypted.
-- **Encrypted in RAM**: Secrets are cached in memory and wiped immediately on agent shutdown.
-- **In-Memory Tar Streaming**: Direct injection to `tmpfs` avoids leaving plaintext traces on physical storage.
-- Detailed analysis can be found in [THREAT_MODEL.md](THREAT_MODEL.md).
+> **Note**: DSO V3.1 is production-ready and actively maintained.
 
-## 8. Limitations
-- **Docker Socket Access**: DSO requires privileged access to `/var/run/docker.sock` to manage container lifecycles.
-- **Trusted Daemon**: Project assumes the underlying Docker daemon and host kernel are not compromised.
-- **Container Breakout**: DSO does not protect against an attacker who has already gained root-level breakout access to the host or daemon.
-- **Provider Authentication**: The operator depends on the security of its own authentication credentials to the configured secret provider.
+---
 
-## 9. Quick Start
-### 1. Install
-Download the latest binary from the [Releases](https://github.com/docker-secret-operator/dso/releases) page.
+## 📋 Prerequisites
 
-### 2. Configure (`dso.yaml`)
-```yaml
-provider: vault
-config:
-  address: "https://vault.example.com:8200"
-secrets:
-  - name: production/mysql/password
-    inject: file
-    path: "/run/secrets/db_password"
-    uid: 1001
-    gid: 1001
-```
+Before running the Docker Secret Operator, ensure you have:
+- **Docker Engine**: 20.10+ installed and running.
+- **Socket Access**: Permission to read/write the Docker socket (`/var/run/docker.sock`).
+- **Go 1.24+**: (Optional) Only required for building from source.
 
-### 3. Run
+---
+
+## ⚡ Quick Start (5 Minutes)
+
+### Step 1: Install DSO (Docker CLI Plugin)
+DSO is now a native Docker CLI plugin. Use our installer for your platform:
+
+**Linux / macOS / WSL:**
 ```bash
-dso up -d
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
-## 10. Use Cases
-- **Local Development**: Replicate production-like secret injection in local `docker-compose` stacks.
-- **Secure CI/CD**: Inject dynamic build-time keys without exposing them in ephemeral runner logs.
-- **Edge Computing**: Manage secrets on remote Docker engines at scale without the overhead of Kubernetes.
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.ps1 | iex
+```
 
-## Non-Goals
+### Step 2: Verify Installation
+```bash
+docker dso version
+```
+*If `docker dso` is not recognized, ensure the plugin is in `~/.docker/cli-plugins` and restart your terminal.*
 
-- Not a Kubernetes replacement
-- Not a secret storage system
-- Not a policy engine (future roadmap)
+### Step 3: Minimal "First Run" Flow
+DSO follows a safe, two-step "Validate -> Up" flow. Use the `-c` flag for your DSO config and everything else is forwarded to the Docker CLI.
 
-## 11. Documentation Links
-- [Architecture Overview](ARCHITECTURE.md)
-- [Security Policy](SECURITY.md)
-- [Threat Model](THREAT_MODEL.md)
-- [Project Governance](GOVERNANCE.md)
-- [Contributing Guide](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Configuration Reference](docs/CONFIGURATION.md)
-- [Provider Guide](docs/PROVIDERS.md)
+1.  **Validate**: Ensure your providers are reachable and config is correct.
+    ```bash
+    docker dso validate -c examples/dso-minimal.yaml
+    ```
+2.  **Deploy**: Spawns your stack with dynamically injected secrets.
+    ```bash
+    docker dso up -c examples/dso-minimal.yaml -f docker-compose.yml -d
+    ```
+    *Note: `docker dso up` automatically ensures the DSO Agent is running in the background.*
+
+### Step 4: Verify
+Confirm successful injection with checkmark logs:
+```text
+✔ provider 'local' initialized
+✔ secrets synced (app-key)
+✔ container 'my-app' updated
+```
 
 ---
-### License
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for more details.
+
+## 🧰 Command Overview
+
+DSO follows a strict Docker-native CLI design.
+
+- `docker dso up`     → **User Command**: Deploys stacks and auto-starts the agent.
+- `docker dso agent`  → **Runtime Command**: Runs the background reconciliation engine (used by systemd/Docker).
+- `docker dso version` → **Verification**: Returns plugin metadata and agent status.
+
+### Commands
+- `docker dso up`: Deploy a stack and inject secrets from defined providers.
+  ```bash
+  docker dso up -c dso.yaml -f docker-compose.yml -d
+  ```
+  *Flag Forwarding: All standard Docker Compose flags (like `-d`, `--build`, `--scale`) are supported and forwarded directly.*
+- `docker dso down`: Safely stop and remove containers managed by DSO.
+  ```bash
+  docker dso down -f docker-compose.yml
+  ```
+  *Scope: DSO down exclusively targets containers labeled with `dso.managed=true`. It provides a surgical teardown of operator-controlled services without affecting any other containers in your Docker environment.*
+- `docker dso validate`: Strictly validate your `dso.yaml` schema and test provider connectivity.
+- `docker dso watch`: Monitor live container events and rotation logs in real-time.
+- `docker dso version`: Display the current version of the DSO Agent and CLI plugin metadata.
+
+---
+
+## 📦 Examples Guide
+
+Explore our [Example Library](examples/) for various use cases:
+
+| File | Environment | When to use |
+| :--- | :--- | :--- |
+| **[dso-minimal.yaml](examples/dso-minimal.yaml)** | Local Development | Rapid testing or offline development. |
+| **[dso-aws.yaml](examples/dso-aws.yaml)** | Production (AWS) | Cloud-native environments using IAM. |
+| **[dso-local.yaml](examples/dso-local.yaml)** | Air-gapped / Local | Secrets-from-files or local ENVs. |
+| **[dso-v2.yaml](examples/dso-v2.yaml)** | Multi-Cloud | Production reference for complex, hybrid stacks. |
+
+---
+
+## 🔍 Observability & Debugging
+
+DSO provides granular observability to track every secret's lifecycle.
+
+### Successful Operations
+```text
+✔ 🚀 Executing Zero-Downtime Rolling Rotation  {"id": "api-srv-1"}
+✔ provider 'vault-prod' synced successfully
+```
+
+### Typical Failures
+```text
+✖ retry attempt 2/3...                       {"provider": "aws-sm"}
+✖ provider connection failed                 {"error": "timeout: connection reset"}
+⚠ secret unchanged, skipping rotation        {"name": "db-pass"}
+```
+
+### How to Debug
+- **Log Level**: Use `--log-level=debug` for deep internal traces.
+- **Dry-run**: Use `docker dso validate` to check if your providers are reachable before deploying.
+- **Watch mode**: Keep `docker dso watch` open in a separate terminal to see real-time rotation events.
+
+### Debug Mode
+When troubleshooting complex provider issues, enable verbose tracing in your `dso.yaml`:
+```yaml
+logging:
+  level: debug
+```
+*Use this mode only in development or during active troubleshooting, as it may output internal metadata and increase log volume significantly.*
+
+---
+
+## 🔐 Security Hardening
+
+### Best Practices
+- **Use File Injection**: For high-value secrets, use `inject: {type: file}` to mount secrets into a `tmpfs` (RAM-only) volume.
+- **Restrict Permissions**: Always define `uid` and `gid` in your config to match the application user inside the container.
+- **Rotation Frequency**: Set short refresh intervals for production secrets to minimize exposure windows.
+
+### Anti-Patterns (IMPORTANT)
+- **Do NOT Log Secrets**: DSO automatically redacts logs, but never manually echo secrets into logs.
+- **Do NOT Persist to Disk**: Avoid storing secrets in persistent volumes; DSO is designed for volatile memory injection only.
+- **Avoid ENV for High Security**: Environment variables are easier to leak in crash dumps; use file injection where possible.
+
+### Threat Model
+For a detailed security analysis, including risks associated with the Docker Socket and environment variables, refer to our [Lightweight Threat Model](SECURITY.md#threat-model).
+
+---
+
+## 🏗️ Architecture Overview
+
+DSO consists of three primary layers:
+1.  **DSO Agent**: The long-running process that orchestrates lifecycle events.
+2.  **Provider Layer**: Pluggable connectors for AWS, Vault, Azure, and Huawei.
+3.  **Injection Engine**: Securely streams secrets into containers using the Docker API.
+
+For a deeper dive, see our [Architecture Documentation](ARCHITECTURE.md).
+
+---
+
+## ⚠️ Breaking Changes (V3.1)
+
+DSO has fully transitioned to a **single-binary Docker CLI plugin architecture**.
+
+- **Standalone Binaries Removed**: The legacy `dso` and `dso-agent` standalone binaries have been removed for a cleaner plugin-native experience. Use `docker dso <command>` for all operations.
+- **Plugin-Only Usage**: DSO must now be installed as a Docker CLI plugin (`docker-dso`).
+- **Unified Logic**: All core reconciliation and CLI logic reside within a single `docker-dso` executable.
+
+---
+
+## 🔄 Agent Lifecycle
+
+DSO V3.1 introduces automated agent management to simplify the user experience.
+
+- **Auto-Start**: The `docker dso up` command automatically checks if the DSO agent is running. If no responsive agent is detected on the Unix socket (`/var/run/dso.sock`), it spawns a background agent process.
+- **Background Execution**: When started via `up`, the agent runs as a detached subprocess (`docker-dso agent`), ensuring that the CLI remains responsive. Logs for the background agent can be viewed via system logs or by running the agent in the foreground.
+- **Foreground Mode**: You can manually run the agent in the foreground using `docker dso agent`. This is recommended when running DSO as a `systemd` service or during initial setup/debugging.
+- **Safe Lifecycle**: The agent handles `SIGTERM` gracefully, ensuring all Unix sockets and resources are cleaned up on shutdown. It uses a responsive socket check to prevent duplicate processes.
+
+---
+
+## 🚚 Installation Paths
+
+Depending on your use case, `docker-dso` should be installed in one of the following locations for Docker to recognize it as a plugin:
+
+- **User Install** (Default):
+  `~/.docker/cli-plugins/docker-dso` (Linux/macOS)
+  `%USERPROFILE%\.docker\cli-plugins\docker-dso.exe` (Windows)
+
+- **System Install** (Requires sudo):
+  `/usr/local/lib/docker/cli-plugins/docker-dso`
+
+Ensure the binary has executable permissions: `chmod +x ~/.docker/cli-plugins/docker-dso`.
+
+---
+
+## 🛠️ Troubleshooting
+
+If `docker dso` is not recognized:
+1. Ensure the binary is in the correct `cli-plugins` folder above.
+2. Ensure the binary is named exactly `docker-dso` (or `docker-dso.exe`).
+3. Restart your Docker CLI or terminal session.
+
+## 📚 Documentation Links
+
+- 🛠️ [Configuration Reference](docs/configuration.md)
+- 📡 [Provider Setup Guide](docs/providers.md)
+- 🏗️ [Architecture Deep Dive](ARCHITECTURE.md)
+- 📁 [Example Library](examples/)
+
+---
+
+### ⭐ Contributing & Community
+DSO is open-source and **aligned with CNCF Sandbox expectations**. We welcome [contributions](CONTRIBUTING.md) and [feedback](https://github.com/docker-secret-operator/dso/issues). If you like the project, please give us a star! ⭐
+
+---
+
+## 📚 Deep Dive Resources
+
+- 🏗️ **Architecture**: Learn about our [Zero-Persistence Execution](ARCHITECTURE.md).
+- 🛡️ **Security**: Review our [Hardening Guide and Threat Model](SECURITY.md).
+- 📁 **Examples**: Explore the [Pre-configured Stack Library](examples/README.md).
+
+Licensed under the Apache License, Version 2.0.

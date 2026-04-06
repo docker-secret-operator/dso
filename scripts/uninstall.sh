@@ -23,13 +23,20 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo -e "${GREEN}Stopping and disabling dso-agent service...${NC}"
-systemctl stop dso-agent || true
-systemctl disable dso-agent || true
+echo -e "${GREEN}Stopping and disabling services...${NC}"
+systemctl stop dso 2>/dev/null || true
+systemctl disable dso 2>/dev/null || true
+rm -f /etc/systemd/system/dso.service
+
+# Cleanup legacy service
+systemctl stop dso-agent 2>/dev/null || true
+systemctl disable dso-agent 2>/dev/null || true
 rm -f /etc/systemd/system/dso-agent.service
+
 systemctl daemon-reload
 
 echo -e "${GREEN}Removing binaries and plugin...${NC}"
+rm -f $INSTALL_DIR/docker-dso
 rm -f $INSTALL_DIR/dso
 rm -f $INSTALL_DIR/dso-agent
 rm -f /usr/local/lib/docker/cli-plugins/docker-dso

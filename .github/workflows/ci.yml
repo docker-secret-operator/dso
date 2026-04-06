@@ -64,6 +64,19 @@ jobs:
           version: v1.64.5
           args: --timeout=5m
 
+  # ── CLI Guard ───────────────────────────────────────────────
+  cli-guard:
+    name: CLI Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate CLI Usage
+        run: |
+          chmod +x scripts/validate-cli.sh
+          ./scripts/validate-cli.sh
+
   # ── Security Scan ───────────────────────────────────────────
   security:
     name: Security Scan

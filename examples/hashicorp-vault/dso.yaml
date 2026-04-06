@@ -1,27 +1,26 @@
-# Sample configuration — DO NOT use in production
-provider: vault
-
-config:
-  address: http://example.com:8200
-  token: YOUR_VAULT_TOKEN
-  mount: secret
+# DSO Example: HashiCorp Vault (V2)
+providers:
+  dev-vault:
+    type: vault
+    address: http://example.com:8200
+    token: YOUR_VAULT_TOKEN
+    mount: secret
 
 agent:
   cache: true
   watch:
-    mode: polling
     polling_interval: 20s
-  
-  restart_strategy:
-    type: rolling
-    grace_period: 10s
+
+defaults:
+  inject:
+    type: env
+  rotation:
+    enabled: true
+    strategy: restart
 
 secrets:
   - name: mysql
-    inject: env
-    rotation: true
-    reload_strategy:
-      type: restart
+    provider: dev-vault
     mappings:
       # Key in Vault (field) → Environment Variable name in Container
       username: DB_USER

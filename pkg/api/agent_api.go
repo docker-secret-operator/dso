@@ -11,7 +11,7 @@ type AgentResponse struct {
 	Error string
 }
 
-// AgentAPI is the interface exposed by the dso-agent daemon over Unix socket.
+// AgentAPI is the interface exposed by the DSO agent daemon over Unix socket.
 type AgentAPI interface {
 	GetSecret(req *AgentRequest, resp *AgentResponse) error
 }

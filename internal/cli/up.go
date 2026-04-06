@@ -3,16 +3,67 @@ package cli
 import (
 	"fmt"
 	"os"
+	"net"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/docker-secret-operator/dso/internal/core"
 	"github.com/spf13/cobra"
 )
 
+func ensureAgentRunning(configPath string) {
+	socketPath := "/var/run/dso.sock"
+	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
+		socketPath = custom
+	}
+
+	// 1. Probe the socket
+	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+	if err == nil {
+		conn.Close()
+		return // Agent is responsive
+	}
+
+	// 2. Start agent in background if not responsive
+	fmt.Println("🚀 Starting DSO agent...")
+	
+	// We use the same binary (os.Args[0]) with the 'agent' command
+	args := []string{"agent"}
+	if configPath != "" && configPath != "dso.yaml" {
+		args = append(args, "--config", configPath)
+	}
+
+	cmd := exec.Command(os.Args[0], args...)
+	
+	// Start in background, detached from terminal
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	
+	err = cmd.Start()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to start DSO agent: %v\n", err)
+		return
+	}
+
+	// Wait for socket to initialize
+	start := time.Now()
+	for time.Since(start) < 5*time.Second {
+		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fmt.Fprintf(os.Stderr, "Warning: Agent started but socket %s not ready yet.\n", socketPath)
+}
+
 func NewUpCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "up [args...]",
-		Short:              "Native Docker Compose integration with dynamic secrets",
+		Short:              "Deploy a stack and automatically start the DSO agent",
+		Long:               "The 'up' command is the primary entrypoint for DSO. It performs a Docker Compose deployment with secure secret injection and automatically ensures the DSO agent is running in the background. All standard Docker Compose flags (like -d, --build) are supported and forwarded directly.",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			composeFile := ""
@@ -20,6 +71,7 @@ func NewUpCmd() *cobra.Command {
 			if configPath == "" {
 				configPath = ResolveConfig()
 			}
+			ensureAgentRunning(configPath)
 
 			var dockerArgs []string
 			skip := false

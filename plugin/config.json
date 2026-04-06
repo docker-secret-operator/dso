@@ -8,7 +8,8 @@
     "socket": "dso-driver.sock"
   },
   "entrypoint": [
-    "/usr/local/bin/dso-agent"
+    "/usr/local/bin/docker-dso",
+    "agent"
   ],
   "network": {
     "type": "host"

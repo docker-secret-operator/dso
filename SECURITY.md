@@ -28,7 +28,38 @@ DSO manages the transition of sensitive data through the following security stag
 - **Trusted Docker Daemon**: DSO assumes the Docker Engine is running a secure, uncompromised version and is governed by appropriate access controls.
 - **Secure Host Environment**: The operator assumes the host kernel, RAM, and DSO Agent process space are protected from unauthorized inspection or memory scraping.
 
-## 5. Explicit Limitations
+## 5. Lightweight Threat Model
+
+Understanding the boundaries of DSO's protection is critical for production deployments.
+
+### 5.1 Environment Variable Exposure
+**Risk**: Standard environment variables used for secret injection are visible to any user who can run `docker inspect` or read `/proc/<pid>/environ`.
+**DSO Control**: DSO supports **File Injection** into `tmpfs` mounts, which ensures secrets never appear in the container's environment metadata.
+
+### 5.2 File Mount & RAM Risks
+**Risk**: While DSO prevents secrets from hitting the physical disk, an attacker with **Root/Sudo** access on the host can still inspect volatile memory (RAM) or read the `tmpfs` mount points.
+**DSO Control**: DSO minimizes the exposure window by ensuring secrets are only present in RAM during the lifecycle of the container. 
+
+### 5.3 Docker Socket Escape
+**Risk**: DSO requires access to `/var/run/docker.sock`. If the DSO container itself is compromised, an attacker could potentially gain full control over the Docker host.
+**DSO Control**: We recommend running DSO with `--network none` and `--restart unless-stopped` to minimize the attack surface of the operator itself.
+
+## 6. Recommended Secure Defaults
+
+To ensure the highest level of security for production workloads, we recommend the following configuration:
+
+```yaml
+# Recommended Secure Production Setup
+inject:
+  type: file      # Mounts secrets directly to tmpfs; prevents env exposure
+
+logging:
+  level: info     # Prevents potential secret leaking in debug traces
+```
+
+*Note: While `inject: env` is easier for development, `inject: file` is the gold standard for production as it completely removes secrets from the process environment metadata accessible via `docker inspect`.*
+
+## 7. Explicit Limitations
 DSO does **not** protect against the following scenarios:
 - **Container Compromise**: If an attacker gains code execution within a target container, they can read any secrets injected into that specific container.
 - **Root-Level Host Access**: An attacker with root privileges on the host can inspect the DSO process memory or `docker exec` into any container.

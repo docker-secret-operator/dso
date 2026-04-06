@@ -1,0 +1,14 @@
+# DSO Minimal Example (V2)
+# The smallest working configuration for local development.
+
+providers:
+  local:
+    type: file
+    config:
+      path: "/tmp/dso-secrets"
+
+secrets:
+  - name: my-app-secret
+    provider: local
+    mappings:
+      SECRET_KEY: APP_SECRET

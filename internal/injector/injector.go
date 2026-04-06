@@ -15,7 +15,7 @@ type AgentClient struct {
 func NewAgentClient(socketPath string) (*AgentClient, error) {
 	client, err := rpc.Dial("unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to dso-agent socket at %s: %w", socketPath, err)
+		return nil, fmt.Errorf("failed to connect to the DSO agent socket at %s: %w", socketPath, err)
 	}
 	return &AgentClient{client: client}, nil
 }
@@ -40,8 +40,21 @@ func (ac *AgentClient) FetchSecret(providerName string, config map[string]string
 func (ac *AgentClient) FetchAllEnvs(cfg *config.Config) (map[string]string, error) {
 	envs := make(map[string]string)
 	for _, sec := range cfg.Secrets {
-		if sec.Inject == "env" || sec.Inject == "" { // default to env
-			data, err := ac.FetchSecret(cfg.Provider, cfg.Config, sec.Name)
+		if sec.Inject.Type == "env" || sec.Inject.Type == "" { // default to env
+			pName := sec.Provider
+			if pName == "" {
+				// Default to first provider if none specified
+				for k := range cfg.Providers {
+					pName = k
+					break
+				}
+			}
+			pCfg, ok := cfg.Providers[pName]
+			if !ok {
+				return nil, fmt.Errorf("provider %s not found for secret %s", pName, sec.Name)
+			}
+
+			data, err := ac.FetchSecret(pName, pCfg.Config, sec.Name)
 			if err != nil {
 				return nil, err
 			}

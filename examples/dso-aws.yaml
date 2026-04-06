@@ -1,0 +1,25 @@
+# DSO AWS Secrets Manager Reference (V2)
+# Best practices for AWS-only environments with IAM Instance Profiles.
+
+providers:
+  aws:
+    type: aws
+    region: us-east-1
+    auth:
+      method: iam_role  # Automatically fetches from Instance Metadata Service
+
+defaults:
+  inject:
+    type: env
+  rotation:
+    enabled: true
+    strategy: restart
+
+secrets:
+  - name: "/prod/ecommerce/db-password"
+    provider: aws
+    mappings:
+      password: DB_PASSWORD
+    targets:
+      containers:
+        - checkout-api

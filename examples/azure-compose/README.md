@@ -9,8 +9,8 @@ This example demonstrates using **Docker Secret Operator (DSO)** to inject MySQL
 | Component | Role |
 | :--- | :--- |
 | **Azure Key Vault** | Stores `MYSQL-ROOT-PASSWORD`, `MYSQL-USER`, `MYSQL-PASSWORD` as individual secrets |
-| **dso-agent** | Authenticates to Azure, fetches secrets, and caches them in memory |
-| **dso compose** | Injects the secret values into docker compose at container startup |
+| **DSO Agent** | Authenticates to Azure, fetches secrets, and caches them in memory |
+| **docker dso** | Injects the secret values into docker compose at container startup |
 | **mysql_db** | MySQL container receives credentials via environment variables |
 | **phpmyadmin** | Connects to MySQL without any credentials in the compose file |
 
@@ -95,28 +95,30 @@ sudo chmod 600 /etc/dso/dso.yaml
 **`dso.yaml`** — connects to your Azure Key Vault and maps each secret:
 
 ```yaml
-provider: azure
+# DSO Example: Azure Key Vault (V3.1)
+providers:
+  azure-prod:
+    type: azure
+    config:
+      vault_url: "https://dev-kv.vault.azure.net/"
 
-config:
-  vault_url: "https://dev-kv.vault.azure.net/"   # Your Key Vault URL
-
-agent:
-  cache: true
-  refresh_interval: 5s
+defaults:
+  inject:
+    type: env
 
 secrets:
   - name: MYSQL-ROOT-PASSWORD    # Exact name in Azure Key Vault
-    inject: env
+    provider: azure-prod
     mappings:
       value: MYSQL_ROOT_PASSWORD  # Azure strings always use "value" as the key
 
   - name: MYSQL-USER
-    inject: env
+    provider: azure-prod
     mappings:
       value: MYSQL_USER
 
   - name: MYSQL-PASSWORD
-    inject: env
+    provider: azure-prod
     mappings:
       value: MYSQL_PASSWORD
 ```
@@ -128,13 +130,13 @@ secrets:
 ## Step 4 — Start the DSO Agent
 
 ```bash
-sudo systemctl restart dso-agent
-sudo systemctl status dso-agent
+sudo systemctl restart DSO Agent
+sudo systemctl status DSO Agent
 
 # Verify each secret is reachable:
-dso fetch MYSQL-ROOT-PASSWORD
-dso fetch MYSQL-USER
-dso fetch MYSQL-PASSWORD
+docker dso fetch MYSQL-ROOT-PASSWORD
+docker dso fetch MYSQL-USER
+docker dso fetch MYSQL-PASSWORD
 ```
 
 Expected output for each:
@@ -181,12 +183,12 @@ services:
 ## Step 6 — Deploy
 
 ```bash
-dso compose up -d
+docker dso up -d
 ```
 
 DSO will:
 1. Load `/etc/dso/dso.yaml`
-2. Connect to `dso-agent` over the Unix socket
+2. Connect to `DSO Agent` over the Unix socket
 3. Fetch `MYSQL-ROOT-PASSWORD`, `MYSQL-USER`, `MYSQL-PASSWORD` from Azure Key Vault
 4. Inject them into the environment as `MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`
 5. Run `docker compose up -d` with the enriched environment
@@ -276,7 +278,7 @@ examples/azure-compose/
 ## Cleanup
 
 ```bash
-dso compose down
+docker dso down
 # or to also remove volumes:
 docker compose down -v
 ```
