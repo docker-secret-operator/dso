@@ -29,7 +29,7 @@ func NewExportCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Agent connection failed. Is dso-agent running? error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Agent connection failed. Is the DSO agent running? error: %v\n", err)
 				os.Exit(1)
 			}
 

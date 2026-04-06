@@ -2,16 +2,16 @@
 
 ## Project Description
 
-Docker Secret Operator (DSO) is a reconciliation engine that syncs secrets from cloud providers (AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, Huawei CSMS) into Docker containers at runtime.
+Docker Secret Operator (DSO) is a reconciliation engine that syncs secrets from cloud providers (AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, Huawei CSMS) into Docker containers at runtime. **DSO is a native Docker CLI plugin for secret management — no Kubernetes required.**
 
 It runs as a lightweight agent on the Docker host. You define which secrets your containers need in a YAML file, and DSO handles the rest — fetching, caching, injecting, and automatically rotating secrets when they change upstream.
 
-The project ships as a native Docker CLI plugin (`docker dso up -d`) and is written in Go. It uses about 20MB of RAM and runs as a systemd service.
+The project ships as a native Docker CLI plugin (`docker dso up`) and is written in Go. It uses about 20MB of RAM and runs as a systemd service.
 
 **Repository:** https://github.com/docker-secret-operator/dso  
 **License:** Apache-2.0  
 **Language:** Go  
-**Current version:** v3.0.0  
+**Current version:** v3.1.0  
 
 ## Problem Statement
 

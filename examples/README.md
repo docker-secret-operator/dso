@@ -1,21 +1,33 @@
 # DSO Examples
 
-This directory contains standalone end-to-end examples highlighting the capabilities of the **Docker Secret Operator (DSO)** across different cloud environments.
+This directory contains reference configurations for the Docker Secret Operator (DSO) V2.
 
-## Running an Example
-Navigate into any example directory and run the stack using the `docker dso` plugin.
+## 📁 Repository Structure
 
-```bash
-cd aws-compose
+| File | Description |
+| :--- | :--- |
+| `dso-v2.yaml` | **Full Production Reference** using multiple providers. |
+| `dso-minimal.yaml` | Smallest working configuration (Starter). |
+| `dso-aws.yaml` | AWS Secrets Manager specialized configuration. |
+| `dso-local.yaml` | Local development reference using the `file` provider. |
 
-# Native plugin execution: retrieve secrets & boot!
-docker dso up -d
-```
+## 🚀 How to Use
 
-## Available Scenarios
-- **aws-compose**: Demonstrates `inject: env` with an AWS Secrets Manager JSON payload being mapped to an Alpine Node container.
-- **azure-compose**: Demonstrates the `inject: file` logic, generating an invisible `tmpfs` volume payload linked to Azure Key Vault inside a Python container.
-- **huawei-compose**: Demonstrates standard single-key extraction using Huawei CSMS feeding into a Redis database environment instance.
-- **v2-rotation-rolling-restart**: Showcases DSO v2.0.0 features: **Continuous Watcher**, **Best-Effort Rolling Restarts**, and **Dynamic File Overwriting**.
-- **docker-swarm**: Highlights the native Docker V2 Secret Driver integration for Swarm clusters.
-- **production-compose**: A production-ready blueprint with DSO running as a sidecar container inside the compose stack.
+1.  **Choose an example**: Start with `dso-minimal.yaml` if you're new.
+2.  **Edit the configuration**: Replace placeholders (like `YOUR_VAULT_TOKEN`) with actual values.
+3.  **Run DSO**:
+    ```bash
+    docker dso up -d -c examples/dso-minimal.yaml
+    ```
+
+## 🔐 Specialized Integrations
+
+We also provide complete subdirectory examples for specific cloud providers that include `docker-compose.yaml` and deployment notes:
+
+- [AWS Secrets Manager](./aws-compose)
+- [Azure Key Vault](./azure-compose)
+- [HashiCorp Vault](./hashicorp-vault)
+- [Huawei Cloud CSMS](./huawei-compose)
+
+---
+For a full configuration reference, see the [Configuration Guide](../docs/configuration.md).

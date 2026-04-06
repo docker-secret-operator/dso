@@ -1,0 +1,20 @@
+# DSO Local Dev Reference (V2)
+# Air-gapped or local development using the 'file' secret backend.
+
+providers:
+  local:
+    type: file
+    config:
+      path: "./.secrets"
+
+logging:
+  level: debug
+
+secrets:
+  - name: "postgres-password"
+    provider: local
+    inject:
+      type: file
+      path: "/run/secrets/pg_pass"
+    mappings:
+      password: "password"

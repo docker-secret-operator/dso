@@ -12,8 +12,8 @@ Authentication uses **IAM Agency** on the ECS instance — no long-term access k
 | :--- | :--- |
 | **Huawei CSMS** | Stores MySQL credentials as a JSON secret |
 | **IAM Agency** | Grants the ECS instance permission to read CSMS and KMS resources |
-| **dso-agent** | Reads temporary credentials from ECS metadata, fetches secrets from CSMS |
-| **dso compose** | Injects secret values into docker compose at container startup |
+| **DSO Agent** | Reads temporary credentials from ECS metadata, fetches secrets from CSMS |
+| **docker dso** | Injects secret values into docker compose at container startup |
 | **mysql_db** | MySQL container receives credentials via environment variables |
 | **phpmyadmin** | Connects to MySQL without any credentials in the compose file |
 
@@ -113,7 +113,7 @@ EOF
 sudo chmod 600 /etc/dso/agent.env
 ```
 
-> **Why this step is needed**: The `dso-agent` runs as a systemd service and does not inherit your shell environment. The credentials must be explicitly placed in `/etc/dso/agent.env` which the systemd unit reads as `EnvironmentFile`.
+> **Why this step is needed**: The `DSO Agent` runs as a systemd service and does not inherit your shell environment. The credentials must be explicitly placed in `/etc/dso/agent.env` which the systemd unit reads as `EnvironmentFile`.
 
 ---
 
@@ -130,19 +130,20 @@ sudo chmod 600 /etc/dso/dso.yaml
 **`dso.yaml`** — connects to Huawei CSMS and maps the secret JSON fields to container ENV vars:
 
 ```yaml
-provider: huawei
+# DSO Example: Huawei Cloud CSMS (V3.1)
+providers:
+  huawei-prod:
+    type: huawei
+    region: ap-southeast-2
+    project_id: 98176f42176505f83584d83fd6baedf   # Your project ID
 
-config:
-  region: ap-southeast-2
-  project_id: 98176f42176505f83584d83fd6baedf   # Your project ID
-
-agent:
-  refresh_interval: 5s
-  cache: true
+defaults:
+  inject:
+    type: env
 
 secrets:
   - name: localhost-sm              # Exact CSMS secret name
-    inject: env
+    provider: huawei-prod
     mappings:
       MYSQL_ROOT_PASSWORD: MYSQL_ROOT_PASSWORD   # JSON key → container ENV
       MYSQL_USER: MYSQL_USER
@@ -156,11 +157,11 @@ secrets:
 ## Step 7 — Start the DSO Agent
 
 ```bash
-sudo systemctl restart dso-agent
-sudo systemctl status dso-agent
+sudo systemctl restart DSO Agent
+sudo systemctl status DSO Agent
 
 # Verify the secret is reachable
-dso fetch localhost-sm
+docker dso fetch localhost-sm
 ```
 
 Expected output:
@@ -209,7 +210,7 @@ services:
 ## Step 9 — Deploy
 
 ```bash
-dso compose up -d
+docker dso up -d
 ```
 
 DSO will:
@@ -273,7 +274,7 @@ HUAWEI_SECRET_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(s
 HUAWEI_SECURITY_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['credential']['securitytoken'])")
 EOF
 sudo chmod 600 /etc/dso/agent.env
-sudo systemctl restart dso-agent
+sudo systemctl restart DSO Agent
 ```
 
 > **Note**: Temporary credentials from ECS IAM Agency expire periodically (typically every 24 hours). Consider setting up a cron job to refresh them automatically.
@@ -307,7 +308,7 @@ sudo tee /etc/cron.d/dso-hw-creds > /dev/null << 'EOF'
   ST=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['credential']['securitytoken'])") && \
   printf "HUAWEI_ACCESS_KEY=%s\nHUAWEI_SECRET_KEY=%s\nHUAWEI_SECURITY_TOKEN=%s\n" "$AK" "$SK" "$ST" \
     > /etc/dso/agent.env && chmod 600 /etc/dso/agent.env && \
-  systemctl restart dso-agent
+  systemctl restart DSO Agent
 EOF
 ```
 
@@ -331,7 +332,7 @@ examples/huawei-compose/
 ## Cleanup
 
 ```bash
-dso compose down
+docker dso down
 # Remove volumes too:
 docker compose down -v
 ```

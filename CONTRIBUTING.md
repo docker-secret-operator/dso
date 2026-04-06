@@ -98,9 +98,83 @@ We're open to ideas. Open an issue with the `enhancement` label and describe:
 - How you'd expect it to work
 - Why it would be useful to other users
 
-## Getting help
+## Adding a New Provider
 
-If you're stuck or have questions, open a [Discussion](https://github.com/docker-secret-operator/dso/discussions) or reach out on an issue. We're happy to help.
+DSO is designed to be extensible. To add a new secret provider (e.g., GCP Secret Manager), follow these steps:
+
+### 1. Implement the Interface
+Your provider must implement the `SecretProvider` interface defined in `pkg/api/plugin.go`. Here is a minimal skeleton:
+
+```go
+package main
+
+import "github.com/docker-secret-operator/dso/pkg/api"
+
+type MyProvider struct {
+    client interface{} // Your SDK client
+}
+
+func (p *MyProvider) Init(config map[string]string) error {
+    // 1. Parse your config (e.g., region, project_id)
+    // 2. Initialize your SDK client
+    return nil
+}
+
+func (p *MyProvider) GetSecret(name string) (map[string]string, error) {
+    // 1. Call your secret manager API
+    // 2. Return a map of keys and values
+    return map[string]string{"KEY": "VALUE"}, nil
+}
+```
+
+### 2. Create the Plugin Entrypoint
+Create a new directory in `cmd/plugins/dso-provider-<name>`. 
+Use the `plugin.Serve` helper to wrap your implementation into an RPC-modeled plugin. Reference `cmd/plugins/dso-provider-vault/main.go` for the boilerplate.
+
+### 3. Register the Type
+Add your provider string identifier to the factory in `internal/providers/store.go`. This allows the `dso.yaml` to recognize your `type: <name>` field.
+
+### 4. Verification
+- Add unit tests for your `GetSecret` logic.
+- Verify with a sample config:
+  ```yaml
+  providers:
+    my-new-cloud:
+      type: <name>
+      config: { ... }
+  ```
+## Development Workflow
+
+To set up a local development environment for DSO:
+
+> [!NOTE] 
+> DSO is primarily intended to be run as a Docker CLI plugin (`docker-dso`). For local development and testing, you should build and run the `docker-dso` binary directly.
+
+### 1. Quick Development Loop
+To rapidly iterate on configuration schema or CLI features:
+```bash
+go build -o docker-dso ./cmd/docker-dso
+./docker-dso validate -c examples/dso-minimal.yaml
+```
+This loop ensures your core logic and schema mappings are correct without the overhead of the full plugin installation.
+
+### 2. Run Locally
+You can run the Agent directly from the source for testing:
+```bash
+go run cmd/docker-dso/main.go agent --config examples/dso-minimal.yaml
+```
+
+### 3. Test Configuration Changes
+Before deploying your changes, use the validation logic to sanity check your schema:
+```bash
+go run cmd/docker-dso/main.go validate -c your-test-config.yaml
+```
+
+### 3. Add a Secret Provider
+If you're implementing a new backend:
+- **Interface**: Define the logic in `pkg/provider/`.
+- **Plugin binary**: Create a entrypoint in `cmd/plugins/dso-provider-<name>/`.
+- **Factory**: Register your new type in `internal/providers/store.go`.
 
 ---
 

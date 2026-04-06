@@ -15,52 +15,215 @@ type RestartStrategy struct {
 }
 
 type WatchConfig struct {
-	Mode            string `yaml:"mode"` // polling, event, hybrid
-	PollingInterval string `yaml:"polling_interval"`
+	Mode            string        `yaml:"mode"` // polling, event, hybrid
+	PollingInterval string        `yaml:"polling_interval"`
+	Webhook         WebhookConfig `yaml:"webhook"`
 }
 
 type WebhookConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	AuthToken string `yaml:"auth_token"`
+	Endpoint  string `yaml:"endpoint,omitempty"`
 }
 
-type RotationConfig struct {
-	Strategy           string `yaml:"strategy"`
-	HealthCheckTimeout string `yaml:"health_check_timeout"`
-	MaxParallel        int    `yaml:"max_parallel"`
+type RotationConfigV2 struct {
+	Enabled            bool   `yaml:"enabled"`
+	Strategy           string `yaml:"strategy"` // restart, signal, none
+	Signal             string `yaml:"signal,omitempty"`
+	HealthCheckTimeout string `yaml:"health_check_timeout,omitempty"`
+}
+
+type AuthConfig struct {
+	Method string            `yaml:"method"` // iam_role, access_key, token, env
+	Params map[string]string `yaml:"params,omitempty"`
+}
+
+type RetryConfig struct {
+	Attempts int    `yaml:"attempts"`
+	Backoff  string `yaml:"backoff"`
+}
+
+type ProviderConfig struct {
+	Type   string            `yaml:"type"`
+	Region string            `yaml:"region,omitempty"`
+	Auth   AuthConfig        `yaml:"auth,omitempty"`
+	Retry  RetryConfig       `yaml:"retry,omitempty"`
+	Config map[string]string `yaml:"config,omitempty"`
+}
+
+type InjectionConfig struct {
+	Type string `yaml:"type"` // env, file
+	Path string `yaml:"path,omitempty"`
+	UID  int    `yaml:"uid,omitempty"`
+	GID  int    `yaml:"gid,omitempty"`
+}
+
+type TargetConfig struct {
+	Containers []string          `yaml:"containers,omitempty"`
+	Labels     map[string]string `yaml:"labels,omitempty"`
+}
+
+type DefaultsConfig struct {
+	Inject   InjectionConfig  `yaml:"inject,omitempty"`
+	Rotation RotationConfigV2 `yaml:"rotation,omitempty"`
+}
+
+type LoggingConfig struct {
+	Level  string `yaml:"level"`  // info, debug, error
+	Format string `yaml:"format"` // json, text
 }
 
 type AgentConfig struct {
-	Cache           bool            `yaml:"cache"`
-	RefreshInterval string          `yaml:"refresh_interval"` 
-	AutoSync        bool            `yaml:"auto_sync"`
-	RestartStrategy RestartStrategy `yaml:"restart_strategy"`
-	Watch           WatchConfig     `yaml:"watch"`
-	Webhook         WebhookConfig   `yaml:"webhook"`
-	Rotation        RotationConfig  `yaml:"rotation"`
-}
-
-type ReloadStrategy struct {
-	Type string `yaml:"type"` // "signal" | "restart" | "none"
+	Cache           bool             `yaml:"cache"`
+	RefreshInterval string           `yaml:"refresh_interval"`
+	AutoSync        bool             `yaml:"auto_sync"`
+	RestartStrategy RestartStrategy  `yaml:"restart_strategy"`
+	Watch           WatchConfig      `yaml:"watch"`
+	Rotation        RotationConfigV2 `yaml:"rotation"`
 }
 
 type SecretMapping struct {
-	Name           string            `yaml:"name"`
-	Inject         string            `yaml:"inject"` // "file", "env", "socket"
-	Path           string            `yaml:"path,omitempty"`
-	UID            int               `yaml:"uid,omitempty"`
-	GID            int               `yaml:"gid,omitempty"`
-	Rotation       bool              `yaml:"rotation"`
-	ReloadStrategy ReloadStrategy    `yaml:"reload_strategy"`
-	Mappings       map[string]string `yaml:"mappings"`
+	Name     string            `yaml:"name"`
+	Provider string            `yaml:"provider,omitempty"`
+	Inject   InjectionConfig   `yaml:"inject"`
+	Rotation RotationConfigV2  `yaml:"rotation"`
+	Targets  TargetConfig      `yaml:"targets,omitempty"`
+	Mappings map[string]string `yaml:"mappings"`
 }
 
 type Config struct {
-	Provider string            `yaml:"provider"`
-	Config   map[string]string `yaml:"config,omitempty"`
-	Region   string            `yaml:"region,omitempty"`
-	Agent    AgentConfig       `yaml:"agent"`
-	Secrets  []SecretMapping   `yaml:"secrets"`
+	Providers map[string]ProviderConfig `yaml:"providers"`
+	Agent     AgentConfig               `yaml:"agent"`
+	Defaults  DefaultsConfig            `yaml:"defaults,omitempty"`
+	Logging   LoggingConfig             `yaml:"logging,omitempty"`
+	Secrets   []SecretMapping           `yaml:"secrets"`
+
+	// Legacy fields for backward compatibility detection
+	LegacyProvider string            `yaml:"provider,omitempty"`
+	LegacyConfig   map[string]string `yaml:"config,omitempty"`
+}
+
+func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	// Internal type to avoid infinite recursion
+	type alias Config
+	var aux alias
+
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+
+	*c = Config(aux)
+
+	// Handle Legacy Top-Level Provider
+	if c.LegacyProvider != "" {
+		if c.Providers == nil {
+			c.Providers = make(map[string]ProviderConfig)
+		}
+		if _, exists := c.Providers[c.LegacyProvider]; !exists {
+			c.Providers[c.LegacyProvider] = ProviderConfig{
+				Type:   c.LegacyProvider,
+				Config: c.LegacyConfig,
+			}
+		}
+	}
+
+	// Handle Legacy Secret Mappings
+	for range c.Secrets {
+		// Detect if Inject was a simple string in raw YAML (v1)
+		// Since we've already decoded into structured InjectionConfig,
+		// we need to check if the 'type' is empty but was likely intended.
+		// However, yaml.v3 handles this better if we use an intermediate map or custom unmarshaler for SecretMapping too.
+	}
+
+	return nil
+}
+
+// SecretMapping custom unmarshaler to handle legacy formats
+func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
+	// 1. Try to decode as the standard V2 structure
+	type alias SecretMapping
+	var v2 alias
+	if err := value.Decode(&v2); err == nil {
+		// Even if it decoded, we need to check if 'inject' or 'rotation' were actually strings/bools
+		// because yaml.v3 might try to coerce them or ignore them if types mismatch.
+		*s = SecretMapping(v2)
+	}
+
+	// 2. Disambiguate legacy fields using a raw map representation
+	var raw map[string]interface{}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	// Handle Legacy 'inject' as a string
+	if val, ok := raw["inject"].(string); ok {
+		s.Inject.Type = val
+	}
+
+	// Handle Legacy 'rotation' as a bool
+	if val, ok := raw["rotation"].(bool); ok {
+		s.Rotation.Enabled = val
+	}
+
+	// Handle Legacy 'reload_strategy'
+	if reloadRaw, ok := raw["reload_strategy"].(map[string]interface{}); ok {
+		if reloadType, ok := reloadRaw["type"].(string); ok {
+			s.Rotation.Strategy = reloadType
+			s.Rotation.Enabled = true
+		}
+	}
+
+	return nil
+}
+
+func (c *Config) Validate() error {
+	if len(c.Providers) == 0 {
+		return fmt.Errorf("at least one provider must be configured")
+	}
+
+	for i, sec := range c.Secrets {
+		if sec.Name == "" {
+			return fmt.Errorf("secret at index %d is missing 'name'", i)
+		}
+
+		// 1. Merge Injection Defaults
+		if sec.Inject.Type == "" {
+			sec.Inject.Type = c.Defaults.Inject.Type
+		}
+		if sec.Inject.Type == "" {
+			return fmt.Errorf("secret '%s' is missing injection type", sec.Name)
+		}
+
+		if sec.Inject.Path == "" {
+			sec.Inject.Path = c.Defaults.Inject.Path
+		}
+		if sec.Inject.Type == "file" && sec.Inject.Path == "" {
+			return fmt.Errorf("secret '%s' with type 'file' must have a 'path'", sec.Name)
+		}
+
+		if sec.Inject.UID == 0 {
+			sec.Inject.UID = c.Defaults.Inject.UID
+		}
+		if sec.Inject.GID == 0 {
+			sec.Inject.GID = c.Defaults.Inject.GID
+		}
+
+		// 2. Merge Rotation Defaults
+		if !sec.Rotation.Enabled && c.Defaults.Rotation.Enabled {
+			sec.Rotation.Enabled = true
+		}
+		if sec.Rotation.Strategy == "" {
+			sec.Rotation.Strategy = c.Defaults.Rotation.Strategy
+		}
+		if sec.Rotation.Strategy == "" {
+			sec.Rotation.Strategy = "restart" // Final fallback
+		}
+
+		// Sync back
+		c.Secrets[i] = sec
+	}
+
+	return nil
 }
 
 // IsSafePath validates that a user-provided path does not escape the base directory
@@ -110,6 +273,10 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse yaml config: %w", err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
 	return &cfg, nil

@@ -12,13 +12,19 @@ func init() {
 	Logger, _ = zap.NewProduction()
 }
 
-// NewLogger creates a new configured zap logger
-func NewLogger(level string, isProduction bool) (*zap.Logger, error) {
+// NewLogger creates a new configured zap logger with level and format (json/text)
+func NewLogger(level string, format string, isProduction bool) (*zap.Logger, error) {
 	var cfg zap.Config
 	if isProduction {
 		cfg = zap.NewProductionConfig()
 	} else {
 		cfg = zap.NewDevelopmentConfig()
+	}
+
+	if format == "json" {
+		cfg.Encoding = "json"
+	} else {
+		cfg.Encoding = "console"
 	}
 
 	var zapLevel zapcore.Level

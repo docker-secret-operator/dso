@@ -11,16 +11,21 @@ import (
 var CfgFile string
 
 func ResolveConfig() string {
-	// Priority: Local -> Global
-	if _, err := os.Stat("dso.yaml"); err == nil {
-		return "dso.yaml"
-	}
+	// Priority 1: CLI flag (-c)
 	if CfgFile != "" && CfgFile != "dso.yaml" {
 		return CfgFile
 	}
+
+	// Priority 2: /etc/dso/dso.yaml
 	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
 		return "/etc/dso/dso.yaml"
 	}
+
+	// Priority 3: ./dso.yaml
+	if _, err := os.Stat("dso.yaml"); err == nil {
+		return "dso.yaml"
+	}
+
 	return "dso.yaml"
 }
 
@@ -28,14 +33,15 @@ func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dso",
 		Short: "Docker Secret Operator (DSO) CLI",
-		Long:  `dso fetches and injects secrets into containers dynamically.`,
+		Long:  `Docker Secret Operator (DSO) is a Docker CLI plugin for secret management — no Kubernetes required. It fetches and injects secrets into containers dynamically using secure in-memory streaming.`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			_, _ = observability.NewLogger("info", false)
+			_, _ = observability.NewLogger("info", "console", false)
 		},
 	}
 
 	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (default: /etc/dso/dso.yaml or ./dso.yaml)")
 
+	cmd.AddCommand(NewAgentCmd())
 	cmd.AddCommand(NewMetadataCmd())
 	cmd.AddCommand(NewComposeCmd())
 	cmd.AddCommand(NewFetchCmd())

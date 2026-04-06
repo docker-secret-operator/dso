@@ -292,6 +292,17 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				newEnvs := make(map[string]string)
 				if r.Cache != nil && r.Config != nil {
 					for _, sec := range r.Config.Secrets {
+						// 2.1 Identify Provider
+						pName := sec.Provider
+						if pName == "" {
+							if len(r.Config.Providers) == 1 {
+								for name := range r.Config.Providers {
+									pName = name
+									break
+								}
+							}
+						}
+
 						containerUsesSecret := false
 						for _, ts := range target.Secrets {
 							if ts == sec.Name {
@@ -301,10 +312,12 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 						
 						if containerUsesSecret {
-							cacheKey := fmt.Sprintf("%s:%s", r.Config.Provider, sec.Name)
+							cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
 							if data, found := r.Cache.Get(cacheKey); found {
-								for _, envName := range sec.Mappings {
+								for keyInProvider, envName := range sec.Mappings {
 									if val, ok := data[envName]; ok {
+										newEnvs[envName] = val
+									} else if val, ok := data[keyInProvider] ; ok {
 										newEnvs[envName] = val
 									}
 								}
@@ -362,11 +375,28 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 					}
 					
-					if targetMapping != nil && targetMapping.Inject == "file" {
-						cacheKey := fmt.Sprintf("%s:%s", r.Config.Provider, secretName)
-						if data, found := r.Cache.Get(cacheKey); found {
-							if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, targetMapping.Path, data, targetMapping.UID, targetMapping.GID); err != nil {
-								r.Logger.Error("Secret injection failed", zap.Error(err))
+					if targetMapping != nil {
+						injectConfig := targetMapping.Inject
+						if injectConfig.Type == "" {
+							injectConfig = r.Config.Defaults.Inject
+						}
+
+						if injectConfig.Type == "file" && injectConfig.Path != "" {
+							pName := targetMapping.Provider
+							if pName == "" {
+								if len(r.Config.Providers) == 1 {
+									for name := range r.Config.Providers {
+										pName = name
+										break
+									}
+								}
+							}
+
+							cacheKey := fmt.Sprintf("%s:%s", pName, secretName)
+							if data, found := r.Cache.Get(cacheKey); found {
+								if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, injectConfig.Path, data, injectConfig.UID, injectConfig.GID); err != nil {
+									r.Logger.Error("Secret injection failed", zap.Error(err))
+								}
 							}
 						}
 					}
@@ -421,9 +451,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							break
 						}
 					}
-					if targetMapping != nil && targetMapping.Inject == "file" {
-						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Path, 15*time.Second, 3); err != nil {
-							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Path))
+					if targetMapping != nil && targetMapping.Inject.Type == "file" {
+						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Inject.Path, 15*time.Second, 3); err != nil {
+							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Inject.Path))
 							_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
 							goto ROLLBACK
 						}

@@ -106,7 +106,7 @@ func NewComposeCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Agent connection failed. Is dso-agent running? Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Agent connection failed. Is the DSO agent running? Error: %v\n", err)
 				os.Exit(1)
 			}
 

@@ -10,7 +10,7 @@ func NewVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the version number of DSO",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Docker Secret Operator (DSO) v3.0.0")
+			fmt.Println("Docker Secret Operator (DSO) v3.1.0")
 		},
 	}
 }
