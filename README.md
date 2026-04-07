@@ -44,7 +44,7 @@ DSO bridges the gap between enterprise secret providers (AWS, Vault, Azure) and 
 Before running the Docker Secret Operator, ensure you have:
 - **Docker Engine**: 20.10+ installed and running.
 - **Socket Access**: Permission to read/write the Docker socket (`/var/run/docker.sock`).
-- **Go 1.24+**: (Optional) Only required for building from source.
+- **Go 1.25+**: (Optional) Only required for building from source.
 
 ---
 
@@ -114,6 +114,15 @@ DSO follows a strict Docker-native CLI design.
 - `docker dso validate`: Strictly validate your `dso.yaml` schema and test provider connectivity.
 - `docker dso watch`: Monitor live container events and rotation logs in real-time.
 - `docker dso version`: Display the current version of the DSO Agent and CLI plugin metadata.
+- `docker dso logs`: View DSO Agent logs directly from the terminal.
+  ```bash
+  docker dso logs              # Show last 100 log lines
+  docker dso logs -f           # Follow logs in real-time (like tail -f)
+  docker dso logs -n 50       # Show last 50 lines
+  docker dso logs --since "10 minutes ago"  # Time-filtered logs
+  docker dso logs --level error             # Show only errors
+  docker dso logs --api        # Stream from REST API instead of journald
+  ```
 
 ---
 
@@ -179,6 +188,48 @@ For a detailed security analysis, including risks associated with the Docker Soc
 
 ---
 
+## 🔌 Provider Plugins
+
+DSO uses a plugin architecture for cloud secret backends. All plugins are built and installed automatically by the installer.
+
+| Provider | Plugin Binary | Auth Methods | Status |
+| :--- | :--- | :--- | :--- |
+| **AWS Secrets Manager** | `dso-provider-aws` | IAM Role, Access Key, ENV | ✅ Stable |
+| **Azure Key Vault** | `dso-provider-azure` | Managed Identity, Client Secret | ✅ Stable |
+| **Huawei Cloud CSMS** | `dso-provider-huawei` | Access Key / Secret Key | ✅ Stable |
+| **HashiCorp Vault** | `dso-provider-vault` | Token, AppRole | ✅ Stable |
+
+Plugins are installed to `/usr/local/lib/dso/plugins/` during system installation.
+
+---
+
+## 🩺 Monitoring & Health Checks
+
+The DSO Agent exposes a built-in REST API for live monitoring (default port: `:8080`).
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/health` | GET | Returns `{"status":"up"}` when the agent is running |
+| `/api/secrets` | GET | JSON list of all secrets currently tracked in the cache |
+| `/api/events` | GET | Returns recent secret lifecycle events (last 50) |
+| `/api/events/ws` | WebSocket | Real-time event streaming for live dashboards |
+| `/api/events/secret-update` | POST | Webhook trigger for external rotation notifications |
+
+**Using the health check:**
+```bash
+curl http://localhost:8080/health
+# {"status":"up"}
+```
+
+**To customize the API port:**
+```bash
+docker dso agent --api-addr :9090
+```
+
+When running as a `systemd` service, the health endpoint can be used in your infrastructure monitoring stack (e.g. Prometheus blackbox exporter, UptimeRobot, or Kubernetes readiness probes).
+
+---
+
 ## 🏗️ Architecture Overview
 
 DSO consists of three primary layers:
@@ -194,8 +245,8 @@ For a deeper dive, see our [Architecture Documentation](ARCHITECTURE.md).
 
 DSO has fully transitioned to a **single-binary Docker CLI plugin architecture**.
 
-- **Standalone Binaries Removed**: The legacy `dso` and `dso-agent` standalone binaries have been removed for a cleaner plugin-native experience. Use `docker dso <command>` for all operations.
-- **Plugin-Only Usage**: DSO must now be installed as a Docker CLI plugin (`docker-dso`).
+- **Unified Binary**: The legacy `dso` and `dso-agent` commands are preserved as **symlinks** to `docker-dso` for backward compatibility. Use `docker dso <command>` for all primary operations.
+- **Plugin-First Usage**: DSO is now installed as a Docker CLI plugin (`docker-dso`), enabling the `docker dso` interface natively.
 - **Unified Logic**: All core reconciliation and CLI logic reside within a single `docker-dso` executable.
 
 ---
@@ -207,7 +258,8 @@ DSO V3.1 introduces automated agent management to simplify the user experience.
 - **Auto-Start**: The `docker dso up` command automatically checks if the DSO agent is running. If no responsive agent is detected on the Unix socket (`/var/run/dso.sock`), it spawns a background agent process.
 - **Background Execution**: When started via `up`, the agent runs as a detached subprocess (`docker-dso agent`), ensuring that the CLI remains responsive. Logs for the background agent can be viewed via system logs or by running the agent in the foreground.
 - **Foreground Mode**: You can manually run the agent in the foreground using `docker dso agent`. This is recommended when running DSO as a `systemd` service or during initial setup/debugging.
-- **Safe Lifecycle**: The agent handles `SIGTERM` gracefully, ensuring all Unix sockets and resources are cleaned up on shutdown. It uses a responsive socket check to prevent duplicate processes.
+- **API Server**: The agent starts a REST API server on `:8080` by default. Use the `--api-addr` flag to customize the port (e.g. `docker dso agent --api-addr :9090`).
+- **Graceful Shutdown**: The agent uses `SIGTERM` / `SIGINT` signals via `signal.NotifyContext` to cleanly stop all goroutines, flush sockets, and release resources before exiting.
 
 ---
 
