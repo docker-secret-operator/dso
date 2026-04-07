@@ -107,6 +107,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 	t.lastRotations.Store(cacheKey, time.Now())
 	t.Cache.Set(cacheKey, secretData)
 
+	t.Logger.Debug("Diagnostic: Rotation triggered for secret label", zap.String("sec_name", secretName))
 	msg := fmt.Sprintf("Secret rotated: %s", secretName)
 	t.Logger.Info(msg, zap.String("provider", providerName))
 	if t.Server != nil {

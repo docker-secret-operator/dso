@@ -137,6 +137,7 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 			ComposePath: composePath,
 			Secrets:     secretList,
 		})
+		r.Logger.Debug("Initial population: Managed container found", zap.String("id", c.ID), zap.Strings("secrets", secretList))
 	}
 	r.Logger.Info("Initial container population complete", zap.Int("count", len(containers)))
 }
@@ -520,8 +521,23 @@ FINISH:
 	if matchedCount == 0 {
 		msg := fmt.Sprintf("No managed containers found using secret: %s", secretName)
 		r.Logger.Warn(msg)
+		
+		// DIAGNOSTIC LOG: Print everything we KNOW
+		r.Targets.Range(func(k, v interface{}) bool {
+			target := v.(*TargetContainer)
+			r.Logger.Debug("Diagnostic Scan: Checking Target Map Entry", 
+				zap.String("id", target.ID), 
+				zap.Strings("linked_secrets", target.Secrets))
+			return true
+		})
+
 		if r.Server != nil {
 			if as, ok := r.Server.(interface{ Emit(string) }); ok {
+				// Count existing targets for diagnosis
+				targetCount := 0
+				r.Targets.Range(func(_, _ interface{}) bool { targetCount++; return true })
+				
+				as.Emit(fmt.Sprintf("\033[1;33m[DSO SCAN]\033[0m Target map scan complete. Total managed containers in memory: %d", targetCount))
 				as.Emit("\033[1;33m[DSO ROTATION]\033[0m " + msg)
 			}
 		}
