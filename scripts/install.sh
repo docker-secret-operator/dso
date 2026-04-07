@@ -110,13 +110,14 @@ fi
 
 # 3. Download/Prepare Project Files
 echo -e "${GREEN}[2/7] Preparing DSO source...${NC}"
-rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
 
 if [ -f "./go.mod" ] && grep -q "github.com/docker-secret-operator/dso" "./go.mod"; then
     echo -e "Local source detected. Using current directory."
-    cp -r . "$BUILD_DIR/"
+    BUILD_DIR="."
 else
+    BUILD_DIR="/tmp/dso-install"
     echo -e "No local source found. Downloading from $REPO_URL..."
+    rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
     git clone "$REPO_URL" .
 fi
