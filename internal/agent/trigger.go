@@ -132,7 +132,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		}
 
 		if t.Server != nil {
-			t.Server.Emit(fmt.Sprintf("Triggering %s for %s", rotationMode, secretName))
+			t.Server.Emit(fmt.Sprintf("Triggering %s for containers linked to %s", rotationMode, secretName))
 		}
 		
 		// Note: The Reloader internally handles the strategy logic (restart/signal)
