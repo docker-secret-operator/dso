@@ -186,9 +186,25 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 					tmpfsMounts = append(tmpfsMounts, injectConfig.Path)
 				} else {
 					// Standard ENV mode
-					envSection := make(map[string]interface{})
-					if existingEnv, ok := svc["environment"].(map[string]interface{}); ok {
-						envSection = existingEnv
+					// Handle case where environment is a list vs map in the original docker-compose.yml
+					var envSection map[string]interface{}
+					if existingEnvMap, ok := svc["environment"].(map[string]interface{}); ok {
+						envSection = existingEnvMap
+					} else if existingEnvSlice, ok := svc["environment"].([]interface{}); ok {
+						// Convert slice to map
+						envSection = make(map[string]interface{})
+						for _, item := range existingEnvSlice {
+							strItem := fmt.Sprintf("%v", item)
+							parts := strings.SplitN(strItem, "=", 2)
+							if len(parts) == 2 {
+								envSection[parts[0]] = parts[1]
+							} else if len(parts) == 1 {
+								// e.g., - MYSQL_ROOT_PASSWORD
+								envSection[parts[0]] = nil
+							}
+						}
+					} else {
+						envSection = make(map[string]interface{})
 					}
 					
 					for keyInProvider, envName := range sec.Mappings {
