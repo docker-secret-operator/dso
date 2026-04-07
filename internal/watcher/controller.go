@@ -144,6 +144,14 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 
 func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string) error {
 	matchedCount := 0
+	// Step 1: Identify all affected containers and their strategies
+	type restartJob struct {
+		target      *TargetContainer
+		preInjected map[string]string
+		releaseLock func()
+	}
+	projectsToRestart := make(map[string]restartJob)
+
 	r.Targets.Range(func(key, value interface{}) bool {
 		target := value.(*TargetContainer)
 
@@ -166,7 +174,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		matchedCount++
 
 		// EXTRACT SERVICE NAME FOR LOCKING
-		serviceName := strings.TrimPrefix(target.ID, "/") 
+		serviceName := strings.TrimPrefix(target.ID, "/")
 		inspect, err := r.cli.ContainerInspect(ctx, target.ID)
 		if err == nil {
 			if sn, ok := inspect.Config.Labels["com.docker.compose.service"]; ok {
@@ -174,7 +182,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}
 		}
 
-		// STALE LOCK RECOVERY (5 MINUTED)
+		// STALE LOCK RECOVERY (5 MINUTES)
 		if val, busy := r.rotationLocks.Load(serviceName); busy {
 			info := val.(*lockInfo)
 			if time.Since(info.startTime) > 5*time.Minute {
@@ -185,96 +193,67 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				return true
 			}
 		}
-		
-		r.rotationLocks.Store(serviceName, &lockInfo{startTime: time.Now(), serviceName: serviceName})
-		
-		defer func() {
-			// Lock cleanup is handled in goroutines for background tasks
-		}()
 
-		// Helper to release lock in background goroutines
+		r.rotationLocks.Store(serviceName, &lockInfo{startTime: time.Now(), serviceName: serviceName})
+
 		releaseLock := func() {
 			r.rotationLocks.Delete(serviceName)
 		}
 
 		activeStrategy := target.Strategy
 		if activeStrategy == "auto" || activeStrategy == "" {
-			inspect, err := r.cli.ContainerInspect(ctx, target.ID)
-			if err == nil {
+			if inspect.Config != nil {
 				analysisResult := analyzer.AnalyzeContainer(inspect)
 				decision := strategy.DecideStrategy(analysisResult)
-
-				if r.Server != nil {
-					if as, ok := r.Server.(interface{ Emit(string) }); ok {
-						as.Emit("\n" + decision.Report)
-					}
-				}
 				activeStrategy = decision.Strategy
 			} else {
 				activeStrategy = "restart"
 			}
 		}
 
+		// DE-DUPLICATE RESTART STRATEGY BY COMPOSE PATH
 		if target.ComposePath != "" && activeStrategy == "restart" {
-			r.Logger.Info("Triggering native Docker Compose rotation via Core Engine", zap.String("path", target.ComposePath))
-
-			// Build the pre-injected secrets map from cache to avoid re-fetching from agent
-			preInjected := make(map[string]string)
-			if r.Cache != nil && r.Config != nil {
-				for _, sec := range r.Config.Secrets {
-					pName := sec.Provider
-					if pName == "" {
-						for name := range r.Config.Providers {
-							pName = name
-							break
+			if _, exists := projectsToRestart[target.ComposePath]; !exists {
+				// Build the pre-injected secrets map from cache
+				preInjected := make(map[string]string)
+				if r.Cache != nil && r.Config != nil {
+					for _, sec := range r.Config.Secrets {
+						pName := sec.Provider
+						if pName == "" {
+							for name := range r.Config.Providers {
+								pName = name
+								break
+							}
 						}
-					}
-					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
-					if data, found := r.Cache.Get(cacheKey); found {
-						for provKey, envName := range sec.Mappings {
-							if val, ok := data[envName]; ok {
-								preInjected[envName] = val
-							} else if val, ok := data[provKey]; ok {
-								preInjected[envName] = val
+						cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
+						if data, found := r.Cache.Get(cacheKey); found {
+							for provKey, envName := range sec.Mappings {
+								if val, ok := data[envName]; ok {
+									preInjected[envName] = val
+								} else if val, ok := data[provKey]; ok {
+									preInjected[envName] = val
+								}
 							}
 						}
 					}
 				}
-			}
-
-			go func() {
-				RecordDSOAction(filepath.Base(filepath.Dir(target.ComposePath)))
-
-				if r.Server != nil {
-					if as, ok := r.Server.(interface{ Emit(string) }); ok {
-						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart (compose)\n🔄 Native rotation: Scaling %s from compose context.", target.ComposePath))
-					}
+				projectsToRestart[target.ComposePath] = restartJob{
+					target:      target,
+					preInjected: preInjected,
+					releaseLock: releaseLock,
 				}
-				// Pass pre-injected secrets directly — avoids calling back into the agent socket (deadlock fix)
-				err := core.RunComposeUpWithEnv(target.ComposePath, []string{"-d"}, "", false, preInjected)
+			} else {
+				// Already handled by project leader
 				releaseLock()
-				if err != nil {
-					r.Logger.Error("Background rotation failed", zap.Error(err))
-					if r.Server != nil {
-						if as, ok := r.Server.(interface{ Emit(string) }); ok {
-							as.Emit(fmt.Sprintf("\033[1;31m[DSO ROTATION]\033[0m ❌ Background rotation failed: %s (Check agent logs for details)", target.ComposePath))
-						}
-					}
-				} else {
-					r.Logger.Info("Background rotation successful", zap.String("path", target.ComposePath))
-					if r.Server != nil {
-						if as, ok := r.Server.(interface{ Emit(string) }); ok {
-							as.Emit(fmt.Sprintf("\033[1;32m[DSO ROTATION]\033[0m ✅ Background rotation successful: %s", target.ComposePath))
-						}
-					}
-				}
-			}()
+			}
 			return true
 		}
 
+		// EXECUTE PER-CONTAINER STRATEGIES (NON-COMPOSE)
 		if activeStrategy == "signal" {
 			r.Logger.Info("Sending SIGHUP to container", zap.String("id", target.ID))
 			_ = r.cli.ContainerKill(ctx, target.ID, "SIGHUP")
+			releaseLock()
 		} else if activeStrategy == "rolling" {
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
@@ -527,6 +506,45 @@ FINISH:
 		}
 		return true
 	})
+
+	// STAGE 2: EXECUTE DE-DUPLICATED COMPOSE RESTARTS
+	for path, job := range projectsToRestart {
+		target := job.target
+		preInjected := job.preInjected
+		releaseLock := job.releaseLock
+
+		r.Logger.Info("Triggering de-duplicated Docker Compose rotation", zap.String("path", path))
+
+		go func(p string, t *TargetContainer, pi map[string]string, rl func()) {
+			RecordDSOAction(filepath.Base(filepath.Dir(p)))
+
+			if r.Server != nil {
+				if as, ok := r.Server.(interface{ Emit(string) }); ok {
+					as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart (compose)\n🔄 Native rotation: Scaling %s from compose context.", p))
+				}
+			}
+
+			// Pass pre-injected secrets directly — avoids calling back into the agent socket (deadlock fix)
+			err := core.RunComposeUpWithEnv(p, []string{"-d", "--remove-orphans"}, "", false, pi)
+			rl()
+
+			if err != nil {
+				r.Logger.Error("Background rotation failed", zap.Error(err))
+				if r.Server != nil {
+					if as, ok := r.Server.(interface{ Emit(string) }); ok {
+						as.Emit(fmt.Sprintf("\033[1;31m[DSO ROTATION]\033[0m ❌ Background rotation failed: %s (Check agent logs for details)", p))
+					}
+				}
+			} else {
+				r.Logger.Info("Background rotation successful", zap.String("path", p))
+				if r.Server != nil {
+					if as, ok := r.Server.(interface{ Emit(string) }); ok {
+						as.Emit(fmt.Sprintf("\033[1;32m[DSO ROTATION]\033[0m ✅ Background rotation successful: %s", p))
+					}
+				}
+			}
+		}(path, target, preInjected, releaseLock)
+	}
 
 	if matchedCount == 0 {
 		msg := fmt.Sprintf("No managed containers found using secret: %s", secretName)
