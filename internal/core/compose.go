@@ -28,7 +28,8 @@ type ComposeFile struct {
 }
 
 // RunComposeUpWithEnv parses the compose file, fetches DSO custom secrets for env overrides, merges them with dso.yaml configurations, and dynamically runs docker compose up via stdin.
-func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string, dryRun bool) error {
+// If preInjected is non-nil, those secrets are used directly instead of connecting back to the agent (used during rotation to avoid self-call deadlock).
+func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string, dryRun bool, preInjected ...map[string]string) error {
 	envMap := make(map[string]string)
 	for _, e := range os.Environ() {
 		parts := strings.SplitN(e, "=", 2)
@@ -47,9 +48,19 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		}
 	}
 
+	// Always load config (needed for label injection below, regardless of how secrets are fetched)
+	cfg, _ := config.LoadConfig(targetConfig)
+
 	var injectedSecrets map[string]string
-	cfg, err := config.LoadConfig(targetConfig)
-	if err == nil {
+
+	// If the caller pre-injected secrets (e.g. during rotation), use those directly.
+	// This avoids a self-call deadlock where the agent tries to talk to itself.
+	if len(preInjected) > 0 && preInjected[0] != nil {
+		injectedSecrets = preInjected[0]
+		for k, v := range injectedSecrets {
+			envMap[k] = v
+		}
+	} else if cfg != nil {
 		socketPath := "/var/run/dso.sock"
 		if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 			socketPath = custom

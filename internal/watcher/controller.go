@@ -216,16 +216,41 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 		if target.ComposePath != "" && activeStrategy == "restart" {
 			r.Logger.Info("Triggering native Docker Compose rotation via Core Engine", zap.String("path", target.ComposePath))
-			
+
+			// Build the pre-injected secrets map from cache to avoid re-fetching from agent
+			preInjected := make(map[string]string)
+			if r.Cache != nil && r.Config != nil {
+				for _, sec := range r.Config.Secrets {
+					pName := sec.Provider
+					if pName == "" {
+						for name := range r.Config.Providers {
+							pName = name
+							break
+						}
+					}
+					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
+					if data, found := r.Cache.Get(cacheKey); found {
+						for provKey, envName := range sec.Mappings {
+							if val, ok := data[envName]; ok {
+								preInjected[envName] = val
+							} else if val, ok := data[provKey]; ok {
+								preInjected[envName] = val
+							}
+						}
+					}
+				}
+			}
+
 			go func() {
 				RecordDSOAction(filepath.Base(filepath.Dir(target.ComposePath)))
-				
+
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
 						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart (compose)\n🔄 Native rotation: Scaling %s from compose context.", target.ComposePath))
 					}
 				}
-				err := core.RunComposeUpWithEnv(target.ComposePath, []string{"-d"}, "", false)
+				// Pass pre-injected secrets directly — avoids calling back into the agent socket (deadlock fix)
+				err := core.RunComposeUpWithEnv(target.ComposePath, []string{"-d"}, "", false, preInjected)
 				releaseLock()
 				if err != nil {
 					r.Logger.Error("Background rotation failed", zap.Error(err))
