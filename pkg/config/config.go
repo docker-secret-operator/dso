@@ -140,27 +140,40 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 // SecretMapping custom unmarshaler to handle legacy formats
 func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
-	// 1. Try to decode as the standard V2 structure
-	type alias SecretMapping
-	var v2 alias
-	if err := value.Decode(&v2); err == nil {
-		// Even if it decoded, we need to check if 'inject' or 'rotation' were actually strings/bools
-		// because yaml.v3 might try to coerce them or ignore them if types mismatch.
-		*s = SecretMapping(v2)
-	}
+	// 1. Try to decode as the standard V2 structure first
+	type v2Type SecretMapping
+	var v2 v2Type
+	// Ignore errors on the first pass as it might fail due to legacy field types
+	_ = value.Decode(&v2)
+	*s = SecretMapping(v2)
 
-	// 2. Disambiguate legacy fields using a raw map representation
+	// 2. Handle legacy field disambiguation using a raw map representation
 	var raw map[string]interface{}
 	if err := value.Decode(&raw); err != nil {
 		return err
 	}
 
-	// Handle Legacy 'inject' as a string
+	// Always ensure Name is populated from raw if it wasn't caught by V2 decode
+	if name, ok := raw["name"].(string); ok && s.Name == "" {
+		s.Name = name
+	}
+
+	// Always ensure Mappings are populated
+	if mappings, ok := raw["mappings"].(map[string]interface{}); ok && len(s.Mappings) == 0 {
+		s.Mappings = make(map[string]string)
+		for k, v := range mappings {
+			if strVal, ok := v.(string); ok {
+				s.Mappings[k] = strVal
+			}
+		}
+	}
+
+	// Handle Legacy 'inject' as a string (v1 format: inject: env)
 	if val, ok := raw["inject"].(string); ok {
 		s.Inject.Type = val
 	}
 
-	// Handle Legacy 'rotation' as a bool
+	// Handle Legacy 'rotation' as a bool (v1 format: rotation: true)
 	if val, ok := raw["rotation"].(bool); ok {
 		s.Rotation.Enabled = val
 	}
@@ -226,17 +239,33 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// IsSafePath validates that a user-provided path does not escape the base directory
-// and is not absolute.
+// IsSafePath validates that a user-provided path does not escape the base directory.
 func IsSafePath(baseDir, userPath string) (string, error) {
 	clean := filepath.Clean(userPath)
 
-	// Reject absolute paths
-	if filepath.IsAbs(clean) {
+	// List of allowed absolute system directories for DSO
+	allowedSystemDirs := []string{
+		"/etc/dso/",
+		"/usr/local/lib/dso/",
+		"/usr/local/bin/",
+		"/var/run/dso/",
+		"/run/dso/",
+	}
+
+	isSystemPath := false
+	for _, dir := range allowedSystemDirs {
+		if strings.HasPrefix(clean, dir) {
+			isSystemPath = true
+			break
+		}
+	}
+
+	// Reject absolute paths unless they are in allowed system directories
+	if filepath.IsAbs(clean) && !isSystemPath {
 		return "", fmt.Errorf("absolute paths not allowed: %s", userPath)
 	}
 
-	// If no baseDir is provided, at least reject ".."
+	// If no baseDir is provided, at least reject ".." for security
 	if baseDir == "" {
 		if strings.Contains(clean, "..") {
 			return "", fmt.Errorf("path traversal attempt: %s", userPath)

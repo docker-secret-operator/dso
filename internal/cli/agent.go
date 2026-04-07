@@ -10,6 +10,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/internal/watcher"
+	"github.com/docker-secret-operator/dso/internal/server"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ import (
 func NewAgentCmd() *cobra.Command {
 	var socketPath string
 	var driverSocket string
+	var apiAddr string
 
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -31,7 +33,9 @@ func NewAgentCmd() *cobra.Command {
 			cfgPath := ResolveConfig()
 			cfg, err := config.LoadConfig(cfgPath)
 			if err != nil {
-				logger.Fatal("Failed to load configuration", zap.Error(err), zap.String("path", cfgPath))
+				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed", 
+					zap.Error(err), 
+					zap.String("config_path", cfgPath))
 			}
 
 			// Initialize Cache & Store
@@ -61,7 +65,10 @@ func NewAgentCmd() *cobra.Command {
 				}
 			}()
 
-			// 3. Start Reconciliation Loop
+			// 3. Start REST API Server (Health Checks & Monitoring)
+			go server.StartRESTServer(apiAddr, cache, trigger, cfg, logger)
+
+			// 4. Start Reconciliation Loop
 			if err := trigger.StartAll(); err != nil {
 				logger.Fatal("Failed to start trigger engine", zap.Error(err))
 			}
@@ -69,14 +76,15 @@ func NewAgentCmd() *cobra.Command {
 			logger.Info("DSO Agent is now running", 
 				zap.String("version", "v3.1.0"),
 				zap.String("ipc_socket", socketPath),
-				zap.String("driver_socket", driverSocket))
+				zap.String("driver_socket", driverSocket),
+				zap.String("api_addr", apiAddr))
 
-			// Handle Termination
-			sigChan := make(chan os.Signal, 1)
-			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-			
-			sig := <-sigChan
-			logger.Info("Shutting down DSO Agent", zap.String("signal", sig.String()))
+			// Handle Termination with Graceful Shutdown
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			<-ctx.Done()
+			logger.Info("Shutting down DSO Agent...")
 			
 			// Stop components
 			trigger.Stop()
@@ -91,6 +99,7 @@ func NewAgentCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&socketPath, "socket", "/var/run/dso.sock", "Path to DSO internal IPC socket")
 	cmd.Flags().StringVar(&driverSocket, "driver-socket", "/run/docker/plugins/dso.sock", "Path to Docker Secret Driver socket")
+	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8080", "Address to bind the REST API server (e.g. :8080)")
 
 	return cmd
 }

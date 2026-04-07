@@ -108,6 +108,9 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	pluginPath := filepath.Join(filepath.Clean(pluginDir), pluginName)
 
 	if err := validatePluginPath(pluginPath); err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file or directory") {
+			return nil, nil, fmt.Errorf("provider plugin '%s' not found at %s. Ensure the plugin source exists in cmd/plugins/ and was built during installation", providerName, pluginPath)
+		}
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
 	}
 
