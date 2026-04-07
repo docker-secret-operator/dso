@@ -84,6 +84,9 @@ func NewAgentCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
+			// 5. Start Docker Event Loop for the Reloader (CRITICAL BUG FIX)
+			reloader.StartEventLoop(ctx)
+
 			<-ctx.Done()
 			logger.Info("Shutting down DSO Agent...")
 			
