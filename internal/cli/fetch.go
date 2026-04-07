@@ -13,12 +13,24 @@ func NewFetchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "fetch [secret-name]",
 		Short: "Manually fetch a secret and display it",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg, err := config.LoadConfig(ResolveConfig())
 			if err != nil {
 				fmt.Printf("Error loading config: %v\nTip: Create /etc/dso/dso.yaml or pass --config /path/to/dso.yaml\n", err)
 				os.Exit(1)
+			}
+
+			if len(args) == 0 {
+				fmt.Println("Available secrets in configuration:")
+				if len(cfg.Secrets) == 0 {
+					fmt.Println("  (No secrets defined in dso.yaml)")
+				}
+				for _, s := range cfg.Secrets {
+					fmt.Printf("  - %s\n", s.Name)
+				}
+				fmt.Println("\nUsage: docker dso fetch [secret-name]")
+				return
 			}
 
 			socketPath := "/var/run/dso.sock"
@@ -28,7 +40,7 @@ func NewFetchCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				fmt.Printf("Error connecting to agent: %v\n", err)
+				fmt.Printf("Error connecting to agent: %v (Ensure 'docker dso up' or 'dso-agent' is running)\n", err)
 				os.Exit(1)
 			}
 
@@ -41,22 +53,16 @@ func NewFetchCmd() *cobra.Command {
 				}
 			}
 
-			pName := ""
-			var pCfg config.ProviderConfig
-			if secMapping != nil {
-				pName = secMapping.Provider
+			if secMapping == nil {
+				fmt.Printf("Error: Secret '%s' not found in config.\n\nAvailable secrets:\n", secretName)
+				for _, s := range cfg.Secrets {
+					fmt.Printf("  - %s\n", s.Name)
+				}
+				os.Exit(1)
 			}
 
-			if pName == "" {
-				// Default to first provider if none specified
-				for k, v := range cfg.Providers {
-					pName = k
-					pCfg = v
-					break
-				}
-			} else {
-				pCfg = cfg.Providers[pName]
-			}
+			pName := secMapping.Provider
+			pCfg := cfg.Providers[pName]
 
 			data, err := client.FetchSecret(pName, pCfg.Config, secretName)
 			if err != nil {

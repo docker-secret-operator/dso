@@ -138,10 +138,11 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 			Secrets:     secretList,
 		})
 	}
-	r.Logger.Info("Initial container population complete")
+	r.Logger.Info("Initial container population complete", zap.Int("count", len(containers)))
 }
 
 func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string) error {
+	matchedCount := 0
 	r.Targets.Range(func(key, value interface{}) bool {
 		target := value.(*TargetContainer)
 
@@ -160,6 +161,8 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		if !usesSecret {
 			return true
 		}
+
+		matchedCount++
 
 		// EXTRACT SERVICE NAME FOR LOCKING
 		serviceName := strings.TrimPrefix(target.ID, "/") 
@@ -488,5 +491,18 @@ FINISH:
 		}
 		return true
 	})
+
+	if matchedCount == 0 {
+		msg := fmt.Sprintf("No managed containers found using secret: %s", secretName)
+		r.Logger.Warn(msg)
+		if r.Server != nil {
+			if as, ok := r.Server.(interface{ Emit(string) }); ok {
+				as.Emit("\033[1;33m[DSO ROTATION]\033[0m " + msg)
+			}
+		}
+	} else {
+		msg := fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName)
+		r.Logger.Info(msg)
+	}
 	return nil
 }
