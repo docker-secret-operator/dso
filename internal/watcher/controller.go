@@ -255,8 +255,18 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				releaseLock()
 				if err != nil {
 					r.Logger.Error("Background rotation failed", zap.Error(err))
+					if r.Server != nil {
+						if as, ok := r.Server.(interface{ Emit(string) }); ok {
+							as.Emit(fmt.Sprintf("\033[1;31m[DSO ROTATION]\033[0m ❌ Background rotation failed: %s (Check agent logs for details)", target.ComposePath))
+						}
+					}
 				} else {
 					r.Logger.Info("Background rotation successful", zap.String("path", target.ComposePath))
+					if r.Server != nil {
+						if as, ok := r.Server.(interface{ Emit(string) }); ok {
+							as.Emit(fmt.Sprintf("\033[1;32m[DSO ROTATION]\033[0m ✅ Background rotation successful: %s", target.ComposePath))
+						}
+					}
 				}
 			}()
 			return true
