@@ -232,6 +232,17 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		return fmt.Errorf("failed to marshal transformed compose file: %w", err)
 	}
 
+	// [DIAGNOSTIC] Print injection summary to terminal
+	for name, svcRaw := range parsed.Services {
+		svc, ok := svcRaw.(map[string]interface{})
+		if !ok { continue }
+		if labels, ok := svc["labels"].(map[string]interface{}); ok {
+			if _, managed := labels["dso.reloader"]; managed {
+				fmt.Printf(" [DSO] Linked service '%s' to secrets: %v\n", name, labels["dso.secrets"])
+			}
+		}
+	}
+
 	// Step 2: Run docker compose via stdin
 	projectName := filepath.Base(filepath.Dir(absPath))
 	
