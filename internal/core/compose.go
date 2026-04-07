@@ -260,6 +260,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		finalEnvs = append(finalEnvs, fmt.Sprintf("%s=%s", k, v))
 	}
 	cmd.Env = finalEnvs
+	cmd.Dir = filepath.Dir(absPath) // Set context to project folder for relative path resolution
 
 	if dryRun {
 		fmt.Printf("DRY RUN: DSO would securely inject the following secrets into %s (in-memory transformation):\n", filename)
