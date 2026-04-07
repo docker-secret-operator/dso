@@ -260,8 +260,8 @@ func IsSafePath(baseDir, userPath string) (string, error) {
 		}
 	}
 
-	// Reject absolute paths unless they are in allowed system directories
-	if filepath.IsAbs(clean) && !isSystemPath {
+	// Reject absolute paths unless they are in allowed system directories or we are in "anywhere" mode (empty baseDir)
+	if filepath.IsAbs(clean) && !isSystemPath && baseDir != "" {
 		return "", fmt.Errorf("absolute paths not allowed: %s", userPath)
 	}
 
