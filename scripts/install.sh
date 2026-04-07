@@ -12,6 +12,7 @@ set -e
 
 # Configuration
 REPO_URL="https://github.com/docker-secret-operator/dso"
+BACKUP_REPO="https://github.com/umairmd385/docker-secret-operator"
 BUILD_DIR="/tmp/dso-install"
 DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
 if [ "$EUID" -eq 0 ]; then
@@ -145,8 +146,36 @@ install_binary() {
         sudo chmod +x "$dest"
         echo -e "  Installed $(basename "$dest")"
     else
-        echo -e "WARNING: $src not found, skipping"
+        echo -e "${RED}ERROR: $src not found. Binary was not built.${NC}"
+        exit 1
     fi
+}
+
+restore_missing_source() {
+    local plugin=$1
+    local target_dir="./cmd/plugins/dso-provider-$plugin"
+    
+    if [ ! -d "$target_dir" ] || [ ! -f "$target_dir/main.go" ]; then
+        echo -e "${BLUE}Restoring missing source for $plugin from backup...${NC}"
+        local temp_restore="/tmp/dso-restore-$(date +%s)"
+        mkdir -p "$temp_restore"
+        
+        # Fresh clone to temporary directory (minimal depth)
+        git clone --depth 1 "$BACKUP_REPO" "$temp_restore" >/dev/null 2>&1
+        
+        # Copy exact plugin directory
+        mkdir -p "$target_dir"
+        cp -rf "$temp_restore/cmd/plugins/dso-provider-$plugin/." "$target_dir/"
+        rm -rf "$temp_restore"
+        
+        if [ -f "$target_dir/main.go" ]; then
+            echo -e "${GREEN}✓ Successfully restored $plugin source.${NC}"
+        else
+            echo -e "${RED}✖ Failed to restore $plugin source from backup.${NC}"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # Install Docker CLI Plugin
@@ -166,16 +195,20 @@ sudo mkdir -p "$LIB_DIR/plugins"
 PLUGINS=("aws" "azure" "huawei" "vault")
 for plugin in "${PLUGINS[@]}"; do
     echo "Building plugin: $plugin"
+    
+    # Autonomous restoration if source is missing
+    restore_missing_source "$plugin" || echo -e "${RED}WARNING: Restoration of $plugin failed.${NC}"
+
     if [ -d "./cmd/plugins/dso-provider-$plugin" ]; then
         if CGO_ENABLED=0 go build -ldflags="-s -w" -o "dso-provider-$plugin" "./cmd/plugins/dso-provider-$plugin"; then
             install_binary "dso-provider-$plugin" "$LIB_DIR/plugins/dso-provider-$plugin"
             rm "dso-provider-$plugin"
         else
-            echo "ERROR: Failed to build $plugin plugin"
+            echo -e "${RED}ERROR: Failed to build $plugin plugin${NC}"
             exit 1
         fi
     else
-        echo "WARNING: Source for $plugin missing, skipping build"
+        echo -e "${RED}WARNING: Source for $plugin missing even after restoration attempt, skipping.${NC}"
     fi
 done
 
@@ -267,5 +300,7 @@ echo -e "  - ${BLUE}dso-agent --help${NC}         (Run engine directly)"
 echo -e "  - ${BLUE}systemctl start dso-agent${NC}  (Manage as system service)"
 echo -e "${BLUE}================================================================${NC}"
 
-# Cleanup
-rm -rf "$BUILD_DIR"
+# 8. Cleanup
+if [ "$BUILD_DIR" != "." ]; then
+    rm -rf "$BUILD_DIR"
+fi
