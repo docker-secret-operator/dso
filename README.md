@@ -55,7 +55,7 @@ DSO is now a native Docker CLI plugin. Use our installer for your platform:
 
 **Linux / macOS / WSL:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 ```
 
 **Windows (PowerShell):**
