@@ -49,3 +49,4 @@ node_modules/
 # Local testing and tools
 ffmpeg-*
 .gitingore
+presentation/
