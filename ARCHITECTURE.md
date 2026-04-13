@@ -1,6 +1,6 @@
 # DSO System Architecture (V3.1)
 
-The Docker Secret Operator (DSO) is a reconciliation engine designed for standalone Docker and Docker Compose environments. It implements a **zero-persistence model** to ensure sensitive data is fetched from trusted providers and injected into containers without ever being written to the host's physical disk.
+The Docker Secret Operator (DSO) is a **Secret Reconciliation Engine** designed for standalone Docker and Docker Compose environments. It implements a **zero-persistence model** to ensure sensitive data is fetched from trusted providers and injected into containers without ever being written to the host's physical disk.
 
 ---
 
@@ -102,6 +102,8 @@ In the event of a provider outage or sync failure, the system falls back to a "s
 
 ## 📈 Roadmap
 
-- **Advanced Selectors**: Integration with Prometheus-style label selectors.
-- **Kubernetes Edge**: Support for lightweight K3s/K8s environments.
-- **Extended Providers**: Google Secret Manager, CyberArk, and custom gRPC plugins.
+DSO is evolving into an intelligent reconciliation platform. For the detailed phase-by-phase vision, see the [ROADMAP.md](./ROADMAP.md).
+
+- **Phase 1**: Core Engine Completion (`apply`, `diff`, background loop).
+- **Phase 2**: Controlled Ecosystem Expansion (GSM, 1Password).
+- **Phase 3**: Intelligence & Observability (AI Sentinel, OTel).
