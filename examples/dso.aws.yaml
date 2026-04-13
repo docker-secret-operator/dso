@@ -1,0 +1,45 @@
+# DSO Production AWS Configuration (V3.1)
+# ------------------------------------------------------------------------------
+# Targeted Scenario: AWS Secrets Manager with IAM Role Authentication.
+# ------------------------------------------------------------------------------
+
+providers:
+  aws-prod:
+    type: aws
+    region: us-east-1
+    auth:
+      method: iam_role  # Best Practice: Use IAM Roles instead of Access Keys.
+    retry:
+      attempts: 5       # Resilient against transient network dips.
+      backoff: 3s
+
+defaults:
+  inject:
+    type: file          # Mount secrets as files in RAM (tmpfs).
+    uid: 1000
+    gid: 1000
+  rotation:
+    enabled: true
+    strategy: restart   # Re-pull and restart container on secret update.
+
+secrets:
+  # Injection for a Database Service
+  - name: "/prod/app/db/credentials"
+    provider: aws-prod
+    mappings:
+      username: DB_USER
+      password: DB_PASS
+    targets:
+      labels:
+        dso.managed: "true" # DSO will discover all containers with this label.
+
+  # Injection for a Frontend API Key
+  - name: "/prod/app/api/key"
+    provider: aws-prod
+    mappings:
+      secret_key: API_KEY
+    inject:
+      type: env        # Simple environment variable injection.
+    targets:
+      containers:
+        - frontend-srv # Explicit target deployment.

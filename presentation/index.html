@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSO: Docker Secret Operator Presentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="presentation-container">
+        <!-- Progress Bar -->
+        <div class="progress-container">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+
+        <!-- Slides Container -->
+        <div class="slides-container" id="slidesContainer">
+            
+            <!-- Slide 1: Title -->
+            <section class="slide active" id="slide-1">
+                <div class="glass-card title-slide">
+                    <div class="badge">V3.1 RELEASE</div>
+                    <h1>Docker Secret Operator <span class="accent">(DSO)</span></h1>
+                    <p class="subtitle">Production-Grade Secret Orchestration for Docker Ecosystems</p>
+                    <div class="meta">
+                        <span>Zero-Persistence</span> • <span>Multi-Provider</span> • <span>Native Plugin</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 2: The Problem -->
+            <section class="slide" id="slide-2">
+                <div class="glass-card">
+                    <h2>The <span class="danger">"Secret Sprawl"</span> Problem</h2>
+                    <ul class="feature-list">
+                        <li>
+                            <strong>Security Risks</strong>
+                            <p>Hardcoded secrets in ENV or static files on host disks.</p>
+                        </li>
+                        <li>
+                            <strong>Manual Toil</strong>
+                            <p>Error-prone manual credential rotation leads to long-lived risks.</p>
+                        </li>
+                        <li>
+                            <strong>Orchestration Gap</strong>
+                            <p>Docker & Compose lack the native secret injection of Kubernetes.</p>
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Slide 3: The DSO Solution -->
+            <section class="slide" id="slide-3">
+                <div class="glass-card">
+                    <h2>Introducing <span class="accent">DSO</span></h2>
+                    <div class="solution-grid">
+                        <div class="grid-item">
+                            <h3>Native Plugin</h3>
+                            <p>A first-class Docker CLI extension. No heavy agents.</p>
+                        </div>
+                        <div class="grid-item">
+                            <h3>Zero-K8s</h3>
+                            <p>Kubernetes-grade security for standard Docker environments.</p>
+                        </div>
+                        <div class="grid-item">
+                            <h3>Auto-Rotation</h3>
+                            <p>Event-driven reconciliation and atomic container updates.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 4: Architecture -->
+            <section class="slide" id="slide-4">
+                <div class="glass-card architecture-slide">
+                    <h2>DSO <span class="accent">Architecture</span></h2>
+                    <div class="code-box">
+                        <pre>
+[Provider Layer]  →  [DSO Agent]  →  [Docker API]
+(AWS/Vault/Azure)    (In-Memory)     (Secure Stream)
+                        </pre>
+                    </div>
+                    <ul class="stats-list">
+                        <li><strong>DSO Agent:</strong> Orchestrates lifecycle and reconciliation.</li>
+                        <li><strong>Provider Layer:</strong> RPC-based pluggable connectors.</li>
+                        <li><strong>Injection Engine:</strong> Streams secrets to RAM (tmpfs).</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Slide 5: Zero-Persistence -->
+            <section class="slide" id="slide-5">
+                <div class="glass-card">
+                    <h2><span class="secure">Zero-Persistence</span> Execution</h2>
+                    <p class="description">How we eliminate the host-disk attack vector:</p>
+                    <div class="secure-box">
+                        <div class="secure-step">
+                            <span class="step-num">1</span>
+                            <p>Stream directly from Provider to Agent RAM.</p>
+                        </div>
+                        <div class="secure-step">
+                            <span class="step-num">2</span>
+                            <p>Package into in-memory Tar archives.</p>
+                        </div>
+                        <div class="secure-step">
+                            <span class="step-num">3</span>
+                            <p>Inject into container <strong>tmpfs</strong> mounts.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 6: Multi-Provider -->
+            <section class="slide" id="slide-6">
+                <div class="glass-card">
+                    <h2>Unified <span class="accent">Provider Map</span></h2>
+                    <div class="provider-badges">
+                        <span class="provider">AWS Secrets Manager</span>
+                        <span class="provider">HashiCorp Vault</span>
+                        <span class="provider">Azure Key Vault</span>
+                        <span class="provider">Local Protected Files</span>
+                    </div>
+                    <div class="code-box small">
+                        <pre>
+# Federated Secrets in dso.yaml
+secrets:
+  - name: "prod-db"
+    provider: vault
+  - name: "api-keys"
+    provider: aws-sm
+                        </pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 7: Lifecycle -->
+            <section class="slide" id="slide-7">
+                <div class="glass-card">
+                    <h2>Smart <span class="accent">Lifecycle Management</span></h2>
+                    <ul class="check-list">
+                        <li><strong>Checksum Validation:</strong> Rotates ONLY when data changes.</li>
+                        <li><strong>Atomic Updates:</strong> Clean "Restart" or "Signal" strategies.</li>
+                        <li><strong>Health-Aware:</strong> Verifies new containers before removing the old.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Slide 8: Repo Analysis (Consolidated) -->
+            <section class="slide" id="slide-8">
+                <div class="glass-card narrow">
+                    <h2>Repository <span class="accent">Structural Analysis</span></h2>
+                    <div class="analysis-grid">
+                        <div class="grid-item">
+                            <h3>Reconciler</h3>
+                            <p>Located in <code>internal/agent</code>. The "Brain" monitoring secrets vs container state.</p>
+                        </div>
+                        <div class="grid-item">
+                            <h3>Core Engine</h3>
+                            <p>Located in <code>internal/core</code>. Responsible for non-persistent Compose orchestration.</p>
+                        </div>
+                        <div class="grid-item">
+                            <h3>Plugin Native</h3>
+                            <p>Single Go binary architecture. Compliant with Docker Plugin CLI specification.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 9: Quick Setup Guide -->
+            <section class="slide" id="slide-9">
+                <div class="glass-card">
+                    <h2>Quick <span class="accent">Setup Guide</span></h2>
+                    <div class="secure-box">
+                        <div class="secure-step">
+                            <span class="step-num">1</span>
+                            <p><strong>Install:</strong> <code>curl -fsSL https://[repo]/install.sh | bash</code></p>
+                        </div>
+                        <div class="secure-step">
+                            <span class="step-num">2</span>
+                            <p><strong>Validate:</strong> Ensure provider connectivity with <code>docker dso validate</code>.</p>
+                        </div>
+                        <div class="secure-step">
+                            <span class="step-num">3</span>
+                            <p><strong>Deploy:</strong> Orchestrate with <code>docker dso up -d</code>.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 10: AWS Production YAML -->
+            <section class="slide" id="slide-10">
+                <div class="glass-card">
+                    <h2>AWS <span class="accent">Production Reference</span></h2>
+                    <p class="description">Production-ready configuration emphasizing IAM Security:</p>
+                    <div class="code-box small">
+                        <pre>
+providers:
+  aws-prod:
+    type: aws
+    region: us-east-1
+    auth:
+      method: iam_role  # Best Practice: Instance Identity
+secrets:
+  - name: "/prod/app/db"
+    provider: aws-prod
+    mappings: { password: DB_PASS }
+    targets: { labels: { dso.managed: "true" } }
+                        </pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 11: Commands Reference -->
+            <section class="slide" id="slide-11">
+                <div class="glass-card">
+                    <h2>Production <span class="accent">Command Dashboard</span></h2>
+                    <div class="roi-container">
+                        <div class="roi-item">
+                            <h3>Up</h3>
+                            <code>docker dso up -d</code>
+                            <p>Deploy stack + auto-start agent.</p>
+                        </div>
+                        <div class="roi-item">
+                            <h3>Watch</h3>
+                            <code>docker dso watch</code>
+                            <p>Live stream of rotation events.</p>
+                        </div>
+                        <div class="roi-item">
+                            <h3>Validate</h3>
+                            <code>docker dso validate</code>
+                            <p>Pre-flight provider checks.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Slide 12: Q&A -->
+            <section class="slide" id="slide-12">
+                <div class="glass-card final-slide">
+                    <h2>Ready for <span class="accent">Launch</span>.</h2>
+                    <p>DSO V3.1 is stable and production-ready.</p>
+                    <div class="terminal-box">
+                        <code>$ docker dso up -d</code>
+                    </div>
+                    <div class="cta">Any Questions?</div>
+                </div>
+            </section>
+
+        </div>
+
+        <!-- Navigation Controls -->
+        <div class="nav-controls">
+            <button id="prevBtn" class="nav-btn">&larr;</button>
+            <div id="slideCounter" class="slide-counter">1 / 12</div>
+            <button id="nextBtn" class="nav-btn">&rarr;</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
