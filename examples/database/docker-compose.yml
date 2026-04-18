@@ -1,0 +1,82 @@
+version: "3.9"
+
+# ─── Database Exclusion Example ───────────────────────────────────────────────
+#
+# This example shows the standard pattern for a web app + database setup.
+#
+# DSO behaviour:
+#   ✅ `api`   — has ports, not a database image → proxy injected automatically
+#   ❌ `mysql` — known database image → skipped automatically (ports preserved)
+#   ❌ `redis` — known cache image   → skipped automatically (ports preserved)
+#
+# DSO maintains an internal allowlist of known stateful service images that
+# must NOT be traffic-proxied by default. Mid-connection container replacement
+# on a database causes connection resets and potential data corruption.
+#
+# Known excluded images (by image name, tag- and registry-agnostic):
+#   mysql, postgres, postgresql, mariadb, mongo, mongodb, redis,
+#   elasticsearch, cassandra, rabbitmq, memcached, couchdb, influxdb,
+#   neo4j, kafka, zookeeper, etcd
+#
+# If you need to proxy one of these (e.g. a read replica), use:
+#   x-dso:
+#     enabled: true
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Application layer (proxied) ───────────────────────────────────────────
+  api:
+    image: backend-api:latest
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: "${DB_NAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      REDIS_URL: "redis://redis:6379"
+    ports:
+      - "3000:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    # DSO auto-detects this service and injects a proxy.
+    # In the generated file:
+    #   - Port 3000 moves from api → dso-proxy-api
+    #   - api joins dso_mesh and gets expose: ["3000"]
+    #   - dso-proxy-api starts before connections arrive
+
+  # ── Primary database (NOT proxied) ───────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "${DB_NAME}"
+      MYSQL_USER: "${DB_USER}"
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"    # Port preserved on the service — DSO does not touch this.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Cache layer (NOT proxied) ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"    # Port preserved on the service — DSO does not touch this.
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:

@@ -1,0 +1,78 @@
+version: "3.9"
+
+# ─── Advanced App — Explicit x-dso Control ───────────────────────────────────
+#
+# Use the optional `x-dso` extension field to override DSO's default behaviour
+# on a per-service basis. This is useful when:
+#
+#   - You want to force-enable proxy injection on a database
+#   - You want to opt a service OUT of injection despite having ports
+#   - You want to specify a deployment strategy (rolling, canary — Phase 2)
+#
+# x-dso options:
+#   enabled:  true  → always proxy this service (even if it's a known DB image)
+#   enabled:  false → never proxy this service  (even if it has ports)
+#   strategy: rolling | canary   (default: rolling)
+#
+# The `x-dso` block is stripped from the generated compose file — Docker never
+# sees it. Standard compose tooling (docker compose config, editor validation)
+# ignores unknown extension fields by design.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Explicitly enabled, custom strategy ──────────────────────────────────
+  api:
+    image: myapp:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_HOST=db
+    depends_on:
+      - db
+    x-dso:
+      enabled: true        # redundant here (auto-detection would catch it) but
+      strategy: rolling    # explicit is often clearer in production configs
+
+  # ── Explicitly disabled — port binding stays on the service itself ────────
+  admin:
+    image: myapp-admin:latest
+    ports:
+      - "9000:9000"        # this port stays on the admin service, NOT the proxy
+    x-dso:
+      enabled: false       # internal dashboard — we don't want zero-downtime
+                           # semantics here; a brief restart is acceptable
+
+  # ── Database force-enabled (unusual but supported) ────────────────────────
+  #
+  # By default, known database images are excluded from proxy injection because
+  # replacing a stateful container mid-connection is dangerous. Set enabled:true
+  # to override this if you know what you're doing (e.g. a read replica, or a
+  # connection-pool-managed setup where mid-request cutover is safe).
+  analytics-db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: "${ANALYTICS_DB_PASSWORD}"
+    volumes:
+      - analytics_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    x-dso:
+      enabled: true        # explicit opt-in overrides the database auto-exclusion
+      strategy: rolling
+
+  # ── Standard database — excluded automatically ────────────────────────────
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+      MYSQL_DATABASE: myapp
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    # No x-dso block needed. DSO recognises mysql:8.0 and skips it.
+
+volumes:
+  db_data:
+  analytics_data:

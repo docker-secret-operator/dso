@@ -1,0 +1,66 @@
+version: "3.9"
+
+# ─── Basic App — Zero-Config DSO Example ─────────────────────────────────────
+#
+# This is a completely standard docker-compose.yml.
+# No DSO-specific syntax is required at all.
+#
+# How DSO works with this file:
+#   1. Run:  dso generate   (or `docker dso up` once integrated)
+#   2. DSO reads this file and detects that `api` has `ports` declared.
+#   3. Because `api` is not a known database image, DSO marks it as eligible
+#      for proxy injection.
+#   4. DSO generates docker-compose.generated.yml where:
+#      - `api` loses its host port binding (port 3000 moves to `expose`)
+#      - A new service `dso-proxy-api` appears, owning port 3000 on the host
+#      - Both services join the `dso_mesh` bridge network
+#   5. Run:  docker compose -f docker-compose.generated.yml up
+#
+# Zero-downtime deployments are now active. The proxy owns the host port;
+# the backing container can be replaced without dropping a single connection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    command: node server.js
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"   # DSO detects this and enables proxy injection automatically
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # worker has no ports — DSO passes it through unchanged.
+  # Background jobs, queue consumers, and similar services work as normal.
+  worker:
+    image: node:20-alpine
+    working_dir: /app
+    command: node worker.js
+    environment:
+      - QUEUE_URL=redis://cache:6379
+    depends_on:
+      - cache
+
+  cache:
+    image: redis:7-alpine
+    # redis is a known database image — DSO skips it automatically even
+    # though it declares ports. No proxy is injected.
+    ports:
+      - "6379:6379"  # passed through unchanged
+
+# Expected DSO output (abbreviated):
+#
+#   Parsed 3 service(s) — 1 eligible for proxy injection
+#
+#   DSO Transform Summary:
+#     DSO: Enabling zero-downtime for service 'api'
+#     DSO: Injecting proxy for port 3000 → api
+#
+#   Generated: docker-compose.generated.yml
