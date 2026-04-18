@@ -1,0 +1,95 @@
+version: "3.9"
+
+# ─── Standard docker-compose.yml ─────────────────────────────────────────────
+# This is a completely normal compose file. No DSO-specific structure required.
+# DSO will auto-detect which services to proxy based on the presence of `ports`.
+#
+# Optional: add x-dso to any service for fine-grained control.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Application services (will be proxied automatically) ─────────────────
+
+  api:
+    image: backend-api:latest
+    environment:
+      - DB_HOST=mysql-db
+      - DB_PORT=3306
+      - REDIS_URL=redis://cache:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mysql-db
+      - cache
+    restart: unless-stopped
+    # DSO will:
+    #   1. Remove the host port binding ("3000:3000")
+    #   2. Add expose: ["3000"]
+    #   3. Create dso-proxy-api that owns port 3000 on the host
+    #   4. Join service to dso_mesh network
+
+  frontend:
+    image: frontend-app:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    # No x-dso needed — DSO auto-detects based on ports.
+
+  worker:
+    image: task-worker:latest
+    environment:
+      - DB_HOST=mysql-db
+    depends_on:
+      - mysql-db
+    restart: unless-stopped
+    # No ports declared → DSO will pass this through unchanged.
+
+  # ── Infrastructure services (excluded from proxy by default) ─────────────
+
+  mysql-db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "${DB_NAME}"
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"    # DSO recognises mysql as a database and skips proxy injection.
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"    # redis is also a known database — skipped automatically.
+    restart: unless-stopped
+
+  # ── Example: force a database into proxy mode with x-dso ─────────────────
+
+  analytics-db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: "${ANALYTICS_DB_PASSWORD}"
+    volumes:
+      - analytics_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    x-dso:
+      enabled: true          # Explicit opt-in overrides database auto-exclusion.
+      strategy: rolling
+    restart: unless-stopped
+
+  # ── Example: opt an app service out of proxy injection ───────────────────
+
+  admin-panel:
+    image: admin:latest
+    ports:
+      - "9000:9000"
+    x-dso:
+      enabled: false         # Explicit opt-out — ports remain on the service.
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  analytics_data:

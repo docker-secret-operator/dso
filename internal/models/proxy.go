@@ -1,96 +1,113 @@
 // Package models defines the domain types for the DSO proxy architecture.
-// It covers both the user-facing dso-compose.yml structure and the internal
-// representations used during transformation.
+//
+// V2 replaces the hand-rolled dso-proxy DSL with a standard-compose-first
+// model: every service is analysed individually, and eligibility for proxy
+// injection is determined by auto-detection rules plus an optional x-dso
+// extension field that the user may add to any service.
 package models
 
-// PortMapping describes a single host:container port binding owned by the proxy.
-// Example: "8080:3306" means the proxy listens on host port 8080 and forwards
-// to the backing service's container port 3306.
-type PortMapping struct {
-	// Raw is the original string token from the YAML, e.g. "8080:3306" or "3000".
-	Raw string `yaml:"raw,omitempty"`
+// DSOOptions represents the optional `x-dso` extension field on a Compose service.
+// All fields are optional; absent values fall back to auto-detection rules.
+//
+// Example dso-compose.yml snippet:
+//
+//	services:
+//	  app:
+//	    image: myapp
+//	    ports:
+//	      - "3000:3000"
+//	    x-dso:
+//	      enabled: true
+//	      strategy: rolling
+type DSOOptions struct {
+	// Enabled explicitly opts a service in (true) or out (false) of DSO proxy
+	// injection. When nil the parser applies auto-detection: services with ports
+	// that are not known database images are eligible.
+	Enabled *bool `yaml:"enabled,omitempty"`
 
-	// Host is the port exposed on the Docker host (owned by the proxy).
-	Host string
-
-	// Container is the port the application container listens on internally.
-	Container string
+	// Strategy names the deployment strategy to use when rotating this service.
+	// Supported values (Phase 2+): "rolling", "canary". Defaults to "rolling".
+	Strategy string `yaml:"strategy,omitempty"`
 }
 
-// ProxyTarget defines one service that the proxy section manages.
-// Each entry maps a backing service name to the public port bindings the proxy
-// should own on its behalf.
+// ParsedService is the result of fully analysing one Compose service definition.
+// The parser populates this struct; the transformer reads it.
+type ParsedService struct {
+	// Name is the service key from the Compose file, e.g. "api" or "mysql-db".
+	Name string
+
+	// RawFields holds every field from the original service definition except
+	// `ports`, `x-dso`, and `container_name`, which are either managed by DSO
+	// or explicitly disallowed. These fields are passed through verbatim.
+	RawFields map[string]interface{}
+
+	// Ports is the list of port-mapping strings declared on the service,
+	// e.g. ["3000:3000", "5000:5000"]. Populated even for ineligible services
+	// so the transformer can restore them for pass-through services.
+	Ports []string
+
+	// DSO holds the parsed x-dso options for this service. Zero-value when no
+	// x-dso block was present (fields are safe to read without nil-checking).
+	DSO DSOOptions
+
+	// IsEligible is true when the transformer should inject a proxy service and
+	// move this service's ports to the proxy. False means pass-through.
+	IsEligible bool
+}
+
+// DSOConfig is the root result produced by the parser. It is the single
+// input type consumed by the transformer.
+type DSOConfig struct {
+	// Version is the Compose file format version string, e.g. "3.9".
+	Version string
+
+	// Services is the ordered list of parsed service definitions.
+	// Ordering is alphabetical by service name for deterministic output.
+	Services []ParsedService
+
+	// RawNetworks is the top-level `networks:` block from the original Compose
+	// file, passed through verbatim and merged with the dso_mesh network.
+	RawNetworks interface{}
+
+	// RawVolumes is the top-level `volumes:` block from the original Compose
+	// file, passed through verbatim.
+	RawVolumes interface{}
+
+	// DeprecatedProxy is populated only when a legacy dso-proxy block was found
+	// in the services map. Non-nil value signals the transformer to emit a
+	// deprecation warning. Support will be removed in a future major version.
+	DeprecatedProxy *LegacyProxyConfig
+}
+
+// LegacyProxyConfig holds the content of the former dso-proxy service stanza.
+// It is used only for backward compatibility.
+//
+// Deprecated: add x-dso extension fields directly to each service, or rely on
+// auto-detection. The dso-proxy block will be removed in a future release.
+type LegacyProxyConfig struct {
+	Containers []ProxyTarget
+}
+
+// ProxyTarget is a single entry in the legacy dso-proxy.containers list.
+//
+// Deprecated: see LegacyProxyConfig.
 type ProxyTarget struct {
-	// Name is the service key as it appears in the services block.
+	// Name is the backing service key this proxy target references.
 	Name string `yaml:"name"`
 
-	// Ports is the list of host→container port mappings the proxy will own.
+	// Ports is the list of host:container port mappings this target owns.
 	Ports []string `yaml:"ports"`
 }
 
-// ProxyConfig represents the top-level `dso-proxy` stanza in dso-compose.yml.
-// It declares which services participate in the proxy layer and what ports they
-// expose to the outside world.
-type ProxyConfig struct {
-	// Containers holds one entry per proxied backing service.
-	Containers []ProxyTarget `yaml:"containers"`
-}
+// PortMapping is a parsed host:container port pair.
+// Used internally by helpers that need to inspect individual port components.
+type PortMapping struct {
+	// Raw is the original mapping string, e.g. "8080:3306".
+	Raw string
 
-// Service mirrors a service entry in the dso-compose.yml services block.
-// Fields map directly to their Docker Compose equivalents so that non-proxy
-// services can be passed through the transformer without information loss.
-type Service struct {
-	// Image is the Docker image reference, e.g. "mysql:latest".
-	Image string `yaml:"image,omitempty"`
+	// Host is the port exposed on the Docker host.
+	Host string
 
-	// Build is a path or build-context map used when no pre-built image exists.
-	Build interface{} `yaml:"build,omitempty"`
-
-	// Ports lists internal container ports (no host binding; host ports are
-	// owned exclusively by the proxy). Format: "3306" or "3306/tcp".
-	Ports []string `yaml:"ports,omitempty"`
-
-	// Environment holds env vars as a list ("KEY=VALUE") or map.
-	Environment interface{} `yaml:"environment,omitempty"`
-
-	// Volumes lists volume mounts for the service.
-	Volumes []string `yaml:"volumes,omitempty"`
-
-	// DependsOn expresses startup ordering between services.
-	DependsOn []string `yaml:"depends_on,omitempty"`
-
-	// Restart is the restart policy, e.g. "unless-stopped".
-	Restart string `yaml:"restart,omitempty"`
-
-	// Labels are additional metadata labels to attach to the container.
-	Labels map[string]string `yaml:"labels,omitempty"`
-
-	// Networks explicitly lists networks this service should join.
-	// The transformer will always inject "dso_mesh" in addition to any declared here.
-	Networks []string `yaml:"networks,omitempty"`
-
-	// Expose lists ports to expose to other services (not to the host).
-	Expose []string `yaml:"expose,omitempty"`
-
-	// HealthCheck defines the Docker HEALTHCHECK for this service.
-	HealthCheck interface{} `yaml:"healthcheck,omitempty"`
-
-	// Extra captures any unknown top-level keys so that un-modelled fields
-	// are preserved transparently during YAML round-trips.
-	Extra map[string]interface{} `yaml:",inline"`
-}
-
-// DSOConfig is the root struct for parsing a dso-compose.yml file.
-// It separates the proxy declaration from the regular service definitions.
-type DSOConfig struct {
-	// Version is the Compose file format version, e.g. "3.9".
-	Version string `yaml:"version"`
-
-	// DSO is the optional `dso-proxy` stanza. When present it defines which
-	// services are proxied and what port bindings the proxy owns.
-	DSO ProxyConfig `yaml:"services>dso-proxy,omitempty"`
-
-	// Services maps service names to their definitions.
-	// The `dso-proxy` key is extracted before this map is used by the transformer.
-	Services map[string]interface{} `yaml:"services"`
+	// Container is the port the application container listens on.
+	Container string
 }

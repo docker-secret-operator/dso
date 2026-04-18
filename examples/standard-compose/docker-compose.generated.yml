@@ -1,0 +1,118 @@
+version: "3.9"
+services:
+    admin-panel:
+        image: admin:latest
+        ports:
+            - 9000:9000
+        restart: unless-stopped
+    analytics-db:
+        environment:
+            POSTGRES_PASSWORD: ${ANALYTICS_DB_PASSWORD}
+        expose:
+            - "5432"
+        image: postgres:16
+        labels:
+            dso.managed: "true"
+            dso.service: analytics-db
+            dso.strategy: rolling
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+        volumes:
+            - analytics_data:/var/lib/postgresql/data
+    api:
+        depends_on:
+            - mysql-db
+            - cache
+        environment:
+            - DB_HOST=mysql-db
+            - DB_PORT=3306
+            - REDIS_URL=redis://cache:6379
+        expose:
+            - "3000"
+        image: backend-api:latest
+        labels:
+            dso.managed: "true"
+            dso.service: api
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+    cache:
+        image: redis:7-alpine
+        ports:
+            - 6379:6379
+        restart: unless-stopped
+    dso-proxy-analytics-db:
+        command: TCP-LISTEN:5433,fork,reuseaddr TCP:analytics-db:5432
+        depends_on:
+            - analytics-db
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: analytics-db
+        networks:
+            - dso_mesh
+        ports:
+            - 5433:5432
+    dso-proxy-api:
+        command: TCP-LISTEN:3000,fork,reuseaddr TCP:api:3000
+        depends_on:
+            - api
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: api
+        networks:
+            - dso_mesh
+        ports:
+            - 3000:3000
+    dso-proxy-frontend:
+        command: TCP-LISTEN:80,fork,reuseaddr TCP:frontend:80
+        depends_on:
+            - frontend
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: frontend
+        networks:
+            - dso_mesh
+        ports:
+            - 80:80
+            - 443:443
+    frontend:
+        expose:
+            - "80"
+            - "443"
+        image: frontend-app:latest
+        labels:
+            dso.managed: "true"
+            dso.service: frontend
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+    mysql-db:
+        environment:
+            MYSQL_DATABASE: ${DB_NAME}
+            MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+        image: mysql:8.0
+        ports:
+            - 3306:3306
+        restart: unless-stopped
+        volumes:
+            - db_data:/var/lib/mysql
+    worker:
+        depends_on:
+            - mysql-db
+        environment:
+            - DB_HOST=mysql-db
+        image: task-worker:latest
+        restart: unless-stopped
+networks:
+    dso_mesh:
+        driver: bridge
+volumes:
+    analytics_data: null
+    db_data: null

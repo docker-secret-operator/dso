@@ -1,15 +1,17 @@
-// Package transformer converts a parsed DSOConfig into a valid Docker Compose
-// document that is ready to be used with `docker compose up`.
+// Package transformer converts a validated *models.DSOConfig into a canonical
+// docker-compose.generated.yml that is ready for `docker compose up`.
 //
-// Transformation rules applied:
-//   - Application services: ports are removed; expose is added instead so
-//     services can still talk to each other internally. The dso_mesh network
-//     and a dso.service label are injected.
-//   - For every proxied service a synthetic dso-proxy-<name> service is added.
-//     It owns the host port bindings and forwards traffic to the backing service
-//     via the shared dso_mesh network.
-//   - No container_name is ever set (constraint from the architecture).
-//   - A top-level networks block defining dso_mesh is always emitted.
+// For each eligible service (IsEligible == true):
+//   - `ports` are removed from the service and converted to `expose`.
+//   - A proxy service `dso-proxy-<name>` takes ownership of the host ports.
+//   - `dso_mesh` network and DSO labels are injected.
+//
+// For ineligible services (databases, explicitly disabled, no ports):
+//   - All fields including `ports` are passed through unchanged.
+//   - `container_name` is still stripped (architecture constraint).
+//
+// The function also returns a human-readable summary slice suitable for
+// printing as a "diff" to the user before the generated file is written.
 package transformer
 
 import (
@@ -21,210 +23,174 @@ import (
 )
 
 const (
-	// meshNetwork is the shared overlay network that connects all DSO-managed
-	// services and their proxy counterparts.
+	// meshNetwork is the shared bridge network joining all DSO-managed services
+	// and their proxy counterparts.
 	meshNetwork = "dso_mesh"
 
-	// proxyImage is the lightweight TCP proxy image used by generated proxy
-	// services. This is intentionally swappable — a future phase will allow
-	// users to configure a custom proxy image.
+	// proxyImage is the placeholder proxy image. Phase 2 will replace this with
+	// a properly configured reverse-proxy (nginx/Envoy) that handles multi-port
+	// forwarding natively.
 	proxyImage = "alpine/socat:latest"
 )
 
-// composeOutput is the full docker-compose document structure that will be
-// serialised to YAML by Transform.
+// composeOutput is the full document structure written to docker-compose.generated.yml.
 type composeOutput struct {
 	Version  string                            `yaml:"version"`
 	Services map[string]map[string]interface{} `yaml:"services"`
-	Networks map[string]interface{}            `yaml:"networks"`
+	Networks map[string]interface{}            `yaml:"networks,omitempty"`
+	Volumes  interface{}                       `yaml:"volumes,omitempty"`
 }
 
-// Transform takes a validated *models.DSOConfig and returns the bytes of a
-// ready-to-use docker-compose.generated.yml file.
+// Transform converts a parsed *models.DSOConfig into the bytes of a valid
+// docker-compose.generated.yml.
 //
-// It does NOT write anything to disk. The caller (cmd/dso or a CLI command)
-// is responsible for persisting the output.
-func Transform(cfg *models.DSOConfig) ([]byte, error) {
-	out := composeOutput{
+// Returns:
+//   - out: the YAML bytes to write to disk.
+//   - summary: human-readable lines describing every transformation applied.
+//   - err: non-nil on any fatal transformation failure.
+func Transform(cfg *models.DSOConfig) (out []byte, summary []string, err error) {
+	doc := composeOutput{
 		Version:  cfg.Version,
 		Services: make(map[string]map[string]interface{}),
-		Networks: map[string]interface{}{
-			meshNetwork: map[string]interface{}{
-				"driver": "bridge",
-			},
-		},
+		Networks: buildNetworks(cfg.RawNetworks),
+		Volumes:  cfg.RawVolumes,
 	}
 
-	// Build a lookup of proxied service names → their port mappings so we can
-	// strip those ports from the backing service definitions.
-	proxiedPorts := buildProxiedPortIndex(cfg.DSO.Containers)
-
-	// --- Pass 1: transform backing services ---
-	for name, rawSvc := range cfg.Services {
-		svcMap, err := toStringMap(rawSvc)
-		if err != nil {
-			return nil, fmt.Errorf("transformer: service %q is not a valid map: %w", name, err)
-		}
-
-		transformed, err := transformBackingService(name, svcMap, proxiedPorts[name])
-		if err != nil {
-			return nil, fmt.Errorf("transformer: cannot transform service %q: %w", name, err)
-		}
-
-		out.Services[name] = transformed
+	// Surface the deprecation warning in the transform summary as well.
+	if cfg.DeprecatedProxy != nil {
+		summary = append(summary,
+			"⚠  dso-proxy block detected — migrating to auto-detection (deprecated, will be removed in v4)")
 	}
 
-	// --- Pass 2: generate proxy services ---
-	for _, target := range cfg.DSO.Containers {
-		proxyName := "dso-proxy-" + target.Name
-		proxySvc, err := buildProxyService(target)
-		if err != nil {
-			return nil, fmt.Errorf("transformer: cannot build proxy for %q: %w", target.Name, err)
+	for _, svc := range cfg.Services {
+		if !svc.IsEligible {
+			// Pass-through: preserve everything including the original ports.
+			// container_name was already stripped by the parser.
+			passThrough := copyMap(svc.RawFields)
+			if len(svc.Ports) > 0 {
+				passThrough["ports"] = toInterfaceSlice(svc.Ports)
+			}
+			doc.Services[svc.Name] = passThrough
+			continue
 		}
-		out.Services[proxyName] = proxySvc
+
+		// ── Eligible: transform the backing service ───────────────────────────
+		backing, err := transformBacking(svc)
+		if err != nil {
+			return nil, summary, fmt.Errorf("transformer: service %q: %w", svc.Name, err)
+		}
+		doc.Services[svc.Name] = backing
+		summary = append(summary,
+			fmt.Sprintf("DSO: Enabling zero-downtime for service '%s'", svc.Name))
+
+		// ── Generate the proxy service ────────────────────────────────────────
+		proxySvc, err := buildProxy(svc)
+		if err != nil {
+			return nil, summary, fmt.Errorf("transformer: proxy for %q: %w", svc.Name, err)
+		}
+		doc.Services["dso-proxy-"+svc.Name] = proxySvc
+
+		for _, p := range svc.Ports {
+			hp := hostPort(p)
+			summary = append(summary,
+				fmt.Sprintf("DSO: Injecting proxy for port %s → %s", hp, svc.Name))
+		}
 	}
 
-	return yaml.Marshal(out)
+	b, err := yaml.Marshal(doc)
+	return b, summary, err
 }
 
-// transformBackingService applies the DSO rules to a single application service:
-//   - Removes container_name (not allowed in this architecture).
-//   - Moves declared ports to the expose list.
-//   - Adds the dso_mesh network.
-//   - Injects dso.service and dso.managed labels.
-func transformBackingService(
-	name string,
-	svc map[string]interface{},
-	_ []string, // proxied port list reserved for future use
-) (map[string]interface{}, error) {
-	out := make(map[string]interface{}, len(svc)+4)
+// transformBacking applies the DSO rules to a single eligible service:
+//   - Moves ports to expose.
+//   - Injects dso_mesh network.
+//   - Injects dso.service and dso.managed labels (+ dso.strategy if set).
+func transformBacking(svc models.ParsedService) (map[string]interface{}, error) {
+	out := copyMap(svc.RawFields)
 
-	for k, v := range svc {
-		switch k {
-		case "container_name":
-			// Explicitly dropped — proxy architecture requires Docker to assign names.
-			continue
-		case "ports":
-			// Ports on the host are owned by the proxy. Convert them to expose entries
-			// so that intra-mesh communication still works without host bindings.
-			expose := portsToExpose(v)
-			if len(expose) > 0 {
-				out["expose"] = expose
-			}
-		default:
-			out[k] = v
-		}
+	// Convert ports to expose entries (container-side only, no host binding).
+	if expose := portsToExpose(svc.Ports); len(expose) > 0 {
+		out["expose"] = expose
 	}
 
-	// Inject dso_mesh network.
+	// Inject dso_mesh network (merge with any existing network declarations).
 	out["networks"] = mergeNetworks(out["networks"], meshNetwork)
 
-	// Inject DSO labels.
-	out["labels"] = mergeLabels(out["labels"], map[string]string{
-		"dso.service": name,
+	// Build the DSO label set.
+	extraLabels := map[string]string{
+		"dso.service": svc.Name,
 		"dso.managed": "true",
-	})
+	}
+	if svc.DSO.Strategy != "" {
+		extraLabels["dso.strategy"] = svc.DSO.Strategy
+	}
+	out["labels"] = mergeLabels(out["labels"], extraLabels)
 
 	return out, nil
 }
 
-// buildProxyService generates a synthetic dso-proxy-<name> service that owns
-// the external port bindings for a proxied backing service.
+// buildProxy generates the synthetic dso-proxy-<name> service that owns all
+// host port bindings for the proxied backing service.
 //
-// For now the proxy is a simple socat container that forwards TCP traffic.
-// Phase 2 will replace this with a proper nginx/Envoy/HAProxy configuration.
-func buildProxyService(target models.ProxyTarget) (map[string]interface{}, error) {
-	// Build the socat command arguments: one socat invocation per port pair.
-	// Each entry becomes a separate `command` argument in the generated YAML.
-	if len(target.Ports) == 0 {
-		return nil, fmt.Errorf("proxy target %q has no port mappings", target.Name)
+// NOTE: The current implementation uses socat for the primary port only.
+// Multi-port support (Phase 2) will replace socat with a proper reverse-proxy
+// image and a generated config file.
+func buildProxy(svc models.ParsedService) (map[string]interface{}, error) {
+	if len(svc.Ports) == 0 {
+		return nil, fmt.Errorf("service has no ports to proxy")
 	}
 
-	// For multi-port proxies we'll use the first port for the primary socat
-	// command and note that multi-port support will evolve in Phase 2 with a
-	// proper reverse-proxy image.
-	firstMapping := strings.TrimSpace(target.Ports[0])
-	parts := strings.SplitN(firstMapping, ":", 2)
+	// Parse the first port mapping for the socat command.
+	primaryPort := strings.TrimSpace(svc.Ports[0])
+	parts := strings.SplitN(primaryPort, ":", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("proxy target %q: malformed port mapping %q", target.Name, firstMapping)
+		return nil, fmt.Errorf(
+			"malformed port mapping %q: expected 'hostPort:containerPort'", primaryPort)
 	}
+	hostP := strings.TrimSpace(parts[0])
+	containerP := strings.TrimSpace(parts[1])
 
-	hostPort := strings.TrimSpace(parts[0])
-	containerPort := strings.TrimSpace(parts[1])
+	// socat: listen on hostP, forward to backing service's containerP via mesh.
+	socatCmd := fmt.Sprintf("TCP-LISTEN:%s,fork,reuseaddr TCP:%s:%s",
+		hostP, svc.Name, containerP)
 
-	// socat command: listen on hostPort, forward to backing service's containerPort.
-	socatCmd := fmt.Sprintf(
-		"TCP-LISTEN:%s,fork,reuseaddr TCP:%s:%s",
-		hostPort, target.Name, containerPort,
-	)
-
-	proxySvc := map[string]interface{}{
-		"image":   proxyImage,
-		"command": socatCmd,
-		"ports":   target.Ports, // proxy owns ALL host port bindings
-		"networks": []string{meshNetwork},
+	return map[string]interface{}{
+		"image":      proxyImage,
+		"command":    socatCmd,
+		"ports":      toInterfaceSlice(svc.Ports),
+		"networks":   []string{meshNetwork},
+		"depends_on": []string{svc.Name},
 		"labels": map[string]string{
 			"dso.proxy":   "true",
-			"dso.service": target.Name,
+			"dso.service": svc.Name,
 			"dso.managed": "true",
 		},
-		"depends_on": []string{target.Name},
-	}
-
-	return proxySvc, nil
+	}, nil
 }
 
-// buildProxiedPortIndex constructs a map of service name → list of host ports
-// that are declared in the dso-proxy stanza. This is used to ensure those
-// ports are stripped from the backing service's own port list.
-func buildProxiedPortIndex(targets []models.ProxyTarget) map[string][]string {
-	idx := make(map[string][]string, len(targets))
-	for _, t := range targets {
-		idx[t.Name] = append(idx[t.Name], t.Ports...)
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+// buildNetworks constructs the top-level networks map, always including
+// dso_mesh and merging in any user-defined networks from the original file.
+func buildNetworks(existing interface{}) map[string]interface{} {
+	networks := map[string]interface{}{
+		meshNetwork: map[string]interface{}{"driver": "bridge"},
 	}
-	return idx
-}
-
-// portsToExpose converts a raw `ports` field value (which can be a []interface{}
-// or []string in Go after YAML unmarshalling) into a deduplicated list of
-// plain container port strings suitable for the `expose` key.
-func portsToExpose(raw interface{}) []string {
-	if raw == nil {
-		return nil
-	}
-
-	var expose []string
-
-	switch v := raw.(type) {
-	case []interface{}:
-		for _, p := range v {
-			s := fmt.Sprintf("%v", p)
-			// Strip any host-side prefix (e.g. "8080:3306" → "3306").
-			if idx := strings.LastIndex(s, ":"); idx >= 0 {
-				s = s[idx+1:]
-			}
-			s = strings.TrimSpace(s)
-			if s != "" {
-				expose = append(expose, s)
-			}
+	switch v := existing.(type) {
+	case map[string]interface{}:
+		for k, val := range v {
+			networks[k] = val
 		}
-	case []string:
-		for _, p := range v {
-			if idx := strings.LastIndex(p, ":"); idx >= 0 {
-				p = p[idx+1:]
-			}
-			p = strings.TrimSpace(p)
-			if p != "" {
-				expose = append(expose, p)
-			}
+	case map[interface{}]interface{}:
+		for k, val := range v {
+			networks[fmt.Sprintf("%v", k)] = val
 		}
 	}
-
-	return expose
+	return networks
 }
 
-// mergeNetworks merges an existing `networks` field value with a new network
-// name, returning a deduplicated []string.
+// mergeNetworks returns a deduplicated []string of network names, always
+// placing meshNetwork first.
 func mergeNetworks(existing interface{}, add string) []string {
 	seen := map[string]bool{add: true}
 	result := []string{add}
@@ -245,26 +211,21 @@ func mergeNetworks(existing interface{}, add string) []string {
 				result = append(result, s)
 			}
 		}
-	case map[interface{}]interface{}, map[string]interface{}:
-		// Named networks in map form — preserve the key names only.
-		if m, ok := v.(map[string]interface{}); ok {
-			for k := range m {
-				if !seen[k] {
-					seen[k] = true
-					result = append(result, k)
-				}
+	case map[string]interface{}:
+		for k := range v {
+			if !seen[k] {
+				seen[k] = true
+				result = append(result, k)
 			}
 		}
 	}
-
 	return result
 }
 
-// mergeLabels merges an existing `labels` field value (list or map) with
-// additional label entries, returning a consolidated map[string]string.
+// mergeLabels consolidates an existing labels value (list or map form) with
+// additional label entries, returning a unified map[string]string.
 func mergeLabels(existing interface{}, add map[string]string) map[string]string {
 	out := make(map[string]string)
-
 	switch v := existing.(type) {
 	case map[interface{}]interface{}:
 		for k, val := range v {
@@ -274,36 +235,67 @@ func mergeLabels(existing interface{}, add map[string]string) map[string]string 
 		for k, val := range v {
 			out[k] = fmt.Sprintf("%v", val)
 		}
+	case map[string]string:
+		for k, val := range v {
+			out[k] = val
+		}
 	case []interface{}:
-		// Label list format: "KEY=VALUE"
+		// "KEY=VALUE" list form.
 		for _, item := range v {
-			parts := strings.SplitN(fmt.Sprintf("%v", item), "=", 2)
-			if len(parts) == 2 {
-				out[parts[0]] = parts[1]
+			if p := strings.SplitN(fmt.Sprintf("%v", item), "=", 2); len(p) == 2 {
+				out[p[0]] = p[1]
 			}
 		}
 	}
-
 	for k, val := range add {
 		out[k] = val
 	}
-
 	return out
 }
 
-// toStringMap coerces an interface{} (as returned by the YAML decoder into a
-// generic map) into a map[string]interface{}, returning an error if it cannot.
-func toStringMap(v interface{}) (map[string]interface{}, error) {
-	switch m := v.(type) {
-	case map[string]interface{}:
-		return m, nil
-	case map[interface{}]interface{}:
-		out := make(map[string]interface{}, len(m))
-		for k, val := range m {
-			out[fmt.Sprintf("%v", k)] = val
+// portsToExpose converts a list of port-mapping strings (e.g. "8080:3306" or
+// "3000") into a list of container-side-only port strings for the expose key.
+func portsToExpose(ports []string) []string {
+	var expose []string
+	for _, p := range ports {
+		container := p
+		// Strip host prefix: "8080:3306" → "3306"
+		if idx := strings.LastIndex(p, ":"); idx >= 0 {
+			container = p[idx+1:]
 		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected map, got %T", v)
+		// Strip protocol suffix: "3306/tcp" → "3306"
+		if idx := strings.Index(container, "/"); idx >= 0 {
+			container = container[:idx]
+		}
+		if s := strings.TrimSpace(container); s != "" {
+			expose = append(expose, s)
+		}
 	}
+	return expose
+}
+
+// hostPort extracts the host-side portion of a port-mapping string.
+// "8080:3306" → "8080", "3000" → "3000".
+func hostPort(mapping string) string {
+	parts := strings.SplitN(mapping, ":", 2)
+	return strings.TrimSpace(parts[0])
+}
+
+// copyMap returns a shallow copy of a map[string]interface{}.
+func copyMap(src map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+// toInterfaceSlice converts []string to []interface{} for YAML marshalling
+// compatibility with Docker Compose list fields.
+func toInterfaceSlice(ss []string) []interface{} {
+	out := make([]interface{}, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }

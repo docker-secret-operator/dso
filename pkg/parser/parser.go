@@ -1,149 +1,278 @@
-// Package parser reads and validates dso-compose.yml files.
-// It is responsible for decoding the raw YAML, splitting the special
-// `dso-proxy` service stanza away from the regular service definitions,
-// and asserting that every proxy target references a real service.
+// Package parser reads standard docker-compose.yml files and produces a
+// validated *models.DSOConfig ready for the transformer.
+//
+// Auto-detection rules (applied per service, in priority order):
+//  1. x-dso.enabled = false  → never eligible (explicit opt-out)
+//  2. x-dso.enabled = true   → always eligible (explicit opt-in, even DBs)
+//  3. Has ports + not a known database image → eligible
+//  4. Everything else → pass-through, unchanged
+//
+// The legacy dso-proxy service block is still accepted for backward
+// compatibility but triggers a deprecation warning.
 package parser
 
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/docker-secret-operator/dso/internal/models"
 	"gopkg.in/yaml.v3"
 )
 
-// rawDSOConfig is used solely during the initial unmarshal step so that we can
-// grab the raw `services` map (including the `dso-proxy` key) before we
-// separate concerns into the public DSOConfig struct.
-type rawDSOConfig struct {
-	Version  string                     `yaml:"version"`
-	Services map[string]yaml.Node `yaml:"services"`
+// knownDatabaseImages lists image base-names (without tags or registries) that
+// should NOT be proxied by default. Users can override with x-dso.enabled=true.
+var knownDatabaseImages = map[string]bool{
+	"mysql":         true,
+	"postgres":      true,
+	"postgresql":    true,
+	"mariadb":       true,
+	"mongo":         true,
+	"mongodb":       true,
+	"redis":         true,
+	"elasticsearch": true,
+	"cassandra":     true,
+	"rabbitmq":      true,
+	"memcached":     true,
+	"couchdb":       true,
+	"influxdb":      true,
+	"neo4j":         true,
+	"kafka":         true,
+	"zookeeper":     true,
+	"etcd":          true,
 }
 
-// rawProxyService matches the shape of the `dso-proxy` stanza inside services.
-type rawProxyService struct {
+// rawCompose is the top-level docker-compose.yml structure used during the
+// initial unmarshalling pass. Using yaml.Node for services lets us decode each
+// service independently without losing unknown fields.
+type rawCompose struct {
+	Version  string                  `yaml:"version"`
+	Services map[string]yaml.Node    `yaml:"services"`
+	Networks interface{}             `yaml:"networks"`
+	Volumes  interface{}             `yaml:"volumes"`
+}
+
+// rawLegacyProxy matches the shape of the old dso-proxy service stanza.
+type rawLegacyProxy struct {
 	Containers []models.ProxyTarget `yaml:"containers"`
 }
 
-// ParseFile reads the dso-compose.yml at the given path, validates it, and
-// returns a fully populated *models.DSOConfig on success.
-//
-// Validation rules:
-//   - The file must be readable and contain valid YAML.
-//   - At least one non-proxy service must be declared.
-//   - Every proxy target must reference a service that exists in the services map.
-//   - Every proxy target must declare at least one port mapping.
-func ParseFile(path string) (*models.DSOConfig, error) {
+// ParseFile reads the docker-compose.yml at path and returns a validated
+// *models.DSOConfig, any non-fatal warnings (e.g. deprecation notices), and
+// any fatal error.
+func ParseFile(path string) (*models.DSOConfig, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("parser: cannot read %q: %w", path, err)
+		return nil, nil, fmt.Errorf("parser: cannot read %q: %w", path, err)
 	}
-
 	return Parse(data)
 }
 
 // Parse accepts raw YAML bytes and returns a validated *models.DSOConfig.
-// This variant is useful for testing without a real file on disk.
-func Parse(data []byte) (*models.DSOConfig, error) {
-	// Step 1: decode into the raw intermediate struct so we can inspect every
-	// top-level service key before splitting off the proxy stanza.
-	var raw rawDSOConfig
+// This variant is useful for unit tests that don't need a real file on disk.
+func Parse(data []byte) (*models.DSOConfig, []string, error) {
+	var raw rawCompose
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parser: invalid YAML: %w", err)
+		return nil, nil, fmt.Errorf("parser: invalid YAML: %w", err)
 	}
 
 	if len(raw.Services) == 0 {
-		return nil, fmt.Errorf("parser: dso-compose.yml must declare at least one service")
+		return nil, nil, fmt.Errorf("parser: no services found in compose file")
 	}
 
-	// Step 2: extract and decode the `dso-proxy` stanza if present.
-	var proxyConfig models.ProxyConfig
-
-	proxyNode, hasProxy := raw.Services["dso-proxy"]
-	if hasProxy {
-		var rp rawProxyService
-		if err := proxyNode.Decode(&rp); err != nil {
-			return nil, fmt.Errorf("parser: cannot decode dso-proxy stanza: %w", err)
-		}
-		proxyConfig.Containers = rp.Containers
-	}
-
-	// Step 3: build the backing service map (everything except dso-proxy).
-	backingServices := make(map[string]interface{}, len(raw.Services))
-	for name, node := range raw.Services {
-		if name == "dso-proxy" {
-			continue
-		}
-
-		// Decode each service node into a generic map so the transformer can
-		// iterate over arbitrary fields without bespoke per-field handling.
-		var svcMap map[string]interface{}
-		if err := node.Decode(&svcMap); err != nil {
-			return nil, fmt.Errorf("parser: cannot decode service %q: %w", name, err)
-		}
-		backingServices[name] = svcMap
-	}
-
-	if len(backingServices) == 0 {
-		return nil, fmt.Errorf("parser: dso-compose.yml has no backing services (only dso-proxy)")
-	}
-
-	// Step 4: validate proxy references.
-	if hasProxy {
-		if err := validateProxyTargets(proxyConfig.Containers, backingServices); err != nil {
-			return nil, err
-		}
-	}
-
+	var warnings []string
 	cfg := &models.DSOConfig{
-		Version:  raw.Version,
-		DSO:      proxyConfig,
-		Services: backingServices,
+		Version:     raw.Version,
+		RawNetworks: raw.Networks,
+		RawVolumes:  raw.Volumes,
 	}
 
-	return cfg, nil
+	// ── Backward compatibility: detect legacy dso-proxy block ────────────────
+	if legacyNode, hasLegacy := raw.Services["dso-proxy"]; hasLegacy {
+		warnings = append(warnings,
+			"WARNING: The dso-proxy block is deprecated. "+
+				"Use a standard docker-compose.yml with optional x-dso extension fields instead. "+
+				"Support will be removed in a future major release.")
+
+		var lp rawLegacyProxy
+		if err := legacyNode.Decode(&lp); err != nil {
+			return nil, warnings, fmt.Errorf("parser: cannot decode legacy dso-proxy block: %w", err)
+		}
+		cfg.DeprecatedProxy = &models.LegacyProxyConfig{Containers: lp.Containers}
+	}
+
+	// Build a lookup of services the legacy proxy explicitly targets so we can
+	// force-enable eligibility even when auto-detection would say no.
+	legacyTargets := buildLegacyTargetIndex(cfg.DeprecatedProxy)
+
+	// ── Parse backing services in alphabetical order (deterministic output) ──
+	names := make([]string, 0, len(raw.Services))
+	for name := range raw.Services {
+		if name != "dso-proxy" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		node := raw.Services[name]
+		svc, err := parseService(name, &node)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("parser: service %q: %w", name, err)
+		}
+
+		// Legacy proxy block forces eligibility for its declared targets,
+		// overriding the auto-detection result.
+		if legacyPorts, isLegacyTarget := legacyTargets[name]; isLegacyTarget {
+			svc.IsEligible = true
+			// Patch ports from the legacy target if the service didn't declare any.
+			if len(svc.Ports) == 0 {
+				svc.Ports = legacyPorts
+			}
+		}
+
+		cfg.Services = append(cfg.Services, svc)
+	}
+
+	return cfg, warnings, nil
 }
 
-// validateProxyTargets checks that:
-//  1. Every proxy container references a declared backing service.
-//  2. Each proxy target has at least one port mapping.
-//  3. Each port mapping is well-formed (non-empty, contains ":").
-func validateProxyTargets(targets []models.ProxyTarget, services map[string]interface{}) error {
-	for _, target := range targets {
-		if target.Name == "" {
-			return fmt.Errorf("parser: proxy container entry is missing a 'name' field")
-		}
+// parseService decodes a single service YAML node into a ParsedService.
+func parseService(name string, node *yaml.Node) (models.ParsedService, error) {
+	// Decode into a generic map so we preserve every field without bespoke
+	// per-field handling — unknown keys are kept as-is for pass-through.
+	var raw map[string]interface{}
+	if err := node.Decode(&raw); err != nil {
+		return models.ParsedService{}, fmt.Errorf("cannot decode service: %w", err)
+	}
 
-		if _, exists := services[target.Name]; !exists {
-			return fmt.Errorf(
-				"parser: proxy references unknown service %q — make sure it is declared in the services block",
-				target.Name,
-			)
+	// Extract x-dso options (may be absent).
+	var dsoOpts models.DSOOptions
+	if xdso, ok := raw["x-dso"]; ok {
+		if err := remarshal(xdso, &dsoOpts); err != nil {
+			return models.ParsedService{}, fmt.Errorf("cannot decode x-dso block: %w", err)
 		}
+	}
 
-		if len(target.Ports) == 0 {
-			return fmt.Errorf(
-				"parser: proxy target %q must declare at least one port mapping",
-				target.Name,
-			)
+	// Extract image (needed for database detection).
+	image, _ := raw["image"].(string)
+
+	// Extract ports into a clean []string.
+	ports := extractPorts(raw["ports"])
+
+	// Build RawFields: everything except the DSO-managed keys.
+	rawFields := make(map[string]interface{}, len(raw))
+	for k, v := range raw {
+		switch k {
+		case "ports", "x-dso", "container_name":
+			// ports   → managed by DSO (moved to proxy or restored unchanged)
+			// x-dso   → consumed by parser, not passed to Compose
+			// container_name → forbidden in DSO proxy architecture
+			continue
+		default:
+			rawFields[k] = v
 		}
+	}
 
-		for _, p := range target.Ports {
-			trimmed := strings.TrimSpace(p)
-			if trimmed == "" {
-				return fmt.Errorf(
-					"parser: proxy target %q has an empty port mapping entry",
-					target.Name,
-				)
+	return models.ParsedService{
+		Name:       name,
+		RawFields:  rawFields,
+		Ports:      ports,
+		DSO:        dsoOpts,
+		IsEligible: determineEligibility(dsoOpts, ports, image),
+	}, nil
+}
+
+// determineEligibility applies the four auto-detection rules in priority order.
+func determineEligibility(opts models.DSOOptions, ports []string, image string) bool {
+	// Rule 1: explicit opt-out always wins.
+	if opts.Enabled != nil && !*opts.Enabled {
+		return false
+	}
+	// Rule 2: explicit opt-in always wins (even for database images).
+	if opts.Enabled != nil && *opts.Enabled {
+		return true
+	}
+	// Rule 3: auto — must have at least one port AND not a known database image.
+	return len(ports) > 0 && !isKnownDatabase(image)
+}
+
+// isKnownDatabase returns true if the image base-name matches a known stateful
+// service that should not be traffic-proxied by default.
+func isKnownDatabase(image string) bool {
+	if image == "" {
+		return false
+	}
+	// Strip registry prefix: "docker.io/library/mysql:8.0" → "mysql:8.0"
+	base := image
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	// Strip tag: "mysql:8.0" → "mysql"
+	if idx := strings.Index(base, ":"); idx >= 0 {
+		base = base[:idx]
+	}
+	return knownDatabaseImages[strings.ToLower(base)]
+}
+
+// extractPorts coerces the raw `ports` field value (which can be
+// []interface{} with string or int elements after yaml unmarshalling) into a
+// clean []string of port-mapping tokens.
+func extractPorts(raw interface{}) []string {
+	if raw == nil {
+		return nil
+	}
+	var ports []string
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, p := range v {
+			var s string
+			switch pv := p.(type) {
+			case string:
+				s = strings.TrimSpace(pv)
+			case int:
+				s = fmt.Sprintf("%d", pv)
+			default:
+				s = strings.TrimSpace(fmt.Sprintf("%v", pv))
 			}
-			if !strings.Contains(trimmed, ":") {
-				return fmt.Errorf(
-					"parser: proxy target %q has invalid port mapping %q — expected format 'hostPort:containerPort'",
-					target.Name, trimmed,
-				)
+			if s != "" {
+				ports = append(ports, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s = strings.TrimSpace(s); s != "" {
+				ports = append(ports, s)
 			}
 		}
 	}
-	return nil
+	return ports
+}
+
+// remarshal round-trips a value through YAML marshal+unmarshal into dest.
+// Used to safely decode the x-dso field (which arrives as map[string]interface{})
+// into a typed struct.
+func remarshal(src interface{}, dest interface{}) error {
+	b, err := yaml.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(b, dest)
+}
+
+// ── Legacy target index ──────────────────────────────────────────────────────
+
+// legacyTargetIndex maps service name → port strings from the legacy dso-proxy block.
+type legacyTargetIndex map[string][]string
+
+func buildLegacyTargetIndex(lp *models.LegacyProxyConfig) legacyTargetIndex {
+	idx := make(legacyTargetIndex)
+	if lp == nil {
+		return idx
+	}
+	for _, t := range lp.Containers {
+		idx[t.Name] = t.Ports
+	}
+	return idx
 }
