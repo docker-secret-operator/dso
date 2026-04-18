@@ -27,10 +27,15 @@ const (
 	// and their proxy counterparts.
 	meshNetwork = "dso_mesh"
 
-	// proxyImage is the placeholder proxy image. Phase 2 will replace this with
-	// a properly configured reverse-proxy (nginx/Envoy) that handles multi-port
-	// forwarding natively.
-	proxyImage = "alpine/socat:latest"
+	// proxyImage is the DSO Go-based TCP reverse proxy that replaced socat.
+	// Build with: docker build -t docker-secret-operator/dso-proxy:latest
+	//             -f Dockerfile.proxy .
+	proxyImage = "docker-secret-operator/dso-proxy:latest"
+
+	// proxyAPIPort is the HTTP control API port exposed on the dso_mesh network.
+	// External traffic cannot reach this port; it is only accessible to other
+	// services on the mesh (e.g. the DSO agent for dynamic backend management).
+	proxyAPIPort = 9900
 )
 
 // composeOutput is the full document structure written to docker-compose.generated.yml.
@@ -132,34 +137,52 @@ func transformBacking(svc models.ParsedService) (map[string]interface{}, error) 
 // buildProxy generates the synthetic dso-proxy-<name> service that owns all
 // host port bindings for the proxied backing service.
 //
-// NOTE: The current implementation uses socat for the primary port only.
-// Multi-port support (Phase 2) will replace socat with a proper reverse-proxy
-// image and a generated config file.
+// The proxy is configured entirely via environment variables:
+//
+//	 DSO_PROXY_BINDS    — one entry per port mapping ("listenPort:service:targetPort")
+//	 DSO_PROXY_BACKENDS — initial backend to register ("id:service:host:port")
+//	 DSO_PROXY_API_PORT — HTTP control API port (always proxyAPIPort)
+//
+// Multi-port services are handled natively: every port mapping in svc.Ports
+// produces one entry in DSO_PROXY_BINDS. The Go proxy opens one TCP listener
+// per entry, replacing the previous single-port socat command.
 func buildProxy(svc models.ParsedService) (map[string]interface{}, error) {
 	if len(svc.Ports) == 0 {
-		return nil, fmt.Errorf("service has no ports to proxy")
+		return nil, fmt.Errorf("service %q has no ports to proxy", svc.Name)
 	}
 
-	// Parse the first port mapping for the socat command.
-	primaryPort := strings.TrimSpace(svc.Ports[0])
-	parts := strings.SplitN(primaryPort, ":", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf(
-			"malformed port mapping %q: expected 'hostPort:containerPort'", primaryPort)
+	// Build DSO_PROXY_BINDS: "listenPort:service:targetPort,..."
+	bindSpecs := make([]string, 0, len(svc.Ports))
+	for _, p := range svc.Ports {
+		p = strings.TrimSpace(p)
+		parts := strings.SplitN(p, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf(
+				"service %q: malformed port mapping %q (expected 'hostPort:containerPort')",
+				svc.Name, p)
+		}
+		hostP := strings.TrimSpace(parts[0])
+		containerP := strings.TrimSpace(parts[1])
+		bindSpecs = append(bindSpecs, fmt.Sprintf("%s:%s:%s", hostP, svc.Name, containerP))
 	}
-	hostP := strings.TrimSpace(parts[0])
-	containerP := strings.TrimSpace(parts[1])
 
-	// socat: listen on hostP, forward to backing service's containerP via mesh.
-	socatCmd := fmt.Sprintf("TCP-LISTEN:%s,fork,reuseaddr TCP:%s:%s",
-		hostP, svc.Name, containerP)
+	// Build DSO_PROXY_BACKENDS: the initial backend entry.
+	// host = service DNS name (Docker resolves this on the dso_mesh network).
+	// port = 0 → proxy uses binding.TargetPort when dialling, which is set per
+	// listener from DSO_PROXY_BINDS and supports multi-port correctly.
+	initialBackend := fmt.Sprintf("%s-default:%s:%s:0", svc.Name, svc.Name, svc.Name)
 
 	return map[string]interface{}{
 		"image":      proxyImage,
-		"command":    socatCmd,
 		"ports":      toInterfaceSlice(svc.Ports),
 		"networks":   []string{meshNetwork},
 		"depends_on": []string{svc.Name},
+		"expose":     []string{fmt.Sprintf("%d", proxyAPIPort)},
+		"environment": map[string]string{
+			"DSO_PROXY_BINDS":    strings.Join(bindSpecs, ","),
+			"DSO_PROXY_BACKENDS": initialBackend,
+			"DSO_PROXY_API_PORT": fmt.Sprintf("%d", proxyAPIPort),
+		},
 		"labels": map[string]string{
 			"dso.proxy":   "true",
 			"dso.service": svc.Name,
