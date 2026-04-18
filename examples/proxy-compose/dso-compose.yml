@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  # ─── DSO Proxy Declaration ───────────────────────────────────────────────────
+  # This stanza is DSO-specific and is never passed through to Docker Compose.
+  # Each container entry maps a backing service to the host ports the proxy owns.
+  dso-proxy:
+    containers:
+      - name: mysql-db
+        ports:
+          - "8080:3306"        # host:8080 → mysql-db:3306
+
+      - name: backend-app1
+        ports:
+          - "3005:3000"        # host:3005 → backend-app1:3000
+          - "5001:5000"        # host:5001 → backend-app1:5000
+
+      - name: backend-app2
+        ports:
+          - "3010:3000"        # host:3010 → backend-app2:3000
+          - "5002:5000"        # host:5002 → backend-app2:5000
+
+  # ─── Backing Services ────────────────────────────────────────────────────────
+  # No container_name. No host port bindings. The proxy owns all of those.
+  mysql-db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "${DB_NAME}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+
+  backend-app1:
+    image: email-service:latest
+    environment:
+      - DB_HOST=mysql-db
+      - DB_PORT=3306
+    depends_on:
+      - mysql-db
+    restart: unless-stopped
+
+  backend-app2:
+    image: email-service:latest
+    environment:
+      - DB_HOST=mysql-db
+      - DB_PORT=3306
+    depends_on:
+      - mysql-db
+    restart: unless-stopped
+
+volumes:
+  mysql_data:

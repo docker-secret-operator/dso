@@ -1,0 +1,85 @@
+version: "3.9"
+services:
+    backend-app1:
+        depends_on:
+            - mysql-db
+        environment:
+            - DB_HOST=mysql-db
+            - DB_PORT=3306
+        image: email-service:latest
+        labels:
+            dso.managed: "true"
+            dso.service: backend-app1
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+    backend-app2:
+        depends_on:
+            - mysql-db
+        environment:
+            - DB_HOST=mysql-db
+            - DB_PORT=3306
+        image: email-service:latest
+        labels:
+            dso.managed: "true"
+            dso.service: backend-app2
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+    dso-proxy-backend-app1:
+        command: TCP-LISTEN:3005,fork,reuseaddr TCP:backend-app1:3000
+        depends_on:
+            - backend-app1
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: backend-app1
+        networks:
+            - dso_mesh
+        ports:
+            - 3005:3000
+            - 5001:5000
+    dso-proxy-backend-app2:
+        command: TCP-LISTEN:3010,fork,reuseaddr TCP:backend-app2:3000
+        depends_on:
+            - backend-app2
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: backend-app2
+        networks:
+            - dso_mesh
+        ports:
+            - 3010:3000
+            - 5002:5000
+    dso-proxy-mysql-db:
+        command: TCP-LISTEN:8080,fork,reuseaddr TCP:mysql-db:3306
+        depends_on:
+            - mysql-db
+        image: alpine/socat:latest
+        labels:
+            dso.managed: "true"
+            dso.proxy: "true"
+            dso.service: mysql-db
+        networks:
+            - dso_mesh
+        ports:
+            - 8080:3306
+    mysql-db:
+        environment:
+            MYSQL_DATABASE: ${DB_NAME}
+            MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+        image: mysql:8.0
+        labels:
+            dso.managed: "true"
+            dso.service: mysql-db
+        networks:
+            - dso_mesh
+        restart: unless-stopped
+        volumes:
+            - mysql_data:/var/lib/mysql
+networks:
+    dso_mesh:
+        driver: bridge
