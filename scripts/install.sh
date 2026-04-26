@@ -2,27 +2,23 @@
 # ==============================================================================
 # Docker Secret Operator (DSO) - Production Installer (V3.2)
 # ==============================================================================
-# This script performs a full, production-ready installation of the DSO
-# Official Docker CLI plugin and optional background agent.
+# This script performs a clean installation of the DSO Official Docker CLI plugin
 #
-# Supported OS: Linux (Ubuntu, Debian, CentOS, RHEL)
+# Supported OS: Linux (Ubuntu, Debian, CentOS, RHEL), macOS
 # ==============================================================================
 
 set -e
 
 # Configuration
 REPO_URL="https://github.com/docker-secret-operator/dso"
-BACKUP_REPO="https://github.com/umairmd385/docker-secret-operator"
-BUILD_DIR="/tmp/dso-install"
 DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+
 if [ "$EUID" -eq 0 ]; then
     PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
     SYSTEM_BIN_DIR="/usr/local/bin"
-    LIB_DIR="/usr/local/lib/dso"
 else
     PLUGIN_DIR="$DOCKER_CONFIG/cli-plugins"
     SYSTEM_BIN_DIR="$HOME/.local/bin"
-    LIB_DIR="$HOME/.local/lib/dso"
 fi
 
 # Colors for output
@@ -35,24 +31,16 @@ echo -e "${BLUE}==========================================${NC}"
 echo -e "${BLUE}   Installing Docker Secret Operator (DSO) ${NC}"
 echo -e "${BLUE}==========================================${NC}"
 
-# 1. Root Check (Partial)
-if [ "$EUID" -ne 0 ]; then 
-  echo -e "${RED}Warning: Not running as root. System-wide components (systemd) will be skipped.${NC}"
-  echo -e "${RED}To perform a full production install, use: sudo bash install.sh${NC}"
-  echo ""
-fi
+# 1. Dependency Checking
+echo -e "${GREEN}[1/5] Checking dependencies...${NC}"
 
-# 2. Dependency Installation
-echo -e "${GREEN}[1/7] Checking dependencies...${NC}"
-
-# Function to install if missing
 install_if_missing() {
     if ! command -v $1 &> /dev/null; then
         echo -e "Installing $1..."
         if [ "$EUID" -eq 0 ]; then
-            apt-get update && apt-get install -y $1 || yum install -y $1 || apk add $1
+            apt-get update && apt-get install -y $1 || yum install -y $1 || apk add $1 || brew install $1
         else
-            echo -e "${RED}Error: $1 is missing and we don't have root to install it.${NC}"
+            echo -e "${RED}Error: $1 is missing. Please install it manually.${NC}"
             exit 1
         fi
     fi
@@ -64,53 +52,26 @@ install_if_missing "tar"
 
 # Check for Docker
 if ! command -v docker &> /dev/null; then
-    echo -e "Docker not found. Installing Docker..."
-    if [ "$EUID" -eq 0 ]; then
-        curl -fsSL https://get.docker.com | sh
-        systemctl enable --now docker
-    else
-        echo -e "${RED}Error: Docker is missing and we don't have root to install it.${NC}"
-        exit 1
-    fi
+    echo -e "${RED}Error: Docker is not installed. Please install Docker manually and try again.${NC}"
+    exit 1
 fi
 
-# Check for Go (Minimum 1.25.0 per go.mod)
-export PATH=$PATH:/usr/local/go/bin
-
-install_go() {
-    echo -e "Installing Go 1.25.0..."
-    GO_VERSION="1.25.0"
-    if [ "$EUID" -eq 0 ]; then
-        curl -LO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
-        rm -rf /usr/local/go && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-        rm go${GO_VERSION}.linux-amd64.tar.gz
-        export PATH=$PATH:/usr/local/go/bin
-        # Persist for future sessions
-        if ! grep -q '/usr/local/go/bin' /etc/environment 2>/dev/null; then
-            echo 'PATH="/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' >> /etc/environment
-        fi
-    else
-        echo -e "${RED}Error: Go 1.25.0+ is required but missing. Please install it or run as root.${NC}"
-        exit 1
-    fi
-}
-
+# Check for Go (Minimum 1.21.0)
 if ! command -v go &> /dev/null; then
-    echo -e "Go not found. Installing..."
-    install_go
+    echo -e "${RED}Error: Go 1.21+ is required but not found. Please install Go manually and try again.${NC}"
+    exit 1
 else
-    # Parse major.minor correctly
     CURRENT_GO_MINOR=$(go version | grep -oP 'go1\.\K[0-9]+' | head -1)
-    if [ -z "$CURRENT_GO_MINOR" ] || [ "$CURRENT_GO_MINOR" -lt 25 ]; then
-        echo -e "Go version too old (need 1.25+). Upgrading..."
-        install_go
+    if [ -z "$CURRENT_GO_MINOR" ] || [ "$CURRENT_GO_MINOR" -lt 21 ]; then
+        echo -e "${RED}Error: Go version is too old (need 1.21+). Please upgrade Go manually and try again.${NC}"
+        exit 1
     else
-        echo -e "${GREEN}Go $(go version | awk '{print $3}') already installed. Skipping.${NC}"
+        echo -e "${GREEN}Go $(go version | awk '{print $3}') detected.${NC}"
     fi
 fi
 
-# 3. Download/Prepare Project Files
-echo -e "${GREEN}[2/7] Preparing DSO source...${NC}"
+# 2. Download/Prepare Project Files
+echo -e "${GREEN}[2/5] Preparing DSO source...${NC}"
 
 if [ -f "./go.mod" ] && grep -q "github.com/docker-secret-operator/dso" "./go.mod"; then
     echo -e "Local source detected. Using current directory."
@@ -119,20 +80,17 @@ else
     BUILD_DIR="/tmp/dso-install"
     echo -e "No local source found. Downloading from $REPO_URL..."
     rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
-    git clone "$REPO_URL" .
+    git clone "$REPO_URL" "$BUILD_DIR"
 fi
-cd "$BUILD_DIR"
 
-# 4. Build Primary Binary (Official Docker Plugin)
-echo -e "${GREEN}[3/7] Building docker-dso...${NC}"
+pushd "$BUILD_DIR" > /dev/null
+
+# 3. Build Primary Binary (Official Docker Plugin)
+echo -e "${GREEN}[3/5] Building docker-dso...${NC}"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o docker-dso ./cmd/docker-dso/
 
-# 5. Installing binaries
-echo -e "${GREEN}[4/7] Installing binaries...${NC}"
-
-echo "Stopping dso-agent service if running..."
-sudo systemctl stop dso-agent 2>/dev/null || true
+# 4. Installing binaries
+echo -e "${GREEN}[4/5] Installing binaries...${NC}"
 
 install_binary() {
     local src=$1
@@ -140,167 +98,45 @@ install_binary() {
     local dir=$(dirname "$dest")
     
     if [ -f "$src" ]; then
-        sudo mkdir -p "$dir"
-        sudo cp "$src" "$dest.tmp"
-        sudo mv "$dest.tmp" "$dest"
-        sudo chmod +x "$dest"
-        echo -e "  Installed $(basename "$dest")"
+        mkdir -p "$dir"
+        cp "$src" "$dest.tmp"
+        mv "$dest.tmp" "$dest"
+        chmod +x "$dest"
+        echo -e "  Installed $(basename "$dest") to $dir"
     else
         echo -e "${RED}ERROR: $src not found. Binary was not built.${NC}"
         exit 1
     fi
 }
 
-restore_missing_source() {
-    local plugin=$1
-    local target_dir="./cmd/plugins/dso-provider-$plugin"
-    
-    if [ ! -d "$target_dir" ] || [ ! -f "$target_dir/main.go" ]; then
-        echo -e "${BLUE}Restoring missing source for $plugin from backup...${NC}"
-        local temp_restore="/tmp/dso-restore-$(date +%s)"
-        mkdir -p "$temp_restore"
-        
-        # Fresh clone to temporary directory (minimal depth)
-        git clone --depth 1 "$BACKUP_REPO" "$temp_restore" >/dev/null 2>&1
-        
-        # Copy exact plugin directory
-        mkdir -p "$target_dir"
-        cp -rf "$temp_restore/cmd/plugins/dso-provider-$plugin/." "$target_dir/"
-        rm -rf "$temp_restore"
-        
-        if [ -f "$target_dir/main.go" ]; then
-            echo -e "${GREEN}✓ Successfully restored $plugin source.${NC}"
-        else
-            echo -e "${RED}✖ Failed to restore $plugin source from backup.${NC}"
-            return 1
-        fi
-    fi
-    return 0
-}
-
-# Install Docker CLI Plugin
+mkdir -p "$PLUGIN_DIR"
 install_binary "docker-dso" "$PLUGIN_DIR/docker-dso"
-
-# Install as Standalone binary
 install_binary "docker-dso" "$SYSTEM_BIN_DIR/docker-dso"
 
-# Create symlinks for legacy/standalone support
-sudo ln -sf "$SYSTEM_BIN_DIR/docker-dso" "$SYSTEM_BIN_DIR/dso"
-sudo ln -sf "$SYSTEM_BIN_DIR/docker-dso" "$SYSTEM_BIN_DIR/dso-agent"
+# Create symlink for standalone support
+ln -sf "$SYSTEM_BIN_DIR/docker-dso" "$SYSTEM_BIN_DIR/dso"
 
-# 6. Build and Install Provider Plugins (Robust Build Loop)
-echo -e "${GREEN}[5/7] Setting up provider plugins...${NC}"
-sudo mkdir -p "$LIB_DIR/plugins"
-
-PLUGINS=("aws" "azure" "huawei" "vault")
-for plugin in "${PLUGINS[@]}"; do
-    echo "Building plugin: $plugin"
-    
-    # Autonomous restoration if source is missing
-    restore_missing_source "$plugin" || echo -e "${RED}WARNING: Restoration of $plugin failed.${NC}"
-
-    if [ -d "./cmd/plugins/dso-provider-$plugin" ]; then
-        if CGO_ENABLED=0 go build -ldflags="-s -w" -o "dso-provider-$plugin" "./cmd/plugins/dso-provider-$plugin"; then
-            install_binary "dso-provider-$plugin" "$LIB_DIR/plugins/dso-provider-$plugin"
-            rm "dso-provider-$plugin"
-        else
-            echo -e "${RED}ERROR: Failed to build $plugin plugin${NC}"
-            exit 1
-        fi
-    else
-        echo -e "${RED}WARNING: Source for $plugin missing even after restoration attempt, skipping.${NC}"
-    fi
-done
-
-# 7. Configure dso-agent (Interactive)
-echo -e "${GREEN}[6/7] Configuring DSO...${NC}"
-
-if [ "$EUID" -eq 0 ]; then
-    sudo mkdir -p /etc/dso
-    if [ ! -f /etc/dso/dso.yaml ]; then
-        echo -e "${BLUE}Creating /etc/dso/dso.yaml configuration...${NC}"
-        # ... (rest of configuration generation remains same)
-        cat << EOF | sudo tee /etc/dso/dso.yaml > /dev/null
-# Docker Secret Operator (DSO) Configuration
-provider: aws
-agent:
-  cache: true
-  watch:
-    mode: polling
-    polling_interval: 5m
-secrets:
-  - name: my-database-secret
-    inject: env
-    mappings:
-      DB_PASSWORD: password
-EOF
-        echo -e "  ✓ Created /etc/dso/dso.yaml"
-    fi
-    sudo chmod 644 /etc/dso/dso.yaml
-
-    # Setup Systemd
-    if [ -d /etc/systemd/system ]; then
-        echo -e "Configuring systemd service..."
-        cat << EOF | sudo tee /etc/systemd/system/dso-agent.service > /dev/null
-[Unit]
-Description=Docker Secret Operator Agent
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-ExecStart=$SYSTEM_BIN_DIR/docker-dso agent --api-addr :8080
-Restart=on-failure
-RestartSec=5
-EnvironmentFile=-/etc/dso/agent.env
-RuntimeDirectory=dso
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        sudo systemctl daemon-reload
-        sudo systemctl enable dso-agent || true
-        
-        echo "Starting dso-agent..."
-        sudo systemctl start dso-agent
-        
-        echo "Verifying service..."
-        if ! systemctl is-active --quiet dso-agent; then
-            echo "ERROR: dso-agent failed to start"
-            # exit 1 # Don't exit here to allow verification part to show errors
-        else
-            echo -e "  ✓ dso-agent is active"
-        fi
-    fi
-else
-    echo -e "${YELLOW}Skipping /etc/dso configuration (not root).${NC}"
-fi
-
-# 8. Verification
-echo -e "${GREEN}[7/7] Verifying installation...${NC}"
+# 5. Verification
+echo -e "${GREEN}[5/5] Verifying installation...${NC}"
 
 if docker dso version &> /dev/null; then
     VERSION=$(docker dso version | head -n 1)
     echo -e "${GREEN}✓ $VERSION installed successfully as Docker plugin!${NC}"
 else
-    echo -e "${RED}❌ Docker CLI plugin installation failed...${NC}"
+    echo -e "${RED}❌ Docker CLI plugin installation failed. Ensure $PLUGIN_DIR is in Docker's path.${NC}"
     exit 1
 fi
 
 # Success message
 echo -e "${BLUE}================================================================${NC}"
-echo -e "${GREEN}   Docker Secret Operator (DSO) setup complete!                ${NC}"
-echo -e "${BLUE}================================================================${NC}"
 echo -e "Usage (Official Plugin):"
-echo -e "  - ${BLUE}docker dso up -d${NC}         (Starts agent and deploys)"
-echo -e "  - ${BLUE}docker dso version${NC}       (Check status)"
-echo -e ""
-echo -e "Usage (Standalone):"
-echo -e "  - ${BLUE}dso-agent --help${NC}         (Run engine directly)"
-echo -e "  - ${BLUE}systemctl start dso-agent${NC}  (Manage as system service)"
+echo -e "  - ${BLUE}docker dso init${NC}          (Initialize local vault)"
+echo -e "  - ${BLUE}docker dso secret set${NC}    (Store secrets securely)"
+echo -e "  - ${BLUE}docker dso up -d${NC}         (Deploy and inject secrets automatically)"
 echo -e "${BLUE}================================================================${NC}"
 
-# 8. Cleanup
+# Cleanup
+popd > /dev/null
 if [ "$BUILD_DIR" != "." ]; then
     rm -rf "$BUILD_DIR"
 fi

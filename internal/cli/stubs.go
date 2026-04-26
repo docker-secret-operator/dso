@@ -15,18 +15,6 @@ func NewVersionCmd() *cobra.Command {
 	}
 }
 
-func NewInitCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "init",
-		Short: "Initialize DSO configuration",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Initializing DSO workspace...")
-			// TODO: Implement actual init logic
-			fmt.Println("Success.")
-		},
-	}
-}
-
 func NewApplyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "apply",
