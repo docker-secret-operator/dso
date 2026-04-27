@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -94,7 +95,32 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 		return err
 	}
 
-	data, err := prov.GetSecret(req.Secret)
+	type fetchResult struct {
+		data map[string]string
+		err  error
+	}
+	fetchCh := make(chan fetchResult, 1)
+	go func() {
+		d, e := prov.GetSecret(req.Secret)
+		fetchCh <- fetchResult{d, e}
+	}()
+
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer fetchCancel()
+
+	var data map[string]string
+	select {
+	case res := <-fetchCh:
+		data = res.data
+		err = res.err
+	case <-fetchCtx.Done():
+		timer.Observe(time.Since(start).Seconds())
+		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
+		observability.BackendFailuresTotal.WithLabelValues(req.Provider, "timeout").Inc()
+		resp.Error = "provider timed out after 30s"
+		return fmt.Errorf("provider timed out fetching secret %q", req.Secret)
+	}
+
 	timer.Observe(time.Since(start).Seconds())
 	if err != nil {
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
@@ -118,7 +144,9 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		Config: cfg,
 	}
 
-	_ = rpc.RegisterName("Agent", server)
+	if err := rpc.RegisterName("Agent", server); err != nil {
+		return nil, fmt.Errorf("failed to register RPC service: %w", err)
+	}
 
 	// Pre-bind check: is there another agent already running?
 	if _, err := os.Stat(socketPath); err == nil {
@@ -129,7 +157,9 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		}
 		// Stale socket, remove it
 		logger.Warn("Removing stale Unix socket", zap.String("path", socketPath))
-		_ = os.Remove(socketPath)
+		if err := os.Remove(socketPath); err != nil {
+			logger.Warn("Failed to remove stale socket", zap.String("path", socketPath), zap.Error(err))
+		}
 	}
 
 	logger.Info("Starting local Unix socket", zap.String("path", socketPath))
@@ -138,11 +168,9 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		return nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
 	}
 
-	// Ensure permissive permissions so containers mounted can read it
-	// #nosec G302 -- required for container access across namespaces.
-	// Unix socket is local-only (not exposed over network).
-	// Risk accepted: any local process can connect.
-	_ = os.Chmod(socketPath, 0666)
+	if err := os.Chmod(socketPath, 0600); err != nil {
+		logger.Warn("Failed to set socket permissions", zap.String("path", socketPath), zap.Error(err))
+	}
 
 	go func() {
 		defer listener.Close()
@@ -196,7 +224,9 @@ func (s *AgentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.Logger.Warn("Failed to encode driver response", zap.Error(err))
+	}
 }
 
 func StartDriverServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) error {
@@ -208,7 +238,9 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	if _, err := os.Stat(socketPath); err == nil {
-		_ = os.Remove(socketPath)
+		if err := os.Remove(socketPath); err != nil {
+			logger.Warn("Failed to remove existing driver socket", zap.String("path", socketPath), zap.Error(err))
+		}
 	}
 
 	logger.Info("Starting Docker Secret Driver socket", zap.String("path", socketPath))
@@ -217,7 +249,9 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 		return fmt.Errorf("failed to listen on driver socket %s: %w", socketPath, err)
 	}
 
-	_ = os.Chmod(socketPath, 0666)
+	if err := os.Chmod(socketPath, 0600); err != nil {
+		logger.Warn("Failed to set driver socket permissions", zap.String("path", socketPath), zap.Error(err))
+	}
 
 	httpServer := &http.Server{
 		Handler:           server,

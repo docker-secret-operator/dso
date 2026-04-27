@@ -8,7 +8,17 @@ dist/
 *.so
 *.dylib
 docker-dso
-dso-provider-*
+dso-cli
+# Ignore compiled plugin binaries at the repo root (e.g. `go build -o dso-provider-aws`)
+# but NOT the source directories under cmd/plugins/
+/dso-provider-*
+
+# Profiling artifacts
+*.prof
+*.pprof
+
+# Temporary directories
+.tmp/
 
 # OS-specific files
 .DS_Store
