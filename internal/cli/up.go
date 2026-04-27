@@ -59,25 +59,22 @@ func ensureAgentRunning(configPath string) {
 	fmt.Fprintf(os.Stderr, "Warning: Agent started but socket %s not ready yet.\n", socketPath)
 }
 
-func detectMode(flagMode string, configPath string) string {
+func detectMode(flagMode string, configPath string) (string, string) {
 	if flagMode != "" {
-		return strings.ToLower(flagMode)
+		return strings.ToLower(flagMode), "flag"
 	}
 
-	// Priority 1: Check for Native Vault. If it exists, default to LOCAL mode.
-	home, _ := os.UserHomeDir()
-	vaultPath := filepath.Join(home, ".dso", "vault.enc")
-	if _, err := os.Stat(vaultPath); err == nil {
-		return "local"
+	if envMode := os.Getenv("DSO_FORCE_MODE"); envMode != "" {
+		return strings.ToLower(envMode), "env"
 	}
 
-	// Priority 2: Check for global Cloud configuration.
+	// Priority 3: Check for global Cloud configuration.
 	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
-		return "cloud"
+		return "cloud", "auto-detected"
 	}
 
-	// Default to local (it will error later if no vault or secrets found)
-	return "local"
+	// Default to local
+	return "local", "default"
 }
 
 func getProjectName(args []string) string {
@@ -172,10 +169,10 @@ func NewUpCmd() *cobra.Command {
 				}
 			}
 
-			mode := detectMode(flagMode, configPath)
+			mode, reason := detectMode(flagMode, configPath)
 
 			if mode == "cloud" {
-				fmt.Printf("🔐 DSO Mode: CLOUD (%s)\n", configPath)
+				fmt.Printf("[DSO] Mode: cloud (%s)\n", reason)
 
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
@@ -195,8 +192,8 @@ func NewUpCmd() *cobra.Command {
 					os.Exit(1)
 				}
 			} else {
-				fmt.Println("🔐 DSO Mode: LOCAL (Native Vault)")
-				fmt.Println("🔐 Resolving secrets...")
+				fmt.Printf("[DSO] Mode: local (%s)\n", reason)
+				fmt.Println("[DSO] Resolving secrets...")
 
 				v, err := vault.LoadDefault()
 				if err != nil {

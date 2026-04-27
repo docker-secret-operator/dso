@@ -49,11 +49,21 @@ func NewInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "Initialize the DSO Native Vault",
+		Long:  "Creates the encrypted vault at ~/.dso/vault.enc. Must be run as a standard user (not root).",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// ── Privilege guard: vault must never be root-owned ─────────
+			if os.Geteuid() == 0 {
+				return fmt.Errorf(
+					"'dso init' must NOT be run as root.\n" +
+						"  The vault must be owned by your user account.\n" +
+						"  Please re-run without sudo: dso init",
+				)
+			}
 			if err := vault.InitDefault(); err != nil {
 				return fmt.Errorf("failed to initialize vault: %w", err)
 			}
 			fmt.Println("✅ DSO Native Vault initialized successfully.")
+			fmt.Println("   Next step: docker dso secret set <project>/<path>")
 			return nil
 		},
 	}

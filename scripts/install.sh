@@ -1,161 +1,222 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ==============================================================================
-# Docker Secret Operator (DSO) - Production Installer (V3.2)
+# Docker Secret Operator (DSO) — Thin Installer
 # ==============================================================================
-# This script performs a clean installation of the DSO Official Docker CLI plugin
+# Responsibilities:
+#   1. Detect OS + architecture
+#   2. Download the correct prebuilt binary from GitHub Releases
+#   3. Place it in the appropriate path (root vs. user)
+#   4. chmod +x
+#   5. Print version, location, and context-aware next steps
 #
-# Supported OS: Linux (Ubuntu, Debian, CentOS, RHEL), macOS
+# Does NOT:
+#   - Compile any Go code
+#   - Set up systemd services
+#   - Initialize the vault
+#   - Install plugins
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
-# Configuration
-REPO_URL="https://github.com/docker-secret-operator/dso"
-DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+# ── Configuration ──────────────────────────────────────────────────────────────
+REPO="docker-secret-operator/dso"
+RELEASE_BASE="https://github.com/${REPO}/releases/download"
+BINARY_NAME="docker-dso"
 
-if [ "$EUID" -eq 0 ]; then
-    PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
-    SYSTEM_BIN_DIR="/usr/local/bin"
-else
-    PLUGIN_DIR="$DOCKER_CONFIG/cli-plugins"
-    SYSTEM_BIN_DIR="$HOME/.local/bin"
-fi
-
-# Colors for output
+# Colour codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-echo -e "${BLUE}==========================================${NC}"
-echo -e "${BLUE}   Installing Docker Secret Operator (DSO) ${NC}"
-echo -e "${BLUE}==========================================${NC}"
-
-# 1. Dependency Checking
-echo -e "${GREEN}[1/5] Checking dependencies...${NC}"
-
-install_if_missing() {
-    if ! command -v "$1" &> /dev/null; then
-        echo -e "Installing $1..."
-        if [ "$EUID" -eq 0 ]; then
-            apt-get update && apt-get install -y "$1" || yum install -y "$1" || apk add "$1" || brew install "$1"
-        else
-            echo -e "${RED}Error: '$1' is missing. Please install it manually.${NC}"
-            exit 1
-        fi
-    fi
-}
-
-install_if_missing "curl"
-install_if_missing "git"
-install_if_missing "tar"
-
-# Check for Docker
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}Error: Docker is not installed. Please install Docker manually and try again.${NC}"
-    exit 1
-fi
-
-# Check for Go (Minimum 1.21.0)
-check_go() {
-    if command -v go &> /dev/null; then
-        GO_VERSION_OUT=$(go version 2>&1)
-        if [[ $GO_VERSION_OUT != *"cannot find GOROOT"* ]] && [[ $GO_VERSION_OUT == *"go version"* ]]; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-if ! check_go; then
-    echo -e "Go not found or broken. Searching for Go in common locations..."
-    if [ -x "/usr/local/go/bin/go" ]; then
-        export PATH="/usr/local/go/bin:$PATH"
-        export GOROOT="/usr/local/go"
-        echo -e "Found Go at /usr/local/go/bin/go. Using it."
-    fi
-fi
-
-if ! check_go; then
-    echo -e "${RED}Error: Go 1.21+ is required but not found or is broken. Please install Go manually and try again.${NC}"
-    exit 1
+# ── Resolve target paths (root vs. user) ───────────────────────────────────────
+if [ "$(id -u)" -eq 0 ]; then
+    IS_ROOT=true
+    INSTALL_DIR="/usr/local/bin"
+    PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
 else
-    CURRENT_GO_MINOR=$(go version | grep -oP 'go1\.\K[0-9]+' | head -1)
-    if [ -z "$CURRENT_GO_MINOR" ] || [ "$CURRENT_GO_MINOR" -lt 21 ]; then
-        echo -e "${RED}Error: Go version is too old (need 1.21+). Please upgrade Go manually and try again.${NC}"
+    IS_ROOT=false
+    INSTALL_DIR="${HOME}/.local/bin"
+    PLUGIN_DIR="${HOME}/.docker/cli-plugins"
+fi
+
+# ── Detect OS ──────────────────────────────────────────────────────────────────
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "${OS}" in
+    linux)  GOOS="linux"  ;;
+    darwin) GOOS="darwin" ;;
+    *)
+        echo -e "${RED}Error: Unsupported OS '${OS}'. DSO supports linux and darwin.${NC}"
         exit 1
-    else
-        echo -e "${GREEN}Go $(go version | awk '{print $3}') detected.${NC}"
-    fi
-fi
+        ;;
+esac
 
-# 2. Download/Prepare Project Files
-echo -e "${GREEN}[2/5] Preparing DSO source...${NC}"
-
-if [ -f "./go.mod" ] && grep -q "github.com/docker-secret-operator/dso" "./go.mod"; then
-    echo -e "Local source detected. Using current directory."
-    BUILD_DIR="."
-else
-    BUILD_DIR="/tmp/dso-install"
-    echo -e "No local source found. Downloading from $REPO_URL..."
-    rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-    git clone "$REPO_URL" "$BUILD_DIR"
-fi
-
-pushd "$BUILD_DIR" > /dev/null
-
-# 3. Build Primary Binary (Official Docker Plugin)
-echo -e "${GREEN}[3/5] Building docker-dso...${NC}"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o docker-dso ./cmd/docker-dso/
-
-# 4. Installing binaries
-echo -e "${GREEN}[4/5] Installing binaries...${NC}"
-
-install_binary() {
-    local src=$1
-    local dest=$2
-    local dir=$(dirname "$dest")
-    
-    if [ -f "$src" ]; then
-        mkdir -p "$dir"
-        cp "$src" "$dest.tmp"
-        mv "$dest.tmp" "$dest"
-        chmod +x "$dest"
-        echo -e "  Installed $(basename "$dest") to $dir"
-    else
-        echo -e "${RED}ERROR: $src not found. Binary was not built.${NC}"
+# ── Detect architecture ────────────────────────────────────────────────────────
+ARCH="$(uname -m)"
+case "${ARCH}" in
+    x86_64)           GOARCH="amd64" ;;
+    aarch64|arm64)    GOARCH="arm64" ;;
+    *)
+        echo -e "${RED}Error: Unsupported architecture '${ARCH}'. DSO supports amd64 and arm64.${NC}"
         exit 1
-    fi
-}
+        ;;
+esac
 
-mkdir -p "$PLUGIN_DIR"
-install_binary "docker-dso" "$PLUGIN_DIR/docker-dso"
-install_binary "docker-dso" "$SYSTEM_BIN_DIR/docker-dso"
+# ── Resolve version ────────────────────────────────────────────────────────────
+# Use the VERSION env var if provided, otherwise fetch the latest release tag.
+if [ -z "${DSO_VERSION:-}" ]; then
+    echo -e "${BLUE}Fetching latest DSO version...${NC}"
+    DSO_VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' \
+        | head -1 \
+        | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
+fi
 
-# Create symlink for standalone support
-ln -sf "$SYSTEM_BIN_DIR/docker-dso" "$SYSTEM_BIN_DIR/dso"
-
-# 5. Verification
-echo -e "${GREEN}[5/5] Verifying installation...${NC}"
-
-if docker dso version &> /dev/null; then
-    VERSION=$(docker dso version | head -n 1)
-    echo -e "${GREEN}✓ $VERSION installed successfully as Docker plugin!${NC}"
-else
-    echo -e "${RED}❌ Docker CLI plugin installation failed. Ensure $PLUGIN_DIR is in Docker's path.${NC}"
+if [ -z "${DSO_VERSION}" ]; then
+    echo -e "${RED}Error: Failed to fetch the latest DSO version.${NC}"
+    echo -e "${RED}       This may be caused by a GitHub API rate limit.${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Fix: Set the version manually and re-run:${NC}"
+    echo -e "       export DSO_VERSION=v3.2.0"
+    echo -e "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash"
     exit 1
 fi
 
-# Success message
-echo -e "${BLUE}================================================================${NC}"
-echo -e "Usage (Official Plugin):"
-echo -e "  - ${BLUE}docker dso init${NC}          (Initialize local vault)"
-echo -e "  - ${BLUE}docker dso secret set${NC}    (Store secrets securely)"
-echo -e "  - ${BLUE}docker dso up -d${NC}         (Deploy and inject secrets automatically)"
-echo -e "${BLUE}================================================================${NC}"
+echo -e "${BLUE}Installing DSO ${DSO_VERSION} (${GOOS}/${GOARCH})...${NC}"
 
-# Cleanup
-popd > /dev/null
-if [ "$BUILD_DIR" != "." ]; then
-    rm -rf "$BUILD_DIR"
+# ── Construct download URL ─────────────────────────────────────────────────────
+TARBALL_NAME="${BINARY_NAME}_${DSO_VERSION}_${GOOS}_${GOARCH}.tar.gz"
+TARBALL_URL="${RELEASE_BASE}/${DSO_VERSION}/${TARBALL_NAME}"
+CHECKSUM_URL="${TARBALL_URL}.sha256"
+
+# ── PATH shadowing guard ───────────────────────────────────────────────────────
+# If a global binary exists but we are running without root, warn loudly.
+if [ "${IS_ROOT}" = false ]; then
+    GLOBAL_BINARY="/usr/local/lib/docker/cli-plugins/${BINARY_NAME}"
+    if [ -f "${GLOBAL_BINARY}" ]; then
+        echo -e "${YELLOW}⚠️  WARNING: A global DSO installation was detected at ${GLOBAL_BINARY}.${NC}"
+        echo -e "${YELLOW}   Installing locally (~/.docker) will create a PATH conflict.${NC}"
+        echo -e "${YELLOW}   This may cause unexpected behavior if multiple versions exist.${NC}"
+        echo -e "${YELLOW}   To upgrade globally instead, re-run with: sudo bash install.sh${NC}"
+        echo -e "${YELLOW}   Proceeding with local install...${NC}"
+        echo ""
+    fi
+fi
+
+# ── Download to temp directory ─────────────────────────────────────────────────
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+TARBALL_PATH="${TMP_DIR}/${TARBALL_NAME}"
+curl -fsSL \
+    --retry 2 \
+    --max-time 90 \
+    --connect-timeout 10 \
+    --output "${TARBALL_PATH}" \
+    "${TARBALL_URL}" || {
+    echo -e "${RED}Error: Failed to download binary from ${TARBALL_URL}${NC}"
+    exit 1
+}
+
+echo -e "  Downloading checksum..."
+CHECKSUM_PATH="${TARBALL_PATH}.sha256"
+curl -fsSL \
+    --retry 2 \
+    --max-time 30 \
+    --connect-timeout 10 \
+    --output "${CHECKSUM_PATH}" \
+    "${CHECKSUM_URL}" || {
+    echo -e "${RED}Error: Failed to download checksum from ${CHECKSUM_URL}${NC}"
+    exit 1
+}
+
+# ── Validate checksum ──────────────────────────────────────────────────────────
+echo -e "  Validating integrity (SHA256)..."
+EXPECTED_HASH="$(awk '{print $1}' "${CHECKSUM_PATH}")"
+if command -v sha256sum &>/dev/null; then
+    ACTUAL_HASH="$(sha256sum "${TARBALL_PATH}" | awk '{print $1}')"
+elif command -v shasum &>/dev/null; then
+    ACTUAL_HASH="$(shasum -a 256 "${TARBALL_PATH}" | awk '{print $1}')"
+else
+    echo -e "${RED}Error: No sha256sum or shasum found. Cannot verify integrity.${NC}"
+    exit 1
+fi
+
+if [ "${ACTUAL_HASH}" != "${EXPECTED_HASH}" ]; then
+    echo -e "${RED}Error: Integrity check FAILED.${NC}"
+    echo -e "  Expected: ${EXPECTED_HASH}"
+    echo -e "  Actual:   ${ACTUAL_HASH}"
+    exit 1
+fi
+
+# ── Extract binary ─────────────────────────────────────────────────────────────
+echo -e "  Extracting binary..."
+tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}"
+
+# ── Validate extracted binary exists ───────────────────────────────────────────
+EXTRACTED_BINARY="${TMP_DIR}/${BINARY_NAME}"
+if [ ! -f "${EXTRACTED_BINARY}" ]; then
+    # Fallback: some GoReleaser configs drop a plain 'dso' binary
+    if [ -f "${TMP_DIR}/dso" ]; then
+        EXTRACTED_BINARY="${TMP_DIR}/dso"
+    else
+        echo -e "${RED}Error: Neither '${BINARY_NAME}' nor 'dso' found in tarball after extraction.${NC}"
+        echo -e "${RED}       Contents of extraction dir:${NC}"
+        ls -la "${TMP_DIR}/"
+        exit 1
+    fi
+fi
+
+# ── Install binary ─────────────────────────────────────────────────────────────
+mkdir -p "${PLUGIN_DIR}" "${INSTALL_DIR}"
+
+cp "${EXTRACTED_BINARY}" "${PLUGIN_DIR}/${BINARY_NAME}"
+chmod +x "${PLUGIN_DIR}/${BINARY_NAME}"
+
+# Symlink for standalone dso usage
+ln -sf "${PLUGIN_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/dso"
+
+# ── Print result and context-aware next steps ──────────────────────────────────
+echo ""
+echo -e "${GREEN}✅ DSO ${DSO_VERSION} installed successfully!${NC}"
+echo -e "   Plugin:     ${PLUGIN_DIR}/${BINARY_NAME}"
+echo -e "   Standalone: ${INSTALL_DIR}/dso (symlink)"
+echo ""
+
+if [ "${IS_ROOT}" = true ]; then
+    echo -e "${BLUE}Installed globally.${NC} Context: root"
+    echo ""
+    echo "Next steps:"
+    echo ""
+    echo "  For LOCAL mode (each user runs):"
+    echo "    docker dso init"
+    echo ""
+    echo "  For CLOUD mode (enterprise / systemd agent):"
+    echo "    sudo docker dso system setup"
+    echo ""
+else
+    echo -e "${BLUE}Installed for current user.${NC} Context: non-root"
+    echo ""
+
+    # Check if ~/.local/bin is on PATH
+    if [[ ":${PATH}:" != *":${INSTALL_DIR}:"* ]]; then
+        echo -e "${YELLOW}⚠️  '${INSTALL_DIR}' is not on your PATH.${NC}"
+        echo "   Add it with:"
+        echo "     export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+        echo ""
+    fi
+
+    echo "Next steps:"
+    echo ""
+    echo "  Initialize your local vault:"
+    echo "    docker dso init"
+    echo ""
+    echo "  Store a secret:"
+    echo "    docker dso secret set app/db_pass"
+    echo ""
+    echo "  Deploy:"
+    echo "    docker dso up -d"
+    echo ""
+    echo -e "${YELLOW}⚠️  Note: Mode is NOT yet configured. 'docker dso init' is required before first use.${NC}"
 fi
