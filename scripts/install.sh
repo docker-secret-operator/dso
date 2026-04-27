@@ -35,12 +35,12 @@ echo -e "${BLUE}==========================================${NC}"
 echo -e "${GREEN}[1/5] Checking dependencies...${NC}"
 
 install_if_missing() {
-    if ! command -v $1 &> /dev/null; then
+    if ! command -v "$1" &> /dev/null; then
         echo -e "Installing $1..."
         if [ "$EUID" -eq 0 ]; then
-            apt-get update && apt-get install -y $1 || yum install -y $1 || apk add $1 || brew install $1
+            apt-get update && apt-get install -y "$1" || yum install -y "$1" || apk add "$1" || brew install "$1"
         else
-            echo -e "${RED}Error: $1 is missing. Please install it manually.${NC}"
+            echo -e "${RED}Error: '$1' is missing. Please install it manually.${NC}"
             exit 1
         fi
     fi
@@ -57,8 +57,27 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # Check for Go (Minimum 1.21.0)
-if ! command -v go &> /dev/null; then
-    echo -e "${RED}Error: Go 1.21+ is required but not found. Please install Go manually and try again.${NC}"
+check_go() {
+    if command -v go &> /dev/null; then
+        GO_VERSION_OUT=$(go version 2>&1)
+        if [[ $GO_VERSION_OUT != *"cannot find GOROOT"* ]] && [[ $GO_VERSION_OUT == *"go version"* ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+if ! check_go; then
+    echo -e "Go not found or broken. Searching for Go in common locations..."
+    if [ -x "/usr/local/go/bin/go" ]; then
+        export PATH="/usr/local/go/bin:$PATH"
+        export GOROOT="/usr/local/go"
+        echo -e "Found Go at /usr/local/go/bin/go. Using it."
+    fi
+fi
+
+if ! check_go; then
+    echo -e "${RED}Error: Go 1.21+ is required but not found or is broken. Please install Go manually and try again.${NC}"
     exit 1
 else
     CURRENT_GO_MINOR=$(go version | grep -oP 'go1\.\K[0-9]+' | head -1)

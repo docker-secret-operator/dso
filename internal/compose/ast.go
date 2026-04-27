@@ -12,7 +12,7 @@ func GetMapValue(node *yaml.Node, key string) *yaml.Node {
 	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
-	for i := 0; i < len(node.Content); i += 2 {
+	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
 			return node.Content[i+1]
 		}
@@ -25,7 +25,7 @@ func SetMapValue(node *yaml.Node, key string, valueNode *yaml.Node) {
 	if node == nil || node.Kind != yaml.MappingNode {
 		return
 	}
-	for i := 0; i < len(node.Content); i += 2 {
+	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
 			node.Content[i+1] = valueNode
 			return

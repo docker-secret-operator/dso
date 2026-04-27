@@ -8,7 +8,15 @@ dist/
 *.so
 *.dylib
 docker-dso
+dso-cli
 dso-provider-*
+
+# Profiling artifacts
+*.prof
+*.pprof
+
+# Temporary directories
+.tmp/
 
 # OS-specific files
 .DS_Store

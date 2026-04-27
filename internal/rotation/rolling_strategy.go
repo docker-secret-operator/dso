@@ -41,32 +41,48 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	createResp, err := rs.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, originalName)
 	if err != nil {
 		// ROLLBACK renaming if we can't create new
-		_ = rs.cli.ContainerRename(ctx, containerID, originalName)
+		if rbErr := rs.cli.ContainerRename(ctx, containerID, originalName); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback rename failed: %v\n", rbErr)
+		}
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 
 	if err := rs.cli.ContainerStart(ctx, createResp.ID, container.StartOptions{}); err != nil {
 		// ROLLBACK
-		_ = rs.cli.ContainerRemove(ctx, createResp.ID, container.RemoveOptions{Force: true})
-		_ = rs.cli.ContainerRename(ctx, containerID, originalName)
+		if rbErr := rs.cli.ContainerRemove(ctx, createResp.ID, container.RemoveOptions{Force: true}); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback remove failed: %v\n", rbErr)
+		}
+		if rbErr := rs.cli.ContainerRename(ctx, containerID, originalName); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback rename failed: %v\n", rbErr)
+		}
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
 	// Step 4: Verification Loop (Wait for health)
-	fmt.Printf("\033[1;33m[DSO ROTATION]\033[0m Waiting for health verification (%v timeout)...\n", timeout)
+	fmt.Printf("⏳ [DSO ROTATION] Waiting for health verification (%v timeout)...\n", timeout)
 	if err := WaitHealthy(ctx, rs.cli, createResp.ID, timeout); err != nil {
 		// ROLLBACK
-		fmt.Printf("\033[1;31m[DSO WARNING]\033[0m New container failed health check. Rolling back...\n")
-		_ = rs.cli.ContainerStop(ctx, createResp.ID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, createResp.ID, container.RemoveOptions{Force: true})
-		_ = rs.cli.ContainerRename(ctx, containerID, originalName)
+		fmt.Printf("❌ [DSO WARNING] New container failed health check. Rolling back...\n")
+		if rbErr := rs.cli.ContainerStop(ctx, createResp.ID, container.StopOptions{}); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback stop failed: %v\n", rbErr)
+		}
+		if rbErr := rs.cli.ContainerRemove(ctx, createResp.ID, container.RemoveOptions{Force: true}); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback remove failed: %v\n", rbErr)
+		}
+		if rbErr := rs.cli.ContainerRename(ctx, containerID, originalName); rbErr != nil {
+			fmt.Printf("⚠️  [DSO WARNING] Rollback rename failed: %v\n", rbErr)
+		}
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
 	// Step 5: Success - Purge the OLD container
-	fmt.Printf("\033[1;32m[DSO SUCCESS]\033[0m Cutover complete. Cleaning up old instance.\n")
-	_ = rs.cli.ContainerStop(ctx, containerID, container.StopOptions{})
-	_ = rs.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	fmt.Printf("✅ [DSO SUCCESS] Cutover complete. Cleaning up old instance.\n")
+	if err := rs.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+		fmt.Printf("⚠️  [DSO WARNING] Failed to stop old container %s: %v\n", containerID, err)
+	}
+	if err := rs.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+		fmt.Printf("⚠️  [DSO WARNING] Failed to remove old container %s: %v\n", containerID, err)
+	}
 
 	return nil
 }
