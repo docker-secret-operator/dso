@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v3.2.0] - 2026-04-28
+
+### Added
+
+- **Dual-Mode Execution**: `dso up` now automatically detects and routes to Local Mode (Native Vault)
+  or Cloud Mode (legacy systemd agent) based on flags, environment variables, and system state.
+- **Native Vault** (`dso init`): Local AES-256-GCM encrypted vault at `~/.dso/vault.enc`.
+  No cloud provider, no root, no systemd required.
+- **Compose Resolver**: AST-level `dso://` and `dsofile://` secret injection into Docker Compose files.
+- **Inline Agent**: In-process Docker event agent for Local Mode — no background process needed.
+- **`dso system setup`**: Root-only command that installs the cloud-mode systemd service, downloads
+  and SHA256-validates provider plugins, and activates the daemon automatically.
+- **`dso system doctor`**: Read-only diagnostics showing binary path, detected mode, vault/config
+  presence, systemd status, and per-plugin availability + version.
+- **Plugin distribution**: All four providers (`vault`, `aws`, `azure`, `huawei`) are now shipped
+  as a unified, version-aligned tarball (`dso-plugins-{os}-{arch}-{version}.tar.gz`).
+- **GoReleaser pipeline**: Multi-arch prebuilt binaries (Linux/macOS × amd64/arm64).
+  No Go installation required on end-user machines.
+- **SHA256 integrity validation**: Both `install.sh` and `dso system setup` verify checksums
+  before writing any files to disk.
+- **Atomic rollback**: `dso system setup` removes all partial state on any step failure.
+
+### Changed
+
+- `install.sh` is now a thin delivery-only script (download + chmod + path placement).
+  All system configuration is delegated to `dso system setup` and `dso init`.
+- Mode detection priority: `--mode` flag → `DSO_FORCE_MODE` env → `/etc/dso/dso.yaml`
+  existence → systemd service existence → default `local`.
+- `dso init` now enforces non-root execution (vault must be user-owned, never root-owned).
+
+### Fixed
+
+- Legacy agent command kept as `dso agent` (unchanged) for zero-touch V2 systemd upgrades.
+- PATH shadowing detection in `install.sh` warns when a global binary conflicts with local install.
+
+### Known Limitations
+
+- `dso-provider-aws`, `dso-provider-azure`, and `dso-provider-huawei` are included in the
+  plugin bundle but return `not yet implemented` at runtime. `dso-provider-vault` is fully functional.
+
+---
+
 ## [v3.1.0] - Production Ready
 ### Added
 - **Global CLI Migration**: Completed the transition to `docker dso` as the primary interface.
