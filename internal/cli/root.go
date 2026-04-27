@@ -60,6 +60,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewLogsCmd())
 	cmd.AddCommand(NewSecretCmd())
 	cmd.AddCommand(NewEnvImportCmd())
+	cmd.AddCommand(NewSystemCmd())
 
 	return cmd
 }

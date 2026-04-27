@@ -23,9 +23,9 @@ func NewAgentCmd() *cobra.Command {
 	var apiAddr string
 
 	cmd := &cobra.Command{
-		Use:   "agent",
-		Short: "Run the DSO background reconciliation engine",
-		Long:  `The agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
+		Use:   "legacy-agent",
+		Short: "Run the DSO background reconciliation engine (Legacy V2)",
+		Long:  `The legacy-agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			logger, _ := observability.NewLogger("info", "console", false)
 			defer logger.Sync()

@@ -3,32 +3,50 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"   # Trigger on any tag matching v*, e.g. v3.2.0, v3.2.1-rc1
 
 permissions:
-  contents: write
+  contents: write  # Required for GoReleaser to create GitHub Releases
 
 jobs:
-  goreleaser:
-    name: Release
+  release:
+    name: Build & Release
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      # ── 1. Checkout with full history for changelog generation ────────────
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0    # Full history needed for GoReleaser changelog
 
-      - name: Setup Go
+      # ── 2. Set up Go (matches go.mod requirement) ─────────────────────────
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version-file: go.mod   # Reads Go version from go.mod exactly
 
+      # ── 3. Cache Go modules ───────────────────────────────────────────────
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # ── 4. Validate build before release ──────────────────────────────────
+      - name: Verify build
+        run: go build ./...
+
+      # ── 5. Run GoReleaser ─────────────────────────────────────────────────
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"   # Pin to GoReleaser v2 major series
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
