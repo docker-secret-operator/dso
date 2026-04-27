@@ -1,6 +1,6 @@
 <h1 align="center">Docker Secret Operator (DSO)</h1>
 <p align="center">
-  <b>Secure secret injection for Docker Compose — no .env files, no docker inspect leaks, no cloud account required.</b>
+  <b>Secure secret injection for Docker Compose — no .env files, no docker inspect leaks, no Swarm required, no cloud account required.</b>
 </p>
 <p align="center">
   <a href="https://github.com/docker-secret-operator/dso/releases/latest"><img src="https://img.shields.io/github/v/release/docker-secret-operator/dso?label=latest" alt="Latest Release"></a>
@@ -25,7 +25,14 @@ Both problems exist because secrets are stored as plaintext on disk before they 
 
 ## ✨ The Solution
 
-DSO replaces `.env` files with an **encrypted local vault** and injects secrets at runtime — directly into container memory via `tmpfs`. Secrets never touch disk and are invisible to `docker inspect`.
+DSO replaces `.env` files with an **encrypted local vault**. Secrets are injected at runtime, directly into container memory via `tmpfs`. They never touch disk. They are invisible to `docker inspect`.
+
+## 👥 Who Is This For?
+
+- **Local developers** tired of `.env` files leaking into git
+- **CI/CD pipelines** that need secrets without environment variable exposure
+- **Teams on `docker compose`** who want Docker Secrets-level guarantees without adopting Swarm
+- **Platform teams** integrating a centralised vault (HashiCorp, AWS, Azure) into compose-based deployments
 
 It works in two modes depending on your environment:
 
@@ -58,9 +65,9 @@ docker dso up
            No secrets written to disk at any point
 ```
 
-**`dsofile://`** — secret is streamed into a `tmpfs` RAM disk inside the container. Invisible to `docker inspect`. Nothing on the host filesystem.
+**`dsofile://`** — streams the secret into a `tmpfs` RAM disk inside the container. Invisible to `docker inspect`. Nothing written to the host filesystem.
 
-**`dso://`** — secret is injected as an environment variable. Simpler, but visible to `docker inspect`. Use `dsofile://` where possible.
+> ⚠️ **Security note:** `dso://` injects the secret as a standard environment variable — it **is** visible to `docker inspect`. Use `dsofile://` wherever the target application supports reading secrets from a file path.
 
 ---
 
@@ -100,13 +107,19 @@ services:
 ```bash
 docker dso up -d
 ```
-*DSO parses the compose file, resolves secrets from the vault in memory, starts an inline agent, and hands a sanitized compose file to Docker. No secrets on disk at any point.*
+*DSO parses the compose file, resolves secrets from the vault in memory, and passes a sanitized compose file to Docker.*
 
 ---
 
 ## ☁️ Cloud Mode — Production Setup
 
-For teams already using a centralised secrets backend (HashiCorp Vault, or AWS/Azure/Huawei when available). Runs a background `dso-agent` process managed by systemd, keeping secrets out of the deployment pipeline entirely.
+**Use Cloud Mode when:**
+- You already run HashiCorp Vault, AWS Secrets Manager, or Azure Key Vault
+- You need a single secrets backend shared across multiple hosts or teams
+- A long-running daemon is acceptable (and preferred) for your deployment model
+- You are on Linux with systemd
+
+Runs a background `dso-agent` process managed by systemd. Secrets are fetched by provider plugins and never stored locally.
 
 ```bash
 # Install globally
@@ -189,7 +202,7 @@ DSO_FORCE_MODE=cloud docker dso up
 | Cloud provider integration | ❌ No | ✅ Yes (via plugins) |
 | Invisible to `docker inspect` | ✅ Yes | ✅ Yes (dsofile://) |
 
-If you are on Swarm and already using Docker Secrets, keep using them. DSO is for teams on `docker compose` who need the same guarantees without adopting Swarm.
+If you are on Swarm and already using Docker Secrets, keep using them. DSO targets teams on `docker compose` who need the same security guarantees without adopting Swarm.
 
 ---
 
