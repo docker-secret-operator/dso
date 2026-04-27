@@ -69,7 +69,9 @@ func (t *TriggerEngine) StartAll() error {
 			}
 
 			if sec.Rotation.Enabled {
-				_ = t.StartPolling(pName, pCfg, sec, interval)
+				if err := t.StartPolling(pName, pCfg, sec, interval); err != nil {
+					t.Logger.Error("Failed to start polling", zap.String("provider", pName), zap.String("secret", sec.Name), zap.Error(err))
+				}
 			}
 		}
 	}
@@ -137,7 +139,9 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		}
 		
 		// Note: The Reloader internally handles the strategy logic (restart/signal)
-		_ = t.Reloader.TriggerReload(ctx, secretName)
+		if err := t.Reloader.TriggerReload(ctx, secretName); err != nil {
+			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
+		}
 	}()
 }
 
