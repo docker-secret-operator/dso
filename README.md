@@ -11,10 +11,17 @@
 
 ## 🚫 The Problem
 
-`.env` files cause two serious security problems:
+Local development typically uses `.env` files to pass secrets into containers. This creates two concrete, exploitable security gaps:
 
-1. **Git leaks** — developers accidentally commit secrets to source control.
-2. **`docker inspect` exposure** — environment variables are baked into container metadata and readable by anyone with host access.
+1. **Git leaks.** `.env` files get committed. Once a secret is in git history it cannot be safely removed — it must be rotated. This happens more often than teams admit.
+
+2. **`docker inspect` exposure.** Every environment variable passed to a container is permanently stored in Docker's metadata layer. Any process on the host with Docker access can run:
+   ```bash
+   docker inspect <container_id> | grep -A5 'Env'
+   ```
+   and read your database passwords, API keys, and tokens in plain text. No breach required.
+
+Both problems exist because secrets are stored as plaintext on disk before they reach the container.
 
 ## ✨ The Solution
 
@@ -25,7 +32,35 @@ It works in two modes depending on your environment:
 | Mode | Use Case | Requires |
 | :--- | :--- | :--- |
 | **Local** (default) | Development, CI, offline | Nothing — no cloud, no root |
-| **Cloud** (legacy/enterprise) | Production with AWS/Azure/Vault | Root, systemd |
+| **Cloud** | Production with AWS/Azure/Vault | Root, systemd |
+
+---
+
+## 🧠 How DSO Works
+
+When you run `docker dso up`, DSO intercepts the compose file before Docker sees it:
+
+```
+docker dso up
+    │
+    ├─ 1. Read docker-compose.yaml (AST parse)
+    ├─ 2. Detect mode (local / cloud)
+    │
+    ├─ [Local]  Resolve dso:// and dsofile:// from ~/.dso/vault.enc
+    │           Start inline in-process agent
+    │           Mutate compose AST in memory
+    │
+    └─ [Cloud]  Route to running dso-agent (systemd)
+                Agent fetches secrets from provider plugin (Vault, AWS, …)
+                Mutate compose AST in memory
+    │
+    └─ 3. Pass resolved compose file to `docker compose up`
+           No secrets written to disk at any point
+```
+
+**`dsofile://`** — secret is streamed into a `tmpfs` RAM disk inside the container. Invisible to `docker inspect`. Nothing on the host filesystem.
+
+**`dso://`** — secret is injected as an environment variable. Simpler, but visible to `docker inspect`. Use `dsofile://` where possible.
 
 ---
 
@@ -37,11 +72,13 @@ It works in two modes depending on your environment:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
+*Downloads the prebuilt binary for your OS/arch and places it in your Docker plugin directory.*
 
 **2. Initialize your local vault**
 ```bash
 docker dso init
 ```
+*Creates `~/.dso/vault.enc` — your AES-256-GCM encrypted secret store.*
 
 **3. Store a secret**
 ```bash
@@ -57,29 +94,29 @@ services:
     environment:
       POSTGRES_PASSWORD_FILE: dsofile://app/db_pass
 ```
+*`dsofile://` streams the secret into a RAM disk inside the container — never touches host disk, invisible to `docker inspect`.*
 
 **5. Deploy**
 ```bash
 docker dso up -d
 ```
-
-DSO resolves secrets in memory, starts an inline agent, and passes a mutated compose file to Docker. Your secrets are never written to disk.
+*DSO parses the compose file, resolves secrets from the vault in memory, starts an inline agent, and hands a sanitized compose file to Docker. No secrets on disk at any point.*
 
 ---
 
-## ☁️ Cloud Mode — Enterprise Setup
+## ☁️ Cloud Mode — Production Setup
 
-For teams using AWS Secrets Manager, Azure Key Vault, or HashiCorp Vault via a long-running systemd agent:
+For teams already using a centralised secrets backend (HashiCorp Vault, or AWS/Azure/Huawei when available). Runs a background `dso-agent` process managed by systemd, keeping secrets out of the deployment pipeline entirely.
 
 ```bash
-# Install globally first
+# Install globally
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# Configure cloud mode (downloads plugins, writes systemd service, starts daemon)
+# Download plugins, write systemd service, start daemon
 sudo docker dso system setup
 ```
 
-Cloud mode is auto-detected when `/etc/dso/dso.yaml` exists. See [Cloud Mode Configuration](docs/configuration.md).
+DSO auto-detects Cloud Mode when `/etc/dso/dso.yaml` exists — no flag needed. See [Cloud Mode Configuration](docs/configuration.md).
 
 ---
 
@@ -124,7 +161,7 @@ docker dso up --mode=local
 DSO_FORCE_MODE=local docker dso up
 ```
 
-### Cloud Mode (legacy/enterprise)
+### Cloud Mode
 
 - Reads config from `/etc/dso/dso.yaml`
 - Runs a background `dso-agent` via systemd
@@ -136,6 +173,23 @@ Auto-detected when `/etc/dso/dso.yaml` or the systemd service file exists. Overr
 docker dso up --mode=cloud
 DSO_FORCE_MODE=cloud docker dso up
 ```
+
+---
+
+## ❓ Why Not Docker Secrets?
+
+[Docker Secrets](https://docs.docker.com/engine/swarm/secrets/) is a native Docker feature — but it requires **Docker Swarm**. If you are running plain `docker compose` (the majority of development and CI environments), Docker Secrets is not available.
+
+| | Docker Secrets | DSO |
+| :--- | :--- | :--- |
+| Requires Swarm | ✅ Yes | ❌ No |
+| Works with `docker compose` | ❌ No | ✅ Yes |
+| Local dev workflow | ❌ No | ✅ Yes |
+| Encrypted at rest | ✅ Yes (Swarm Raft) | ✅ Yes (AES-256-GCM) |
+| Cloud provider integration | ❌ No | ✅ Yes (via plugins) |
+| Invisible to `docker inspect` | ✅ Yes | ✅ Yes (dsofile://) |
+
+If you are on Swarm and already using Docker Secrets, keep using them. DSO is for teams on `docker compose` who need the same guarantees without adopting Swarm.
 
 ---
 
@@ -197,6 +251,8 @@ Plugins are downloaded automatically by `sudo docker dso system setup`. Stub plu
 
 ## 🔍 Diagnose Your Setup
 
+If `docker dso up` behaves unexpectedly — wrong mode selected, agent not starting, plugins missing — run the doctor command first before filing a bug report:
+
 ```bash
 docker dso system doctor
 ```
@@ -214,6 +270,8 @@ Systemd Service   NOT FOUND  (expected for cloud mode only)
 Plugin: vault     MISSING    (expected for cloud mode only)
 ════════════════════════════════════════════════════════════
 ```
+
+`MISSING` plugin status is normal in Local Mode. `INVALID` means the binary exists but is not executable — re-run `sudo docker dso system setup`.
 
 ---
 
