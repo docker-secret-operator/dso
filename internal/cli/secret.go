@@ -198,10 +198,19 @@ func newSecretListCmd() *cobra.Command {
 	}
 }
 
-// NewEnvImportCmd imports an .env file into the Vault securely
+// NewEnvCmd is the parent command for .env file operations.
 func NewEnvImportCmd() *cobra.Command {
+	parent := &cobra.Command{
+		Use:   "env",
+		Short: "Manage .env file operations",
+	}
+	parent.AddCommand(newEnvImportSubCmd())
+	return parent
+}
+
+func newEnvImportSubCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "env import <file> [project]",
+		Use:   "import <file> [project]",
 		Short: "Import a .env file into the vault",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -248,27 +257,27 @@ func NewEnvImportCmd() *cobra.Command {
 
 				key := strings.TrimSpace(parts[0])
 				value := strings.TrimSpace(parts[1])
-					
-					// Safely strip surrounding quotes if present
-					if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
-						value = value[1 : len(value)-1]
-					}
 
-					if key == "" || strings.Contains(key, "..") {
-						fmt.Printf("⚠️  Skipping invalid key at line %d: '%s'.\n", lineNum, key)
-						continue
-					}
-					if len(value) > 1<<20 {
-						fmt.Printf("⚠️  Skipping key at line %d: value exceeds 1MB.\n", lineNum)
-						continue
-					}
-
-					if _, exists := batch[key]; exists {
-						fmt.Printf("⚠️  Duplicate key detected: '%s'. Overwriting with last occurrence.\n", key)
-						duplicateWarn = true
-					}
-					batch[key] = value
+				// Safely strip surrounding quotes if present
+				if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+					value = value[1 : len(value)-1]
 				}
+
+				if key == "" || strings.Contains(key, "..") {
+					fmt.Printf("⚠️  Skipping invalid key at line %d: '%s'.\n", lineNum, key)
+					continue
+				}
+				if len(value) > 1<<20 {
+					fmt.Printf("⚠️  Skipping key at line %d: value exceeds 1MB.\n", lineNum)
+					continue
+				}
+
+				if _, exists := batch[key]; exists {
+					fmt.Printf("⚠️  Duplicate key detected: '%s'. Overwriting with last occurrence.\n", key)
+					duplicateWarn = true
+				}
+				batch[key] = value
+			}
 
 			if err := scanner.Err(); err != nil {
 				return fmt.Errorf("error reading file: %w", err)

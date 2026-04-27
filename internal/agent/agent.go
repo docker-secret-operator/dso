@@ -22,6 +22,7 @@ type Agent struct {
 	docker   *client.Client
 	injected map[string]bool
 	mu       sync.Mutex
+	Ready    chan struct{} // Signaled when the agent is listening
 }
 
 // NewAgent creates a new Agent daemon.
@@ -30,6 +31,7 @@ func NewAgent(docker *client.Client) *Agent {
 		cache:    NewCache(),
 		docker:   docker,
 		injected: make(map[string]bool),
+		Ready:    make(chan struct{}),
 	}
 }
 
@@ -51,6 +53,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		Filters: filterArgs,
 	})
 
+	close(a.Ready)
 	log.Println("✅ [DSO Agent] Started listening for Docker lifecycle events...")
 
 	for {
@@ -86,33 +89,32 @@ func (a *Agent) handleEvent(ctx context.Context, msg events.Message) {
 	}
 
 	switch msg.Action {
-	case "create", "start":
-		a.mu.Lock()
-		alreadyInjected := a.injected[containerID]
-		if !alreadyInjected {
-			a.injected[containerID] = true
-		}
-		a.mu.Unlock()
+	case "create":
+		// File secrets are injected via docker exec which requires a running
+		// container. Skip the create event — injection happens on start.
+		// The wait loop inside the container ensures startup is deferred until
+		// files appear in the tmpfs.
+		log.Printf("⏳ [DSO Agent] Container created, awaiting start to inject secrets (%s/%s)\n", project, service)
 
-		if alreadyInjected {
-			return // Avoid duplicate injection from rapid create->start events
-		}
-
-		// Ensure Docker API calls do not hang the agent
+	case "start":
 		injectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		if err := a.inject(injectCtx, containerID, serviceSecrets); err != nil {
-			log.Printf("❌ [DSO Agent] Failed injection [%s] for container %s (%s/%s): %v\n", msg.Action, containerID[:12], project, service, err)
-			// Reset tracking on failure so a retry (e.g., on start) can naturally occur
+			log.Printf("❌ [DSO Agent] Failed injection [start] for container %s (%s/%s): %v\n", containerID[:12], project, service, err)
+			// Clear tracker so a restart (die→start) retries injection
 			a.mu.Lock()
 			delete(a.injected, containerID)
 			a.mu.Unlock()
 		} else {
-			log.Printf("🔒 [DSO Agent] Injected secrets [%s] for container %s (%s/%s)\n", msg.Action, containerID[:12], project, service)
+			a.mu.Lock()
+			a.injected[containerID] = true
+			a.mu.Unlock()
+			log.Printf("🔒 [DSO Agent] Injected secrets [start] for container %s (%s/%s)\n", containerID[:12], project, service)
 		}
+
 	case "die", "destroy":
-		// Clear idempotency tracker when container stops so restarts trigger re-injection
+		// Clear tracker so the next start (on restart) re-injects into fresh tmpfs
 		a.mu.Lock()
 		delete(a.injected, containerID)
 		a.mu.Unlock()
@@ -125,12 +127,9 @@ func (a *Agent) inject(ctx context.Context, containerID string, serviceSecrets r
 	for filePath, hash := range serviceSecrets.FileSecrets {
 		val, ok := a.cache.Get(hash)
 		if !ok {
-			return fmt.Errorf("secret missing from pool")
+			return fmt.Errorf("secret missing from cache pool")
 		}
-		
-		// Tar headers mandate filename only, as we copy directly to /run/secrets/dso
-		fileName := filepath.Base(filePath)
-		filesToInject[fileName] = val
+		filesToInject[filepath.Base(filePath)] = val
 	}
 
 	return injector.InjectFiles(ctx, a.docker, containerID, filesToInject, serviceSecrets.UID, serviceSecrets.GID)

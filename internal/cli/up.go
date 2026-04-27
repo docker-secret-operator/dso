@@ -59,13 +59,24 @@ func ensureAgentRunning(configPath string) {
 	fmt.Fprintf(os.Stderr, "Warning: Agent started but socket %s not ready yet.\n", socketPath)
 }
 
-func detectMode(flagMode string) string {
+func detectMode(flagMode string, configPath string) string {
 	if flagMode != "" {
-		return flagMode
+		return strings.ToLower(flagMode)
 	}
+
+	// Priority 1: Check for Native Vault. If it exists, default to LOCAL mode.
+	home, _ := os.UserHomeDir()
+	vaultPath := filepath.Join(home, ".dso", "vault.enc")
+	if _, err := os.Stat(vaultPath); err == nil {
+		return "local"
+	}
+
+	// Priority 2: Check for global Cloud configuration.
 	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
 		return "cloud"
 	}
+
+	// Default to local (it will error later if no vault or secrets found)
 	return "local"
 }
 
@@ -112,6 +123,10 @@ func NewUpCmd() *cobra.Command {
 			for i := 0; i < len(args); i++ {
 				arg := args[i]
 				
+				if arg == "--help" || arg == "-h" {
+					cmd.Help()
+					return
+				}
 				if strings.HasPrefix(arg, "--mode=") {
 					flagMode = strings.TrimPrefix(arg, "--mode=")
 					continue
@@ -157,10 +172,10 @@ func NewUpCmd() *cobra.Command {
 				}
 			}
 
-			mode := detectMode(flagMode)
+			mode := detectMode(flagMode, configPath)
 
 			if mode == "cloud" {
-				fmt.Println("🔐 DSO Mode: CLOUD (dso.yaml)")
+				fmt.Printf("🔐 DSO Mode: CLOUD (%s)\n", configPath)
 
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
@@ -189,6 +204,13 @@ func NewUpCmd() *cobra.Command {
 					os.Exit(1)
 				}
 
+				fmt.Println("🚀 Starting DSO agent...")
+				cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error connecting to Docker API: %v\n", err)
+					os.Exit(1)
+				}
+
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error reading compose file: %v\n", err)
@@ -202,16 +224,10 @@ func NewUpCmd() *cobra.Command {
 				}
 
 				projectName := getProjectName(dockerArgs)
-				mutatedRoot, seed, err := resolver.ResolveCompose(&root, v, projectName)
+				ctx := context.Background()
+				mutatedRoot, seed, err := resolver.ResolveCompose(ctx, cli, &root, v, projectName)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error resolving compose secrets: %v\n", err)
-					os.Exit(1)
-				}
-
-				fmt.Println("🚀 Starting DSO agent...")
-				cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error connecting to Docker API: %v\n", err)
 					os.Exit(1)
 				}
 
@@ -226,6 +242,14 @@ func NewUpCmd() *cobra.Command {
 						fmt.Fprintf(os.Stderr, "Agent error: %v\n", err)
 					}
 				}()
+
+				// Wait for agent to be ready (listening for events)
+				select {
+				case <-agentDaemon.Ready:
+					// Ready to proceed
+				case <-time.After(5 * time.Second):
+					fmt.Fprintln(os.Stderr, "Warning: Agent startup timed out, proceeding anyway...")
+				}
 
 				tmpFile, err := os.CreateTemp("", "docker-compose-dso-*.yaml")
 				if err != nil {
@@ -244,8 +268,10 @@ func NewUpCmd() *cobra.Command {
 
 				fmt.Println("🐳 Running docker compose...")
 				
-				// Reconstruct docker-compose command with the mutated AST file
-				execArgs := append([]string{"compose", "-f", tmpFile.Name(), "up"}, dockerArgs...)
+				// Reconstruct docker-compose command with the mutated AST file.
+				// We MUST explicitly pass the project name because using a temp file
+				// in /tmp would otherwise cause Docker to derive the wrong project name.
+				execArgs := append([]string{"compose", "-p", projectName, "-f", tmpFile.Name(), "up"}, dockerArgs...)
 				execCmd := exec.Command("docker", execArgs...)
 				execCmd.Stdout = os.Stdout
 				execCmd.Stderr = os.Stderr

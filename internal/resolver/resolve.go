@@ -1,12 +1,14 @@
 package resolver
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"strings"
 
 	"github.com/docker-secret-operator/dso/internal/compose"
 	"github.com/docker-secret-operator/dso/pkg/vault"
+	"github.com/docker/docker/client"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,7 +57,7 @@ func parseURIPath(uriPath, fallbackProject string) (string, string, error) {
 
 // ResolveCompose traverses a parsed Docker Compose YAML AST, detects DSO URIs,
 // fetches secrets from the Vault, mutates the AST in-place, and builds the AgentSeed.
-func ResolveCompose(root *yaml.Node, v *vault.Vault, composeProject string) (*yaml.Node, *AgentSeed, error) {
+func ResolveCompose(ctx context.Context, cli *client.Client, root *yaml.Node, v *vault.Vault, composeProject string) (*yaml.Node, *AgentSeed, error) {
 	if root == nil {
 		return nil, nil, fmt.Errorf("root node is nil")
 	}
@@ -79,7 +81,10 @@ func ResolveCompose(root *yaml.Node, v *vault.Vault, composeProject string) (*ya
 		Services:    make(map[string]ServiceSecrets),
 	}
 
-	for i := 0; i < len(servicesNode.Content); i += 2 {
+	for i := 0; i+1 < len(servicesNode.Content); i += 2 {
+		if servicesNode.Content[i] == nil || servicesNode.Content[i+1] == nil {
+			continue
+		}
 		serviceName := servicesNode.Content[i].Value
 		serviceBody := servicesNode.Content[i+1]
 
@@ -115,6 +120,21 @@ func ResolveCompose(root *yaml.Node, v *vault.Vault, composeProject string) (*ya
 		if len(serviceSecrets.EnvSecrets) > 0 || len(serviceSecrets.FileSecrets) > 0 {
 			seed.Services[serviceName] = serviceSecrets
 		}
+
+		// Reliability fix: if using dsofile://, wrap the command/entrypoint to wait for secrets
+		if len(serviceSecrets.FileSecrets) > 0 {
+			// Zero-Config: Inspect image to find original entrypoint if not in compose
+			imageNode := compose.GetMapValue(serviceBody, "image")
+			var origEntrypoint, origCmd []string
+			if imageNode != nil && imageNode.Kind == yaml.ScalarNode && cli != nil {
+				img, _, err := cli.ImageInspectWithRaw(ctx, imageNode.Value)
+				if err == nil {
+					origEntrypoint = img.Config.Entrypoint
+					origCmd = img.Config.Cmd
+				}
+			}
+			wrapCommandWithWait(serviceBody, serviceName, serviceSecrets.FileSecrets, origEntrypoint, origCmd)
+		}
 	}
 
 	return root, seed, nil
@@ -123,9 +143,12 @@ func ResolveCompose(root *yaml.Node, v *vault.Vault, composeProject string) (*ya
 func resolveEnvironment(envNode *yaml.Node, v *vault.Vault, composeProject, serviceName string, serviceSecrets *ServiceSecrets, seed *AgentSeed) error {
 	switch envNode.Kind {
 	case yaml.MappingNode:
-		for i := 0; i < len(envNode.Content); i += 2 {
+		for i := 0; i+1 < len(envNode.Content); i += 2 {
 			keyNode := envNode.Content[i]
 			valNode := envNode.Content[i+1]
+			if keyNode == nil || valNode == nil {
+				continue
+			}
 
 			if valNode.Kind != yaml.ScalarNode {
 				continue
@@ -217,4 +240,61 @@ func processSecretURI(uri string, v *vault.Vault, composeProject, serviceName, k
 	}
 
 	return "", false, nil
+}
+
+func wrapCommandWithWait(serviceNode *yaml.Node, serviceName string, fileSecrets map[string]string, origEntrypoint, origCmd []string) {
+	// Build a list of files to wait for
+	var files []string
+	for path := range fileSecrets {
+		files = append(files, path)
+	}
+
+	// We'll use a simple shell loop. Most official images have /bin/sh.
+	waitCmd := "until "
+	for i, f := range files {
+		if i > 0 {
+			waitCmd += " && "
+		}
+		waitCmd += fmt.Sprintf("[ -f %s ]", f)
+	}
+	waitCmd += "; do sleep 0.1; done; "
+
+	// Try to find 'command' first
+	commandNode := compose.GetMapValue(serviceNode, "command")
+	if commandNode != nil {
+		if commandNode.Kind == yaml.ScalarNode {
+			commandNode.Value = "sh -c '" + waitCmd + "exec " + commandNode.Value + "'"
+		} else if commandNode.Kind == yaml.SequenceNode {
+			// Convert sequence to string
+			var parts []string
+			for _, item := range commandNode.Content {
+				parts = append(parts, item.Value)
+			}
+			commandNode.Kind = yaml.ScalarNode
+			commandNode.Value = "sh -c '" + waitCmd + "exec " + strings.Join(parts, " ") + "'"
+		}
+		return
+	}
+
+	// If no command is found in the compose file, we use the inspected image defaults.
+	if commandNode == nil {
+		var finalCmd []string
+		if len(origEntrypoint) > 0 {
+			finalCmd = append(finalCmd, origEntrypoint...)
+		}
+		if len(origCmd) > 0 {
+			finalCmd = append(finalCmd, origCmd...)
+		}
+
+		if len(finalCmd) > 0 {
+			newCommandNode := &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: "sh -c '" + waitCmd + "exec " + strings.Join(finalCmd, " ") + "'",
+				Tag:   "!!str",
+			}
+			compose.SetMapValue(serviceNode, "command", newCommandNode)
+		} else {
+			fmt.Printf("💡 INFO: Service '%s' is using dsofile:// but has no 'command' and image defaults are empty. Ensure entrypoint handles wait.\n", serviceName)
+		}
+	}
 }

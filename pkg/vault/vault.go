@@ -60,6 +60,10 @@ func getMasterKey() (string, error) {
 		}
 		return "", fmt.Errorf("failed to read master key: %w", err)
 	}
+	// Enforce restrictive permissions — fix silently if a previous version wrote it wrong.
+	if err := os.Chmod(keyPath, 0600); err != nil {
+		return "", fmt.Errorf("failed to secure master key file permissions: %w", err)
+	}
 	return strings.TrimSpace(string(data)), nil
 }
 

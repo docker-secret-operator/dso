@@ -74,8 +74,8 @@ func NewAgentCmd() *cobra.Command {
 				logger.Fatal("Failed to start trigger engine", zap.Error(err))
 			}
 
-			logger.Info("DSO Agent is now running", 
-				zap.String("version", "v3.1.0"),
+			logger.Info("DSO Agent is now running",
+				zap.String("version", "v3.2.0"),
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
@@ -94,8 +94,12 @@ func NewAgentCmd() *cobra.Command {
 			trigger.Stop()
 			
 			// Cleanup sockets
-			_ = os.Remove(socketPath)
-			_ = os.Remove(driverSocket)
+			if err := os.Remove(socketPath); err != nil {
+				logger.Warn("Failed to remove IPC socket on shutdown", zap.String("path", socketPath), zap.Error(err))
+			}
+			if err := os.Remove(driverSocket); err != nil {
+				logger.Warn("Failed to remove driver socket on shutdown", zap.String("path", driverSocket), zap.Error(err))
+			}
 			
 			fmt.Println("DSO Agent stopped.")
 		},
