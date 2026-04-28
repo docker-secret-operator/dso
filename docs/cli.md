@@ -1,214 +1,961 @@
-# CLI Reference
+# DSO CLI Reference
 
-Full command reference for the DSO CLI.  
-All commands are available as `docker dso <command>` or `dso <command>`.
+> **DSO v3.2** — Docker Secret Operator CLI Plugin
+>
+> All commands are invoked as `docker dso <command>`. DSO supports two execution modes:
+> - **Cloud Mode** (default): uses `/etc/dso/dso.yaml` + systemd agent + provider plugins.
+> - **Local Mode** (add-on): uses `~/.dso/vault.enc` after running `docker dso init`.
 
 ---
 
-## Vault Initialization
+## Command Tree
 
-### `dso init`
+```
+docker dso
+├── up                       # Deploy a stack with secret injection (primary entrypoint)
+├── down                     # Stop and remove containers via docker compose
+├── init                     # Initialize the Local Vault (~/.dso/vault.enc)
+├── compose                  # Secret-injecting wrapper for docker compose
+├── fetch [secret-name]      # Manually fetch and display a secret from the agent
+├── export                   # Export injected secrets to a local file (CI/testing)
+├── inspect <container-id>   # Inspect secrets injected into a running container
+├── watch                    # Real-time monitor of secret rotations and events
+├── logs                     # View DSO agent logs (journald or REST API)
+├── validate                 # Validate the dso.yaml config file
+├── diff [stack-name]        # Show config differences vs. deployed stack
+├── version                  # Print the DSO version
+├── secret
+│   ├── set <project>/<path> # Store a secret in the Local Vault
+│   ├── get <project>/<path> # Retrieve a secret from the Local Vault
+│   └── list [project]       # List all secret paths in the Local Vault
+├── env
+│   └── import <file> [proj] # Bulk-import a .env file into the Local Vault
+└── system
+    ├── setup                # Install systemd service + provider plugins (Cloud Mode)
+    └── doctor               # Diagnose installation and runtime environment
+```
 
-Initializes the local encrypted vault at `~/.dso/vault.enc`.
+> **Stub commands** (not yet implemented, will error): `apply`, `inject`, `sync`
+
+---
+
+## Global Flags
+
+These flags are available on every command:
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--config <path>` | `-c` | `dso.yaml` | Override the DSO config file. Resolved in order: flag → `/etc/dso/dso.yaml` → `./dso.yaml` |
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `DSO_MODE` | Force execution mode: `cloud` or `local` |
+| `DSO_FORCE_MODE` | Alias for `DSO_MODE` |
+| `DSO_SOCKET_PATH` | Override the agent Unix socket path (default: `/var/run/dso.sock`) |
+| `DSO_PLUGIN_DIR` | Override the provider plugin directory (default: `/usr/local/lib/dso/plugins`) |
+
+---
+
+## Mode Detection
+
+`docker dso up` and `docker dso compose` auto-detect mode using this priority:
+
+1. `--mode=<cloud|local>` flag
+2. `DSO_MODE` or `DSO_FORCE_MODE` env var
+3. `/etc/dso/dso.yaml` exists → **Cloud**
+4. `./dso.yaml` exists → **Cloud**
+5. `~/.dso/vault.enc` exists → **Local**
+6. No config found → guided error with setup instructions
+
+If both a vault and cloud config are found, **Cloud wins** with a conflict warning.
+
+---
+
+## Core Commands
+
+---
+
+### `docker dso up`
+
+**Deploy a Docker Compose stack with automatic secret injection.**
+
+This is the primary DSO entrypoint. It detects mode, validates configuration, connects to or verifies the agent, injects secrets, and launches your stack.
+
+#### Usage
+
+```bash
+docker dso up [flags] [docker compose args...]
+```
+
+#### Flags (DSO-specific)
+
+| Flag | Description |
+|---|---|
+| `--mode=<cloud\|local>` | Force a specific execution mode |
+| `--debug` | Enable verbose debug output |
+| `--dry-run` | Parse and resolve secrets without actually starting containers |
+| `-f <file>`, `--file=<file>` | Specify the docker-compose file (default: auto-detected) |
+| `-c <path>`, `--config=<path>` | Specify the dso.yaml config path |
+
+All other flags are passed directly to `docker compose up`.
+
+#### Mode Behavior
+
+| Condition | Mode | What Happens |
+|---|---|---|
+| `/etc/dso/dso.yaml` present | Cloud | Connects to systemd agent via `/var/run/dso.sock` |
+| `./dso.yaml` present | Cloud | Same as above |
+| `~/.dso/vault.enc` present | Local | Resolves secrets from encrypted vault in-process |
+| Both vault + cloud config | Cloud | Warns user, defaults to Cloud |
+| No config at all | — | Exits with guided setup message |
+
+#### Examples
+
+```bash
+# Auto-detect mode, use docker-compose.yml in current directory
+docker dso up
+
+# Cloud mode, detached
+docker dso up -d
+
+# Force local mode explicitly
+docker dso up --mode=local
+
+# Use a specific compose file
+docker dso up -f my-stack.yml
+
+# Dry run (resolve secrets, don't start containers)
+docker dso up --dry-run
+```
+
+#### Cloud Mode Output
+
+```
+[DSO] Running in CLOUD mode (auto-detected (/etc/dso/dso.yaml))
+[DSO] Using provider config: /etc/dso/dso.yaml
+[DSO] ⚠️  Secrets will be fetched from external providers
+```
+
+#### Requirements
+
+| | Cloud Mode | Local Mode |
+|---|---|---|
+| Requires root | Socket access required (auto-checked) | No |
+| Requires config | `/etc/dso/dso.yaml` or `./dso.yaml` | `~/.dso/vault.enc` |
+| Requires agent | Yes (systemd `dso-agent`) | No |
+
+---
+
+### `docker dso down`
+
+**Stop and remove containers, networks, images, and volumes.**
+
+A thin, security-hardened wrapper around `docker compose down`. Rejects shell-injection characters in arguments.
+
+#### Usage
+
+```bash
+docker dso down [docker compose down flags...]
+```
+
+#### Examples
+
+```bash
+# Stop and remove containers
+docker dso down
+
+# Remove containers and volumes
+docker dso down -v
+
+# Remove containers, images, and volumes
+docker dso down --rmi all -v
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ✅ Yes | No | No |
+
+---
+
+### `docker dso init`
+
+**Initialize the DSO Native Vault (Local Mode setup).**
+
+Creates the encrypted vault file at `~/.dso/vault.enc`. This is the first step to use Local Mode. Must be run as a regular user — never as root.
+
+#### Usage
 
 ```bash
 docker dso init
 ```
 
-- Creates the vault directory and a fresh AES-256-GCM encrypted database.
-- **Must NOT be run as root.** The vault must be owned by your user account.
-  Running with `sudo` will print a clear error and exit.
-- If the vault already exists, prints `"Vault already initialized"` and exits cleanly (idempotent).
+#### Examples
+
+```bash
+docker dso init
+# ✅ DSO Native Vault initialized successfully.
+# Next step: docker dso secret set <project>/<path>
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ❌ No | ✅ Yes (sets up Local) | ❌ Must NOT be root | No |
 
 ---
 
-## Secret Management
+### `docker dso compose`
 
-### `dso secret set <project>/<path>`
+**Secret-injecting wrapper for `docker compose` subcommands.**
 
-Stores a secret in the vault. Prompts for the value interactively (invisible input).
+Fetches secrets from the running DSO agent and merges them into the process environment before exec-ing `docker compose`. Supported subcommands: `up`, `down`, `ps`, `logs`, `stop`, `restart`, `pull`.
 
-```bash
-docker dso secret set app/db_pass
-```
-
-Pipe a value from stdin:
-```bash
-cat ./tls.key | docker dso secret set app/tls_key
-```
-
-### `dso secret get <project>/<path>`
-
-Retrieves and prints a secret value to stdout.
+#### Usage
 
 ```bash
-docker dso secret get app/db_pass
+docker dso compose <subcommand> [args...]
 ```
 
-Pipe to clipboard:
-```bash
-docker dso secret get app/db_pass | pbcopy
-```
-
-### `dso secret list [project]`
-
-Lists all secret keys in the vault (values are never shown).
+#### Examples
 
 ```bash
-docker dso secret list app
+# Bring up stack with injected secrets
+docker dso compose up -d
+
+# Check stack status
+docker dso compose ps
+
+# View logs
+docker dso compose logs -f
 ```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No (agent-dependent) | No | Yes (`dso.yaml`) |
+
+> **Note:** This command requires the agent to be running. Use `docker dso up` for Local Mode deployments.
 
 ---
 
-## Environment Import
-
-### `dso env import <file> [project]`
-
-Batch-imports an existing `.env` file into the vault.
-
-```bash
-docker dso env import .env myapp
-```
-
-- Warns on duplicate keys.
-- Validates syntax before importing.
-- Original `.env` file is not modified or deleted.
+## Secret Management (Local Mode)
 
 ---
 
-## Deployment
+### `docker dso secret set`
 
-### `dso up [docker compose args]`
+**Store a secret securely in the Local Vault.**
 
-The primary runtime command. Resolves secrets and deploys your stack.
+Accepts input interactively (hidden terminal prompt) or via stdin pipe. Vault must be initialized first with `docker dso init`.
 
-```bash
-docker dso up -d
-docker dso up --build
-docker dso up --mode=local   # Force local mode
-docker dso up --mode=cloud   # Force cloud mode
-```
-
-**Mode detection order:**
-1. `--mode` flag
-2. `DSO_FORCE_MODE` environment variable
-3. `/etc/dso/dso.yaml` exists → cloud
-4. `dso-agent.service` systemd unit exists → cloud
-5. Default → local
-
-In **local mode**, DSO starts an inline in-process agent, resolves `dso://` and `dsofile://` references from the Native Vault, and passes the resolved compose file to Docker.
-
-In **cloud mode**, DSO routes to the running `dso-agent` systemd service, which fetches secrets from your configured cloud provider.
-
-### `dso down [docker compose args]`
-
-Stops the running stack.
+#### Usage
 
 ```bash
-docker dso down
+docker dso secret set <project>/<path>
 ```
+
+Key format: `<project>/<path>`
+- If no `/` is provided, project defaults to `global`.
+- Path cannot contain `..` (directory traversal blocked).
+- Max secret size: **1MB**.
+
+#### Examples
+
+```bash
+# Interactive (hidden input prompt)
+docker dso secret set myapp/db_password
+
+# Pipe from stdin
+echo "s3cr3t" | docker dso secret set myapp/db_password
+
+# Global namespace (no project prefix)
+docker dso secret set api_key
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ❌ No | ✅ Yes | No | No (vault must exist) |
+
+---
+
+### `docker dso secret get`
+
+**Retrieve a secret from the Local Vault.**
+
+Prints the raw secret value to stdout. No trailing newline by default (for safe piping).
+
+#### Usage
+
+```bash
+docker dso secret get <project>/<path> [flags]
+```
+
+#### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--newline` | `-n` | `false` | Append a newline character to the output |
+
+#### Examples
+
+```bash
+# Print secret (no trailing newline)
+docker dso secret get myapp/db_password
+
+# Print with trailing newline
+docker dso secret get myapp/db_password -n
+
+# Capture in a variable
+MY_SECRET=$(docker dso secret get myapp/db_password)
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ❌ No | ✅ Yes | No | No (vault must exist) |
+
+---
+
+### `docker dso secret list`
+
+**List all secret paths stored in the Local Vault.**
+
+Lists paths within a project namespace. Does not expose values.
+
+#### Usage
+
+```bash
+docker dso secret list [project]
+```
+
+If `project` is omitted, defaults to `global`.
+
+#### Examples
+
+```bash
+# List all global secrets
+docker dso secret list
+
+# List secrets for a specific project
+docker dso secret list myapp
+```
+
+#### Output
+
+```
+Secrets in project 'myapp':
+  - myapp/db_password
+  - myapp/api_key
+  - myapp/redis_url
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ❌ No | ✅ Yes | No | No (vault must exist) |
+
+---
+
+### `docker dso env import`
+
+**Bulk-import secrets from a `.env` file into the Local Vault.**
+
+Parses standard `KEY=VALUE` format. Strips surrounding quotes. Skips empty lines and `#` comments. Warns on duplicate keys (last value wins). Warns on malformed lines. Max per-line value: 1MB.
+
+#### Usage
+
+```bash
+docker dso env import <file> [project]
+```
+
+If `project` is omitted, secrets are stored under `global`.
+
+#### Examples
+
+```bash
+# Import into global namespace
+docker dso env import .env.production
+
+# Import into a named project
+docker dso env import .env.staging myapp
+
+# After importing, delete the plaintext file securely
+shred -u .env.production
+```
+
+#### Output
+
+```
+✅ Successfully imported 12 secrets to project 'myapp'.
+⚠️  WARNING: Plaintext '.env.production' still exists on disk. Delete it securely when done.
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ❌ No | ✅ Yes | No | No (vault must exist) |
+
+---
+
+## Cloud Diagnostics & Operations
+
+---
+
+### `docker dso fetch`
+
+**Manually fetch and display a secret from the running agent.**
+
+Connects to the agent via Unix socket, resolves a named secret from `dso.yaml`, and prints its key-value pairs. Without an argument, lists all secrets defined in the config.
+
+#### Usage
+
+```bash
+docker dso fetch [secret-name]
+```
+
+#### Examples
+
+```bash
+# List all secrets defined in dso.yaml
+docker dso fetch
+
+# Fetch a specific named secret
+docker dso fetch db_credentials
+```
+
+#### Output
+
+```
+Secret: db_credentials
+  DB_HOST: prod-db.example.com
+  DB_PASS: ********
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No | No | Yes (`dso.yaml`, agent must run) |
+
+---
+
+### `docker dso export`
+
+**Export resolved secrets to a local file for CI/testing.**
+
+Connects to the agent, fetches all secrets, and writes them to a file in `.env` format. Emits a warning to gitignore the output file.
+
+#### Usage
+
+```bash
+docker dso export [flags]
+```
+
+#### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--format` | `-f` | `env` | Output format (`env`) |
+| `--output` | `-o` | `.env.local` | Output file path |
+
+#### Examples
+
+```bash
+# Export to .env.local (default)
+docker dso export
+
+# Export to a custom path
+docker dso export -o /tmp/ci-secrets.env
+
+# Use in CI pipelines
+docker dso export -o .env.ci && docker compose --env-file .env.ci up
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No | No | Yes (agent must run) |
+
+> ⚠️ **Security:** Exported files contain plaintext secrets. Always add them to `.gitignore` and delete them after use.
+
+---
+
+### `docker dso inspect`
+
+**Inspect the environment variables and secret mounts of a running container.**
+
+Uses the Docker API to inspect a container's environment. Automatically masks values of variables with sensitive-sounding names (containing: `pass`, `secret`, `key`, `token`, `auth`, `cred`).
+
+#### Usage
+
+```bash
+docker dso inspect <container-id>
+```
+
+#### Examples
+
+```bash
+# Inspect by container ID
+docker dso inspect a3f9b2c1d4e5
+
+# Inspect by container name
+docker dso inspect my-app-container
+```
+
+#### Output
+
+```
+Container Environment Variables for /my-app (a3f9b2c1d4):
+  DB_HOST=prod-db.example.com
+  DB_PASSWORD=******** (Masked)
+  NODE_ENV=production
+
+Mounted Secret Files (/run/secrets):
+  Mount: /var/run/dso/secrets -> /run/secrets
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ✅ Yes | No | No |
+
+---
+
+### `docker dso watch`
+
+**Real-time monitor of secret rotations and Docker container lifecycle events.**
+
+Subscribes to the Docker event stream and periodically polls the agent for DSO-specific rotation events. Displays both streams in a unified colourised view.
+
+#### Usage
+
+```bash
+docker dso watch [flags]
+```
+
+#### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--debug` | `-d` | `false` | Enable raw event payload output |
+| `--strategy` | — | `auto` | Rotation strategy label: `auto`, `rolling`, `restart` |
+
+#### Examples
+
+```bash
+# Start monitoring
+docker dso watch
+
+# Enable raw payload debugging
+docker dso watch --debug
+
+# Filter to a specific rotation strategy
+docker dso watch --strategy rolling
+```
+
+#### Output
+
+```
+DSO Watcher Active (Strategy: auto) - Monitoring live container events...
+-----------------------------------------------------------------------------------
+[DSO ROTATION] [14:22:01] Secret 'db_password' rotated for container my-app
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ✅ Yes | No | No |
+
+---
+
+### `docker dso logs`
+
+**View logs from the DSO Agent service.**
+
+Reads from `journald` if available on the system, with automatic fallback to the agent REST API. Supports log level filtering, time windows, and live following.
+
+#### Usage
+
+```bash
+docker dso logs [flags]
+```
+
+#### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--follow` | `-f` | `false` | Follow log output in real-time |
+| `--tail` | `-n` | `100` | Number of lines to show from end |
+| `--since` | — | — | Show logs since timestamp/duration (e.g. `"10 minutes ago"`, `"2026-04-07 10:00:00"`) |
+| `--level` | — | — | Filter by level: `debug`, `info`, `warn`, `error`, `fatal` |
+| `--api` | — | `false` | Use the agent REST API instead of journald |
+| `--api-addr` | — | `http://localhost:8080` | Agent REST API address (when `--api` is used) |
+
+#### Examples
+
+```bash
+# Show last 100 lines
+docker dso logs
+
+# Follow live output
+docker dso logs -f
+
+# Show last 50 lines
+docker dso logs -n 50
+
+# Filter errors only
+docker dso logs --level error
+
+# Logs from last 10 minutes
+docker dso logs --since "10 minutes ago"
+
+# Use REST API (non-systemd systems)
+docker dso logs --api
+
+# Combine: follow errors from REST API
+docker dso logs --api -f --level error
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No | No (sudo for full journal) | No |
+
+> **Tip:** If `journalctl` requires elevated permissions, run `sudo docker dso logs`, or use `--api` as an alternative.
+
+---
+
+### `docker dso validate`
+
+**Validate the DSO configuration file.**
+
+Loads and parses the resolved `dso.yaml`. Exits `0` on success, `1` on parse/schema failure.
+
+#### Usage
+
+```bash
+docker dso validate [--config <path>]
+```
+
+#### Examples
+
+```bash
+# Validate the auto-resolved config
+docker dso validate
+
+# Validate a specific file
+docker dso validate --config /etc/dso/dso.yaml
+
+# Use in CI
+docker dso validate || exit 1
+```
+
+#### Output
+
+```bash
+✅ Configuration /etc/dso/dso.yaml is valid.
+# or
+❌ Validation failed for /etc/dso/dso.yaml: unknown provider 'vault2'
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No | No | Yes (`dso.yaml`) |
+
+---
+
+### `docker dso diff`
+
+**Show structural differences between local configuration and the deployed stack.**
+
+Compares provider mapping keys from `dso.yaml` against the deployed stack state. Does **not** compare or expose secret values (by design).
+
+#### Usage
+
+```bash
+docker dso diff [stack-name]
+```
+
+If `stack-name` is omitted, defaults to `default`.
+
+#### Examples
+
+```bash
+# Diff the default stack
+docker dso diff
+
+# Diff a named stack
+docker dso diff my-production-stack
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ❌ No | No | Yes (`dso.yaml`) |
 
 ---
 
 ## System Commands
 
-### `dso system setup`
+---
 
-> **Requires root.** Run with `sudo`.
+### `docker dso system setup`
 
-Configures DSO for **Cloud Mode**. Run once after a global install.
+**Install and activate Cloud Mode infrastructure.**
+
+Downloads provider plugin binaries from GitHub Releases, validates SHA256 checksums, installs them to `/usr/local/lib/dso/plugins/`, writes the systemd service unit, enables, and starts the `dso-agent` service. After completion, verifies the service is `active` via `systemctl is-active`.
+
+**Must be run as root (`sudo`).**
+**Linux only** (systemd required).
+
+#### Usage
 
 ```bash
 sudo docker dso system setup
 ```
 
-What it does, in order:
-1. Creates `/etc/dso/` configuration directory.
-2. Writes `/etc/systemd/system/dso-agent.service` (idempotent).
-3. Downloads the provider plugin bundle for your OS/arch from the GitHub release.
-4. Verifies the SHA256 checksum before extracting anything.
-5. Cleans and repopulates `/usr/local/lib/dso/plugins/`.
-6. Runs `systemctl daemon-reload && systemctl enable dso-agent && systemctl restart dso-agent`.
+#### What It Does
 
-If any step fails, all written files are rolled back atomically.
+1. Creates `/etc/dso/` config directory
+2. Writes `/etc/systemd/system/dso-agent.service`
+3. Downloads plugin tarball from GitHub Releases matching current binary version
+4. Validates SHA256 checksum
+5. Extracts plugins to `/usr/local/lib/dso/plugins/`
+6. Runs `--version` on each plugin binary to confirm executability
+7. Runs `systemctl daemon-reload && enable && restart`
+8. Confirms `systemctl is-active dso-agent`
+9. Performs atomic rollback on any failure
 
-Prints on success:
+#### Examples
+
+```bash
+# Initial Cloud Mode setup
+sudo docker dso system setup
+
+# After setup, run your stack
+docker dso up
 ```
+
+#### Output
+
+```
+[DSO] Starting Cloud Mode setup...
+[DSO] Creating /etc/dso...
+[DSO] Writing systemd service to /etc/systemd/system/dso-agent.service...
+[DSO] Downloading plugin tarball from https://github.com/.../dso-plugins-linux-amd64-v3.2.0.tar.gz...
+[DSO] Validating plugin integrity (SHA256)...
+[DSO] Extracting plugins to /usr/local/lib/dso/plugins/...
+[DSO] Plugins verified: aws, azure, vault, huawei
+[DSO] Running: systemctl daemon-reload
+[DSO] Running: systemctl enable dso-agent
+[DSO] Running: systemctl restart dso-agent
+[DSO] Verifying dso-agent service status...
+
 [DSO] ✅ Cloud mode configured successfully.
-      Agent:   running (dso-agent.service)
-      Plugins: installed to /usr/local/lib/dso/plugins
-      Monitor: journalctl -u dso-agent -f
+       Agent:   running (dso-agent.service)
+       Plugins: installed to /usr/local/lib/dso/plugins
+       Monitor: journalctl -u dso-agent -f
 ```
 
-> **Non-Linux:** This command is only supported on Linux (systemd required).
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Sets up Cloud | ❌ No | ✅ Yes (`sudo`) | No |
+
+> **Note:** Cannot install if `version = "dev"` (local builds). Use a release binary.
 
 ---
 
-### `dso system doctor`
+### `docker dso system doctor`
 
-Read-only diagnostics. Safe to run at any time, does not modify anything.
+**Diagnose the DSO installation and runtime environment (read-only).**
+
+Checks the binary, effective UID, mode detection, config file, vault file, systemd service status, and all provider plugin paths + executability. Produces a tabular report.
+
+#### Usage
 
 ```bash
 docker dso system doctor
 ```
 
-Example output:
+#### Examples
+
+```bash
+# Run diagnostics
+docker dso system doctor
+
+# Use as a post-install check
+sudo docker dso system setup && docker dso system doctor
+```
+
+#### Output
+
 ```
 DSO System Diagnostics — v3.2.0
 ════════════════════════════════════════════════════════════════════
 Component         Status     Detail
 ────────────────────────────────────────────────────────────────────
-Binary            OK         /usr/local/bin/dso (v3.2.0)
-Effective UID     1000
-Detected Mode     LOCAL      Reason: default
-Config            NOT FOUND  /etc/dso/dso.yaml
-Vault             OK         /home/user/.dso/vault.enc
-Systemd Service   NOT FOUND  File: ... | Runtime: not supported (non-Linux)
-Plugin: vault     MISSING    (cloud mode only)
-Plugin: aws       MISSING    (cloud mode only)
-Plugin: azure     MISSING    (cloud mode only)
-Plugin: huawei    MISSING    (cloud mode only)
+Binary            OK         /usr/local/lib/docker/cli-plugins/docker-dso (v3.2.0)
+Effective UID     0 (root)
+Detected Mode     CLOUD      Reason: auto-detected (/etc/dso/dso.yaml)
+Config            OK         /etc/dso/dso.yaml
+Vault             NOT FOUND  /home/user/.dso/vault.enc
+Systemd Service   OK         File: /etc/systemd/system/dso-agent.service | Runtime: active
+Plugin: aws       OK         /usr/local/lib/dso/plugins/dso-provider-aws (version: v3.2.0)
+Plugin: azure     OK         /usr/local/lib/dso/plugins/dso-provider-azure (version: v3.2.0)
+Plugin: vault     OK         /usr/local/lib/dso/plugins/dso-provider-vault (version: v3.2.0)
+Plugin: huawei    OK         /usr/local/lib/dso/plugins/dso-provider-huawei (version: v3.2.0)
 ════════════════════════════════════════════════════════════════════
 ```
 
-**Status values:**
-- `OK` — present and executable
-- `MISSING` — file does not exist
-- `INVALID` — file exists but is not executable
+#### Mode Compatibility
 
-Plugin `MISSING` is **expected and normal** for Local Mode users.
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ✅ Yes | No | No |
 
 ---
 
-## Utility Commands
+### `docker dso version`
+
+**Print the DSO binary version.**
+
+#### Usage
+
+```bash
+docker dso version
+```
+
+#### Output
+
+```
+Docker Secret Operator (DSO) v3.2.0
+```
+
+---
+
+## Hidden / Internal Commands
+
+These commands are not shown in `--help` output.
+
+### `docker dso legacy-agent`
+
+**Run the DSO background reconciliation engine directly (Cloud Mode daemon).**
+
+This is the process that the `dso-agent` systemd service executes. Not intended for direct user invocation — use `docker dso system setup` instead.
+
+#### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--socket` | `/var/run/dso.sock` | IPC socket path |
+| `--driver-socket` | `/run/docker/plugins/dso.sock` | Docker V2 plugin socket |
+| `--api-addr` | `:8080` | REST API address for health/monitoring |
+
+---
+
+### `docker dso docker-cli-plugin-metadata`
+
+**Return Docker CLI plugin metadata (internal use).**
+
+Used by the Docker CLI to discover and register the plugin. Hidden from users.
+
+---
+
+## Stub Commands (Not Yet Implemented)
+
+The following commands exist in the CLI tree and are registered, but return `not yet implemented`. Do not use in production.
 
 | Command | Description |
-| :--- | :--- |
-| `dso version` | Print CLI version |
-| `dso validate` | Validate a `dso.yaml` config file |
-| `dso fetch <name>` | Manually fetch a secret (cloud mode) |
-| `dso inspect <container>` | Inspect injected secrets for a running container |
-| `dso logs` | View DSO agent logs |
-| `dso watch` | Real-time monitor of secret rotations |
-| `dso export` | Export secrets for CI/testing (local mode) |
-| `dso diff` | Show config diff vs running stack |
+|---|---|
+| `docker dso apply` | Apply a DSO configuration file |
+| `docker dso inject` | Inject secrets directly into a specific running container |
+| `docker dso sync` | Synchronize secrets manually against cloud providers |
 
 ---
 
-## Plugin Reference
+## Workflow Examples
 
-Plugins are used in Cloud Mode only and live at `/usr/local/lib/dso/plugins/`.
+### Fresh User — Local Mode
 
-| Plugin binary | Status | Provider |
-| :--- | :--- | :--- |
-| `dso-provider-vault` | ✅ Fully implemented | HashiCorp Vault (KV v2) |
-| `dso-provider-aws` | 🚧 Stub — not yet implemented | AWS Secrets Manager |
-| `dso-provider-azure` | 🚧 Stub — not yet implemented | Azure Key Vault |
-| `dso-provider-huawei` | 🚧 Stub — not yet implemented | Huawei Cloud DEW |
+```bash
+# 1. Install DSO
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
-Stub plugins are distributed with each release so the installation system validates cleanly.  
-If you invoke a stub, it exits with a clear error:
+# 2. Initialize vault
+docker dso init
+
+# 3. Store secrets
+docker dso secret set myapp/db_password
+docker dso secret set myapp/api_key
+
+# 4. Or import from an existing .env file
+docker dso env import .env myapp
+
+# 5. Deploy
+docker dso up
 ```
-Error: DSO provider 'aws' is not yet implemented.
-       Full AWS Secrets Manager support is planned for a future release.
+
+### Cloud Mode Setup
+
+```bash
+# 1. Install DSO globally
+curl -fsSL ... | sudo bash
+
+# 2. Configure Cloud Mode
+sudo docker dso system setup
+
+# 3. Create /etc/dso/dso.yaml (with your provider config)
+# 4. Deploy
+docker dso up
+
+# 5. Monitor
+docker dso logs -f
+docker dso watch
 ```
+
+### Troubleshooting
+
+```bash
+# Verify everything is installed and running
+docker dso system doctor
+
+# Validate your config file
+docker dso validate
+
+# Check agent logs
+docker dso logs --level error
+
+# Inspect a running container's secrets
+docker dso inspect <container-id>
+```
+
+---
+
+## Cross-References
+
+- **Getting Started**: See [`README.md`](../README.md)
+- **Cloud Setup**: See [System Setup](#docker-dso-system-setup)
+- **Local Vault**: See [`docker dso init`](#docker-dso-init) → [`docker dso secret set`](#docker-dso-secret-set)
+- **Troubleshooting**: Run [`docker dso system doctor`](#docker-dso-system-doctor)
+- **Config Format**: See [`docs/docker-compose.md`](docker-compose.md)
+- **Architecture**: See [`ARCHITECTURE.md`](../ARCHITECTURE.md)

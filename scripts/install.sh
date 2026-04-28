@@ -41,10 +41,32 @@ else
     PLUGIN_DIR="${HOME}/.docker/cli-plugins"
 fi
 
+# ── Docker Daemon Check ────────────────────────────────────────────────────────
+if ! docker info >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  WARNING: Docker daemon is not running.${NC}"
+    echo -e "${YELLOW}   DSO requires Docker at runtime.${NC}"
+    echo -e "${YELLOW}   You can start Docker later.${NC}"
+fi
+
 # ── Detect OS ──────────────────────────────────────────────────────────────────
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "${OS}" in
-    linux)  GOOS="linux"  ;;
+    linux)  
+        GOOS="linux"
+        if [ "${IS_ROOT}" = true ] && ! command -v systemctl &>/dev/null; then
+            echo -e "${RED}Error: Systemd is required for Cloud Mode installation${NC}"
+            exit 1
+        fi
+        if command -v systemctl &>/dev/null; then
+            SYS_STATE="$(systemctl is-system-running 2>/dev/null || true)"
+            if [ "${SYS_STATE}" = "degraded" ]; then
+                echo -e "${YELLOW}⚠️  WARNING: Systemd state is degraded. DSO may not start properly.${NC}"
+            fi
+        fi
+        if grep -qE "(Microsoft|WSL)" /proc/version 2>/dev/null; then
+            echo -e "${YELLOW}⚠️  WARNING: WSL detected. Systemd may not be fully supported without WSL2 systemd enablement.${NC}"
+        fi
+        ;;
     darwin) GOOS="darwin" ;;
     *)
         echo -e "${RED}Error: Unsupported OS '${OS}'. DSO supports linux and darwin.${NC}"
@@ -83,7 +105,11 @@ if [ -z "${DSO_VERSION}" ]; then
     exit 1
 fi
 
-echo -e "${BLUE}Installing DSO ${DSO_VERSION} (${GOOS}/${GOARCH})...${NC}"
+if [ -f "${PLUGIN_DIR}/${BINARY_NAME}" ]; then
+    echo -e "${BLUE}Reinstalling / upgrading existing DSO installation...${NC}"
+else
+    echo -e "${BLUE}Installing DSO ${DSO_VERSION} (${GOOS}/${GOARCH})...${NC}"
+fi
 
 # ── Construct download URL ─────────────────────────────────────────────────────
 TARBALL_NAME="${BINARY_NAME}_${DSO_VERSION}_${GOOS}_${GOARCH}.tar.gz"
@@ -220,3 +246,14 @@ else
     echo ""
     echo -e "${YELLOW}⚠️  Note: Mode is NOT yet configured. 'docker dso init' is required before first use.${NC}"
 fi
+
+# ── Post-install Verification ──────────────────────────────────────────────────
+if [ "${IS_ROOT}" = true ]; then
+    echo -e "${BLUE}Running post-install system diagnostics...${NC}"
+    if ! "${PLUGIN_DIR}/${BINARY_NAME}" system doctor; then
+        echo -e "${RED}Error: Post-install diagnostics failed. Please review the output above.${NC}"
+        echo -e "${YELLOW}Fix: Run 'sudo docker dso system setup' to properly initialize Cloud Mode.${NC}"
+        exit 1
+    fi
+fi
+

@@ -19,8 +19,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ensureAgentRunning triggers the legacy background agent for Cloud Mode
-func ensureAgentRunning(configPath string) {
+// checkCloudAgent verifies the systemd agent is running and responsive.
+func checkCloudAgent() {
 	socketPath := "/var/run/dso.sock"
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
@@ -32,31 +32,18 @@ func ensureAgentRunning(configPath string) {
 		return
 	}
 
-	fmt.Println("🚀 Starting DSO agent...")
-	args := []string{"agent"}
-	if configPath != "" && configPath != "dso.yaml" {
-		args = append(args, "--config", configPath)
+	fmt.Fprintln(os.Stderr, "Error: Failed to connect to DSO background agent.")
+	if os.IsPermission(err) || strings.Contains(err.Error(), "permission denied") {
+		fmt.Fprintf(os.Stderr, "Reason: Permission denied accessing %s\n", socketPath)
+		fmt.Fprintln(os.Stderr, "\nFix: Cloud mode requires elevated permissions to access the daemon.")
+		fmt.Fprintln(os.Stderr, "Run next: sudo docker dso up")
+	} else {
+		fmt.Fprintf(os.Stderr, "Reason: Connection refused or socket %s is missing.\n", socketPath)
+		fmt.Fprintln(os.Stderr, "\nFix: Cloud mode requires the systemd agent to be active.")
+		fmt.Fprintln(os.Stderr, "Run next: sudo docker dso system setup")
+		fmt.Fprintln(os.Stderr, "Diagnostics: docker dso system doctor")
 	}
-
-	cmd := exec.Command(os.Args[0], args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to start DSO agent: %v\n", err)
-		return
-	}
-
-	start := time.Now()
-	for time.Since(start) < 5*time.Second {
-		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	fmt.Fprintf(os.Stderr, "Warning: Agent started but socket %s not ready yet.\n", socketPath)
+	os.Exit(1)
 }
 
 func detectMode(flagMode string, configPath string) (string, string) {
@@ -64,17 +51,63 @@ func detectMode(flagMode string, configPath string) (string, string) {
 		return strings.ToLower(flagMode), "flag"
 	}
 
+	if envMode := os.Getenv("DSO_MODE"); envMode != "" {
+		return strings.ToLower(envMode), "env"
+	}
 	if envMode := os.Getenv("DSO_FORCE_MODE"); envMode != "" {
 		return strings.ToLower(envMode), "env"
 	}
 
-	// Priority 3: Check for global Cloud configuration.
+	hasCloudEtc := false
 	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
-		return "cloud", "auto-detected"
+		hasCloudEtc = true
+	}
+	hasCloudLocal := false
+	if _, err := os.Stat("dso.yaml"); err == nil {
+		hasCloudLocal = true
+	}
+	hasExplicitConfig := false
+	if configPath != "" && configPath != "dso.yaml" {
+		if _, err := os.Stat(configPath); err == nil {
+			hasExplicitConfig = true
+		}
 	}
 
-	// Default to local
-	return "local", "default"
+	hasLocalVault := false
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		if _, err := os.Stat(filepath.Join(home, ".dso", "vault.enc")); err == nil {
+			hasLocalVault = true
+		}
+	}
+
+	// Conflict Check
+	if (hasCloudEtc || hasCloudLocal || hasExplicitConfig) && hasLocalVault {
+		fmt.Println("[DSO] ⚠️ Both local vault and cloud configuration detected. Defaulting to CLOUD mode.")
+		if hasExplicitConfig {
+			return "cloud", fmt.Sprintf("explicit config (%s)", configPath)
+		}
+		if hasCloudEtc {
+			return "cloud", "auto-detected (/etc/dso/dso.yaml)"
+		}
+		return "cloud", "auto-detected (./dso.yaml)"
+	}
+
+	if hasExplicitConfig {
+		return "cloud", fmt.Sprintf("explicit config (%s)", configPath)
+	}
+	if hasCloudEtc {
+		return "cloud", "auto-detected (/etc/dso/dso.yaml)"
+	}
+	if hasCloudLocal {
+		return "cloud", "auto-detected (./dso.yaml)"
+	}
+	if hasLocalVault {
+		return "local", "auto-detected (~/.dso/vault.enc)"
+	}
+
+	// Default to cloud
+	return "cloud", "default fallback"
 }
 
 func getProjectName(args []string) string {
@@ -104,7 +137,7 @@ func NewUpCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "up [args...]",
 		Short:              "Deploy a stack and automatically start the DSO agent",
-		Long:               "The 'up' command is the primary entrypoint for DSO. It performs a Docker Compose deployment with secure secret injection.",
+		Long:               "The 'up' command is the primary entrypoint for DSO. It performs a Docker Compose deployment with secure secret injection.\n\nDSO defaults to Cloud Mode (requires systemd/root configuration). Local Mode is available as an optional developer add-on by running 'docker dso init' or passing '--mode=local'.",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			composeFile := ""
@@ -172,7 +205,14 @@ func NewUpCmd() *cobra.Command {
 			mode, reason := detectMode(flagMode, configPath)
 
 			if mode == "cloud" {
-				fmt.Printf("[DSO] Mode: cloud (%s)\n", reason)
+				if reason == "default fallback" {
+					fmt.Fprintln(os.Stderr, "No configuration found.\n\nChoose a mode:\n- Local: docker dso init\n- Cloud: sudo docker dso system setup")
+					os.Exit(1)
+				}
+
+				fmt.Printf("[DSO] Running in CLOUD mode (%s)\n", reason)
+				fmt.Printf("[DSO] Using provider config: %s\n", configPath)
+				fmt.Println("[DSO] ⚠️  Secrets will be fetched from external providers")
 
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
@@ -185,14 +225,14 @@ func NewUpCmd() *cobra.Command {
 					os.Exit(1)
 				}
 
-				ensureAgentRunning(configPath)
+				checkCloudAgent()
 				err = core.RunComposeUpWithEnv(composeFile, dockerArgs, configPath, dryRun)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error running up: %v\n", err)
 					os.Exit(1)
 				}
 			} else {
-				fmt.Printf("[DSO] Mode: local (%s)\n", reason)
+				fmt.Printf("[DSO] Running in LOCAL mode (%s)\n", reason)
 				fmt.Println("[DSO] Resolving secrets...")
 
 				v, err := vault.LoadDefault()
