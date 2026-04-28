@@ -36,7 +36,7 @@ func hashSecret(project, path, value string) string {
 func parseURIPath(uriPath, fallbackProject string) (string, string, error) {
 	parts := strings.SplitN(uriPath, "/", 2)
 	var project, path string
-	
+
 	if len(parts) == 1 {
 		project = fallbackProject
 		path = parts[0]
@@ -127,7 +127,7 @@ func ResolveCompose(ctx context.Context, cli *client.Client, root *yaml.Node, v 
 			imageNode := compose.GetMapValue(serviceBody, "image")
 			var origEntrypoint, origCmd []string
 			if imageNode != nil && imageNode.Kind == yaml.ScalarNode && cli != nil {
-				img, _, err := cli.ImageInspectWithRaw(ctx, imageNode.Value)
+				img, err := cli.ImageInspect(ctx, imageNode.Value)
 				if err == nil {
 					origEntrypoint = img.Config.Entrypoint
 					origCmd = img.Config.Cmd
@@ -193,7 +193,7 @@ func resolveEnvironment(envNode *yaml.Node, v *vault.Vault, composeProject, serv
 func processSecretURI(uri string, v *vault.Vault, composeProject, serviceName, key string, serviceSecrets *ServiceSecrets, seed *AgentSeed) (string, bool, error) {
 	if strings.HasPrefix(uri, "dso://") {
 		uriPath := strings.TrimPrefix(uri, "dso://")
-		
+
 		targetProject, secretPath, err := parseURIPath(uriPath, composeProject)
 		if err != nil {
 			return "", false, fmt.Errorf("env key '%s': %w", key, err)
@@ -215,7 +215,7 @@ func processSecretURI(uri string, v *vault.Vault, composeProject, serviceName, k
 
 	} else if strings.HasPrefix(uri, "dsofile://") {
 		uriPath := strings.TrimPrefix(uri, "dsofile://")
-		
+
 		targetProject, secretPath, err := parseURIPath(uriPath, composeProject)
 		if err != nil {
 			return "", false, fmt.Errorf("env key '%s': %w", key, err)
@@ -255,23 +255,22 @@ func wrapCommandWithWait(serviceNode *yaml.Node, serviceName string, fileSecrets
 		if i > 0 {
 			waitCmd += " && "
 		}
-		waitCmd += fmt.Sprintf("[ -f %s ]", f)
+		waitCmd += fmt.Sprintf("[ -f %s ]", shellQuote(f))
 	}
 	waitCmd += "; do sleep 0.1; done; "
 
 	// Try to find 'command' first
 	commandNode := compose.GetMapValue(serviceNode, "command")
 	if commandNode != nil {
-		if commandNode.Kind == yaml.ScalarNode {
-			commandNode.Value = "sh -c '" + waitCmd + "exec " + commandNode.Value + "'"
-		} else if commandNode.Kind == yaml.SequenceNode {
-			// Convert sequence to string
+		switch commandNode.Kind {
+		case yaml.ScalarNode:
+			*commandNode = shellCommandNode(waitCmd + commandNode.Value)
+		case yaml.SequenceNode:
 			var parts []string
 			for _, item := range commandNode.Content {
 				parts = append(parts, item.Value)
 			}
-			commandNode.Kind = yaml.ScalarNode
-			commandNode.Value = "sh -c '" + waitCmd + "exec " + strings.Join(parts, " ") + "'"
+			*commandNode = *execArgvNode(waitCmd, parts)
 		}
 		return
 	}
@@ -287,14 +286,47 @@ func wrapCommandWithWait(serviceNode *yaml.Node, serviceName string, fileSecrets
 		}
 
 		if len(finalCmd) > 0 {
-			newCommandNode := &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Value: "sh -c '" + waitCmd + "exec " + strings.Join(finalCmd, " ") + "'",
-				Tag:   "!!str",
-			}
+			newCommandNode := execArgvNode(waitCmd, finalCmd)
 			compose.SetMapValue(serviceNode, "command", newCommandNode)
 		} else {
 			fmt.Printf("💡 INFO: Service '%s' is using dsofile:// but has no 'command' and image defaults are empty. Ensure entrypoint handles wait.\n", serviceName)
 		}
 	}
+}
+
+func shellCommandNode(script string) yaml.Node {
+	return yaml.Node{
+		Kind: yaml.SequenceNode,
+		Tag:  "!!seq",
+		Content: []*yaml.Node{
+			stringNode("sh"),
+			stringNode("-c"),
+			stringNode(script),
+		},
+	}
+}
+
+func execArgvNode(prefix string, argv []string) *yaml.Node {
+	node := &yaml.Node{
+		Kind: yaml.SequenceNode,
+		Tag:  "!!seq",
+		Content: []*yaml.Node{
+			stringNode("sh"),
+			stringNode("-c"),
+			stringNode(prefix + `exec "$@"`),
+			stringNode("dso-entrypoint"),
+		},
+	}
+	for _, arg := range argv {
+		node.Content = append(node.Content, stringNode(arg))
+	}
+	return node
+}
+
+func stringNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

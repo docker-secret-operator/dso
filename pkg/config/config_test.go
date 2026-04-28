@@ -28,9 +28,18 @@ secrets:
 		t.Fatalf("Failed to write temp config file: %v", err)
 	}
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Failed to change working directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Fatalf("Failed to restore working directory: %v", err)
+		}
+	}()
 
 	cfg, err := LoadConfig("dso_v1.yaml")
 	if err != nil {
@@ -87,9 +96,18 @@ secrets:
 		t.Fatalf("Failed to write temp config file: %v", err)
 	}
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Failed to change working directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Fatalf("Failed to restore working directory: %v", err)
+		}
+	}()
 
 	cfg, err := LoadConfig("dso_v2.yaml")
 	if err != nil {
@@ -111,5 +129,27 @@ secrets:
 	}
 	if cfg.Logging.Level != "debug" {
 		t.Errorf("Expected logging level debug, got %s", cfg.Logging.Level)
+	}
+}
+
+func TestIsSafePathRejectsPrefixSibling(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "dso")
+	sibling := base + "-evil/secret.json"
+
+	if _, err := IsSafePath(base, sibling); err == nil {
+		t.Fatalf("Expected sibling prefix path to be rejected")
+	}
+}
+
+func TestIsSafePathAllowsContainedAbsolutePath(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "dso")
+	target := filepath.Join(base, "secrets", "db.json")
+
+	got, err := IsSafePath(base, target)
+	if err != nil {
+		t.Fatalf("Expected contained absolute path to be allowed: %v", err)
+	}
+	if got != target {
+		t.Fatalf("Expected %q, got %q", target, got)
 	}
 }

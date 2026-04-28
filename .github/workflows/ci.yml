@@ -62,7 +62,20 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.4.0
-          args: --timeout=5m --issues-exit-code=0
+          args: --timeout=5m
+
+  # ── CLI Guard ───────────────────────────────────────────────
+  cli-guard:
+    name: CLI Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate CLI usage
+        run: |
+          chmod +x scripts/validate-cli.sh
+          ./scripts/validate-cli.sh
 
   # ── Security Scan ───────────────────────────────────────────
   security:
@@ -83,7 +96,7 @@ jobs:
 
       - name: Run gosec
         run: |
-          "$(go env GOPATH)/bin/gosec" -no-fail -severity medium -confidence medium ./...
+          "$(go env GOPATH)/bin/gosec" -severity medium -confidence medium ./...
 
   # ── DCO Check ──────────────────────────────────────────────
   dco:

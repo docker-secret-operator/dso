@@ -254,33 +254,60 @@ func IsSafePath(baseDir, userPath string) (string, error) {
 
 	isSystemPath := false
 	for _, dir := range allowedSystemDirs {
-		if strings.HasPrefix(clean, dir) {
+		if pathWithinDir(clean, dir) {
 			isSystemPath = true
 			break
 		}
 	}
 
-	// Reject absolute paths unless they are in allowed system directories or we are in "anywhere" mode (empty baseDir)
-	if filepath.IsAbs(clean) && !isSystemPath && baseDir != "" {
+	// Reject absolute paths in "anywhere" mode unless they are in allowed system directories.
+	if filepath.IsAbs(clean) && !isSystemPath && baseDir == "" {
 		return "", fmt.Errorf("absolute paths not allowed: %s", userPath)
 	}
 
 	// If no baseDir is provided, at least reject ".." for security
 	if baseDir == "" {
-		if strings.Contains(clean, "..") {
+		if !filepath.IsLocal(clean) && !isSystemPath {
 			return "", fmt.Errorf("path traversal attempt: %s", userPath)
 		}
 		return clean, nil
 	}
 
-	fullPath := filepath.Join(baseDir, clean)
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid base path: %w", err)
+	}
+	var fullPath string
+	if filepath.IsAbs(clean) {
+		fullPath = clean
+	} else {
+		fullPath = filepath.Join(baseAbs, clean)
+	}
+	fullAbs, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
 
 	// Ensure no directory escape
-	if !strings.HasPrefix(fullPath, baseDir) {
+	rel, err := filepath.Rel(baseAbs, fullAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal detected: %s", userPath)
 	}
 
-	return fullPath, nil
+	return fullAbs, nil
+}
+
+func pathWithinDir(path, dir string) bool {
+	pathAbs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	dirAbs, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(dirAbs, pathAbs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func LoadConfig(cfgFile string) (*Config, error) {
@@ -294,7 +321,7 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config path: %w", err)
 	}
 
-	data, err := os.ReadFile(safePath)
+	data, err := os.ReadFile(safePath) // #nosec G304 -- safePath is constrained by IsSafePath.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", cfgFile, err)
 	}

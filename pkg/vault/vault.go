@@ -53,7 +53,7 @@ func getMasterKey() (string, error) {
 	}
 	keyPath := filepath.Join(dir, "master.key")
 
-	data, err := os.ReadFile(keyPath)
+	data, err := os.ReadFile(keyPath) // #nosec G304 -- keyPath is always under the current user's DSO vault directory.
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", fmt.Errorf("master key not found at %s and DSO_MASTER_KEY not set", keyPath)
@@ -131,7 +131,7 @@ func LoadDefault() (*Vault, error) {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(vaultPath)
+	data, err := os.ReadFile(vaultPath) // #nosec G304 -- vaultPath is always under the current user's DSO vault directory.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read vault: %w", err)
 	}
@@ -184,7 +184,7 @@ func (v *Vault) saveLocked() error {
 	}
 	v.store.Metadata["last_updated"] = time.Now().UTC().Format(time.RFC3339)
 	delete(v.store.Metadata, "checksum") // Exclude from checksum generation
-	
+
 	bytesToHash, err := json.Marshal(v.store)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vault for checksum: %w", err)
@@ -208,7 +208,7 @@ func (v *Vault) saveLocked() error {
 	}
 
 	if err := os.Rename(tmpFile, v.vaultPath); err != nil {
-		os.Remove(tmpFile) // clean up temp file on failure
+		_ = os.Remove(tmpFile) // clean up temp file on failure
 		return fmt.Errorf("failed to commit vault file: %w", err)
 	}
 
@@ -264,7 +264,7 @@ func (v *Vault) Set(project, path, value string) error {
 			"updated_at": time.Now().UTC().Format(time.RFC3339),
 		},
 	}
-	
+
 	return v.saveLocked()
 }
 
@@ -329,6 +329,6 @@ func (v *Vault) SetBatch(project string, secrets map[string]string) error {
 			},
 		}
 	}
-	
+
 	return v.saveLocked()
 }

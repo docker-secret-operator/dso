@@ -56,7 +56,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dso legacy-agent --api-addr :8080
+ExecStart=/usr/local/bin/dso legacy-agent --api-addr 127.0.0.1:8080
 Restart=on-failure
 RestartSec=5
 EnvironmentFile=-/etc/dso/agent.env
@@ -113,18 +113,12 @@ Available providers: vault, aws, azure, huawei`,
 
 			// ── Privilege guard ──────────────────────────────────────────────
 			if os.Geteuid() != 0 {
-				return fmt.Errorf(
-					"Error: 'dso system setup' must be run as root.\n" +
-						"  Fix: Please re-run with: sudo docker dso system setup",
-				)
+				return fmt.Errorf("'dso system setup' must be run as root: re-run with sudo docker dso system setup")
 			}
 
 			// Non-Linux guard: systemd operations are Linux-only.
 			if runtime.GOOS != "linux" {
-				return fmt.Errorf(
-					"Error: 'dso system setup' is only supported on Linux (systemd required).\n"+
-						"  Detected OS: %s", runtime.GOOS,
-				)
+				return fmt.Errorf("'dso system setup' is only supported on Linux with systemd: detected OS %s", runtime.GOOS)
 			}
 
 			// ── Resolve provider list (flag → env → interactive → default) ──
@@ -169,13 +163,13 @@ Available providers: vault, aws, azure, huawei`,
 
 			// ── Step 1: Create /etc/dso config directory ─────────────────────
 			fmt.Println("[DSO] Creating /etc/dso...")
-			if setupErr = os.MkdirAll(dsoConfigDir, 0o755); setupErr != nil {
+			if setupErr = os.MkdirAll(dsoConfigDir, 0o750); setupErr != nil {
 				return fmt.Errorf("failed to create %s: %w", dsoConfigDir, setupErr)
 			}
 
 			// ── Step 2: Write systemd service file ───────────────────────────
 			fmt.Printf("[DSO] Writing systemd service to %s...\n", svcPath)
-			if setupErr = os.WriteFile(svcPath, []byte(systemdTemplate), 0o644); setupErr != nil {
+			if setupErr = os.WriteFile(svcPath, []byte(systemdTemplate), 0o600); setupErr != nil {
 				setupErr = fmt.Errorf("failed to write systemd service: %w", setupErr)
 				return setupErr
 			}
@@ -264,10 +258,7 @@ func validateProviders(raw string) ([]string, error) {
 		}
 		if _, ok := knownProviders[name]; !ok {
 			available := strings.Join(sortedKeys(knownProviders), ", ")
-			return nil, fmt.Errorf(
-				"Error: unknown provider '%s'.\n  Available providers: %s\n  Fix:\n    sudo docker dso system setup --providers %s",
-				name, available, available,
-			)
+			return nil, fmt.Errorf("unknown provider %q: available providers: %s; fix: sudo docker dso system setup --providers %s", name, available, available)
 		}
 		if !seen[name] {
 			seen[name] = true
@@ -354,10 +345,7 @@ func installProviders(providers []string) error {
 	ver := version
 
 	if ver == "dev" {
-		return fmt.Errorf(
-			"Error: cannot install plugins for a development build (version=dev).\n" +
-				"  Fix:\n    Use a release binary with a proper version tag.",
-		)
+		return fmt.Errorf("cannot install plugins for a development build (version=dev): use a release binary with a proper version tag")
 	}
 
 	// Filter out already installed providers
@@ -366,7 +354,7 @@ func installProviders(providers []string) error {
 	for _, p := range providers {
 		binName := knownProviders[p]
 		dst := filepath.Join(pluginInstallDir, binName)
-		if out, err := exec.Command(dst, "--version").Output(); err == nil {
+		if out, err := exec.Command(dst, "--version").Output(); err == nil { // #nosec G204 -- dst is built from fixed directories and known provider names.
 			plugVer := strings.TrimSpace(string(out))
 			if plugVer == ver {
 				fmt.Printf("[DSO] Provider '%s' already installed (v%s) — skipping\n", p, ver)
@@ -390,43 +378,43 @@ func installProviders(providers []string) error {
 	// ── Download to temp directory ───────────────────────────────────────────
 	tmpDir, err := os.MkdirTemp("", "dso-plugins-*")
 	if err != nil {
-		return fmt.Errorf("Error: failed to create temp dir: %w", err)
+		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	fmt.Printf("[DSO] Downloading plugin bundle from %s...\n", tarURL)
 	tarPath := filepath.Join(tmpDir, tarballName)
 	if err := downloadFileWithRetry(tarURL, tarPath); err != nil {
-		return fmt.Errorf("Error: failed to download plugins: %w", err)
+		return fmt.Errorf("failed to download plugins: %w", err)
 	}
 
 	fmt.Printf("[DSO] Downloading checksum from %s...\n", csURL)
 	csPath := filepath.Join(tmpDir, checksumName)
 	if err := downloadFileWithRetry(csURL, csPath); err != nil {
-		return fmt.Errorf("Error: failed to download checksum: %w", err)
+		return fmt.Errorf("failed to download checksum: %w", err)
 	}
 
 	// ── Validate SHA256 ──────────────────────────────────────────────────────
 	fmt.Println("[DSO] Validating plugin bundle integrity (SHA256)...")
 	if err := validateChecksum(tarPath, csPath); err != nil {
-		return fmt.Errorf("Error: integrity check failed: %w", err)
+		return fmt.Errorf("integrity check failed: %w", err)
 	}
 
 	// ── Extract all plugins to a staging directory ───────────────────────────
 	stageDir := filepath.Join(tmpDir, "stage")
-	if err := os.MkdirAll(stageDir, 0o755); err != nil {
-		return fmt.Errorf("Error: failed to create staging dir: %w", err)
+	if err := os.MkdirAll(stageDir, 0o755); err != nil { // #nosec G301 -- staging only contains executable plugin artifacts.
+		return fmt.Errorf("failed to create staging dir: %w", err)
 	}
-	tarCmd := exec.Command("tar", "-xzf", tarPath, "-C", stageDir, "--strip-components=1")
+	tarCmd := exec.Command("tar", "-xzf", tarPath, "-C", stageDir, "--strip-components=1") // #nosec G204 -- tarPath and stageDir are created under a private temp dir.
 	tarCmd.Stdout = os.Stdout
 	tarCmd.Stderr = os.Stderr
 	if err := tarCmd.Run(); err != nil {
-		return fmt.Errorf("Error: tarball extraction failed: %w", err)
+		return fmt.Errorf("tarball extraction failed: %w", err)
 	}
 
 	// ── Ensure plugin install directory exists (preserve existing plugins) ───
-	if err := os.MkdirAll(pluginInstallDir, 0o755); err != nil {
-		return fmt.Errorf("Error: failed to create plugin dir %s: %w", pluginInstallDir, err)
+	if err := os.MkdirAll(pluginInstallDir, 0o755); err != nil { // #nosec G301 -- plugin binaries must be traversable/executable system-wide.
+		return fmt.Errorf("failed to create plugin dir %s: %w", pluginInstallDir, err)
 	}
 
 	// ── Copy ONLY the selected plugins ──────────────────────────────────────
@@ -445,7 +433,7 @@ func installProviders(providers []string) error {
 			continue
 		}
 		if srcInfo.Mode()&0o111 == 0 {
-			if err := os.Chmod(src, 0o755); err != nil {
+			if err := os.Chmod(src, 0o755); err != nil { // #nosec G302 -- provider plugins are executable binaries.
 				fmt.Printf("[DSO] ⚠️  Failed to set executable on staged %s: %v\n", binName, err)
 				failed = append(failed, p)
 				continue
@@ -458,20 +446,20 @@ func installProviders(providers []string) error {
 			failed = append(failed, p)
 			continue
 		}
-		if err := os.Chmod(dst, 0o755); err != nil {
+		if err := os.Chmod(dst, 0o755); err != nil { // #nosec G302 -- provider plugins are executable binaries.
 			fmt.Printf("[DSO] ⚠️  Failed to set permissions on %s: %v\n", dst, err)
 			failed = append(failed, p)
 			continue
 		}
 
 		// Validate the installed binary responds to --version
-		_, err = exec.Command(dst, "--version").Output()
+		_, err = exec.Command(dst, "--version").Output() // #nosec G204 -- dst is built from fixed directories and known provider names.
 		if err != nil {
 			fmt.Printf("[DSO] ⚠️  Plugin validation failed for '%s': binary installed but did not respond to --version\n", p)
 			failed = append(failed, p)
 			continue
 		}
-		
+
 		successful = append(successful, p)
 	}
 
@@ -484,10 +472,7 @@ func installProviders(providers []string) error {
 	}
 	if len(failed) > 0 {
 		fmt.Printf("[DSO] Failed: %s\n", strings.Join(failed, ", "))
-		return fmt.Errorf(
-			"Error: failed to install some providers: %s\n  Fix:\n    sudo docker dso system setup --providers %s",
-			strings.Join(failed, ", "), strings.Join(failed, ","),
-		)
+		return fmt.Errorf("failed to install some providers: %s; fix: sudo docker dso system setup --providers %s", strings.Join(failed, ", "), strings.Join(failed, ","))
 	}
 
 	return nil
@@ -495,17 +480,21 @@ func installProviders(providers []string) error {
 
 // copyFile performs a byte-for-byte copy from src to dst.
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- src is constrained by release extraction code before copyFile is called.
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		_ = in.Close()
+	}()
 
-	out, err := os.Create(dst)
+	out, err := os.Create(dst) // #nosec G304 -- dst is built from the fixed plugin install directory and known provider names.
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		_ = out.Close()
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err
@@ -535,7 +524,7 @@ func activateSystemd() error {
 	}
 	for _, args := range cmds {
 		fmt.Printf("[DSO] Running: %s\n", strings.Join(args, " "))
-		c := exec.Command(args[0], args[1:]...)
+		c := exec.Command(args[0], args[1:]...) // #nosec G204 -- command list is fixed in activateSystemd.
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		if err := c.Run(); err != nil {
@@ -579,17 +568,21 @@ func downloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d downloading %s", resp.StatusCode, url)
 	}
 
-	f, err := os.Create(destPath)
+	f, err := os.Create(destPath) // #nosec G304 -- destination is a caller-controlled temp or fixed system path.
 	if err != nil {
 		return fmt.Errorf("create %s: %w", destPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		return fmt.Errorf("writing %s: %w", destPath, err)
@@ -600,7 +593,7 @@ func downloadFile(url, destPath string) error {
 // validateChecksum computes the SHA256 of tarPath and compares it to the
 // first hex token on the first line of csPath (standard sha256sum format).
 func validateChecksum(tarPath, csPath string) error {
-	csBytes, err := os.ReadFile(csPath)
+	csBytes, err := os.ReadFile(csPath) // #nosec G304 -- checksum path is created under a private temp dir.
 	if err != nil {
 		return fmt.Errorf("reading checksum file: %w", err)
 	}
@@ -610,11 +603,13 @@ func validateChecksum(tarPath, csPath string) error {
 	}
 	expected := fields[0]
 
-	f, err := os.Open(tarPath)
+	f, err := os.Open(tarPath) // #nosec G304 -- tar path is created under a private temp dir.
 	if err != nil {
 		return fmt.Errorf("opening tarball: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -639,14 +634,14 @@ func newSystemDoctorCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-			fmt.Fprintf(w, "DSO System Diagnostics — %s\n", version)
-			fmt.Fprintln(w, strings.Repeat("═", 68))
-			fmt.Fprintln(w, "Component\tStatus\tDetail")
-			fmt.Fprintln(w, strings.Repeat("─", 68))
+			_, _ = fmt.Fprintf(w, "DSO System Diagnostics — %s\n", version)
+			_, _ = fmt.Fprintln(w, strings.Repeat("═", 68))
+			_, _ = fmt.Fprintln(w, "Component\tStatus\tDetail")
+			_, _ = fmt.Fprintln(w, strings.Repeat("─", 68))
 
 			// ── Binary ──────────────────────────────────────────────────────
 			exe, _ := os.Executable()
-			fmt.Fprintf(w, "Binary\tOK\t%s (%s)\n", exe, version)
+			_, _ = fmt.Fprintf(w, "Binary\tOK\t%s (%s)\n", exe, version)
 
 			// ── Effective UID ────────────────────────────────────────────────
 			uid := os.Geteuid()
@@ -654,21 +649,21 @@ func newSystemDoctorCmd() *cobra.Command {
 			if uid == 0 {
 				uidStr += " (root)"
 			}
-			fmt.Fprintf(w, "Effective UID\t%s\t\n", uidStr)
+			_, _ = fmt.Fprintf(w, "Effective UID\t%s\t\n", uidStr)
 
 			// ── Mode Detection ───────────────────────────────────────────────
 			mode, reason := detectMode("", "")
-			fmt.Fprintf(w, "Detected Mode\t%s\tReason: %s\n", strings.ToUpper(mode), reason)
+			_, _ = fmt.Fprintf(w, "Detected Mode\t%s\tReason: %s\n", strings.ToUpper(mode), reason)
 
 			// ── Config (/etc/dso/dso.yaml) ───────────────────────────────────
 			configStatus, configDetail := checkPath("/etc/dso/dso.yaml")
-			fmt.Fprintf(w, "Config\t%s\t%s\n", configStatus, configDetail)
+			_, _ = fmt.Fprintf(w, "Config\t%s\t%s\n", configStatus, configDetail)
 
 			// ── Vault (~/.dso/vault.enc) ─────────────────────────────────────
 			home, _ := os.UserHomeDir()
 			vaultPath := filepath.Join(home, ".dso", "vault.enc")
 			vaultStatus, vaultDetail := checkPath(vaultPath)
-			fmt.Fprintf(w, "Vault\t%s\t%s\n", vaultStatus, vaultDetail)
+			_, _ = fmt.Fprintf(w, "Vault\t%s\t%s\n", vaultStatus, vaultDetail)
 
 			// ── Systemd service ──────────────────────────────────────────────
 			svcPath := filepath.Join(systemdServiceDir, serviceFile)
@@ -684,16 +679,16 @@ func newSystemDoctorCmd() *cobra.Command {
 					svcRunStatus = "inactive/unknown"
 				}
 			}
-			fmt.Fprintf(w, "Systemd Service\t%s\tFile: %s | Runtime: %s\n",
+			_, _ = fmt.Fprintf(w, "Systemd Service\t%s\tFile: %s | Runtime: %s\n",
 				svcFileStatus, svcPath, svcRunStatus)
 
 			// ── Plugins: only report plugins that are installed OR expected ───
 			// We check all known providers but display a clear remediation hint
 			// for any that are missing, distinguishing intentionally-not-installed
 			// from broken installs.
-			fmt.Fprintln(w, strings.Repeat("─", 68))
-			fmt.Fprintln(w, "Provider Plugins\t\t")
-			fmt.Fprintln(w, strings.Repeat("─", 68))
+			_, _ = fmt.Fprintln(w, strings.Repeat("─", 68))
+			_, _ = fmt.Fprintln(w, "Provider Plugins\t\t")
+			_, _ = fmt.Fprintln(w, strings.Repeat("─", 68))
 
 			anyPluginInstalled := false
 			for _, p := range sortedKeys(knownProviders) {
@@ -702,21 +697,21 @@ func newSystemDoctorCmd() *cobra.Command {
 
 				if statErr != nil {
 					// Not installed — show hint instead of a scary "MISSING"
-					fmt.Fprintf(w, "Plugin: %-8s\tNOT INSTALLED\t\n", p)
-					fmt.Fprintf(w, "  └─ Fix: sudo docker dso system setup --providers %s\t\t\n", p)
+					_, _ = fmt.Fprintf(w, "Plugin: %-8s\tNOT INSTALLED\t\n", p)
+					_, _ = fmt.Fprintf(w, "  └─ Fix: sudo docker dso system setup --providers %s\t\t\n", p)
 					continue
 				}
 
 				anyPluginInstalled = true
 
 				if info.Mode()&0o111 == 0 {
-					fmt.Fprintf(w, "Plugin: %-8s\tINVALID\t%s (not executable — re-run system setup)\n", p, pluginPath)
+					_, _ = fmt.Fprintf(w, "Plugin: %-8s\tINVALID\t%s (not executable — re-run system setup)\n", p, pluginPath)
 					continue
 				}
 
 				// Best-effort version probe
 				detail := pluginPath
-				if out, err := exec.Command(pluginPath, "--version").Output(); err == nil {
+				if out, err := exec.Command(pluginPath, "--version").Output(); err == nil { // #nosec G204 -- pluginPath is built from fixed plugin dir and known provider names.
 					plugVer := strings.TrimSpace(string(out))
 					if plugVer != "" {
 						detail = fmt.Sprintf("%s (%s)", pluginPath, plugVer)
@@ -724,18 +719,17 @@ func newSystemDoctorCmd() *cobra.Command {
 				} else {
 					detail = fmt.Sprintf("%s (version probe failed)", pluginPath)
 				}
-				fmt.Fprintf(w, "Plugin: %-8s\tOK\t%s\n", p, detail)
+				_, _ = fmt.Fprintf(w, "Plugin: %-8s\tOK\t%s\n", p, detail)
 			}
 
 			if !anyPluginInstalled {
-				fmt.Fprintln(w, strings.Repeat("─", 68))
-				fmt.Fprintln(w, "ℹ️  No provider plugins installed.")
-				fmt.Fprintln(w, "   Run: sudo docker dso system setup --providers vault")
+				_, _ = fmt.Fprintln(w, strings.Repeat("─", 68))
+				_, _ = fmt.Fprintln(w, "ℹ️  No provider plugins installed.")
+				_, _ = fmt.Fprintln(w, "   Run: sudo docker dso system setup --providers vault")
 			}
 
-			fmt.Fprintln(w, strings.Repeat("═", 68))
-			w.Flush()
-			return nil
+			_, _ = fmt.Fprintln(w, strings.Repeat("═", 68))
+			return w.Flush()
 		},
 	}
 }
@@ -746,16 +740,4 @@ func checkPath(path string) (string, string) {
 		return "OK", path
 	}
 	return "NOT FOUND", path
-}
-
-// checkPluginPath checks that the plugin exists AND has an executable bit set.
-func checkPluginPath(path string) (string, string) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "MISSING", path
-	}
-	if info.Mode()&0o111 == 0 {
-		return "INVALID", fmt.Sprintf("%s (not executable)", path)
-	}
-	return "OK", path
 }

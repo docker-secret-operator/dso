@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/vault"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -110,7 +111,7 @@ func newSecretSetCmd() *cobra.Command {
 			} else {
 				// Interactive hidden prompt
 				fmt.Printf("Enter secret for '%s/%s': ", project, path)
-				bytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+				bytes, err := term.ReadPassword(int(os.Stdin.Fd())) // #nosec G115 -- stdin file descriptors are small OS-provided values.
 				fmt.Println()
 				if err != nil {
 					return fmt.Errorf("failed to read password: %w", err)
@@ -230,11 +231,16 @@ func newEnvImportSubCmd() *cobra.Command {
 				project = strings.TrimSpace(args[1])
 			}
 
-			file, err := os.Open(filePath)
+			safePath, err := config.IsSafePath("", filePath)
+			if err != nil {
+				return fmt.Errorf("invalid import file path: %w", err)
+			}
+
+			file, err := os.Open(safePath) // #nosec G304 -- safePath is constrained by config.IsSafePath.
 			if err != nil {
 				return fmt.Errorf("failed to open file: %w", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 
 			v, err := vault.LoadDefault()
 			if err != nil {
@@ -242,7 +248,7 @@ func newEnvImportSubCmd() *cobra.Command {
 			}
 
 			scanner := bufio.NewScanner(file)
-			
+
 			// Support secrets up to 1MB per line
 			const maxCapacity = 1024 * 1024
 			buf := make([]byte, maxCapacity)

@@ -13,6 +13,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/core"
 	"github.com/docker-secret-operator/dso/internal/resolver"
+	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/vault"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -26,9 +27,9 @@ func checkCloudAgent() {
 		socketPath = custom
 	}
 
-	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second) // #nosec G704 -- this is a Unix domain socket path, not an HTTP target.
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -68,8 +69,12 @@ func detectMode(flagMode string, configPath string) (string, string) {
 	}
 	hasExplicitConfig := false
 	if configPath != "" && configPath != "dso.yaml" {
-		if _, err := os.Stat(configPath); err == nil {
-			hasExplicitConfig = true
+		safePath, safeErr := dsoConfig.IsSafePath("", configPath)
+		if safeErr == nil {
+			_, err := os.Stat(safePath) // #nosec G703 -- path is constrained by config.IsSafePath.
+			if err == nil {
+				hasExplicitConfig = true
+			}
 		}
 	}
 
@@ -121,11 +126,11 @@ func getProjectName(args []string) string {
 			return strings.TrimPrefix(arg, "--project-name=")
 		}
 	}
-	
+
 	if envName := os.Getenv("COMPOSE_PROJECT_NAME"); envName != "" {
 		return envName
 	}
-	
+
 	dir, err := os.Getwd()
 	if err == nil {
 		return filepath.Base(dir)
@@ -152,9 +157,9 @@ func NewUpCmd() *cobra.Command {
 
 			for i := 0; i < len(args); i++ {
 				arg := args[i]
-				
+
 				if arg == "--help" || arg == "-h" {
-					cmd.Help()
+					_ = cmd.Help()
 					return
 				}
 				if strings.HasPrefix(arg, "--mode=") {
@@ -293,7 +298,9 @@ func NewUpCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
 					os.Exit(1)
 				}
-				defer os.Remove(tmpFile.Name())
+				defer func() {
+					_ = os.Remove(tmpFile.Name())
+				}()
 
 				enc := yaml.NewEncoder(tmpFile)
 				enc.SetIndent(2)
@@ -301,19 +308,22 @@ func NewUpCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Error writing AST mutation: %v\n", err)
 					os.Exit(1)
 				}
-				enc.Close()
+				if err := enc.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error finalizing AST mutation: %v\n", err)
+					os.Exit(1)
+				}
 
 				fmt.Println("🐳 Running docker compose...")
-				
+
 				// Reconstruct docker-compose command with the mutated AST file.
 				// We MUST explicitly pass the project name because using a temp file
 				// in /tmp would otherwise cause Docker to derive the wrong project name.
 				execArgs := append([]string{"compose", "-p", projectName, "-f", tmpFile.Name(), "up"}, dockerArgs...)
-				execCmd := exec.Command("docker", execArgs...)
+				execCmd := exec.Command("docker", execArgs...) // #nosec G204 -- docker arguments are intentionally forwarded without shell expansion.
 				execCmd.Stdout = os.Stdout
 				execCmd.Stderr = os.Stderr
 				execCmd.Stdin = os.Stdin
-				
+
 				if err := execCmd.Run(); err != nil {
 					fmt.Fprintf(os.Stderr, "Docker compose failed: %v\n", err)
 					os.Exit(1)
