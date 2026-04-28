@@ -55,9 +55,9 @@ func NewInitCmd() *cobra.Command {
 			// ── Privilege guard: vault must never be root-owned ─────────
 			if os.Geteuid() == 0 {
 				return fmt.Errorf(
-					"'dso init' must NOT be run as root.\n" +
+					"'docker dso init' must NOT be run as root.\n" +
 						"  The vault must be owned by your user account.\n" +
-						"  Please re-run without sudo: dso init",
+						"  Please re-run without sudo: docker dso init",
 				)
 			}
 			if err := vault.InitDefault(); err != nil {
@@ -125,7 +125,7 @@ func newSecretSetCmd() *cobra.Command {
 
 			v, err := vault.LoadDefault()
 			if err != nil {
-				return fmt.Errorf("failed to load vault (run 'dso init' first): %w", err)
+				return fmt.Errorf("failed to load vault (run 'docker dso init' first): %w", err)
 			}
 
 			if err := v.Set(project, path, value); err != nil {

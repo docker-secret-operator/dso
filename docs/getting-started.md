@@ -62,7 +62,7 @@ docker dso init
 
 This creates `~/.dso/vault.enc` and generates your master key.
 
-> ⚠️ Do not run `dso init` with `sudo`. The vault must be owned by your user account.
+> ⚠️ Do not run `docker dso init` with `sudo`. The vault must be owned by your user account.
 
 ### 2. Store a secret
 ```bash

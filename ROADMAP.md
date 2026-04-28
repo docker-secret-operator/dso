@@ -21,23 +21,23 @@ Establish DSO as a **true declarative operator** with deterministic reconciliati
 
 ### ✅ Core Features (Priority — MUST HAVE)
 
-* `dso init`
+* `docker dso init`
   Interactive configuration wizard to bootstrap `dso.yaml`
 
-* `dso apply`
+* `docker dso apply`
   Declarative state enforcement with idempotent reconciliation
 
-* `dso sync`
+* `docker dso sync`
   Manual reconciliation trigger for immediate consistency
 
-* `dso inject`
+* `docker dso inject`
   One-time secret injection for debugging and validation workflows
 
 ---
 
 ### 🔥 Critical Additions (High Impact — MUST ADD)
 
-* `dso diff`
+* `docker dso diff`
   Preview drift between desired and actual state before applying changes
 
 * Reconciliation Loop Engine
