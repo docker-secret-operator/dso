@@ -146,7 +146,7 @@ func (h *HuaweiProvider) WatchSecret(name string, interval time.Duration) (<-cha
 }
 
 func main() {
-	// --version support: used by `dso system doctor` and `dso system setup`
+	// --version support: used by `docker dso system doctor` and `docker dso system setup`
 	// to validate the plugin binary is functioning correctly.
 	// DO NOT perform credential fetching or os.Exit calls here — all
 	// initialization happens in Init() after the go-plugin handshake.

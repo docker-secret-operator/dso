@@ -255,7 +255,7 @@ az keyvault secret list --vault-name dev-kv --query "[].name" -o table
 
 Ensure the name in `dso.yaml` matches exactly.
 
-### `dso fetch` shows empty value
+### `docker dso fetch` shows empty value
 
 Azure secrets must be in **Enabled** status. Check in the Azure Portal → Key Vault → Secrets → confirm each secret shows ✓ Enabled.
 
