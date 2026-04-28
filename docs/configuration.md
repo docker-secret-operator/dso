@@ -60,10 +60,10 @@ providers:
 
 | Type | Backend | Status |
 |---|---|---|
-| `vault` | HashiCorp Vault (KV v2) | ✅ Fully implemented |
-| `aws` | AWS Secrets Manager | 🚧 Not yet implemented |
-| `azure` | Azure Key Vault | 🚧 Not yet implemented |
-| `huawei` | Huawei Cloud CSMS | 🚧 Not yet implemented |
+| `vault` | HashiCorp Vault | ✅ Fully implemented |
+| `aws` | AWS Secrets Manager | ✅ Fully implemented |
+| `azure` | Azure Key Vault | ✅ Fully implemented |
+| `huawei` | Huawei Cloud CSMS | ✅ Fully implemented |
 | `file` | Local filesystem (dev only) | ✅ Supported |
 
 ---
