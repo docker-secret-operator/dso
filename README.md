@@ -241,11 +241,11 @@ DSO supports cloud provider plugins for Cloud Mode:
 | Plugin | Status |
 | :--- | :--- |
 | `dso-provider-vault` | ✅ Fully supported |
-| `dso-provider-aws` | 🚧 Not yet implemented |
-| `dso-provider-azure` | 🚧 Not yet implemented |
-| `dso-provider-huawei` | 🚧 Not yet implemented |
+| `dso-provider-aws` | ✅ Fully supported |
+| `dso-provider-azure` | ✅ Fully supported |
+| `dso-provider-huawei` | ✅ Fully supported |
 
-Plugins are downloaded automatically by `sudo docker dso system setup`. Stub plugins for AWS, Azure, and Huawei are distributed with each release and return a clear `"not yet implemented"` error at runtime — no silent failures.
+Plugins are downloaded automatically by `sudo docker dso system setup`. Each plugin is a standalone binary that implements the DSO `SecretProvider` interface via HashiCorp's `go-plugin` RPC framework.
 
 ---
 
@@ -254,10 +254,14 @@ Plugins are downloaded automatically by `sudo docker dso system setup`. Stub plu
 | Document | Description |
 | :--- | :--- |
 | [Getting Started](docs/getting-started.md) | Step-by-step first-run guide |
-| [Concepts](docs/concepts.md) | `dso://` vs `dsofile://`, vault lifecycle |
+| [Installation](docs/installation.md) | Binary install, selective plugin setup, CI/CD |
+| [Concepts](docs/concepts.md) | Dual-mode architecture, `dso://` vs `dsofile://`, agent lifecycle |
 | [CLI Reference](docs/cli.md) | All commands with examples |
 | [Docker Compose Guide](docs/docker-compose.md) | Env injection, file injection, mixed usage |
-| [Security](docs/security.md) | Why `.env` is unsafe, threat model |
+| [Configuration Reference](docs/configuration.md) | Full `dso.yaml` schema (Cloud Mode) |
+| [Providers](docs/providers.md) | Cloud provider setup and status |
+| [Security](docs/security.md) | Threat model and design decisions |
+| [Migration Guide](docs/migration.md) | Upgrading from v3.0/v3.1 to v3.2 |
 | [Examples](docs/examples/) | PostgreSQL, Redis, Node.js, Django, fullstack |
 
 ---
@@ -276,11 +280,12 @@ DSO System Diagnostics — v3.2.0
 Component         Status     Detail
 ────────────────────────────────────────────────────────────
 Binary            OK         /usr/local/bin/dso (v3.2.0)
-Detected Mode     LOCAL      Reason: default
+Effective UID     1000
+Detected Mode     LOCAL      Reason: auto-detected (~/.dso/vault.enc)
 Config            NOT FOUND  /etc/dso/dso.yaml
 Vault             OK         /home/user/.dso/vault.enc
-Systemd Service   NOT FOUND  (expected for cloud mode only)
-Plugin: vault     MISSING    (expected for cloud mode only)
+Systemd Service   NOT FOUND  File: /etc/systemd/system/dso-agent.service | Runtime: inactive/unknown
+Plugin: vault     MISSING    /usr/local/lib/dso/plugins/dso-provider-vault
 ════════════════════════════════════════════════════════════
 ```
 

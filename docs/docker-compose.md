@@ -1,5 +1,7 @@
 # Docker Compose Integration
 
+> **Mode note:** `dso://` and `dsofile://` URI patterns are **Local Mode only**. In Cloud Mode, secret routing is defined in `dso.yaml` via `secrets[].mappings` — not in the compose file. See the [Configuration Reference](configuration.md).
+
 DSO integrates seamlessly into your existing `docker-compose.yaml` files without requiring custom schema extensions. It utilizes standard `yaml.v3` AST parsing to preserve your comments and structure.
 
 ## 1. File Injection (Best Practice)

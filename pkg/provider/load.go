@@ -108,14 +108,21 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	pluginPath := filepath.Join(filepath.Clean(pluginDir), pluginName)
 
 	if err := validatePluginPath(pluginPath); err != nil {
-		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file or directory") {
-			return nil, nil, fmt.Errorf("provider plugin '%s' not found at %s. Ensure the plugin source exists in cmd/plugins/ and was built during installation", providerName, pluginPath)
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file or directory") || strings.Contains(err.Error(), "not accessible") {
+			return nil, nil, fmt.Errorf(
+				"provider plugin '%s' is not installed.\n"+
+					"  Expected: %s\n"+
+					"  Fix: sudo docker dso system setup --providers %s\n"+
+					"  Run: docker dso system doctor",
+				providerName, pluginPath, providerName,
+			)
 		}
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
 	}
 
 	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.
 	// This is a plugin-based architecture where the command must be dynamic.
+	fmt.Printf("[DSO] Using %s provider plugin: %s\n", strings.ToUpper(providerName), pluginPath)
 	cmd := exec.Command(pluginPath) // #nosec G702 G204
 	cmd.Env = sanitizeEnv()
 
@@ -128,13 +135,13 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	rpcClient, err := client.Client()
 	if err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("failed to start provider plugin client %s: %w", pluginName, err)
+		return nil, client, fmt.Errorf("Failed to start provider plugin '%s'.\n  Reason: The plugin binary could not be executed or failed to respond.\n  Fix: Verify plugin executable permissions and architecture.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
 	}
 
 	raw, err := rpcClient.Dispense("provider")
 	if err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("failed to dispense provider plugin %s: %w", pluginName, err)
+		return nil, client, fmt.Errorf("Failed to load provider '%s'.\n  Reason: The plugin is corrupt or incompatible with this version of DSO.\n  Fix: Reinstall plugins by running 'sudo docker dso system setup'.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
 	}
 
 	prov := raw.(api.SecretProvider)
@@ -145,7 +152,7 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	}
 	if err := prov.Init(providerConfig); err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("provider %s failed to initialize: %w", pluginName, err)
+		return nil, client, fmt.Errorf("Provider '%s' failed to initialize.\n  Reason: Invalid configuration, bad credentials, or network timeout.\n  Fix: Check your dso.yaml credentials and configuration.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
 	}
 
 	return prov, client, nil
