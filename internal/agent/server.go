@@ -65,7 +65,7 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	// slow path provider lookup
 	timer := observability.SecretFetchLatency.WithLabelValues(req.Provider)
 	start := time.Now()
-	
+
 	// Find the provider config in the global config
 	pName := req.Provider
 	if pName == "" {
@@ -152,7 +152,7 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 	if _, err := os.Stat(socketPath); err == nil {
 		conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil, fmt.Errorf("another DSO agent is already responsive on %s", socketPath)
 		}
 		// Stale socket, remove it
@@ -173,7 +173,9 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	go func() {
-		defer listener.Close()
+		defer func() {
+			_ = listener.Close()
+		}()
 		for {
 			conn, err := listener.Accept()
 			if err != nil {

@@ -35,7 +35,7 @@ func (p *FileProvider) GetSecret(name string) (map[string]string, error) {
 		return nil, fmt.Errorf("invalid file path: %w", err)
 	}
 
-	content, err := os.ReadFile(safePath)
+	content, err := os.ReadFile(safePath) // #nosec G304 -- safePath is constrained by config.IsSafePath.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read secret file %s: %w", path, err)
 	}

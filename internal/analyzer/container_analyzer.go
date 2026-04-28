@@ -3,7 +3,7 @@ package analyzer
 import (
 	"strings"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 )
 
 type AnalysisResult struct {
@@ -18,7 +18,7 @@ type AnalysisResult struct {
 	FixedPorts          []string
 }
 
-func AnalyzeContainer(container types.ContainerJSON) AnalysisResult {
+func AnalyzeContainer(container container.InspectResponse) AnalysisResult {
 	res := AnalysisResult{
 		ContainerName: strings.TrimPrefix(container.Name, "/"),
 		NetworkMode:   string(container.HostConfig.NetworkMode),

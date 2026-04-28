@@ -1,8 +1,9 @@
 package providers
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -81,15 +82,14 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 		if attempt < attempts {
 			// Exponential backoff: delay = base * 2^(attempt-1)
 			delay := baseBackoff * time.Duration(1<<(attempt-1))
-			// Add jitter: + random(0-100ms)
-			jitter := time.Duration(rand.Intn(100)) * time.Millisecond
+			jitter := time.Duration(secureJitterMillis()) * time.Millisecond // #nosec G115 -- secureJitterMillis returns 0-99.
 			totalDelay := delay + jitter
 
 			providerLogger.Warn("Failed to initialize provider, applying backoff",
 				zap.Error(err),
 				zap.Int("attempt", attempt),
 				zap.Duration("retry_in", totalDelay))
-			
+
 			time.Sleep(totalDelay)
 		}
 	}
@@ -104,6 +104,14 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 	})
 
 	return prov, nil
+}
+
+func secureJitterMillis() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return uint64(time.Now().UnixNano() % 100)
+	}
+	return binary.LittleEndian.Uint64(b[:]) % 100
 }
 
 // Shutdown cleanly kills all active provider plugin children

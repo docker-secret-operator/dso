@@ -29,7 +29,8 @@ func validatePluginPath(path string) error {
 
 	isAllowed := false
 	for _, dir := range allowedDirs {
-		if strings.HasPrefix(path, dir) {
+		rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			isAllowed = true
 			break
 		}
@@ -63,7 +64,7 @@ func isValidProviderName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
 			return false
 		}
 	}
@@ -135,13 +136,13 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	rpcClient, err := client.Client()
 	if err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("Failed to start provider plugin '%s'.\n  Reason: The plugin binary could not be executed or failed to respond.\n  Fix: Verify plugin executable permissions and architecture.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
+		return nil, client, fmt.Errorf("failed to start provider plugin %q: binary could not be executed or failed to respond: %w (path: %s)", providerName, err, pluginPath)
 	}
 
 	raw, err := rpcClient.Dispense("provider")
 	if err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("Failed to load provider '%s'.\n  Reason: The plugin is corrupt or incompatible with this version of DSO.\n  Fix: Reinstall plugins by running 'sudo docker dso system setup'.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
+		return nil, client, fmt.Errorf("failed to load provider %q: plugin is corrupt or incompatible: %w (path: %s)", providerName, err, pluginPath)
 	}
 
 	prov := raw.(api.SecretProvider)
@@ -152,7 +153,7 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	}
 	if err := prov.Init(providerConfig); err != nil {
 		client.Kill()
-		return nil, client, fmt.Errorf("Provider '%s' failed to initialize.\n  Reason: Invalid configuration, bad credentials, or network timeout.\n  Fix: Check your dso.yaml credentials and configuration.\n  Run: docker dso system doctor\n  Details: %v\n  Path: %s", providerName, err, pluginPath)
+		return nil, client, fmt.Errorf("provider %q failed to initialize: invalid configuration, bad credentials, or network timeout: %w (path: %s)", providerName, err, pluginPath)
 	}
 
 	return prov, client, nil

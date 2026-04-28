@@ -34,7 +34,7 @@ func ProcessEvent(msg events.Message, debug bool) {
 			return
 		}
 	}
-	
+
 	projectName := msg.Actor.Attributes["com.docker.compose.project"]
 	if projectName != "" {
 		if val, exists := recentDSOActions.Load(projectName); exists {
@@ -56,7 +56,7 @@ func ProcessEvent(msg events.Message, debug bool) {
 	fmt.Printf("\033[1;36m[DSO WATCH]\033[0m [%s] \033[1;1m%s\033[0m → %s\n", timestamp, event, name)
 
 	if debug {
-		fmt.Printf("   [DEBUG] ID: %s, From: %s, Action: %v\n", msg.Actor.ID[:12], msg.From, msg.Action)
+		fmt.Printf("   [DEBUG] ID: %s, Image: %s, Action: %v\n", msg.Actor.ID[:12], msg.Actor.Attributes["image"], msg.Action)
 		for k, v := range msg.Actor.Attributes {
 			if k != "name" {
 				fmt.Printf("           %s: %s\n", k, v)

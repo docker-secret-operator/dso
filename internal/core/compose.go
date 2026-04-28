@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +48,10 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	}
 
 	// Always load config (needed for label injection below, regardless of how secrets are fetched)
-	cfg, _ := config.LoadConfig(targetConfig)
+	cfg, err := config.LoadConfig(targetConfig)
+	if err != nil {
+		return fmt.Errorf("failed to load DSO config %s: %w", targetConfig, err)
+	}
 
 	var injectedSecrets map[string]string
 
@@ -86,7 +88,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		return fmt.Errorf("invalid compose file path: %w", err)
 	}
 
-	data, err := os.ReadFile(safePath)
+	data, err := os.ReadFile(safePath) // #nosec G304 -- safePath is constrained by config.IsSafePath.
 	if err != nil {
 		return fmt.Errorf("failed to read compose file %s: %w", filename, err)
 	}
@@ -110,7 +112,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 			for _, sec := range cfg.Secrets {
 				// Check if this service is a target for this secret
 				isTarget := false
-				
+
 				// 1.1 Explicit container naming
 				if len(sec.Targets.Containers) > 0 {
 					for _, targetName := range sec.Targets.Containers {
@@ -120,7 +122,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 						}
 					}
 				}
-				
+
 				// 1.2 Label-based matching (Exact match V1)
 				if !isTarget && len(sec.Targets.Labels) > 0 {
 					svcLabels := make(map[string]string)
@@ -129,7 +131,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 							svcLabels[k] = fmt.Sprintf("%v", v)
 						}
 					}
-					
+
 					matchesAll := true
 					for k, v := range sec.Targets.Labels {
 						if svcLabels[k] != v {
@@ -145,9 +147,9 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				// 1.3 Fallback to Legacy Discovery (if no targets defined)
 				if len(sec.Targets.Containers) == 0 && len(sec.Targets.Labels) == 0 {
 					// In legacy mode, we check if the service has 'dso.reloader=true'
-					// and manually check if it was intended. 
+					// and manually check if it was intended.
 					// For 'docker dso up', we usually inject into ALL unless specified.
-					isTarget = true 
+					isTarget = true
 				}
 
 				if !isTarget {
@@ -161,7 +163,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				}
 				labels["dso.reloader"] = "true"
 				labels["dso.compose.path"] = absPath
-				
+
 				// Track secrets for this service
 				existingSecrets := ""
 				if s, ok := labels["dso.secrets"].(string); ok {
@@ -206,7 +208,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 					} else {
 						envSection = make(map[string]interface{})
 					}
-					
+
 					for keyInProvider, envName := range sec.Mappings {
 						if val, ok := injectedSecrets[envName]; ok {
 							envSection[envName] = val
@@ -235,7 +237,9 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	// [DIAGNOSTIC] Print injection summary to terminal
 	for name, svcRaw := range parsed.Services {
 		svc, ok := svcRaw.(map[string]interface{})
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		if labels, ok := svc["labels"].(map[string]interface{}); ok {
 			if _, managed := labels["dso.reloader"]; managed {
 				fmt.Printf(" [DSO] Linked service '%s' to secrets: %v\n", name, labels["dso.secrets"])
@@ -245,14 +249,14 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 
 	// Step 2: Run docker compose via stdin
 	projectName := filepath.Base(filepath.Dir(absPath))
-	
+
 	// We use '-f -' to read the transformed YAML from stdin, avoiding disk leakage.
 	args := append([]string{"compose", "-p", projectName, "-f", "-", "up"}, extraArgs...)
-	cmd := exec.Command("docker", args...) 
-	
+	cmd := exec.Command("docker", args...) // #nosec G204 -- docker arguments are intentionally forwarded without shell expansion.
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = strings.NewReader(string(transformedData)) 
+	cmd.Stdin = strings.NewReader(string(transformedData))
 
 	// Rebuild process environment for the docker command
 	var finalEnvs []string
@@ -290,7 +294,7 @@ func PrintRedactedCompose(p *ComposeFile) {
 			redacted.Services[name] = svcRaw
 			continue
 		}
-		
+
 		newSvc := make(map[string]interface{})
 		for k, v := range svc {
 			if k == "environment" {
@@ -310,34 +314,7 @@ func PrintRedactedCompose(p *ComposeFile) {
 		}
 		redacted.Services[name] = newSvc
 	}
-	
+
 	d, _ := yaml.Marshal(&redacted)
 	fmt.Println(string(d))
-}
-
-
-func fetchSecretDirectly(provider, secretPath string) (string, error) {
-	socketPath := "/var/run/dso.sock"
-	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
-		socketPath = custom
-	}
-
-	client, err := injector.NewAgentClient(socketPath)
-	if err != nil {
-		return "", fmt.Errorf("agent connection failed: %w", err)
-	}
-
-	data, err := client.FetchSecret(provider, map[string]string{}, secretPath)
-	if err != nil {
-		return "", err
-	}
-
-	if len(data) == 1 {
-		for _, v := range data {
-			return v, nil
-		}
-	}
-
-	bytes, _ := json.Marshal(data)
-	return string(bytes), nil
 }

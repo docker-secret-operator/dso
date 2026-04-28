@@ -9,8 +9,8 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/providers"
-	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/internal/server"
+	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/spf13/cobra"
@@ -28,26 +28,28 @@ func NewAgentCmd() *cobra.Command {
 		Long:  `The legacy-agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			logger, _ := observability.NewLogger("info", "console", false)
-			defer logger.Sync()
+			defer func() {
+				_ = logger.Sync()
+			}()
 
 			cfgPath := ResolveConfig()
 			cfg, err := config.LoadConfig(cfgPath)
 			if err != nil {
-				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed", 
-					zap.Error(err), 
+				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed",
+					zap.Error(err),
 					zap.String("config_path", cfgPath))
 			}
 
 			// Initialize Cache & Store
 			cache := agent.NewSecretCache(5 * time.Minute)
 			storeManager := providers.NewSecretStoreManager(logger)
-			
+
 			// Initialize Reloader (Watcher)
 			reloader, err := watcher.NewReloaderController(logger)
 			if err != nil {
 				logger.Fatal("Failed to initialize reloader controller", zap.Error(err))
 			}
-			
+
 			// Initialize Trigger Engine
 			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg)
 
@@ -89,10 +91,10 @@ func NewAgentCmd() *cobra.Command {
 
 			<-ctx.Done()
 			logger.Info("Shutting down DSO Agent...")
-			
+
 			// Stop components
 			trigger.Stop()
-			
+
 			// Cleanup sockets
 			if err := os.Remove(socketPath); err != nil {
 				logger.Warn("Failed to remove IPC socket on shutdown", zap.String("path", socketPath), zap.Error(err))
@@ -100,14 +102,14 @@ func NewAgentCmd() *cobra.Command {
 			if err := os.Remove(driverSocket); err != nil {
 				logger.Warn("Failed to remove driver socket on shutdown", zap.String("path", driverSocket), zap.Error(err))
 			}
-			
+
 			fmt.Println("DSO Agent stopped.")
 		},
 	}
 
 	cmd.Flags().StringVar(&socketPath, "socket", "/var/run/dso.sock", "Path to DSO internal IPC socket")
 	cmd.Flags().StringVar(&driverSocket, "driver-socket", "/run/docker/plugins/dso.sock", "Path to Docker Secret Driver socket")
-	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8080", "Address to bind the REST API server (e.g. :8080)")
+	cmd.Flags().StringVar(&apiAddr, "api-addr", "127.0.0.1:8080", "Address to bind the REST API server")
 
 	return cmd
 }
