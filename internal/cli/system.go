@@ -78,7 +78,7 @@ func NewSystemCmd() *cobra.Command {
 }
 
 // ─────────────────────────────────────────────────────────────
-// dso system setup
+// docker dso system setup
 // ─────────────────────────────────────────────────────────────
 
 func newSystemSetupCmd() *cobra.Command {
@@ -113,12 +113,12 @@ Available providers: vault, aws, azure, huawei`,
 
 			// ── Privilege guard ──────────────────────────────────────────────
 			if os.Geteuid() != 0 {
-				return fmt.Errorf("'dso system setup' must be run as root: re-run with sudo docker dso system setup")
+				return fmt.Errorf("'docker dso system setup' must be run as root: re-run with sudo docker dso system setup")
 			}
 
 			// Non-Linux guard: systemd operations are Linux-only.
 			if runtime.GOOS != "linux" {
-				return fmt.Errorf("'dso system setup' is only supported on Linux with systemd: detected OS %s", runtime.GOOS)
+				return fmt.Errorf("'docker dso system setup' is only supported on Linux with systemd: detected OS %s", runtime.GOOS)
 			}
 
 			// ── Resolve provider list (flag → env → interactive → default) ──
@@ -624,7 +624,7 @@ func validateChecksum(tarPath, csPath string) error {
 }
 
 // ─────────────────────────────────────────────────────────────
-// dso system doctor
+// docker dso system doctor
 // ─────────────────────────────────────────────────────────────
 
 func newSystemDoctorCmd() *cobra.Command {

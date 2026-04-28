@@ -114,7 +114,7 @@ func (p *AWSProvider) WatchSecret(name string, interval time.Duration) (<-chan a
 }
 
 func main() {
-	// --version support: used by `dso system doctor` and `dso system setup`
+	// --version support: used by `docker dso system doctor` and `docker dso system setup`
 	// to validate the plugin binary is functioning correctly.
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		fmt.Printf("dso-provider-aws %s\n", version)
