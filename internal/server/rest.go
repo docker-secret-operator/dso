@@ -3,13 +3,16 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"strconv"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
+	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/gorilla/websocket"
@@ -39,9 +42,15 @@ type RESTServer struct {
 	Logger        *zap.Logger
 	Hub           *Hub
 	EventStore    *EventStore
+	Auth          *auth.Authenticator
 }
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/health" && r.URL.Path != "/api/events/secret-update" && !s.authorized(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	switch {
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
@@ -60,8 +69,17 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *RESTServer) authorized(r *http.Request) bool {
+	if s.Auth == nil || s.Auth.GetToken() == "" {
+		return true
+	}
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	token := strings.TrimPrefix(header, "Bearer ")
+	return s.Auth.Verify(token) == nil
+}
+
 func (s *RESTServer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, `{"status":"up"}`)
+	_, _ = fmt.Fprintf(w, `{"status":"up"}`)
 }
 
 func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -78,10 +96,10 @@ func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if len(events) == 0 {
-		w.Write([]byte("[]"))
+		_, _ = w.Write([]byte("[]"))
 		return
 	}
-	json.NewEncoder(w).Encode(events)
+	_ = json.NewEncoder(w).Encode(events)
 }
 
 func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +129,9 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 
 	initialEvents := s.EventStore.GetLast(limit, severity)
 	for _, ev := range initialEvents {
-		client.conn.WriteJSON(ev)
+		if err := client.conn.WriteJSON(ev); err != nil {
+			return
+		}
 	}
 
 	go client.writePump()
@@ -121,6 +141,10 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.Config == nil || !s.Config.Agent.Watch.Webhook.Enabled {
 		http.Error(w, "Webhooks are disabled", http.StatusForbidden)
+		return
+	}
+	if s.Config.Agent.Watch.Webhook.AuthToken == "" {
+		http.Error(w, "Webhook auth token is required when webhooks are enabled", http.StatusForbidden)
 		return
 	}
 
@@ -178,11 +202,11 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	fmt.Fprintf(w, `{"status":"accepted"}`)
+	_, _ = fmt.Fprintf(w, `{"status":"accepted"}`)
 }
 
 func (s *RESTServer) handleLogs(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, `{"status":"up"}`)
+	_, _ = fmt.Fprintf(w, `{"status":"up"}`)
 }
 
 func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
@@ -237,7 +261,7 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"active_secrets": res,
 		"total_count":    len(res),
 	})
@@ -263,6 +287,7 @@ func StartRESTServer(addr string, cache *agent.SecretCache, triggerEngine *agent
 		Logger:        logger,
 		Hub:           hub,
 		EventStore:    eventStore,
+		Auth:          auth.NewAuthenticator(),
 	}
 
 	mux := http.NewServeMux()
@@ -282,8 +307,23 @@ func StartRESTServer(addr string, cache *agent.SecretCache, triggerEngine *agent
 		zap.String("addr", addr),
 		zap.Duration("read_timeout", server.ReadTimeout),
 		zap.Duration("write_timeout", server.WriteTimeout))
+	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
+		logger.Warn("REST API is bound to a non-loopback address without DSO_AUTH_TOKEN")
+	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("REST API server failed", zap.Error(err))
 	}
+}
+
+func bindsPublic(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }

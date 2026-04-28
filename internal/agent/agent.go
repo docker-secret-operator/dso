@@ -70,7 +70,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 // handleEvent processes relevant Docker events concurrently.
 func (a *Agent) handleEvent(ctx context.Context, msg events.Message) {
-	containerID := msg.ID
+	containerID := msg.Actor.ID
 	project := msg.Actor.Attributes["com.docker.compose.project"]
 	service := msg.Actor.Attributes["com.docker.compose.service"]
 

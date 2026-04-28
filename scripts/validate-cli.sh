@@ -1,8 +1,10 @@
 #!/bin/bash
 set -e
+EXIT_CODE=0
 
 # Validate that no legacy commands are present in the codebase.
-# This prevents developers from introducing standalone 'dso' or 'dso-agent' references.
+# This prevents developers from introducing standalone CLI invocations while
+# allowing the Linux systemd service name (dso-agent.service).
 
 echo "🔍 Scanning for legacy CLI usage (dso-agent, standalone dso)..."
 
@@ -13,11 +15,30 @@ echo "🔍 Scanning for legacy CLI usage (dso-agent, standalone dso)..."
 # - CONTRIBUTING.md (unless it's a command example we missed)
 # - scripts/uninstall.sh (might need to handle legacy cleanup)
 
-EXCLUDE_FILES="README.md|CHANGELOG.md|ADOPTERS.md|CONTRIBUTING.md|docs/index.md|scripts/uninstall.sh|scripts/install.sh|scripts/install.ps1|scripts/validate-cli.sh|Dockerfile|CNCF_SANDBOX_APPLICATION.md"
+EXCLUDE_PATHS=(
+  ':!README.md'
+  ':!CHANGELOG.md'
+  ':!ADOPTERS.md'
+  ':!CONTRIBUTING.md'
+  ':!docs/index.md'
+  ':!scripts/uninstall.sh'
+  ':!scripts/install.sh'
+  ':!scripts/install.ps1'
+  ':!scripts/validate-cli.sh'
+  ':!Dockerfile'
+  ':!CNCF_SANDBOX_APPLICATION.md'
+)
 
-LEGACY_AGENT=$(grep -rE "\bdso-agent\b" . --exclude-dir=.git | grep -vE "$EXCLUDE_FILES" || true)
-# Only block 'dso ' if NOT preceded by 'docker ' and it's followed by a space
-LEGACY_DSO=$(grep -r "dso " . --exclude-dir=.git | grep -v "docker-dso" | grep -v "docker dso" | grep -vE "$EXCLUDE_FILES" || true)
+# Scan tracked text files only, so ignored local build artifacts cannot fail CI.
+# dso-agent is allowed as the systemd service name but not as a direct command.
+LEGACY_AGENT=$(git grep -nI -E '(^|[[:space:]`"'"'"'])(sudo[[:space:]]+)?dso-agent([[:space:]`"'"'"']|$)' -- . "${EXCLUDE_PATHS[@]}" \
+  | grep -vE 'dso-agent\.service|systemd|systemctl|journalctl|service|daemon|Agent:|Monitor:|Ensure .*dso-agent.*running|Cloud Mode Agent' \
+  | grep -v '"-u", "dso-agent"' || true)
+
+# Block standalone "dso <command>" examples/usages. The Docker CLI plugin form is
+# "docker dso <command>", and the internal systemd ExecStart is explicitly allowed.
+LEGACY_DSO=$(git grep -nI -E '(^|[[:space:]`"'"'"'])(sudo[[:space:]]+)?dso[[:space:]]+(init|apply|sync|inject|diff|env|secret|system|up|down|logs|watch|fetch|compose|inspect|legacy-agent)\b' -- . "${EXCLUDE_PATHS[@]}" \
+  | grep -vE 'docker dso|docker-dso|ExecStart=/usr/local/bin/dso legacy-agent' || true)
 
 if [ -n "$LEGACY_AGENT" ]; then
     echo "❌ Found legacy 'dso-agent' usage:"

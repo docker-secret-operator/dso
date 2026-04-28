@@ -22,7 +22,6 @@ func NewDockerInjector(logger *zap.Logger) *DockerInjector {
 	}
 }
 
-
 // LogInjectionEvent standardizes logging outputs with explicit boundaries mapping to the metrics requested.
 func (d *DockerInjector) LogInjectionEvent(secretName, containerName, eventType, status, errorMsg string) {
 	// Push dynamically to the global telemetry stream without blocking thread context bounds.
@@ -64,7 +63,9 @@ func (d *DockerInjector) SignalContainers(ctx context.Context, secretName string
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	defer func() {
+		_ = cli.Close()
+	}()
 
 	// Filter for containers that opted into signaling for this secret
 	filter := filters.NewArgs()

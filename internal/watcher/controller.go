@@ -39,10 +39,10 @@ type SecretCache interface {
 }
 
 type ReloaderController struct {
-	Logger  *zap.Logger
-	Targets sync.Map // map[string]*TargetContainer (key: containerID)
-	cli     *client.Client
-	Server  interface{}
+	Logger        *zap.Logger
+	Targets       sync.Map // map[string]*TargetContainer (key: containerID)
+	cli           *client.Client
+	Server        interface{}
 	Cache         SecretCache
 	Config        *dsoConfig.Config
 	rotationLocks sync.Map // map[string]*lockInfo (key: service name)
@@ -78,7 +78,7 @@ func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				r.Logger.Info("Shutting down ReloaderController event loop")
-				r.cli.Close()
+				_ = r.cli.Close()
 				return
 			case err := <-errCh:
 				r.Logger.Error("Docker Events API error", zap.Error(err))
@@ -86,7 +86,8 @@ func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 				time.Sleep(5 * time.Second)
 				msgCh, errCh = r.cli.Events(ctx, events.ListOptions{Filters: filterArgs})
 			case msg := <-msgCh:
-				if msg.Action == "start" {
+				switch msg.Action {
+				case "start":
 					if _, hasLabel := msg.Actor.Attributes["dso.reloader"]; hasLabel {
 						strategy := msg.Actor.Attributes["dso.update.strategy"]
 						if strategy == "" {
@@ -103,7 +104,7 @@ func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 						})
 						r.Logger.Info("Registered target container dynamically", zap.String("id", msg.Actor.ID))
 					}
-				} else if msg.Action == "die" || msg.Action == "stop" {
+				case "die", "stop":
 					if _, loaded := r.Targets.LoadAndDelete(msg.Actor.ID); loaded {
 						r.Logger.Info("De-registered target container", zap.String("id", msg.Actor.ID))
 					}
@@ -160,7 +161,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			usesSecret = true
 		} else {
 			for _, s := range target.Secrets {
-				if s == secretName || strings.Contains(secretName, s) || strings.Contains(s, secretName) {
+				if strings.TrimSpace(s) == secretName {
 					usesSecret = true
 					break
 				}
@@ -257,9 +258,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		} else if activeStrategy == "rolling" {
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
-			
+
 			rs := rotation.NewRollingStrategy(r.cli)
-			
+
 			go func() {
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
@@ -287,7 +288,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
-			
+
 			if r.Server != nil {
 				if as, ok := r.Server.(interface{ Emit(string) }); ok {
 					as.Emit("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart\nStopping container → removing → recreating with new secrets → starting")
@@ -328,14 +329,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 								break
 							}
 						}
-						
+
 						if containerUsesSecret {
 							cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
 							if data, found := r.Cache.Get(cacheKey); found {
 								for keyInProvider, envName := range sec.Mappings {
 									if val, ok := data[envName]; ok {
 										newEnvs[envName] = val
-									} else if val, ok := data[keyInProvider] ; ok {
+									} else if val, ok := data[keyInProvider]; ok {
 										newEnvs[envName] = val
 									}
 								}
@@ -354,8 +355,8 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// 4. Prepare new config
 				config := inspect.Config
 				// Clean up state that shouldn't be copied
-				config.Hostname = "" 
-				
+				config.Hostname = ""
+
 				// Merge new envs
 				for k, v := range newEnvs {
 					found := false
@@ -392,7 +393,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							break
 						}
 					}
-					
+
 					if targetMapping != nil {
 						injectConfig := targetMapping.Inject
 						if injectConfig.Type == "" {
@@ -423,10 +424,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// 6. Stop old and Start new
 				stopTimeout := 10
 				_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
-				
+
 				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
-					
+
 					// ROLLBACK WITH 3 RETRIES
 					for i := 0; i < 3; i++ {
 						_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
@@ -438,7 +439,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 						time.Sleep(time.Duration(i+1) * time.Second)
 					}
-					
+
 					r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
 					r.Logger.Error("CRITICAL: Rollback failed for service", zap.String("service", serviceName))
 					releaseLock()
@@ -483,7 +484,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				r.degraded.Delete(serviceName)
 				goto FINISH
 
-ROLLBACK:
+			ROLLBACK:
 				for i := 0; i < 3; i++ {
 					_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
 					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
@@ -493,11 +494,11 @@ ROLLBACK:
 					}
 					time.Sleep(time.Duration(i+1) * time.Second)
 				}
-				
+
 				r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
 				r.Logger.Error("CRITICAL: New container failed and rollback failed", zap.String("service", serviceName))
 
-FINISH:
+			FINISH:
 				releaseLock()
 			}()
 		} else {
@@ -549,12 +550,12 @@ FINISH:
 	if matchedCount == 0 {
 		msg := fmt.Sprintf("No managed containers found using secret: %s", secretName)
 		r.Logger.Warn(msg)
-		
+
 		// DIAGNOSTIC LOG: Print everything we KNOW
 		r.Targets.Range(func(k, v interface{}) bool {
 			target := v.(*TargetContainer)
-			r.Logger.Debug("Diagnostic Scan: Checking Target Map Entry", 
-				zap.String("id", target.ID), 
+			r.Logger.Debug("Diagnostic Scan: Checking Target Map Entry",
+				zap.String("id", target.ID),
 				zap.Strings("linked_secrets", target.Secrets))
 			return true
 		})
@@ -564,7 +565,7 @@ FINISH:
 				// Count existing targets for diagnosis
 				targetCount := 0
 				r.Targets.Range(func(_, _ interface{}) bool { targetCount++; return true })
-				
+
 				as.Emit(fmt.Sprintf("\033[1;33m[DSO SCAN]\033[0m Target map scan complete. Total managed containers in memory: %d", targetCount))
 				as.Emit("\033[1;33m[DSO ROTATION]\033[0m " + msg)
 			}

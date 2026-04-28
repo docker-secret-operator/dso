@@ -75,18 +75,17 @@ func (h *HuaweiProvider) Init(cfg map[string]string) error {
 
 	auth, err := credBuilder.SafeBuild()
 	if err != nil {
-		return fmt.Errorf(
-			"Huawei Cloud credentials error: %w\n"+
-				"  Fix: Set access_key/secret_key in dso.yaml, or set\n"+
-				"       HUAWEI_ACCESS_KEY / HUAWEI_SECRET_KEY environment variables,\n"+
-				"       or attach an IAM Agency to the ECS instance and provide HUAWEI_SECURITY_TOKEN",
-			err,
-		)
+		return fmt.Errorf("huawei Cloud credentials error: %w; fix: set access_key/secret_key in dso.yaml, set HUAWEI_ACCESS_KEY/HUAWEI_SECRET_KEY, or attach an IAM Agency and provide HUAWEI_SECURITY_TOKEN", err)
+	}
+
+	clientRegion, err := region.SafeValueOf(reg)
+	if err != nil {
+		return fmt.Errorf("invalid Huawei Cloud region %q: %w", reg, err)
 	}
 
 	h.client = csms.NewCsmsClient(
 		csms.CsmsClientBuilder().
-			WithRegion(region.ValueOf(reg)).
+			WithRegion(clientRegion).
 			WithCredential(auth).
 			Build(),
 	)
@@ -113,7 +112,7 @@ func (h *HuaweiProvider) GetSecret(name string) (map[string]string, error) {
 	}
 
 	if resp.Version == nil || resp.Version.SecretString == nil {
-		return nil, fmt.Errorf("Huawei CSMS returned an empty secret for '%s'", name)
+		return nil, fmt.Errorf("huawei CSMS returned an empty secret for %q", name)
 	}
 
 	// Try JSON decode first; fall back to {"value": "<raw-string>"} for plain strings.

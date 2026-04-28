@@ -22,10 +22,10 @@ func NewExportCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-            socketPath := "/var/run/dso.sock"
-		    if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
-			    socketPath = custom
-		    }
+			socketPath := "/var/run/dso.sock"
+			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
+				socketPath = custom
+			}
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
@@ -46,21 +46,24 @@ func NewExportCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			f, err := os.Create(safePath)
+			f, err := os.Create(safePath) // #nosec G304 -- safePath is constrained by config.IsSafePath.
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create output file %s: %v\n", output, err)
 				os.Exit(1)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
-            fmt.Fprintln(os.Stderr, "⚠️ WARNING: You are exporting secrets to local disk. Ensure this file is gitignored!")
+			fmt.Fprintln(os.Stderr, "⚠️ WARNING: You are exporting secrets to local disk. Ensure this file is gitignored!")
 
-            for k, v := range injectedEnvs {
-                if format == "env" {
-                    fmt.Fprintf(f, "%s=%s\n", k, v)
-                }
-            }
-            fmt.Printf("Secrets successfully exported to %s format at: %s\n", format, output)
+			for k, v := range injectedEnvs {
+				if format == "env" {
+					if _, err := fmt.Fprintf(f, "%s=%s\n", k, v); err != nil {
+						fmt.Fprintf(os.Stderr, "Failed to write output file %s: %v\n", output, err)
+						os.Exit(1)
+					}
+				}
+			}
+			fmt.Printf("Secrets successfully exported to %s format at: %s\n", format, output)
 		},
 	}
 	cmd.Flags().StringVarP(&format, "format", "f", "env", "Output format (env)")

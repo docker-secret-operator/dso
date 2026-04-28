@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -85,7 +84,7 @@ func isSystemdAvailable() bool {
 func runJournaldLogs(follow bool, since string, tail int, level string) {
 	args := []string{
 		"-u", "dso-agent",
-		"-l",                     // full output, no ellipsis
+		"-l", // full output, no ellipsis
 		"--no-pager",
 		fmt.Sprintf("-n %d", tail),
 	}
@@ -177,7 +176,9 @@ func fetchEvents(url string) []map[string]interface{} {
 		fmt.Fprintf(os.Stderr, "\033[33m      Is the agent running? Try: sudo systemctl start dso-agent\033[0m\n")
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -229,7 +230,6 @@ func journaldPriority(level string) string {
 type logColorWriter struct {
 	writer      io.Writer
 	levelFilter string
-	scanner     *bufio.Scanner
 }
 
 func (w *logColorWriter) Write(p []byte) (n int, err error) {
@@ -243,7 +243,9 @@ func (w *logColorWriter) Write(p []byte) (n int, err error) {
 		if w.levelFilter != "" && !strings.Contains(strings.ToUpper(line), w.levelFilter) {
 			continue
 		}
-		fmt.Fprintln(w.writer, coloured)
+		if _, err := fmt.Fprintln(w.writer, coloured); err != nil {
+			return n, err
+		}
 	}
 	return len(p), nil
 }
