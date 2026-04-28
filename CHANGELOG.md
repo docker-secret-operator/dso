@@ -16,13 +16,14 @@ All notable changes to this project will be documented in this file.
   and SHA256-validates provider plugins, and activates the daemon automatically.
 - **`dso system doctor`**: Read-only diagnostics showing binary path, detected mode, vault/config
   presence, systemd status, and per-plugin availability + version.
-- **Plugin distribution**: All four providers (`vault`, `aws`, `azure`, `huawei`) are now shipped
-  as a unified, version-aligned tarball (`dso-plugins-{os}-{arch}-{version}.tar.gz`).
+- **Selective plugin installation**: `dso system setup` supports installing specific providers via `--providers aws,vault` or interactive prompts.
+- **Full Cloud Providers**: `aws`, `azure`, and `huawei` providers are fully implemented with official SDKs (replacing earlier stubs).
+- **Plugin distribution**: All four providers are shipped as a unified, version-aligned tarball (`dso-plugins-{os}-{arch}-{version}.tar.gz`).
 - **GoReleaser pipeline**: Multi-arch prebuilt binaries (Linux/macOS × amd64/arm64).
   No Go installation required on end-user machines.
 - **SHA256 integrity validation**: Both `install.sh` and `dso system setup` verify checksums
   before writing any files to disk.
-- **Atomic rollback**: `dso system setup` removes all partial state on any step failure.
+- **Atomic rollback**: `dso system setup` removes partial state on failure without destroying preserved plugins.
 
 ### Changed
 
@@ -36,11 +37,6 @@ All notable changes to this project will be documented in this file.
 
 - Legacy agent command kept as `dso agent` (unchanged) for zero-touch V2 systemd upgrades.
 - PATH shadowing detection in `install.sh` warns when a global binary conflicts with local install.
-
-### Known Limitations
-
-- `dso-provider-aws`, `dso-provider-azure`, and `dso-provider-huawei` are included in the
-  plugin bundle but return `not yet implemented` at runtime. `dso-provider-vault` is fully functional.
 
 ---
 
