@@ -1,109 +1,210 @@
-# DSO System Architecture (V3.1)
+# DSO System Architecture (V3.2)
 
-The Docker Secret Operator (DSO) is a **Secret Reconciliation Engine** designed for standalone Docker and Docker Compose environments. It implements a **zero-persistence model** to ensure sensitive data is fetched from trusted providers and injected into containers without ever being written to the host's physical disk.
-
----
-
-## 🏗️ Core Components
-
-### 1. DSO Agent
-The primary long-running orchestration process. It manages authentication with secret providers, maintains an in-memory RAM cache, and executes the core reconciliation loops.
-
-### 2. Multi-Provider Layer
-A pluggable system that connects to various secret backends (HashiCorp Vault, AWS, Azure, Huawei, File). V3.1 allows **simultaneous** connection to multiple backends via the `providers` map.
-
-### 3. Watcher Engine
-An event-driven component that monitors:
-- **Docker Socket**: Real-time listening for container lifecycle events (`start`, `die`, `stop`).
-- **Secret Providers**: Periodic polling (configurable) or webhook-based detection of secret updates.
-
-### 4. Reloader Controller
-Responsible for the atomic rotation of target containers. In V2, it incorporates **Smart Checksum Comparison** to only trigger rotations when actual secret data changes.
+The Docker Secret Operator (DSO) is a **runtime secret injector** designed for standalone Docker and Docker Compose environments. It implements a **zero-persistence model** to ensure sensitive data is never written to the host's physical disk — secrets are fetched at runtime and injected directly into container memory via `tmpfs`.
 
 ---
 
-## 🔄 Data Flow Execution
+## 🏗️ Execution Models
 
-DSO follows a precise, deterministic sequence for every secret reconciliation event:
+DSO has **two distinct execution modes**, each with its own architecture:
 
-1. **Load Configuration**: The CLI/Agent resolves the `dso.yaml` through the `ResolveConfig` utility, performing a high-speed schema validation.
-2. **Initialize Providers**: The provider registry invokes the required RPC-based plugins (AWS, Vault, etc.) and establishes secure authentication sessions.
-3. **Fetch & Decrypt**: Secret data is retrieved over TLS and decrypted into the Agent's volatile RAM. 
-4. **Compare Checksum**: The `TriggerEngine` computes a SHA-256 hash of the new secret and compares it with the cached version. If identical, the process silently terminates to avoid container churn.
-5. **Prepare Tar Stream**: If a change is detected, the `TarStreamer` packages the secret into an in-memory tar archive, ensuring no plaintext data hits the physical disk.
-6. **Trigger Rotation**:
-    - **Backup**: The `Reloader` renames the active container to a backup name.
-    - **Inject**: The tar stream is uploaded to the new container's `tmpfs` via the Docker API.
-    - **Start**: The new container starts; the old one is removed only after a successful health check pass.
+### Local Mode (Default)
+- **Trigger**: `docker dso up <args>`
+- **Execution**: In-process CLI tool (no daemon)
+- **Secret Store**: User's encrypted local vault (`~/.dso/vault.enc`)
+- **Injection**: Environment variables (`dso://`) or tmpfs files (`dsofile://`)
+- **Use Case**: Development, CI/CD, local testing — no root required, no cloud account needed
+
+**Local Mode Flow:**
+```
+docker dso up
+  → Parse docker-compose.yaml
+  → Resolve dso:// and dsofile:// from vault.enc
+  → Inject secrets into compose file (memory only)
+  → Execute `docker compose up` with resolved file
+  → Secrets never touch disk
+```
+
+### Cloud Mode (Optional)
+- **Trigger**: Systemd daemon (`dso-agent`)
+- **Execution**: Background long-running process (requires root, systemd)
+- **Secret Store**: Provider backends (Vault, AWS, Azure, Huawei)
+- **Injection**: Environment variables only (file injection not supported in Cloud Mode)
+- **Use Case**: Production multi-host deployments, centralized secret management
+
+**Cloud Mode Flow:**
+```
+systemd: dso-agent
+  → Listen on Docker socket (/var/run/docker.sock)
+  → Watch for container lifecycle events
+  → Fetch secrets from provider backends on demand
+  → Rotate secrets when changes detected
+  → Maintain in-memory cache of secrets
+```
 
 ---
 
-## 📉 Failure Flow & Resilience
+## 🏗️ Key Components
 
-DSO is designed for high availability, ensuring that transient provider failures do not impact running containers.
+### CLI Layer (Local Mode)
+- **Compose File Parser**: AST-based parsing of docker-compose.yaml
+- **Vault Manager**: AES-256-GCM encryption/decryption of local secrets
+- **Injector Client**: RPC communication with optional Cloud Mode daemon
+- **Commands**: `init`, `secret set/get/list`, `up`, `system doctor`
 
-1. **Detection**: If a provider call (e.g., AWS Secrets Manager) fails due to network timeout or expired credentials, the Agent catches the error.
-2. **Retry with Backoff + Jitter**: DSO immediately triggers an exponential backoff loop. It waits for a base interval (default 2s) which doubles with each failure, adding a random jitter to prevent "thundering herd" syndrome on your secret backend.
-3. **Max Attempts & Thresholds**: If the failure persists beyond the maximum retry count (default 5 attempts), the Agent ceases active retries for that specific reconciliation cycle.
-4. **Resilient Skip**: DSO **never** removes or overwrites a secret if the fetch fails. It retains the last known-good secret in the RAM cache and logs a structured `ERROR` with the specific provider failure details for external alerting systems.
+### Agent Layer (Cloud Mode)
+- **Event Listener**: Docker socket monitoring for container lifecycle events
+- **Provider Registry**: RPC-based plugin system for Vault, AWS, Azure, Huawei
+- **Reconciliation Engine**: Determines when containers need secret rotation
+- **Rotation Controller**: Executes container restart/restart+wait sequences
 
-### 👤 User Impact
-In the event of a provider outage or sync failure, the system falls back to a "safe state":
-- **No Deletion**: Secrets are **never** removed from target containers.
-- **No Restarts**: Containers are **not** restarted or rotated if a fetch occurs in a failure state.
-- **Continuity**: The application continues to run using its last-known-good secret configuration while the operator continues to retry the provider in the background.
+### Observability Layer (Both Modes)
+- **Logging Audit**: Prevents secrets from appearing in logs or stderr
+- **Prometheus Metrics**: 30+ metrics for monitoring injection, rotation, provider health
+- **Event Deduplication**: TTL-based cache prevents duplicate processing
+- **Provider Supervision**: Crash detection, restart backoff, health tracking
 
 ---
 
-##  diagrama Flow Diagram (ASCII)
+## 🔄 Secret Injection Flow
 
-```text
-  [Secret Providers]
-          ↓
-  [DSO Multi-Provider Map] -- (Retry + Jitter)
-          ↓
-  [In-Memory RAM Cache] -- (Checksum Check)
-          ↓
-  [DSO Reconciliation Engine] -- (Target Selection)
-          ↓
-  [Docker API (Socket)]
-          ↓
-  [In-Memory Tar Streaming]
-          ↓
-  [Target Container (tmpfs)]
+### Local Mode Injection (Single-shot)
+```
+1. Parse compose file (AST)
+2. Identify dso:// and dsofile:// references
+3. For each reference:
+   a. Decrypt secret from vault.enc
+   b. Inject into environment map (dso://)
+   c. OR prepare tmpfs mount (dsofile://)
+4. Merge resolved secrets into compose AST
+5. Pass resolved compose to docker compose up
+6. Docker runs containers with injected secrets
+7. Secrets wiped from CLI process on exit
+```
+
+### Cloud Mode Rotation (Event-driven)
+```
+1. Docker daemon emits container lifecycle event
+2. Event handler deduplicates (prevents duplicates within TTL)
+3. Check dso.yaml configuration for this container
+4. Fetch secrets from configured providers (with retry backoff)
+5. Compare new secrets vs cached secrets (checksum)
+6. If changed:
+   a. Stop current container (gracefully or hard)
+   b. Start new container with updated environment
+   c. Verify health (if health check configured)
+   d. Clean up old container
+7. If unchanged: skip rotation (avoid unnecessary restarts)
+8. Log rotation event with redacted secrets
+```
+
+### Retry & Resilience Behavior
+- **Provider Failure**: Exponential backoff (1s → 2s → 4s → ... → 30s max) with jitter
+- **Max Attempts**: Configurable, default 5 before giving up
+- **Graceful Degradation**: If fetch fails, keep running with last-known-good secrets
+- **No Data Loss**: Secrets never deleted, only updated or skipped
+
+---
+
+## 🛠️ Provider Supervision & Recovery
+
+DSO includes runtime supervision features to maintain operational reliability:
+
+- **Health Monitoring**: Periodic heartbeat pings to providers (default 30s interval)
+- **Crash Detection**: Tracks consecutive failures per provider
+- **Restart Backoff**: Exponential backoff when restarting failed providers (1s → 2s → 4s → ... → 30s cap)
+- **Degraded Mode**: If a provider fails, DSO logs error but continues with cached secrets
+- **No Cascading Failures**: Container rotation only triggers when secrets actually change (checksum validation)
+
+---
+
+## 📊 Data Flow Diagram
+
+### Local Mode (Single Request)
+```
+docker dso up
+    ├─ Parse docker-compose.yaml
+    ├─ Read dso:// and dsofile:// references
+    ├─ Decrypt from ~/.dso/vault.enc (AES-256-GCM)
+    ├─ Inject into environment (memory only)
+    └─ Execute: docker compose up [resolved file via stdin]
+        └─ Secrets never written to host disk
+```
+
+### Cloud Mode (Continuous)
+```
+systemd: dso-agent
+    ├─ Connect to Docker socket (/var/run/docker.sock)
+    ├─ Listen for events (container start, stop, die)
+    ├─ Deduplicate events (TTL: 30s default)
+    ├─ Load dso.yaml configuration
+    ├─ Fetch secrets from providers (Vault/AWS/Azure/Huawei)
+    │   └─ Retry with exponential backoff on failure
+    ├─ Cache secrets in RAM
+    ├─ Compare checksum: new vs cached
+    │   ├─ If changed: trigger rotation
+    │   │   ├─ Stop old container (graceful or hard)
+    │   │   ├─ Start new container (env updated)
+    │   │   ├─ Health check (if configured)
+    │   │   └─ Clean up old container
+    │   └─ If unchanged: skip (avoid unnecessary restarts)
+    └─ Emit metrics (Prometheus)
+        └─ rotation_total, rotation_errors, provider_health, etc.
 ```
 
 ---
 
 ## 🛡️ Security Design Decisions
 
-- **In-Memory Tar Streaming**: DSO packages secrets into a tar archive in RAM and uploads them directly to the container's `tmpfs` mounts via the Docker API, bypassing the host's filesystem entirely.
-- **Service-Level Concurrency Locking**: DSO prevents race conditions by ensuring only one rotation is active per service at any time.
-- **Log Redaction**: Centralized redaction logic ensures that sensitive values are masked before reaching any output stream.
-- **Strict Targeting**: V2's `targets` block ensures that secrets are only delivered to explicitly authorized containers, even if labels are accidentally applied elsewhere.
+### Zero-Persistence Guarantee
+- **Local Mode**: Secrets exist only in CLI process memory; never written to disk
+- **Cloud Mode**: Secrets cached in agent RAM; never persisted to host filesystem
+- **Injection**: Files written to container `tmpfs` (RAM disk), automatically cleaned on container exit
+
+### Injection Strategy Tradeoffs
+| Strategy | Local Mode | Cloud Mode | Security | Notes |
+|----------|-----------|-----------|----------|-------|
+| `dso://` (env var) | ✓ | ✓ | ⚠️ Lower | Visible to `docker inspect`, process env |
+| `dsofile://` (tmpfs) | ✓ | ❌ | ✓ Higher | Invisible to `docker inspect`, file-based |
+
+**Recommendation**: Use `dsofile://` in production (Local Mode only); use `dso://` for development convenience.
+
+### Log & Error Redaction
+- All DSO output passes through centralized redaction engine
+- Pattern-based detection removes secrets from logs, errors, stack traces
+- Prevents accidental exposure in observability systems
+
+### Event Deduplication
+- Prevents same secret from being processed multiple times in quick succession
+- TTL-based cache (default 30s) eliminates "thundering herd" on Docker daemon restarts
+- Reduces unnecessary container churn
+
+### Provider Trust Assumptions
+- Providers must be reachable over TLS (HTTPS or encrypted protocols)
+- Provider credentials configured in `dso.yaml` (on secure host filesystem)
+- Docker daemon assumed secure and uncompromised
+- Host user assumed untrusted (no root required for Local Mode)
 
 ---
 
-## 🏗️ Why This Design?
+## 🏗️ Why These Design Choices?
 
-### 🔄 Checksum-based Rotation
-**The Problem**: Traditional operators often restart containers every time a sync occurs, even if the secret hasn't changed, leading to unnecessary downtime.
-**The DSO Solution**: DSO calculates a SHA-256 checksum of the fetched secret. We only trigger the Docker rotation logic if the checksum differs from the last successful injection.
+### Why Checksum Validation?
+**Problem**: Traditional operators restart containers on every sync, even if secrets haven't changed → unnecessary downtime and log churn.  
+**Solution**: Validate that secret content actually changed before triggering rotation. Only restart if necessary.
 
-### 📡 Multi-Provider Map
-**The Problem**: Many organizations use multiple secret stores (e.g., Vault for DBs, AWS for infrastructure). Switching between them usually requires different agents.
-**The DSO Solution**: The V2 `providers` map allows a single DSO instance to bridge multiple backends simultaneously, providing a unified injection interface.
+### Why Event Deduplication?
+**Problem**: Docker daemon restart emits many container events; reprocessing same secret multiple times is wasteful.  
+**Solution**: TTL-based fingerprinting cache deduplicates identical events within a window, preventing cascade failures.
 
-### 🎯 Label-based Targeting
-**The Problem**: Hardcoding container names in configuration files is fragile and doesn't scale with dynamic stacks.
-**The DSO Solution**: By using Docker labels (`dso.inject: "true"`), DSO can automatically discover and inject secrets into any container that matches the selector, making it ideal for elastic environments.
+### Why Two Execution Modes?
+**Problem**: Local development and production have completely different requirements (no daemon vs. centralized management).  
+**Solution**: Local Mode for dev/CI (no root, encrypted vault on laptop); Cloud Mode for production (daemon, provider backends).
 
----
+### Why tmpfs Injection?
+**Problem**: Environment variables are visible to `docker inspect`, host users, and even the container itself.  
+**Solution**: `dsofile://` mounts secrets as read-only files in `tmpfs` (kernel RAM), making them invisible to introspection tools.
 
-## 📈 Roadmap
-
-DSO is evolving into an intelligent reconciliation platform. For the detailed phase-by-phase vision, see the [ROADMAP.md](./ROADMAP.md).
-
-- **Phase 1**: Core Engine Completion (`apply`, `diff`, background loop).
-- **Phase 2**: Controlled Ecosystem Expansion (GSM, 1Password).
-- **Phase 3**: Intelligence & Observability (AI Sentinel, OTel).
+### Why RPC + Plugin System?
+**Problem**: Hard-coding each provider (Vault, AWS, Azure) in the main codebase creates maintenance burden and version lock-in.  
+**Solution**: Plugin system via HashiCorp's `go-plugin` allows independent provider versioning and testing.

@@ -205,7 +205,7 @@ When you run `docker dso up`, the following happens:
 ## 11. Configure DSO Vault Provider (`dso.yaml`)
 
 ```yaml
-# DSO Example: HashiCorp Vault (V3.1)
+# DSO Example: HashiCorp Vault (V3.2)
 providers:
   dev-vault:
     type: vault
@@ -309,4 +309,3 @@ By integrating **HashiCorp Vault** with **DSO**, you have replaced static, insec
 > **Production Reminder**: For production environments, always use a dedicated Vault Service Account (AppRole or Kubernetes Auth) instead of a root token, and ensure Vault is configured with high availability and a secure storage backend.
 
 ---
-*Senior DevOps Documentation Team | 2026*

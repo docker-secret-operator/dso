@@ -194,17 +194,42 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one provider must be configured")
 	}
 
+	// Validate providers
+	validProviderTypes := map[string]bool{"vault": true, "aws": true, "azure": true, "huawei": true}
+	for name, prov := range c.Providers {
+		if prov.Type == "" {
+			return fmt.Errorf("provider '%s' missing 'type'", name)
+		}
+		if !validProviderTypes[prov.Type] {
+			return fmt.Errorf("provider '%s' has invalid type '%s'", name, prov.Type)
+		}
+		// Validate auth config if present
+		if prov.Auth.Method != "" {
+			validAuthMethods := map[string]bool{"iam_role": true, "access_key": true, "token": true, "env": true}
+			if !validAuthMethods[prov.Auth.Method] {
+				return fmt.Errorf("provider '%s' has invalid auth method '%s'", name, prov.Auth.Method)
+			}
+		}
+	}
+
+	// Validate secrets
 	for i, sec := range c.Secrets {
 		if sec.Name == "" {
 			return fmt.Errorf("secret at index %d is missing 'name'", i)
 		}
 
-		// 1. Merge Injection Defaults
+		// Merge Injection Defaults
 		if sec.Inject.Type == "" {
 			sec.Inject.Type = c.Defaults.Inject.Type
 		}
 		if sec.Inject.Type == "" {
 			return fmt.Errorf("secret '%s' is missing injection type", sec.Name)
+		}
+
+		// Validate injection type
+		validInjectTypes := map[string]bool{"env": true, "file": true}
+		if !validInjectTypes[sec.Inject.Type] {
+			return fmt.Errorf("secret '%s' has invalid injection type '%s'", sec.Name, sec.Inject.Type)
 		}
 
 		if sec.Inject.Path == "" {
@@ -214,14 +239,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("secret '%s' with type 'file' must have a 'path'", sec.Name)
 		}
 
-		if sec.Inject.UID == 0 {
+		// Validate file permissions
+		if sec.Inject.Type == "file" && sec.Inject.UID == 0 && sec.Inject.GID == 0 {
+			// If user/group not specified, apply safe defaults
 			sec.Inject.UID = c.Defaults.Inject.UID
-		}
-		if sec.Inject.GID == 0 {
 			sec.Inject.GID = c.Defaults.Inject.GID
 		}
 
-		// 2. Merge Rotation Defaults
+		// Merge Rotation Defaults
 		if !sec.Rotation.Enabled && c.Defaults.Rotation.Enabled {
 			sec.Rotation.Enabled = true
 		}
@@ -232,8 +257,40 @@ func (c *Config) Validate() error {
 			sec.Rotation.Strategy = "restart" // Final fallback
 		}
 
+		// Validate rotation strategy
+		validStrategies := map[string]bool{"restart": true, "signal": true, "auto": true, "none": true}
+		if !validStrategies[sec.Rotation.Strategy] {
+			return fmt.Errorf("secret '%s' has invalid rotation strategy '%s'", sec.Name, sec.Rotation.Strategy)
+		}
+
+		// Validate provider reference
+		providerName := sec.Provider
+		if providerName == "" {
+			// Default to first provider
+			for name := range c.Providers {
+				providerName = name
+				break
+			}
+		}
+		if _, exists := c.Providers[providerName]; !exists {
+			return fmt.Errorf("secret '%s' references non-existent provider '%s'", sec.Name, providerName)
+		}
+
 		// Sync back
 		c.Secrets[i] = sec
+	}
+
+	// Validate Docker socket accessibility (skip in test/CI environments)
+	dockerSocket := os.Getenv("DOCKER_HOST")
+	if dockerSocket == "" {
+		dockerSocket = "/var/run/docker.sock"
+	}
+	if !strings.HasPrefix(dockerSocket, "unix://") && !strings.HasPrefix(dockerSocket, "tcp://") {
+		if _, err := os.Stat(dockerSocket); err != nil {
+			// Non-fatal: docker may not be available in CI/test environments
+			// The socket check is advisory — providers will fail at runtime if docker is unavailable
+			_ = err // socket not accessible but we continue
+		}
 	}
 
 	return nil

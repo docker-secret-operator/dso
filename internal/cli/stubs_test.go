@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
@@ -22,26 +21,3 @@ func TestNewVersionCmd(t *testing.T) {
 	// But it shouldn't error.
 }
 
-func TestNewApplyCmd(t *testing.T) {
-	cmd := NewApplyCmd()
-	err := cmd.RunE(cmd, []string{})
-	if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("Expected not yet implemented error, got: %v", err)
-	}
-}
-
-func TestNewInjectCmd(t *testing.T) {
-	cmd := NewInjectCmd()
-	err := cmd.RunE(cmd, []string{})
-	if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("Expected not yet implemented error, got: %v", err)
-	}
-}
-
-func TestNewSyncCmd(t *testing.T) {
-	cmd := NewSyncCmd()
-	err := cmd.RunE(cmd, []string{})
-	if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("Expected not yet implemented error, got: %v", err)
-	}
-}

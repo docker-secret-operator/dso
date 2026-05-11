@@ -1,4 +1,4 @@
-# DSO Example: Azure Key Vault (V2)
+# DSO Example: Azure Key Vault (V3.2)
 providers:
   azure-prod:
     type: azure
@@ -7,7 +7,8 @@ providers:
 
 agent:
   cache: true
-  refresh_interval: 1m # Check every minute
+  watch:
+    polling_interval: 1m
 
 # ── Azure Key Vault note ───────────────────────────────────────────────────────
 # Azure secrets are plain strings (not JSON). DSO wraps each value internally

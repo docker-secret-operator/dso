@@ -10,7 +10,7 @@ permalink: /
 **Kubernetes-grade secret management for Docker and Docker Compose â no Kubernetes required.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![Release: v3.1.0](https://img.shields.io/badge/Release-v3.1.0-blueviolet.svg)](https://github.com/docker-secret-operator/dso/releases)
+[![Release: v3.2.0](https://img.shields.io/badge/Release-v3.2.0-blueviolet.svg)](https://github.com/docker-secret-operator/dso/releases)
 [![Architecture: Trigger Engine](https://img.shields.io/badge/Architecture-Trigger%20Engine-black.svg?logo=apache&logoColor=white)](https://github.com/docker-secret-operator/dso)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Stars](https://img.shields.io/github/stars/docker-secret-operator/dso?style=social)](https://github.com/docker-secret-operator/dso/stargazers)
@@ -817,22 +817,6 @@ docker-secret-operator/
 ```
 
 ---
-â README.md                      # Main documentation
-```
-ility/             # Logging (zap) + Prometheus metrics
-â   âââ provider/                  # Plugin loader (go-plugin)
-â
-âââ plugin/
-â   âââ config.json                # Docker V2 Secret Driver manifest
-â
-âââ examples/                      # Ready-to-use deployment examples
-âââ .github/workflows/             # CI/CD pipelines (lint, security, release)
-âââ _config.yml                    # GitHub Pages / Jekyll configuration
-âââ install.sh                     # One-command installer
-âââ uninstall.sh                   # Clean removal script
-âââ dso.yaml                       # Example configuration file
-```
-
 ---
 
 ## Service Management

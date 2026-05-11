@@ -1,4 +1,4 @@
-# DSO Example: Huawei Cloud CSMS (V2)
+# DSO Example: Huawei Cloud CSMS (V3.2)
 providers:
   huawei-prod:
     type: huawei
@@ -6,8 +6,9 @@ providers:
     project_id: YOUR_PROJECT_ID
 
 agent:
-  refresh_interval: 1m
   cache: true
+  watch:
+    polling_interval: 1m
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # No access_key / secret_key needed when using IAM Agency on ECS.

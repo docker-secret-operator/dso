@@ -57,13 +57,11 @@ sudo chmod 600 /etc/dso/dso.yaml
 **`dso.yaml`** — connects to AWS and maps secret keys to ENV vars:
 
 ```yaml
-# DSO Example: AWS Secrets Manager (V3.1)
+# DSO Example: AWS Secrets Manager (V3.2)
 providers:
   aws-prod:
     type: aws
     region: us-east-2    # Change to your AWS region
-    auth:
-      method: iam_role
 
 defaults:
   inject:
@@ -88,8 +86,8 @@ secrets:
 ## Step 3 — Start the DSO Agent
 
 ```bash
-sudo systemctl start DSO Agent
-sudo systemctl status DSO Agent
+sudo systemctl start dso-agent
+sudo systemctl status dso-agent
 
 # Confirm it can reach your secret:
 docker dso fetch local_secret

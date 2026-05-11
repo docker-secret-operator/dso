@@ -168,3 +168,124 @@ docker dso validate --config /etc/dso/dso.yaml
 ```
 
 Exits `0` on success. Exits `1` with a descriptive error on parse or schema failure.
+
+---
+
+## Monitoring & Observability (Cloud Mode)
+
+### Health & Status
+
+Check agent status:
+```bash
+sudo systemctl status dso-agent
+
+# View live logs
+journalctl -u dso-agent -f
+
+# Trigger a manual health check
+curl http://localhost:8080/health
+```
+
+### Prometheus Metrics
+
+DSO exports 30+ Prometheus metrics on `:9090/metrics`. Key metrics for operations:
+
+| Metric | Type | Purpose |
+|--------|------|---------|
+| `dso_provider_health_check_status` | Gauge | Provider health (1=healthy, 0=unhealthy) per provider |
+| `dso_provider_heartbeat_latency_seconds` | Histogram | Provider health check latency |
+| `dso_provider_restarts_total` | Counter | Provider crash/restart events |
+| `dso_reconnect_duration_seconds` | Histogram | Time to reconnect to Docker daemon |
+| `dso_reconnect_attempts_total` | Counter | Docker daemon reconnection attempts |
+| `dso_injection_attempts_total` | Counter | Secret injection attempts by result |
+| `dso_injection_latency_seconds` | Histogram | Time to inject a secret |
+| `dso_queue_processing_latency_seconds` | Histogram | Event processing time |
+| `dso_queue_reject_rate` | Gauge | Fraction of rejected events (0-1) |
+| `dso_worker_pool_utilization` | Gauge | Worker thread utilization percent |
+| `dso_events_deduped_total` | Counter | Duplicate events suppressed |
+| `dso_dedup_cache_miss_rate` | Gauge | Dedup cache effectiveness (0-1) |
+| `dso_runtime_memory_bytes` | Gauge | Agent process memory usage |
+| `dso_runtime_goroutine_count` | Gauge | Active goroutines |
+
+Scrape with your monitoring system:
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'dso'
+    static_configs:
+      - targets: ['localhost:9090']
+```
+
+### Runtime Recovery Behavior
+
+**Provider Failure:**
+- Agent detects provider fetch failure
+- Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s (capped)
+- Keeps retrying with jitter to prevent thundering herd
+- Logs error with provider-specific details for alerting
+
+**Docker Daemon Restart:**
+- Agent monitors Docker socket
+- On disconnect, enters reconnect loop (same backoff strategy)
+- Deduplicates events (TTL: 30s) to avoid cascade processing
+- Continues with cached secrets while reconnecting
+
+**Container Churn:**
+- Bounded event queue (2000 events max) prevents memory exhaustion
+- 32 worker threads process events in parallel
+- Excess events dropped with warning log
+- Alert if `dso_events_dropped_total` > 0
+
+**No Data Loss:**
+- Secrets never deleted during failures
+- Rotation only happens if fetch succeeds AND secret changed
+- If provider is unavailable, containers keep running with last-known-good secrets
+
+---
+
+## Troubleshooting
+
+### Agent Won't Start
+
+```bash
+# Check if config is valid
+docker dso validate --config /etc/dso/dso.yaml
+
+# View startup logs
+journalctl -u dso-agent -n 50
+
+# Common issues:
+# - Provider plugin missing: ls -la /usr/local/lib/dso/plugins/
+# - Invalid YAML: docker dso validate
+# - Socket permission denied: ls -la /var/run/dso.sock
+```
+
+### Secrets Not Injecting
+
+```bash
+# Check agent health
+curl http://localhost:8080/health
+
+# Check cached secrets
+curl http://localhost:8080/secrets
+
+# View agent logs for this container
+journalctl -u dso-agent | grep <container_id>
+
+# Verify provider auth
+# AWS: aws sts get-caller-identity
+# Azure: az account show
+# Vault: curl -H "X-Vault-Token: $VAULT_TOKEN" http://vault:8200/v1/sys/health
+```
+
+### High Event Queue Depth
+
+If `dso_event_queue_depth` is near max:
+```bash
+# Check Docker daemon stability
+docker ps -q | wc -l  # Count running containers
+docker events &       # Monitor events for churn
+
+# If containers are constantly restarting, fix the root cause first
+# Then tune queue size in agent config (increase maxEvents)
+```

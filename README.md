@@ -43,6 +43,28 @@ It works in two modes depending on your environment:
 
 ---
 
+## 🎯 What DSO Is & Isn't
+
+### ✅ DSO Is
+
+- **Docker-native**: Works with plain `docker compose` (no Kubernetes, no Swarm required)
+- **Runtime secret injection**: Secrets resolved at container startup, never persisted
+- **Zero-persistence**: Secrets never touch the host filesystem
+- **Multi-provider**: Supports Vault, AWS, Azure, Huawei, and local file backends
+- **Developer-friendly**: Local Mode requires no setup — just `docker dso init`
+- **Production-ready**: Cloud Mode includes supervision, health checks, rotation, observability
+
+### ❌ DSO Is NOT
+
+- **A centralized secrets platform** (like Doppler or HashiCorp Vault) — DSO is a client/daemon for Docker, not a backend
+- **Kubernetes-first** — If you're on Kubernetes, use ExternalSecrets Operator instead
+- **A secret manager** — DSO doesn't store secrets; it only injects them. You manage where they're stored.
+- **Docker Swarm-oriented** — DSO works with `docker compose` on any machine; no Swarm required
+- **A replacement for Docker Secrets** — If you already use Swarm and Docker Secrets, keep using them. DSO is for teams on `compose`.
+- **Zero-downtime rotation** — Rotation requires restarting containers. Plan accordingly.
+
+---
+
 ## 🧠 How DSO Works
 
 When you run `docker dso up`, DSO intercepts the compose file before Docker sees it:
@@ -251,18 +273,33 @@ Plugins are downloaded automatically by `sudo docker dso system setup`. Each plu
 
 ## 📚 Documentation
 
+### Getting Started
 | Document | Description |
 | :--- | :--- |
+| [Quick Start](docs/quick_setup.md) | 5-minute Local Mode setup |
 | [Getting Started](docs/getting-started.md) | Step-by-step first-run guide |
 | [Installation](docs/installation.md) | Binary install, selective plugin setup, CI/CD |
-| [Concepts](docs/concepts.md) | Dual-mode architecture, `dso://` vs `dsofile://`, agent lifecycle |
-| [CLI Reference](docs/cli.md) | All commands with examples |
-| [Docker Compose Guide](docs/docker-compose.md) | Env injection, file injection, mixed usage |
-| [Configuration Reference](docs/configuration.md) | Full `dso.yaml` schema (Cloud Mode) |
-| [Providers](docs/providers.md) | Cloud provider setup and status |
-| [Security](docs/security.md) | Threat model and design decisions |
-| [Migration Guide](docs/migration.md) | Upgrading from v3.0/v3.1 to v3.2 |
 | [Examples](docs/examples/) | PostgreSQL, Redis, Node.js, Django, fullstack |
+
+### Core Concepts
+| Document | Description |
+| :--- | :--- |
+| [Concepts](docs/concepts.md) | Dual-mode architecture, `dso://` vs `dsofile://`, execution models |
+| [Architecture](ARCHITECTURE.md) | System design, data flows, runtime supervision |
+| [Security](docs/security.md) | Threat model, Local/Cloud mode security, limitations |
+
+### Configuration & Operation
+| Document | Description |
+| :--- | :--- |
+| [CLI Reference](docs/cli.md) | All commands with examples |
+| [Configuration Reference](docs/configuration.md) | Full `dso.yaml` schema (Cloud Mode) |
+| [Docker Compose Guide](docs/docker-compose.md) | Env injection (`dso://`), file injection (`dsofile://`), examples |
+| [Providers](docs/providers.md) | Cloud provider setup (Vault, AWS, Azure, Huawei) |
+
+### Advanced & Upgrade
+| Document | Description |
+| :--- | :--- |
+| [Migration Guide](docs/migration.md) | Upgrading from earlier versions |
 
 ---
 

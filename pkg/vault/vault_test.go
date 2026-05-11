@@ -649,3 +649,145 @@ func TestVaultDirPermissionsPreserved(t *testing.T) {
 		t.Errorf("Vault directory permissions not secure. Expected 0700, got %#o", info.Mode().Perm())
 	}
 }
+
+// TestGetVaultDir_NoHome verifies getVaultDir fails when HOME is not set
+func TestGetVaultDir_NoHome(t *testing.T) {
+	oldHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer func() {
+		if oldHome != "" {
+			os.Setenv("HOME", oldHome)
+		}
+	}()
+
+	_, err := getVaultDir()
+	if err == nil {
+		t.Error("Expected getVaultDir to fail when HOME is unset")
+	}
+}
+
+// TestGetMasterKey_NotFound verifies getMasterKey fails when missing
+func TestGetMasterKey_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer func() {
+		if oldHome != "" {
+			os.Setenv("HOME", oldHome)
+		}
+	}()
+	os.Unsetenv("DSO_MASTER_KEY")
+
+	_, err := getMasterKey()
+	if err == nil {
+		t.Error("Expected getMasterKey to fail when key is missing")
+	}
+}
+
+
+
+// TestLoadDefault_InvalidJSON verifies loading invalid JSON
+func TestLoadDefault_InvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer func() {
+		if oldHome != "" {
+			os.Setenv("HOME", oldHome)
+		}
+	}()
+
+	InitDefault()
+
+	vaultPath := filepath.Join(tmpDir, ".dso", "vault.enc")
+
+	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	os.Setenv("DSO_MASTER_KEY", key)
+	defer os.Unsetenv("DSO_MASTER_KEY")
+
+	cipher, _ := Encrypt([]byte("{invalid-json"), key)
+	os.WriteFile(vaultPath, cipher, 0600)
+
+	_, err := LoadDefault()
+	if err == nil {
+		t.Error("Expected LoadDefault to fail on invalid JSON")
+	}
+}
+
+// TestSave_TempFileWriteError verifies Save error handling
+func TestSave_TempFileWriteError(t *testing.T) {
+	v := &Vault{
+		store: &VaultStore{},
+		vaultPath: "/non-existent-dir-for-vault-save/vault.enc",
+		masterKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	err := v.Save()
+	if err == nil {
+		t.Error("Expected Save to fail when path is invalid")
+	}
+}
+
+// TestVaultGet_InvalidInputs verifies Get input validation
+func TestVaultGet_InvalidInputs(t *testing.T) {
+	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
+	
+	_, err := v.Get("", "path")
+	if err == nil {
+		t.Error("Expected Get to fail with empty project")
+	}
+	
+	_, err = v.Get("proj", "")
+	if err == nil {
+		t.Error("Expected Get to fail with empty path")
+	}
+	
+	_, err = v.Get("../proj", "path")
+	if err == nil {
+		t.Error("Expected Get to fail with .. in project")
+	}
+	
+	_, err = v.Get("proj", "../path")
+	if err == nil {
+		t.Error("Expected Get to fail with .. in path")
+	}
+}
+
+// TestVaultList_InvalidInputs verifies List input validation
+func TestVaultList_InvalidInputs(t *testing.T) {
+	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
+	
+	_, err := v.List("")
+	if err == nil {
+		t.Error("Expected List to fail with empty project")
+	}
+	
+	_, err = v.List("../proj")
+	if err == nil {
+		t.Error("Expected List to fail with .. in project")
+	}
+}
+
+// TestVaultSetBatch_InvalidInputs verifies SetBatch input validation
+func TestVaultSetBatch_InvalidInputs(t *testing.T) {
+	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
+	
+	err := v.SetBatch("", map[string]string{"k": "v"})
+	if err == nil {
+		t.Error("Expected SetBatch to fail with empty project")
+	}
+	
+	err = v.SetBatch("../proj", map[string]string{"k": "v"})
+	if err == nil {
+		t.Error("Expected SetBatch to fail with .. in project")
+	}
+	
+	err = v.SetBatch("proj", map[string]string{"../path": "v"})
+	if err == nil {
+		t.Error("Expected SetBatch to fail with .. in path")
+	}
+	
+	err = v.SetBatch("proj", map[string]string{"path": string(make([]byte, 1024*1024+1))})
+	if err == nil {
+		t.Error("Expected SetBatch to fail with oversized secret")
+	}
+}

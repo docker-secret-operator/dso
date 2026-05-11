@@ -1,10 +1,8 @@
-# DSO Example: AWS Secrets Manager (V2)
+# DSO Example: AWS Secrets Manager (V3.2)
 providers:
   aws-prod:
     type: aws
     region: us-east-2    # Change to your AWS region
-    auth:
-      method: iam_role
 
 agent:
   cache: true

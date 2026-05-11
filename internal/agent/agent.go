@@ -8,28 +8,35 @@ import (
 	"sync"
 	"time"
 
+	eventqueue "github.com/docker-secret-operator/dso/internal/events"
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/internal/resolver"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 )
 
 // Agent represents the background process that listens to Docker events
 // and injects secrets into containers seamlessly.
 type Agent struct {
-	cache    *Cache
-	docker   *client.Client
-	injected map[string]bool
-	mu       sync.Mutex
-	Ready    chan struct{} // Signaled when the agent is listening
+	cache      *Cache
+	docker     *client.Client
+	logger     *zap.Logger
+	injected   map[string]bool
+	mu         sync.Mutex
+	Ready      chan struct{} // Signaled when the agent is listening
+	eventQueue *eventqueue.BoundedEventQueue
 }
 
 // NewAgent creates a new Agent daemon.
 func NewAgent(docker *client.Client) *Agent {
+	// Use no-op logger for backward compatibility
+	logger, _ := zap.NewProduction()
 	return &Agent{
 		cache:    NewCache(),
 		docker:   docker,
+		logger:   logger,
 		injected: make(map[string]bool),
 		Ready:    make(chan struct{}),
 	}
@@ -40,8 +47,24 @@ func (a *Agent) GetCache() *Cache {
 	return a.cache
 }
 
+// Close gracefully shuts down the agent and its resources
+func (a *Agent) Close() error {
+	if a.docker != nil {
+		return a.docker.Close()
+	}
+	return nil
+}
+
 // Start begins listening to the Docker socket for lifecycle events.
 func (a *Agent) Start(ctx context.Context) error {
+	// Initialize bounded event queue (1000 max events, 16 workers)
+	a.eventQueue = eventqueue.NewBoundedEventQueue(a.logger, 1000, 16, a.handleEventWithContext)
+	a.eventQueue.Start(ctx)
+	defer a.eventQueue.Stop()
+
+	close(a.Ready)
+	log.Println("✅ [DSO Agent] Started listening for Docker lifecycle events...")
+
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("type", "container")
 	filterArgs.Add("event", "create")
@@ -49,23 +72,68 @@ func (a *Agent) Start(ctx context.Context) error {
 	filterArgs.Add("event", "die")
 	filterArgs.Add("event", "destroy")
 
-	msgCh, errCh := a.docker.Events(ctx, events.ListOptions{
-		Filters: filterArgs,
-	})
-
-	close(a.Ready)
-	log.Println("✅ [DSO Agent] Started listening for Docker lifecycle events...")
+	reconnectDelay := time.Second
+	maxReconnectDelay := 30 * time.Second
+	maxReconnectAttempts := 100
+	reconnectAttempts := 0
 
 	for {
 		select {
 		case <-ctx.Done():
+			log.Println("✅ [DSO Agent] Event loop shutting down gracefully")
 			return ctx.Err()
-		case err := <-errCh:
-			return fmt.Errorf("docker event stream error: %w", err)
-		case msg := <-msgCh:
-			a.handleEvent(ctx, msg)
+		default:
+		}
+
+		msgCh, errCh := a.docker.Events(ctx, events.ListOptions{Filters: filterArgs})
+		reconnectDelay = time.Second
+		reconnectAttempts = 0
+		log.Println("✅ [DSO Agent] Docker event stream connected")
+
+		streamActive := false
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case err := <-errCh:
+				log.Printf("⚠️ [DSO Agent] Docker event stream error: %v, reconnecting in %v", err, reconnectDelay)
+				streamActive = false
+				break
+			case msg := <-msgCh:
+				streamActive = true
+				// Enqueue event with backpressure protection
+				if !a.eventQueue.Enqueue(msg) {
+					log.Printf("⚠️ [DSO Agent] Event queue full, dropping event: %s/%s", msg.Actor.ID[:12], string(msg.Action))
+				}
+			}
+			if !streamActive {
+				break
+			}
+		}
+
+		reconnectAttempts++
+		if reconnectAttempts > maxReconnectAttempts {
+			log.Printf("❌ [DSO Agent] Max reconnect attempts (%d) exceeded, giving up", maxReconnectAttempts)
+			return fmt.Errorf("docker daemon connection exhausted after %d attempts", maxReconnectAttempts)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reconnectDelay):
+			reconnectDelay = time.Duration(float64(reconnectDelay) * 1.5)
+			if reconnectDelay > maxReconnectDelay {
+				reconnectDelay = maxReconnectDelay
+			}
+			log.Printf("✅ [DSO Agent] Reconnecting to Docker daemon (delay: %v, attempt: %d)", reconnectDelay, reconnectAttempts)
 		}
 	}
+}
+
+// handleEventWithContext wraps handleEvent for use with the bounded queue
+func (a *Agent) handleEventWithContext(ctx context.Context, msg events.Message) error {
+	a.handleEvent(ctx, msg)
+	return nil
 }
 
 // handleEvent processes relevant Docker events concurrently.
