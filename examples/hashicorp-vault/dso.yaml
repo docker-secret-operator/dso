@@ -1,4 +1,4 @@
-# DSO Example: HashiCorp Vault (V2)
+# DSO Example: HashiCorp Vault (V3.2)
 providers:
   dev-vault:
     type: vault

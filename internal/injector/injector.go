@@ -1,15 +1,18 @@
 package injector
 
 import (
+	"context"
 	"fmt"
 	"net/rpc"
+	"time"
 
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 )
 
 type AgentClient struct {
-	client *rpc.Client
+	client         *rpc.Client
+	requestTimeout time.Duration
 }
 
 func NewAgentClient(socketPath string) (*AgentClient, error) {
@@ -17,23 +20,59 @@ func NewAgentClient(socketPath string) (*AgentClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to the DSO agent socket at %s: %w", socketPath, err)
 	}
-	return &AgentClient{client: client}, nil
+	return &AgentClient{
+		client:         client,
+		requestTimeout: 30 * time.Second,
+	}, nil
 }
 
 func (ac *AgentClient) FetchSecret(providerName string, config map[string]string, secretName string) (map[string]string, error) {
+	return ac.FetchSecretWithContext(context.Background(), providerName, config, secretName)
+}
+
+func (ac *AgentClient) FetchSecretWithContext(ctx context.Context, providerName string, config map[string]string, secretName string) (map[string]string, error) {
+	// Apply timeout if no deadline already set
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ac.requestTimeout)
+		defer cancel()
+	}
+
 	req := &api.AgentRequest{
 		Provider: providerName,
 		Config:   config,
 		Secret:   secretName,
 	}
+
+	if ac.client == nil {
+		return nil, fmt.Errorf("agent client not initialized")
+	}
+
+	// Check if context is already done before starting RPC
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("secret fetch timeout for provider %s secret %s: %w", providerName, secretName, ctx.Err())
+	default:
+	}
+
+	respCh := make(chan error, 1)
 	var resp api.AgentResponse
-	if err := ac.client.Call("Agent.GetSecret", req, &resp); err != nil {
-		return nil, err
+	go func() {
+		respCh <- ac.client.Call("Agent.GetSecret", req, &resp)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("secret fetch timeout for provider %s secret %s: %w", providerName, secretName, ctx.Err())
+	case err := <-respCh:
+		if err != nil {
+			return nil, fmt.Errorf("rpc call failed: %w", err)
+		}
+		if resp.Error != "" {
+			return nil, fmt.Errorf("agent error: %s", resp.Error)
+		}
+		return resp.Data, nil
 	}
-	if resp.Error != "" {
-		return nil, fmt.Errorf("agent error: %s", resp.Error)
-	}
-	return resp.Data, nil
 }
 
 // FetchAllEnvs aggregates all secrets mapped to environments for a given config.

@@ -15,13 +15,17 @@ import (
 )
 
 type StoreEntry struct {
-	Provider api.SecretProvider
-	Client   *plugin.Client
+	Provider      api.SecretProvider
+	Client        *plugin.Client
+	LastHealthy   time.Time
+	ConsecFails   int
+	MaxFailures   int
 }
 
 type SecretStoreManager struct {
 	logger *zap.Logger
 	store  sync.Map
+	mu     sync.RWMutex
 }
 
 func NewSecretStoreManager(logger *zap.Logger) *SecretStoreManager {
@@ -34,7 +38,16 @@ func NewSecretStoreManager(logger *zap.Logger) *SecretStoreManager {
 func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.ProviderConfig) (api.SecretProvider, error) {
 	if val, ok := s.store.Load(providerName); ok {
 		entry := val.(*StoreEntry)
-		return entry.Provider, nil
+		// Check if connection is stale (no successful use in 10 minutes)
+		if time.Since(entry.LastHealthy) > 10*time.Minute {
+			s.logger.Warn("Provider connection may be stale, reconnecting",
+				zap.String("provider", providerName),
+				zap.Duration("lastHealthy", time.Since(entry.LastHealthy)))
+			s.store.Delete(providerName)
+			// Fall through to reinitialize
+		} else {
+			return entry.Provider, nil
+		}
 	}
 
 	providerLogger := s.logger.With(zap.String("provider", providerName), zap.String("type", pCfg.Type))
@@ -99,11 +112,39 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 	}
 
 	s.store.Store(providerName, &StoreEntry{
-		Provider: prov,
-		Client:   client,
+		Provider:    prov,
+		Client:      client,
+		LastHealthy: time.Now(),
+		ConsecFails: 0,
+		MaxFailures: 5,
 	})
 
+	providerLogger.Info("Provider connection established successfully")
 	return prov, nil
+}
+
+// MarkProviderHealthy updates the last successful use timestamp
+func (s *SecretStoreManager) MarkProviderHealthy(providerName string) {
+	if val, ok := s.store.Load(providerName); ok {
+		entry := val.(*StoreEntry)
+		entry.LastHealthy = time.Now()
+		entry.ConsecFails = 0
+	}
+}
+
+// MarkProviderFailure tracks consecutive failures and removes provider if threshold exceeded
+func (s *SecretStoreManager) MarkProviderFailure(providerName string) {
+	if val, ok := s.store.Load(providerName); ok {
+		entry := val.(*StoreEntry)
+		entry.ConsecFails++
+
+		if entry.ConsecFails >= entry.MaxFailures {
+			s.logger.Error("Provider exhausted failure threshold, removing connection",
+				zap.String("provider", providerName),
+				zap.Int("failures", entry.ConsecFails))
+			s.store.Delete(providerName)
+		}
+	}
 }
 
 func secureJitterMillis() uint64 {

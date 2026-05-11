@@ -25,16 +25,24 @@ func ComputeHash(data map[string]string) string {
 
 // SecretCache provides a TTL cache for external secrets (from providers)
 type SecretCache struct {
-	mu    sync.RWMutex
-	items map[string]CacheItem
-	ttl   time.Duration
+	mu         sync.RWMutex
+	items      map[string]CacheItem
+	ttl        time.Duration
+	maxSize    int64
+	currentLen int64
+	stopCh     chan struct{}
 }
 
 func NewSecretCache(ttl time.Duration) *SecretCache {
-	return &SecretCache{
-		items: make(map[string]CacheItem),
-		ttl:   ttl,
+	sc := &SecretCache{
+		items:      make(map[string]CacheItem),
+		ttl:        ttl,
+		maxSize:    100 * 1024 * 1024, // 100MB limit
+		stopCh:     make(chan struct{}),
 	}
+	// Start background cleanup
+	go sc.cleanupExpiredEntries()
+	return sc
 }
 
 func (c *SecretCache) Get(key string) (map[string]string, bool) {
@@ -80,6 +88,41 @@ func (c *SecretCache) ListKeys() []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// cleanupExpiredEntries periodically removes expired cache entries (runs every 5 minutes)
+func (c *SecretCache) cleanupExpiredEntries() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.mu.Lock()
+			now := time.Now()
+			expiredKeys := make([]string, 0)
+			for k, item := range c.items {
+				if now.After(item.ExpiresAt) {
+					expiredKeys = append(expiredKeys, k)
+				}
+			}
+			for _, k := range expiredKeys {
+				delete(c.items, k)
+			}
+			c.mu.Unlock()
+		}
+	}
+}
+
+// Close stops the cleanup goroutine
+func (c *SecretCache) Close() {
+	select {
+	case <-c.stopCh:
+	default:
+		close(c.stopCh)
+	}
 }
 
 // Cache holds the in-memory state of active DSO Native Vault secrets.

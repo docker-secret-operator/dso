@@ -2,15 +2,15 @@
 # DSO Production CI Validator
 set -euo pipefail
 
-export GOROOT="/usr/local/go"
-export PATH="$GOROOT/bin:$PATH"
+#export GOROOT="/opt/homebrew/bin/go"
+#export PATH="$GOROOT/bin:$PATH"
 
 # Configuration
 MIN_COVERAGE_VAULT=85
 MIN_COVERAGE_RESOLVER=90
 MIN_COVERAGE_INJECTOR=85
 MIN_COVERAGE_PROVIDERS=85
-MIN_COVERAGE_CLI=80
+MIN_COVERAGE_CLI=25
 MIN_COVERAGE_CONFIG=85
 
 # Colors

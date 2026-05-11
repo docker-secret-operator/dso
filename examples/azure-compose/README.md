@@ -95,7 +95,7 @@ sudo chmod 600 /etc/dso/dso.yaml
 **`dso.yaml`** — connects to your Azure Key Vault and maps each secret:
 
 ```yaml
-# DSO Example: Azure Key Vault (V3.1)
+# DSO Example: Azure Key Vault (V3.2)
 providers:
   azure-prod:
     type: azure
@@ -130,8 +130,8 @@ secrets:
 ## Step 4 — Start the DSO Agent
 
 ```bash
-sudo systemctl restart DSO Agent
-sudo systemctl status DSO Agent
+sudo systemctl restart dso-agent
+sudo systemctl status dso-agent
 
 # Verify each secret is reachable:
 docker dso fetch MYSQL-ROOT-PASSWORD

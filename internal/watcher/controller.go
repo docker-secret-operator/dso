@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/analyzer"
 	"github.com/docker-secret-operator/dso/internal/core"
+	eventqueue "github.com/docker-secret-operator/dso/internal/events"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/strategy"
 	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
@@ -47,6 +48,7 @@ type ReloaderController struct {
 	Config        *dsoConfig.Config
 	rotationLocks sync.Map // map[string]*lockInfo (key: service name)
 	degraded      sync.Map // map[string]string (key: service name, val: error)
+	eventQueue    *eventqueue.BoundedEventQueue
 }
 
 func NewReloaderController(logger *zap.Logger) (*ReloaderController, error) {
@@ -60,20 +62,59 @@ func NewReloaderController(logger *zap.Logger) (*ReloaderController, error) {
 	}, nil
 }
 
+// Close gracefully closes the Docker client connection and event queue
+func (r *ReloaderController) Close() error {
+	if r.eventQueue != nil {
+		r.eventQueue.Stop()
+	}
+	if r.cli != nil {
+		return r.cli.Close()
+	}
+	return nil
+}
+
 func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 	r.Logger.Info("Starting Docker Events loop for ReloaderController")
 
+	// Initialize bounded event queue (2000 max events for rotation-heavy workload, 32 workers)
+	r.eventQueue = eventqueue.NewBoundedEventQueue(r.Logger, 2000, 32, r.handleContainerEventWithContext)
+	r.eventQueue.Start(ctx)
+
 	go func() {
 		r.populateInitialTargets(ctx)
+		r.daemonEventLoop(ctx)
+	}()
+}
 
-		filterArgs := filters.NewArgs()
-		filterArgs.Add("type", "container")
-		filterArgs.Add("event", "start")
-		filterArgs.Add("event", "die")
-		filterArgs.Add("event", "stop")
+func (r *ReloaderController) daemonEventLoop(ctx context.Context) {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("type", "container")
+	filterArgs.Add("event", "start")
+	filterArgs.Add("event", "die")
+	filterArgs.Add("event", "stop")
+
+	reconnectDelay := time.Second
+	maxReconnectDelay := 30 * time.Second
+
+	// Start periodic reconciliation (every 10 minutes)
+	go r.periodicReconciliation(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			r.Logger.Info("Shutting down ReloaderController event loop")
+			_ = r.cli.Close()
+			return
+		default:
+		}
 
 		msgCh, errCh := r.cli.Events(ctx, events.ListOptions{Filters: filterArgs})
+		reconnectDelay = time.Second // Reset on successful connection
 
+		r.Logger.Info("Docker event stream connected", zap.Duration("reconnectDelay", reconnectDelay))
+		observability.DaemonReconnectsTotal.WithLabelValues("success").Inc()
+
+		streamActive := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -81,37 +122,163 @@ func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 				_ = r.cli.Close()
 				return
 			case err := <-errCh:
-				r.Logger.Error("Docker Events API error", zap.Error(err))
+				r.Logger.Error("Docker Events stream error", zap.Error(err), zap.Duration("nextRetry", reconnectDelay))
 				observability.BackendFailuresTotal.WithLabelValues("docker_events", "stream_error").Inc()
-				time.Sleep(5 * time.Second)
-				msgCh, errCh = r.cli.Events(ctx, events.ListOptions{Filters: filterArgs})
+				streamActive = false
+				break
 			case msg := <-msgCh:
-				switch msg.Action {
-				case "start":
-					if _, hasLabel := msg.Actor.Attributes["dso.reloader"]; hasLabel {
-						strategy := msg.Actor.Attributes["dso.update.strategy"]
-						if strategy == "" {
-							strategy = "restart"
-						}
-						composePath := msg.Actor.Attributes["dso.compose.path"]
-						secretList := strings.Split(msg.Actor.Attributes["dso.secrets"], ",")
-
-						r.Targets.Store(msg.Actor.ID, &TargetContainer{
-							ID:          msg.Actor.ID,
-							Strategy:    strategy,
-							ComposePath: composePath,
-							Secrets:     secretList,
-						})
-						r.Logger.Info("Registered target container dynamically", zap.String("id", msg.Actor.ID))
-					}
-				case "die", "stop":
-					if _, loaded := r.Targets.LoadAndDelete(msg.Actor.ID); loaded {
-						r.Logger.Info("De-registered target container", zap.String("id", msg.Actor.ID))
-					}
+				streamActive = true
+				// Enqueue event with backpressure protection
+				if !r.eventQueue.Enqueue(msg) {
+					r.Logger.Warn("Event queue full, dropping container event", zap.String("containerID", msg.Actor.ID), zap.String("action", string(msg.Action)))
+					observability.BackendFailuresTotal.WithLabelValues("event_queue", "dropped").Inc()
+				} else {
+					observability.EventsProcessedTotal.WithLabelValues(string(msg.Action)).Inc()
 				}
 			}
+			if !streamActive {
+				break
+			}
 		}
-	}()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(reconnectDelay):
+			reconnectDelay = time.Duration(float64(reconnectDelay) * 1.5)
+			if reconnectDelay > maxReconnectDelay {
+				reconnectDelay = maxReconnectDelay
+			}
+			r.Logger.Info("Reconnecting to Docker daemon", zap.Duration("delay", reconnectDelay))
+			observability.DaemonReconnectsTotal.WithLabelValues("attempt").Inc()
+		}
+	}
+}
+
+// periodicReconciliation runs every 10 minutes to verify runtime state consistency
+func (r *ReloaderController) periodicReconciliation(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			start := time.Now()
+			r.reconcileRuntimeState(ctx)
+			duration := time.Since(start).Seconds()
+			observability.ReconciliationDurationSeconds.Observe(duration)
+		}
+	}
+}
+
+// reconcileRuntimeState verifies that registered containers still exist and are labeled correctly
+func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
+	r.Logger.Info("Starting periodic runtime reconciliation")
+
+	// Count total targets before cleanup
+	targetCount := 0
+	r.Targets.Range(func(key, value interface{}) bool {
+		targetCount++
+		return true
+	})
+
+	orphaned := make([]string, 0)
+	r.Targets.Range(func(key, value interface{}) bool {
+		containerID := key.(string)
+		// Try to inspect container
+		_, err := r.cli.ContainerInspect(ctx, containerID)
+		if err != nil {
+			// Container no longer exists
+			orphaned = append(orphaned, containerID)
+			r.Logger.Debug("Found orphaned container", zap.String("id", containerID), zap.Error(err))
+		}
+		return true
+	})
+
+	// Clean up orphaned containers
+	for _, id := range orphaned {
+		r.Targets.Delete(id)
+		r.Logger.Info("Cleaned up orphaned container from tracking", zap.String("id", id))
+	}
+
+	remainingCount := targetCount - len(orphaned)
+	r.Logger.Info("Runtime reconciliation complete",
+		zap.Int("total_targets", targetCount),
+		zap.Int("orphaned", len(orphaned)),
+		zap.Int("active", remainingCount))
+}
+
+// handleContainerEventWithContext wraps handleContainerEvent for use with the bounded queue
+func (r *ReloaderController) handleContainerEventWithContext(ctx context.Context, msg events.Message) error {
+	return r.handleContainerEvent(msg)
+}
+
+func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
+	// Defensive: validate container ID
+	if msg.Actor.ID == "" {
+		r.Logger.Warn("Received event with empty container ID", zap.String("action", string(msg.Action)))
+		return nil
+	}
+
+	// Defensive: validate attributes map exists
+	if msg.Actor.Attributes == nil {
+		r.Logger.Debug("Event has nil attributes", zap.String("id", msg.Actor.ID), zap.String("action", string(msg.Action)))
+		return nil
+	}
+
+	switch msg.Action {
+	case "start":
+		if _, hasLabel := msg.Actor.Attributes["dso.reloader"]; hasLabel {
+			strategy := msg.Actor.Attributes["dso.update.strategy"]
+			if strategy == "" {
+				strategy = "restart"
+			}
+
+			// Validate strategy
+			validStrategies := map[string]bool{"restart": true, "signal": true, "auto": true}
+			if !validStrategies[strategy] {
+				r.Logger.Warn("Invalid rotation strategy", zap.String("id", msg.Actor.ID), zap.String("strategy", strategy))
+				strategy = "restart" // Default to safe strategy
+			}
+
+			composePath := msg.Actor.Attributes["dso.compose.path"]
+			secretsStr := msg.Actor.Attributes["dso.secrets"]
+
+			// Defensive: handle empty secrets
+			if secretsStr == "" {
+				r.Logger.Warn("Container has no secrets configured", zap.String("id", msg.Actor.ID))
+				return nil
+			}
+
+			// Parse and trim secret names
+			secretList := make([]string, 0)
+			for _, s := range strings.Split(secretsStr, ",") {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					secretList = append(secretList, trimmed)
+				}
+			}
+
+			if len(secretList) == 0 {
+				r.Logger.Warn("Container has no valid secrets after parsing", zap.String("id", msg.Actor.ID))
+				return nil
+			}
+
+			r.Targets.Store(msg.Actor.ID, &TargetContainer{
+				ID:          msg.Actor.ID,
+				Strategy:    strategy,
+				ComposePath: composePath,
+				Secrets:     secretList,
+			})
+			r.Logger.Info("Registered target container dynamically", zap.String("id", msg.Actor.ID), zap.Strings("secrets", secretList))
+		}
+	case "die", "stop":
+		if _, loaded := r.Targets.LoadAndDelete(msg.Actor.ID); loaded {
+			r.Logger.Info("De-registered target container", zap.String("id", msg.Actor.ID))
+		}
+	}
+	return nil
 }
 
 func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
