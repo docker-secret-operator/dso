@@ -114,6 +114,11 @@ func (r *ReloaderController) daemonEventLoop(ctx context.Context) {
 		r.Logger.Info("Docker event stream connected", zap.Duration("reconnectDelay", reconnectDelay))
 		observability.DaemonReconnectsTotal.WithLabelValues("success").Inc()
 
+		// CRITICAL FIX: Immediately reconcile state after daemon reconnect
+		// This detects: dual-running containers, orphaned containers, stale state
+		r.Logger.Info("Performing immediate reconciliation after daemon reconnect")
+		r.reconcileRuntimeState(ctx)
+
 		streamActive := false
 		for {
 			select {
