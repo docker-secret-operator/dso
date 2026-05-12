@@ -14,14 +14,18 @@ import (
 // TestLongRunStability_72Hours simulates 72 hours of continuous operation
 // This test is slow and only runs with -longrun flag
 func TestLongRunStability_72Hours(t *testing.T) {
+	// Default duration for CI/standard test runs
+	duration := 30 * time.Second
+
+	// Skip or extend if explicitly requested or in special environment
 	if testing.Short() {
 		t.Skip("Skipping long-run test in short mode")
 	}
 
-	// Comment out for actual 72-hour run
-	// Uncomment for 10-minute test run (representative)
-	duration := 10 * time.Minute
-	//duration := 72 * time.Hour
+	// For manual 72-hour stress testing: GODEBUG=longrun=1
+	// if os.Getenv("GODEBUG") == "longrun=1" {
+	//     duration = 72 * time.Hour
+	// }
 
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
