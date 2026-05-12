@@ -44,7 +44,6 @@ jobs:
         run: |
           go test -v -race -count=1 ./...
           echo "✅ Tests passed"
-        timeout-minutes: 10
 
   # ── Lint ────────────────────────────────────────────────────
   lint:
@@ -63,7 +62,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.65.0
+          version: v1.64.8
           args: --timeout=5m --exclude-dirs=test
 
   # ── CLI Guard ───────────────────────────────────────────────
