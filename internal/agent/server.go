@@ -32,6 +32,7 @@ func (s *AgentServer) Emit(msg string) {
 	defer s.mu.Unlock()
 	s.Events = append(s.Events, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg))
 	if len(s.Events) > 100 {
+		s.Events[0] = ""
 		s.Events = s.Events[1:]
 	}
 }
@@ -168,8 +169,15 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		return nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
 	}
 
+	// CRITICAL: Socket permissions MUST be restrictive (0600).
+	// If chmod fails, the socket may be world-readable, exposing secrets.
+	// Fail fast rather than silently operating with insecure permissions.
 	if err := os.Chmod(socketPath, 0600); err != nil {
-		logger.Warn("Failed to set socket permissions", zap.String("path", socketPath), zap.Error(err))
+		_ = listener.Close()
+		logger.Error("FATAL: Failed to set socket permissions. Agent cannot start securely.",
+			zap.String("path", socketPath),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to secure socket permissions: %w", err)
 	}
 
 	go func() {
@@ -251,8 +259,15 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 		return fmt.Errorf("failed to listen on driver socket %s: %w", socketPath, err)
 	}
 
+	// CRITICAL: Socket permissions MUST be restrictive (0600).
+	// If chmod fails, the socket may be world-readable, exposing secrets.
+	// Fail fast rather than silently operating with insecure permissions.
 	if err := os.Chmod(socketPath, 0600); err != nil {
-		logger.Warn("Failed to set driver socket permissions", zap.String("path", socketPath), zap.Error(err))
+		_ = listener.Close()
+		logger.Error("FATAL: Failed to set driver socket permissions. Agent cannot start securely.",
+			zap.String("path", socketPath),
+			zap.Error(err))
+		return fmt.Errorf("failed to secure driver socket permissions: %w", err)
 	}
 
 	httpServer := &http.Server{

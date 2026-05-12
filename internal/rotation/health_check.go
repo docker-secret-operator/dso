@@ -36,7 +36,11 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 			}
 		}
 
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	return fmt.Errorf("rotation timed out after %v without health confirmation", timeout)

@@ -51,6 +51,7 @@ type DedupCache struct {
 	cache   map[EventFingerprint]time.Time // fingerprint -> expiration time
 	ttl     time.Duration
 	maxSize int
+	stopCh  chan struct{}
 }
 
 // NewDedupCache creates a new deduplication cache
@@ -68,9 +69,9 @@ func NewDedupCache(ttl time.Duration, maxSize int) *DedupCache {
 		cache:   make(map[EventFingerprint]time.Time),
 		ttl:     ttl,
 		maxSize: maxSize,
+		stopCh:  make(chan struct{}),
 	}
 
-	// Start cleanup goroutine
 	go dc.cleanupLoop()
 
 	return dc
@@ -139,39 +140,40 @@ func (dc *DedupCache) GetStats() map[string]interface{} {
 }
 
 // cleanupLoop periodically removes expired entries
+// Stop terminates the background cleanup goroutine.
+func (dc *DedupCache) Stop() {
+	close(dc.stopCh)
+}
+
 func (dc *DedupCache) cleanupLoop() {
 	ticker := time.NewTicker(dc.ttl)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		dc.mu.Lock()
-
-		now := time.Now()
-		expired := 0
-
-		// Remove all expired entries
-		for key, expTime := range dc.cache {
-			if expTime.Before(now) {
-				delete(dc.cache, key)
-				expired++
-			}
-		}
-
-		// If cache exceeds max size, remove oldest entries
-		if len(dc.cache) > dc.maxSize {
-			// Find oldest entries and remove them
-			entriesToRemove := len(dc.cache) - dc.maxSize
-			for key, _ := range dc.cache {
-				if entriesToRemove <= 0 {
-					break
+	for {
+		select {
+		case <-dc.stopCh:
+			return
+		case <-ticker.C:
+			dc.mu.Lock()
+			now := time.Now()
+			for key, expTime := range dc.cache {
+				if expTime.Before(now) {
+					delete(dc.cache, key)
 				}
-				delete(dc.cache, key)
-				entriesToRemove--
 			}
+			if len(dc.cache) > dc.maxSize {
+				entriesToRemove := len(dc.cache) - dc.maxSize
+				for key := range dc.cache {
+					if entriesToRemove <= 0 {
+						break
+					}
+					delete(dc.cache, key)
+					entriesToRemove--
+				}
+			}
+			dc.updateMetrics()
+			dc.mu.Unlock()
 		}
-
-		dc.updateMetrics()
-		dc.mu.Unlock()
 	}
 }
 
@@ -212,14 +214,12 @@ func (id *ImmediateDedup) IsDuplicate(msg events.Message) bool {
 		return true // Duplicate
 	}
 
-	// Add if not at capacity
 	if len(id.seen) < id.maxSize {
 		id.seen[fp] = true
-	} else {
-		id.overflow = true
+		return false
 	}
-
-	return false
+	id.overflow = true
+	return true
 }
 
 // Reset clears the immediate tracker

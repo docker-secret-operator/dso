@@ -15,6 +15,7 @@ import (
 )
 
 type StoreEntry struct {
+	mu            sync.Mutex
 	Provider      api.SecretProvider
 	Client        *plugin.Client
 	LastHealthy   time.Time
@@ -43,6 +44,14 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 			s.logger.Warn("Provider connection may be stale, reconnecting",
 				zap.String("provider", providerName),
 				zap.Duration("lastHealthy", time.Since(entry.LastHealthy)))
+			entry.Client.Kill()
+			s.store.Delete(providerName)
+			// Fall through to reinitialize
+		} else if entry.Client.Exited() {
+			// Plugin process has crashed; detect and recover automatically
+			s.logger.Warn("Provider plugin process crashed, recovering",
+				zap.String("provider", providerName))
+			entry.Client.Kill()
 			s.store.Delete(providerName)
 			// Fall through to reinitialize
 		} else {
@@ -127,8 +136,10 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 func (s *SecretStoreManager) MarkProviderHealthy(providerName string) {
 	if val, ok := s.store.Load(providerName); ok {
 		entry := val.(*StoreEntry)
+		entry.mu.Lock()
 		entry.LastHealthy = time.Now()
 		entry.ConsecFails = 0
+		entry.mu.Unlock()
 	}
 }
 
@@ -136,12 +147,16 @@ func (s *SecretStoreManager) MarkProviderHealthy(providerName string) {
 func (s *SecretStoreManager) MarkProviderFailure(providerName string) {
 	if val, ok := s.store.Load(providerName); ok {
 		entry := val.(*StoreEntry)
+		entry.mu.Lock()
 		entry.ConsecFails++
+		exceeded := entry.ConsecFails >= entry.MaxFailures
+		failures := entry.ConsecFails
+		entry.mu.Unlock()
 
-		if entry.ConsecFails >= entry.MaxFailures {
+		if exceeded {
 			s.logger.Error("Provider exhausted failure threshold, removing connection",
 				zap.String("provider", providerName),
-				zap.Int("failures", entry.ConsecFails))
+				zap.Int("failures", failures))
 			s.store.Delete(providerName)
 		}
 	}

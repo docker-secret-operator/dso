@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -268,7 +269,9 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 // StartRESTServer starts the REST API server on the specified address with secure timeouts
-func StartRESTServer(addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) {
+// StartRESTServer starts the REST API server and returns a shutdown function.
+// The shutdown function should be called on graceful agent shutdown to properly close connections.
+func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) func() {
 	hub := NewHub(logger)
 	go hub.Run()
 
@@ -311,8 +314,30 @@ func StartRESTServer(addr string, cache *agent.SecretCache, triggerEngine *agent
 		logger.Warn("REST API is bound to a non-loopback address without DSO_AUTH_TOKEN")
 	}
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("REST API server failed", zap.Error(err))
+	// Launch server in goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("REST API server failed", zap.Error(err))
+		}
+	}()
+
+	// Return shutdown function that closes server on context cancellation
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("REST API server shutdown error", zap.Error(err))
+		}
+	}()
+
+	// Return explicit shutdown function for manual control
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("REST API server shutdown error", zap.Error(err))
+		}
 	}
 }
 

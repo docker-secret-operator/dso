@@ -77,6 +77,7 @@ func syncCommand(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create agent client: %w", err)
 	}
+	defer client.Close()
 
 	// 4. Trigger reconciliation
 	fmt.Println("[DSO] Triggering reconciliation...")
