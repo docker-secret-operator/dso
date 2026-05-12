@@ -32,8 +32,21 @@ func ResolveConfig() string {
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dso",
-		Short: "Docker Secret Operator (DSO) CLI",
-		Long:  `Docker Secret Operator (DSO) is a Docker CLI plugin for secret management — no Kubernetes required. It fetches and injects secrets into containers dynamically using secure in-memory streaming.`,
+		Short: "Docker Secret Operator (DSO) — Secret lifecycle runtime for Docker Compose",
+		Long: `Docker Secret Operator (DSO) is a cloud-native secret injection runtime for Docker Compose.
+It fetches and injects secrets into containers at runtime without exposing them to the host filesystem.
+
+DSO is a Docker CLI plugin. Usage:
+  docker dso bootstrap local        # For development
+  sudo docker dso bootstrap agent   # For production
+
+Quick reference:
+  docker dso bootstrap              # Initialize runtime environment
+  docker dso doctor                 # Validate environment
+  docker dso status                 # Check operational status
+  docker dso config show            # View configuration
+
+DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault.`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			_, _ = observability.NewLogger("info", "console", false)
 		},
@@ -41,6 +54,11 @@ func NewRootCmd() *cobra.Command {
 
 	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (default: /etc/dso/dso.yaml or ./dso.yaml)")
 
+	cmd.AddCommand(NewBootstrapCmd())
+	cmd.AddCommand(NewDoctorCmd())
+	cmd.AddCommand(NewStatusCmd())
+	cmd.AddCommand(NewConfigCmd())
+	cmd.AddCommand(NewSystemCmd())
 	cmd.AddCommand(NewAgentCmd())
 	cmd.AddCommand(NewMetadataCmd())
 	cmd.AddCommand(NewComposeCmd())

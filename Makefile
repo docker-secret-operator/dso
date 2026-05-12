@@ -1,6 +1,6 @@
 BINARY   := docker-dso
 MODULE   := github.com/docker-secret-operator/dso
-CMD      := ./cmd/docker-dso
+CMD      := ./cmd/dso
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS  := -X main.version=$(VERSION) -s -w
 

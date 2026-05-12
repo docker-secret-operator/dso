@@ -1,420 +1,172 @@
 # Docker Secret Operator (DSO)
 
-**Runtime secret injection and automatic rotation for Docker Compose**
+**Runtime secret injection and automatic rotation for Docker Compose — as a Docker CLI Plugin**
 
 [![Latest Release](https://img.shields.io/github/v/release/docker-secret-operator/dso?label=latest)](https://github.com/docker-secret-operator/dso/releases/latest)
 [![License](https://img.shields.io/github/license/docker-secret-operator/dso)](LICENSE)
 [![Go Report](https://goreportcard.com/badge/github.com/docker-secret-operator/dso)](https://goreportcard.com/report/github.com/docker-secret-operator/dso)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/docker-secret-operator/dso/ci.yml?branch=main)](https://github.com/docker-secret-operator/dso/actions)
 
----
-
-## Overview
-
-DSO is a runtime secret injection daemon for Docker Compose that solves a fundamental operational problem: **how to safely rotate secrets in containerized applications without exposing them to the host filesystem or Docker metadata layers**.
-
-Unlike traditional approaches (environment variables, `.env` files, docker compose secrets), DSO:
-- **Never persists secrets to disk** — decrypted secrets exist only in process memory and container `tmpfs`
-- **Supports automatic rotation** — detects secret changes and rolls containers with blue-green deployment
-- **Integrates with secret backends** — works with Vault, AWS Secrets Manager, Azure Key Vault, or local encrypted storage
-- **Provides atomic rollback** — failed rotations automatically restore the previous container
-- **Requires no Swarm or Kubernetes** — works with standard `docker compose` on any machine
-
-DSO is designed for teams running Docker Compose in development, CI/CD, and production environments who need secret rotation capabilities without adopting Kubernetes or Docker Swarm.
+> **DSO is a cloud-native infrastructure platform for Docker Compose**—not a CLI utility. It handles the complete secret lifecycle: initialization, rotation, audit, and recovery.
 
 ---
 
-## Why DSO Exists
+## What is DSO?
 
-### The Problem
+DSO is a runtime secret injection daemon for Docker and Docker Compose. It solves a concrete operational problem: **how to rotate secrets in containerized applications safely without exposing them to the host filesystem or Docker's metadata layers**.
 
-Three concrete problems make secrets in Docker Compose dangerous:
+**Key features:**
+- **Avoids disk persistence** — decrypted secrets exist only in process memory and container tmpfs, never written to host storage
+- **Supports automatic rotation** — detects secret changes and refreshes containers with blue-green deployment
+- **Multi-provider** — works with Vault, AWS Secrets Manager, Azure Key Vault, or local encrypted storage
+- **Deterministic rollback** — failed rotations automatically restore the previous container state
+- **No Swarm/Kubernetes** — works with standard `docker compose` on any machine
 
-**1. Persistent Disk Exposure**
+**Designed for:** Teams running Docker Compose in development, CI/CD, and single-host production who need secrets management without adopting Kubernetes or Swarm.
+
+---
+
+## Quick Start
+
+### Local Development (5 minutes)
+
 ```bash
-.env → docker compose reads → env vars in process memory → ENV in container
-↓
-Secret lives on disk from creation until cleanup
-↓
-Forensic recovery, accidental commits, misconfiguration = breach
+# 1. Install DSO as a Docker plugin
+curl -fsSL https://get.dso.dev/install.sh | sh
+
+# 2. Initialize your local environment
+docker dso bootstrap local
+
+# 3. Set a secret
+docker dso secret set app/db_password mypassword
+
+# 4. Update docker-compose.yaml to use the secret
+# services:
+#   postgres:
+#     environment:
+#       DB_PASSWORD: dso://app/db_password
+
+# 5. Deploy
+docker dso compose up
 ```
 
-**2. `docker inspect` Leakage**
-Any process with Docker access can inspect a running container and read all environment variables in plaintext:
+### Production Deployment (Systemd)
+
 ```bash
-$ docker inspect <container_id> | jq '.Config.Env[]'
-POSTGRES_PASSWORD=secret123  # ← Visible to anyone with docker access
+# 1. Install DSO binary
+curl -fsSL https://get.dso.dev/install.sh | sudo sh
+
+# 2. Initialize agent runtime
+sudo docker dso bootstrap agent
+
+# 3. Configure providers and settings
+sudo nano /etc/dso/config.yaml
+
+# 4. Enable and start the agent
+sudo docker dso system enable
+
+# 5. Verify installation
+docker dso doctor
+docker dso status
+
+# 6. Deploy with docker-compose.yaml
+docker compose up
 ```
 
-**3. No Rotation Mechanism**
-Rotating a secret requires:
-- Manual container recreation
-- Downtime coordination
-- Script complexity
-- Error-prone multi-step procedures
+---
 
-### The Solution
+## The Problem
 
-DSO replaces this workflow with:
+Most teams running Docker Compose face a difficult choice: either hardcode secrets in compose files, store them in `.env` files (which risk accidental commits), or adopt Kubernetes. DSO addresses three concrete issues:
+
+1. **Disk Persistence**: Secrets in `.env` files or environment variables live on disk, risking forensic recovery and accidental exposure.
+
+2. **Metadata Leakage**: Any user with Docker socket access can run `docker inspect` and read all environment variables in plaintext.
+
+3. **Manual Rotation**: Rotating a secret requires manual container recreation, coordination, and error-prone scripts.
+
+## How DSO Works
+
+DSO injects secrets at container startup and automatically rotates them via blue-green deployment:
 
 ```
-Secret Backend (Vault/AWS/Local) → DSO Agent → Docker Compose
-                                      ↓
-                                Detect change
-                                      ↓
-                              Create shadow container
-                                      ↓
-                            Inject secrets at startup
-                                      ↓
-                            Verify health (>5s health checks)
-                                      ↓
-                         Atomic swap (container rename)
-                                      ↓
-                           Stop old container
-                                      ↓
-                      Rollback on failure (undo rename)
+Secret Backend (Vault/AWS/Local)
+    ↓
+DSO Agent detects change
+    ↓
+Create new container with updated secret
+    ↓
+Verify health
+    ↓
+Atomic container swap (rename)
+    ↓
+Stop old container
+    ↓
+Rollback on failure (auto-restore)
 ```
 
-**Key properties:**
+**Result:**
 - Secrets never written to host disk
-- Rotation is deterministic and fully reversible
-- Applications see no downtime for read-only rotations
+- Rotation is deterministic and reversible
+- Rotation completes in ~30 seconds with minimal application disruption
 - Failed rotations automatically restore previous state
 
 ---
 
 ## Key Capabilities
 
-### Runtime Secret Injection
-- **`dso://` (environment)**: Inject secret as env var (use when app must read from `ENV`)
-- **`dsofile://` (tmpfs)**: Inject secret into container's RAM disk at `/run/secrets/` (preferred — invisible to `docker inspect`)
-- **Resolved at container start** — not during compose parsing
-- **Secrets never persisted** — only exist in container memory
-
-### Automatic Rotation
-- **Event-driven** — detects secret changes in real-time from provider
-- **Blue-green deployment** — create new container, verify health, atomic swap
-- **Atomic guarantees** — swap is all-or-nothing; partial states are rolled back
-- **Zero-downtime** (for stateless apps) — clients see no interruption
-- **Automatic rollback** — failed rotation automatically restores previous container
-
-### Multi-Provider Architecture
-- **Local mode**: AES-256-GCM encrypted vault at `~/.dso/vault.enc` (no cloud account needed)
-- **Cloud mode**: Integration with enterprise secret backends
-  - HashiCorp Vault (fully supported)
-  - AWS Secrets Manager (fully supported)
-  - Azure Key Vault (fully supported)
-  - Custom providers via plugin interface
-
-### Health Verification
-- **Native Docker health checks** — respects container's HEALTHCHECK directive
-- **Custom exec probes** — verify specific files or commands
-- **Retry logic** — configurable timeouts and retry counts
-- **Prevents broken containers from becoming active** — strict health criteria
-
-### Observability
-- **Prometheus metrics** — rotation timing, success/failure rates, cache stats
-- **Structured logging** — event-driven logs with context propagation
-- **Runtime status** — query agent for pending rotations, cache state
-- **Debug tools** — introspect provider communication, event queue, rotation state
+| Capability | Details |
+|---|---|
+| **Secret Injection** | Inject via `dso://` (environment) or `dsofile://` (tmpfs). Resolved at container startup, not during parsing. |
+| **Automatic Rotation** | Event-driven detection from secret backend. Blue-green deployment with automatic rollback on failure. |
+| **Multi-Provider** | Vault, AWS Secrets Manager, Azure Key Vault, local encrypted storage, or custom plugins. |
+| **Health Verification** | Native Docker health checks or custom probes. Configurable timeouts and retries. |
+| **Observability** | Prometheus metrics, structured JSON logs, runtime status queries. |
+| **Crash Recovery** | Persisted rotation state enables detection and recovery after agent restarts. |
 
 ---
 
 ## Architecture Overview
 
-### Component Diagram
+DSO is a single-agent daemon that monitors Docker events and secret backends, then orchestrates container rotations via blue-green deployment.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Docker Compose Environment                                      │
-└─────────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ docker compose up
-                              │
-┌─────────────────────────────────────────────────────────────────┐
-│ DSO Agent (Daemon Process)                                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
-│  │  Watcher    │  │  Rotation   │  │   Health    │           │
-│  │  (Events)   │  │   Engine    │  │   Check     │           │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘           │
-│         │                │                │                   │
-│         └────────┬───────┴────────┬───────┘                   │
-│                  │                │                            │
-│         ┌────────▼────────┐       │                           │
-│         │   Event Queue   │       │                           │
-│         │ (Debounced)     │       │                           │
-│         └────────┬────────┘       │                           │
-│                  │                │                            │
-│         ┌────────▼────────────────▼────────┐                  │
-│         │   Trigger Engine                 │                  │
-│         │  (Execute Rotations)             │                  │
-│         └────────┬───────────────┬─────────┘                  │
-│                  │               │                             │
-│      ┌───────────▼──────┬────────▼──────────┐                │
-│      │   State Tracker  │  Lock Manager     │                │
-│      │ (Crash Recovery) │ (Concurrency)     │                │
-│      └────────┬─────────┴────────┬──────────┘                │
-│               │                  │                             │
-│      ┌────────▼──────────────────▼────────┐                  │
-│      │   Provider Plugins                 │                  │
-│      │ (Vault, AWS, Azure, Local)         │                  │
-│      └────────────────┬────────────────────┘                  │
-│                       │                                        │
-└───────────────────────┼────────────────────────────────────────┘
-                        │
-          ┌─────────────▼──────────────┐
-          │ Secret Backend             │
-          │ (Vault/AWS/Azure/Local)    │
-          └────────────────────────────┘
+Secret Backends (Vault/AWS/Local)
+                ↓
+        DSO Agent Process
+    ┌────────────────────┐
+    │ • Event Watcher    │
+    │ • Rotation Engine  │
+    │ • Health Checks    │
+    │ • State Tracker    │
+    │ • Provider Plugins │
+    └────────────────────┘
+                ↓
+        Docker Host Containers
 ```
 
-### Core Components
+**Core design:**
+- **Single-agent per host** — manages all containers on a Docker host
+- **Event-driven** — responds to Docker events and provider webhooks
+- **Blue-green rotation** — create new container, verify health, atomic swap
+- **Local state** — persists rotation state for crash recovery
+- **Plugin-based providers** — isolated subprocesses for each secret backend
 
-**Watcher** (`internal/watcher/`)
-- Monitors Docker events and provider webhooks
-- Detects container creation, removal, health state changes
-- Triggers rotation when secret changes detected
-- Debounces rapid changes to prevent thrashing
-
-**Rotation Engine** (`internal/rotation/`)
-- Orchestrates blue-green container deployment
-- Creates shadow container with new secrets
-- Verifies health with exponential backoff
-- Performs atomic container rename (swap)
-- Handles rollback on failure
-
-**Event Queue** (`internal/events/`)
-- Bounded queue with backpressure handling
-- Deduplicates rapid events for same secret
-- Worker pool for parallel event processing
-- Metrics for queue depth and drop rate
-
-**State Tracker** (`internal/agent/state_tracker.go`)
-- Persists rotation state to filesystem (`/var/lib/dso/state/`)
-- Enables crash recovery — detects interrupted rotations on restart
-- Records rotation start time and status
-- Marks stale rotations (>5 min) for manual intervention
-
-**Lock Manager** (`internal/rotation/lock_manager.go`)
-- Local (in-process) and distributed (file-based) locking
-- Prevents concurrent rotation of same secret
-- Stale lock detection and cleanup
-- Prevents race conditions under network partition
-
-**Provider Plugins** (`internal/providers/`)
-- HashiCorp go-plugin RPC system
-- Each provider is isolated subprocess
-- Supports custom provider development
-- Plugin discovery and lifecycle management
-
-**Cache** (`internal/agent/cache.go`)
-- In-memory secret caching with TTL
-- Separate TTL for each provider (avoid over-rotation)
-- Cache size limits to prevent memory bloat
-- Pre-warming on agent startup
+For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## How DSO Works Internally
+## Core Concepts
 
-### Secret Resolution Flow (Startup)
+**Secret Resolution**: When containers reference `dso://` or `dsofile://`, DSO fetches secrets at container startup (not during parsing). Secrets are resolved from the configured provider, optionally cached, then injected via environment or tmpfs.
 
-When `docker compose up` is executed with DSO secrets:
+**Event-Driven Rotation**: DSO monitors Docker and provider events. When a secret changes, it's queued, debounced (5-second window), then rotation is triggered.
 
-```
-1. Docker calls dso://<secret-name> or dsofile://<secret-name>
-   ↓
-2. DSO Agent receives request (via Docker socket)
-   ↓
-3. Check cache:
-   - If valid (not expired) → return cached value
-   - If missing/expired → continue to step 4
-   ↓
-4. Query provider:
-   - Authenticate to secret backend
-   - Fetch secret
-   - Store in cache (with TTL)
-   ↓
-5. For dsofile://:
-   - Mount tmpfs at /run/secrets/
-   - Write secret to file in tmpfs
-   - Return path to container
-   ↓
-6. For dso://:
-   - Return secret as environment variable
-```
+**Blue-Green Deployment**: Rotation follows a fixed sequence: create new container with updated secret → verify health → atomic container rename → stop old → rollback on any failure.
 
-**Design decision:** Secrets are NOT resolved during compose parsing; they're resolved at container startup. This allows:
-- Late binding to provider state
-- Rotation without restarting services that don't use the secret
-- Clean error handling per container
+**Crash Recovery**: Rotation state is persisted to disk, enabling detection of incomplete rotations on restart.
 
-### Event Processing Pipeline
-
-DSO's rotation detection is event-driven:
-
-```
-Docker Event                   Provider Webhook
-      │                              │
-      └──────────┬───────────────────┘
-                 │
-        ┌────────▼─────────┐
-        │  Watcher         │
-        │  (Deduplicate)   │
-        └────────┬─────────┘
-                 │
-        ┌────────▼──────────────┐
-        │  Event Queue          │
-        │  (Bounded, Backpressure)
-        └────────┬──────────────┘
-                 │
-        ┌────────▼─────────────────────┐
-        │  Debounce Window             │
-        │  (Batch rapid events)        │
-        └────────┬────────────────────┘
-                 │
-        ┌────────▼──────────────────────┐
-        │  Trigger Engine               │
-        │  (Execute rotation logic)     │
-        └──────────────────────────────┘
-```
-
-**Event sources:**
-- **Docker watcher**: Container lifecycle changes (create/start/die/health_status)
-- **Provider webhooks**: Secret updated at backend (Vault lease expiry, AWS rotation)
-- **Polling interval**: Periodic refresh from provider (if webhooks unavailable)
-
-**Debounce behavior:**
-- Events for same secret coalesce within 5-second window
-- Prevents cascading rotations from rapid secret changes
-- Trades latency for stability
-
-### Rotation Workflow
-
-When a secret change is detected, DSO executes blue-green rotation:
-
-```
-Step 1: Verify lock
-  └─ AcquireLock(secretName, 5sec timeout)
-     └─ If fails: other agent rotating same secret, abort
-
-Step 2: Create shadow container
-  └─ docker run --name <original>-new
-     └─ New container has new secret injected
-     └─ Original container still running
-
-Step 3: Wait for health
-  └─ Poll container health status
-  └─ Native health check (preferred): wait for "healthy"
-  └─ No health check: wait 30s, assume ready
-  └─ On restart detected: fail immediately
-  └─ On timeout: fail and rollback
-
-Step 4: Atomic swap
-  └─ docker rename <original> <original>-old
-  └─ docker rename <original>-new <original>
-     └─ Two-step rename prevents partial state
-     └─ If second rename fails: restore from <original>-old
-  └─ Verify actual container state before recovery
-
-Step 5: Stop old container
-  └─ docker stop <original>-old (30s grace period)
-  └─ docker rm <original>-old
-
-Step 6: Verify new container
-  └─ Poll container status
-  └─ If crashes: undo rename, restore old container
-
-On ANY failure:
-  └─ Rollback step 4:
-     └─ docker rename <original>-old <original>
-     └─ docker stop/rm <original>-new
-     └─ Mark rotation as requiring manual intervention
-```
-
-**Key safety guarantees:**
-- **Atomic swap**: Only two containers exist at any point; never more
-- **Automatic rollback**: Failed rotation restores original container
-- **Idempotent**: Can be replayed without side effects
-- **Crash-safe**: Interrupted rotation detected on restart, marked for manual review
-
-### Rollback Behavior
-
-Rollback is triggered on:
-- Health check timeout (container never became healthy)
-- Container restart during health verification
-- Swap failure (rename fails)
-- New container crash immediately after swap
-
-Rollback process:
-```
-if rotation failed:
-  1. Undo container renames (restore original)
-  2. Stop new container
-  3. Remove new container
-  4. Mark rotation as "rollback_required" in state tracker
-  5. Log container IDs for manual investigation
-  6. Alert operators via logs (ERROR level)
-```
-
-Operators must manually clean up after rollback if needed (inspect state, verify application).
-
-### Reconciliation (Network Partition Recovery)
-
-When Docker daemon reconnects after a network partition, DSO performs immediate reconciliation:
-
-```
-Docker daemon → Event stream reconnects
-                      │
-                      ├─ Reset reconnect backoff timer
-                      │
-                      └─ Execute reconcileRuntimeState()
-                           │
-                           ├─ List all containers
-                           ├─ Check for dual-running (DSO naming pattern)
-                           ├─ If found:
-                           │  └─ Keep newest, stop older
-                           └─ Detect stale rotation state
-                              └─ Mark for manual intervention
-```
-
-**Why this matters:**
-- Network partition can cause agent to miss container rename events
-- If agent renames container A→A-old but misses A-new→A, you have two active containers
-- Reconciliation detects this within 1 second of reconnection
-- Prevents service degradation from split-brain container state
-
-### Provider Communication
-
-Providers communicate via HashiCorp's go-plugin RPC:
-
-```
-┌──────────────────────┐
-│ DSO Agent (Process A)│
-└──────────┬───────────┘
-           │ RPC socket
-           │
-┌──────────▼──────────────────┐
-│ Provider Subprocess (Proc B) │
-│ (dso-provider-vault)         │
-│ (dso-provider-aws)           │
-│ (dso-provider-azure)         │
-└──────────┬──────────────────┘
-           │ HTTP/gRPC to secret backend
-           │
-┌──────────▼──────────────────┐
-│ Secret Backend               │
-│ (Vault / AWS / Azure)        │
-└──────────────────────────────┘
-```
-
-**Key properties:**
-- Provider is isolated subprocess — crash doesn't kill agent
-- RPC interface is version-stable — old agents work with new providers
-- Plugin verification prevents unsigned binaries — SHA256 hash validation
-- Automatic restart with exponential backoff if plugin crashes
+For detailed workflows, see [docs/architecture.md](docs/architecture.md) and [docs/runtime.md](docs/runtime.md).
 
 ---
 
@@ -466,15 +218,101 @@ sudo chmod +x /usr/local/lib/docker/cli-plugins/dso
 docker dso version
 # Docker Secret Operator v1.0.0
 
-docker dso system doctor
-# DSO System Diagnostics — v1.0.0
-# ════════════════════════════════════════════════════════════
-# Component         Status     Detail
-# ────────────────────────────────────────────────────────────
-# Binary            OK         /usr/local/lib/docker/cli-plugins/dso
-# Detected Mode     LOCAL      ~/.dso/vault.enc exists
-# Vault             OK         ~/.dso/vault.enc
+docker dso doctor
+# ┌─────────────────────────────────────────┐
+# │     DSO Diagnostics Report              │
+# ├─────────────────────────────────────────┤
+# │ ✓ Docker socket                        │
+# │   running                              │
+# │ - Local vault                          │
+# │   not initialized (run: dso bootstrap) │
+# ...
 ```
+
+---
+
+## Operational Commands
+
+DSO provides a comprehensive set of operational commands following infrastructure platform patterns:
+
+### Bootstrap — Initialize Runtime
+
+```bash
+# Development environment (non-root)
+docker dso bootstrap local
+
+# Production agent (requires sudo + systemd)
+sudo docker dso bootstrap agent
+```
+
+Creates directory structure, generates configuration, initializes encryption, and validates environment. Run this **first** after installation.
+
+### Doctor — Validate Environment
+
+```bash
+# Quick health check
+docker dso doctor
+
+# Comprehensive validation (system checks)
+docker dso doctor --level full
+
+# Machine-readable JSON output
+docker dso doctor --json
+```
+
+Validates Docker connectivity, providers, containers, cache, system resources, and permissions. Use this to diagnose setup issues.
+
+### Status — Monitor Operations
+
+```bash
+# Single status check
+docker dso status
+
+# Real-time monitoring (refreshes every 2 seconds)
+docker dso status --watch
+
+# JSON output for scripting
+docker dso status --json
+```
+
+Shows runtime mode, version, uptime, provider health, container status, cache metrics, rotation stats, and queue health.
+
+### Config — Manage Configuration
+
+```bash
+# View configuration file
+docker dso config show
+
+# Edit configuration in $EDITOR
+docker dso config edit
+
+# Validate configuration for errors
+docker dso config validate
+```
+
+Manages the YAML configuration file with syntax validation and smart error reporting.
+
+### System — Agent Management
+
+```bash
+# Show systemd service status
+sudo docker dso system status
+
+# Enable and start agent service
+sudo docker dso system enable
+
+# Disable and stop agent service
+sudo docker dso system disable
+
+# Restart agent service
+sudo docker dso system restart
+
+# View agent logs (follow with -f)
+docker dso system logs
+docker dso system logs -f -n 50
+```
+
+Manages the DSO agent systemd service for production deployments.
 
 ---
 
@@ -542,7 +380,7 @@ docker dso secret set app/postgres_password
 # 2. Waits for it to become healthy
 # 3. Atomically swaps container names
 # 4. Stops old container
-# (All happens in ~10 seconds, zero downtime for clients)
+# (All happens in ~30 seconds; stateless workloads see minimal disruption)
 ```
 
 ### Cloud Mode (with Vault)
@@ -882,62 +720,28 @@ docker dso status
 
 ## Security Model
 
-### Secret Lifecycle
+**Quick summary:** DSO keeps secrets out of persistent storage and Docker metadata, but inherits trust assumptions from Docker and the configured secret provider.
 
-```
-Secret entered by operator
-  ↓ (in vault for Cloud mode, in local vault for Local mode)
-  ↓
-Provider retrieves on demand
-  ↓
-Secret decrypted in memory (process memory only)
-  ↓
-Injected into container at runtime
-  ↓
-Container reads from /run/secrets/ (tmpfs, not disk)
-  ↓
-Container process has secret in memory
-  ↓
-Memory is inaccessible to host (containerization boundary)
-  ↓
-On rotation:
-  - Old secret overwritten in memory
-  - Old container stopped and removed
-  - Old secret no longer accessible
-```
+**Key design decisions:**
+- Secrets are decrypted only in process memory (agent or container)
+- No secrets written to host filesystem (except encrypted vault file)
+- Container secrets injected via tmpfs (invisible to `docker inspect`)
+- Agents assume Docker daemon is trusted and secure
 
-### Key Assumptions
+**What DSO relies on:**
+- Docker daemon isolation (if Docker is compromised, secrets are compromised)
+- Configured provider security (Vault, AWS, Azure)
+- Host kernel process isolation
+- Operator trust (admins have access to secrets)
 
-**Operator trust**: DSO assumes the operator running the daemon and accessing the vault is trusted. No operator-facing secret validation.
+**What DSO does NOT provide:**
+- Multi-tenant isolation (all secrets in single agent process)
+- Operator audit logs (use provider audit: Vault, AWS CloudTrail)
+- Secret scanning or compliance checking
+- Protection against root/privileged attackers (they can inspect agent memory)
+- Plugin sandboxing (binary verification only)
 
-**Container isolation**: Assumes standard Docker containerization prevents host processes from reading container memory.
-
-**Provider security**: DSO trusts the configured provider (Vault, AWS, Azure) to secure secrets; it does not audit provider implementation.
-
-**Local file permissions**: In Local Mode, `~/.dso/vault.enc` must have permissions `0600` (file-based encryption via AES-256-GCM).
-
-**Network security**: Cloud Mode requires TLS to provider backends; DSO validates certificates by default.
-
-### What DSO Does NOT Provide
-
-**Multi-user isolation**: All secrets decrypted in single agent process; no per-container secret filtering.
-
-**Operator audit**: No audit log of who rotated what secret; use provider audit (Vault audit logs, AWS CloudTrail).
-
-**Secret scanning**: DSO does not scan container images for hardcoded secrets.
-
-**Plugin verification**: SHA256 validation prevents tampering in transit; does not verify provider trustworthiness.
-
-### Threat Model
-
-| Threat | Mitigation | Residual Risk |
-|---|---|---|
-| Secret persisted to disk | Secrets only in memory/tmpfs; not written to host FS | Forensic recovery from swapped memory |
-| `docker inspect` leakage | Use `dsofile://`; secret injected to tmpfs | `dso://` env vars visible to `docker inspect` |
-| Plugin compromise | SHA256 verification before execution | Malicious plugin developer |
-| Network eavesdropping | TLS to provider (mandatory) | TLS downgrade attack (requires network attacker + MITM) |
-| Agent compromise | Compromised agent can decrypt cached secrets | Running as root required for cloud mode |
-| Provider compromise | DSO trusts provider; uses provider's threat model | Out of scope (use provider's security) |
+**Detailed threat model:** See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ---
 
@@ -1005,6 +809,50 @@ CRITICAL: Immediate reconcileRuntimeState()
 ```
 
 **Dual-running detection:** DSO uses naming pattern (e.g., `<name>-old`, `<name>-new`) to detect incomplete rotations. On reconnection, it cleans up.
+
+---
+
+## Current Scope & Limitations
+
+DSO is optimized for **single-host Docker Compose environments**. It is not a replacement for Kubernetes-grade secret management.
+
+**Explicit scope:**
+- Single Docker host per agent (no multi-host coordination)
+- Local state persistence (no distributed consensus)
+- File-based locking (scales to ~100s of secrets, not 1000s)
+- Manual recovery after agent crashes during rotation (marked in state tracker)
+- Docker socket access required (must trust Docker daemon)
+
+**Known limitations:**
+- **No HA**: State is local; failover requires manual recovery
+- **No distributed locking**: Multiple agents on same host cause race conditions
+- **No multi-tenant isolation**: All secrets decrypted in single agent process
+- **No audit logs**: Use provider audit logs (Vault, AWS CloudTrail) for compliance
+- **Reconciliation still evolving**: Dual-running detection works but may need manual cleanup in edge cases
+- **Plugin trust**: Binary verification only; no plugin sandboxing
+
+**Intentional non-goals:**
+- Kubernetes support (use ExternalSecrets Operator)
+- HSM integration (future, if needed)
+- Multi-region coordination (out of scope)
+- Secret scanning / compliance checking (use external tools)
+
+---
+
+## When Not to Use DSO
+
+DSO is not appropriate for:
+
+| Use Case | Better Choice | Reason |
+|---|---|---|
+| **Kubernetes environments** | ExternalSecrets Operator or similar | DSO is Docker Compose–only |
+| **Multi-tenant strict isolation** | Vault or dedicated HSM | DSO has no multi-tenant controls |
+| **Highly regulated environments** | Vault with audit trail | DSO has minimal audit capabilities |
+| **Distributed systems** | Consul or etcd–based secrets | DSO assumes single host |
+| **1000s of secrets** | Enterprise secret management | DSO's cache/locking assumes 100s of secrets |
+| **HA/failover required** | Kubernetes or Consul | DSO requires manual recovery |
+
+**If you're already using:** Vault Agent, Sealed Secrets, or Doppler, DSO may duplicate your infrastructure. Evaluate if the Docker Compose–specific focus justifies replacing existing tooling.
 
 ---
 
@@ -1395,3 +1243,179 @@ Use DSO for simplicity; use Vault Agent if already running Vault infrastructure.
 ---
 
 <p align="center">Built by the open-source community for Docker Compose teams who need secret rotation without Swarm or Kubernetes.</p>
+
+## Troubleshooting
+
+### Bootstrap Issues
+
+**"Docker socket not accessible"**
+```bash
+# Verify Docker is running
+docker ps
+
+# Check socket permissions
+ls -la /var/run/docker.sock
+
+# Add current user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+**"Vault initialization failed"**
+```bash
+# Remove failed state and retry
+rm -rf ~/.dso
+docker dso bootstrap local
+```
+
+### Common Diagnostics
+
+**Check environment health:**
+```bash
+docker dso doctor --level full
+```
+
+**Monitor runtime status:**
+```bash
+docker dso status --watch
+```
+
+**View agent logs (production):**
+```bash
+docker dso system logs -f
+```
+
+**Validate configuration:**
+```bash
+docker dso config validate
+```
+
+### Agent Service Issues
+
+**Service won't start:**
+```bash
+# Check systemd status
+sudo systemctl status dso-agent
+
+# View full service logs
+sudo journalctl -u dso-agent -n 100
+
+# Verify permissions
+sudo docker dso doctor --level full
+```
+
+**Configuration mismatch:**
+```bash
+# Edit configuration
+sudo nano /etc/dso/config.yaml
+
+# Validate changes
+sudo docker dso config validate
+
+# Restart service
+sudo docker dso system restart
+```
+
+---
+
+## Development Modes
+
+### Local Development
+
+Use for development and testing on a single machine. Secrets stored in encrypted local vault.
+
+```bash
+docker dso bootstrap local
+docker dso status
+docker dso compose up
+```
+
+**Characteristics:**
+- Non-root operation
+- Local encrypted storage
+- No systemd service
+- Quick setup (<2 minutes)
+
+### Agent Mode (Production)
+
+Use for production deployments on single Docker hosts. Managed via systemd with automatic restarts.
+
+```bash
+sudo docker dso bootstrap agent
+sudo docker dso system enable
+docker dso status --watch
+```
+
+**Characteristics:**
+- Requires root/sudo
+- Systemd-managed service
+- Persistent state tracking
+- Health checks and monitoring
+- Automatic restart on failure
+
+---
+
+## Complete Workflow Example
+
+### Step 1: Install
+
+```bash
+# Download and install binary
+curl -fsSL https://get.dso.dev/install.sh | sh
+```
+
+### Step 2: Initialize
+
+```bash
+# Bootstrap local environment
+docker dso bootstrap local
+```
+
+### Step 3: Validate
+
+```bash
+# Check everything is working
+docker dso doctor
+docker dso status
+```
+
+### Step 4: Configure
+
+```bash
+# View current configuration
+docker dso config show
+
+# Edit if needed
+docker dso config edit
+
+# Validate changes
+docker dso config validate
+```
+
+### Step 5: Deploy
+
+```bash
+# Use secrets in docker-compose.yaml
+# services:
+#   database:
+#     environment:
+#       PASSWORD: dso://myapp/db_password
+
+# Deploy with DSO
+docker dso compose up
+```
+
+### Step 6: Monitor
+
+```bash
+# Watch status in real-time
+docker dso status --watch
+
+# View logs
+docker dso system logs -f
+
+# Check diagnostics
+docker dso doctor
+```
+
+---

@@ -1,0 +1,92 @@
+project_name: dso
+version: 2
+dist: ./dist
+
+builds:
+  - id: docker-dso
+    main: ./cmd/dso
+    binary: docker-dso
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: default
+    format: tar.gz
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - docs/**/*
+    name_template: >-
+      {{- .ProjectName }}-
+      {{- .Version }}-
+      {{- .Os }}-
+      {{- .Arch }}
+
+checksum:
+  name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "^typo:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: docker-secret-operator
+    name: dso
+  draft: false
+  prerelease: auto
+  name_template: "DSO {{ .Version }}"
+  body_template: |
+    ## Docker Secret Operator (DSO) {{ .Version }}
+
+    This release includes updates to the DSO Docker CLI plugin.
+
+    ### Installation
+
+    **User-level (local development):**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+    ```
+
+    **System-wide (production):**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
+    ```
+
+    ### What's Changed
+
+    {{ .Changelog }}
+
+    ### Binary Downloads
+
+    Pre-built binaries are available below for Linux and macOS (amd64 and arm64).
+
+    To verify integrity, compare the binary SHA256 hash against the checksums file.
