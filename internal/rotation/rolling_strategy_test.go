@@ -139,15 +139,17 @@ func TestRollingStrategy_Execute_HealthTimeout(t *testing.T) {
 		t.Fatal("Expected error due to health timeout, got nil")
 	}
 
-	// Verify rollback calls
-	// 1 rename to temp, 1 rename back
-	if renameCalled < 2 {
-		t.Errorf("Expected at least 2 rename calls (rename and rollback), got %d", renameCalled)
+	// Verify rollback behavior with new atomic strategy:
+	// On health check failure, the original container is never renamed,
+	// and the new container is simply stopped and removed.
+	// No rename operations should occur before the atomic swap point.
+	if renameCalled != 0 {
+		t.Errorf("Expected 0 rename calls (health failed before swap), got %d", renameCalled)
 	}
 	if stopCalled == 0 {
-		t.Error("Expected stop call for new container during rollback")
+		t.Error("Expected stop call for unhealthy new container during rollback")
 	}
 	if removeCalled == 0 {
-		t.Error("Expected remove call for new container during rollback")
+		t.Error("Expected remove call for unhealthy new container during rollback")
 	}
 }

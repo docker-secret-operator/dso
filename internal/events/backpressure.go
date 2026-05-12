@@ -53,6 +53,7 @@ type EventHandler func(ctx context.Context, msg events.Message) error
 type BoundedEventQueue struct {
 	logger        *zap.Logger
 	queue         chan events.Message
+	stopCh        chan struct{}
 	maxQueueSize  int
 	numWorkers    int
 	activeWorkers int32
@@ -79,6 +80,7 @@ func NewBoundedEventQueue(logger *zap.Logger, maxQueueSize, numWorkers int, hand
 	return &BoundedEventQueue{
 		logger:       logger,
 		queue:        make(chan events.Message, maxQueueSize),
+		stopCh:       make(chan struct{}),
 		maxQueueSize: maxQueueSize,
 		numWorkers:   numWorkers,
 		handler:      handler,
@@ -106,16 +108,15 @@ func (beq *BoundedEventQueue) worker(ctx context.Context, id int) {
 		select {
 		case <-ctx.Done():
 			return
-		case msg, ok := <-beq.queue:
-			if !ok {
-				return // Queue closed
-			}
-
-			atomic.AddInt32(&beq.activeWorkers, 1)
-			defer atomic.AddInt32(&beq.activeWorkers, -1)
+		case <-beq.stopCh:
+			return
+		case msg := <-beq.queue:
 
 			// Process with timeout and panic recovery
 			func() {
+				atomic.AddInt32(&beq.activeWorkers, 1)
+				defer atomic.AddInt32(&beq.activeWorkers, -1)
+
 				defer func() {
 					if r := recover(); r != nil {
 						beq.logger.Error("Panic in event handler",
@@ -161,6 +162,8 @@ func (beq *BoundedEventQueue) reportMetrics(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-beq.stopCh:
+			return
 		case <-ticker.C:
 			depth := int32(len(beq.queue))
 			maxDepth := atomic.LoadInt32(&beq.maxDepth)
@@ -182,10 +185,12 @@ func (beq *BoundedEventQueue) reportMetrics(ctx context.Context) {
 	}
 }
 
-// Enqueue attempts to add an event to the queue
-// Returns false if queue is full (event dropped)
+// Enqueue attempts to add an event to the queue.
+// Returns false if queue is full or queue is stopped (event dropped).
 func (beq *BoundedEventQueue) Enqueue(msg events.Message) bool {
 	select {
+	case <-beq.stopCh:
+		return false
 	case beq.queue <- msg:
 		return true
 	default:
@@ -195,9 +200,11 @@ func (beq *BoundedEventQueue) Enqueue(msg events.Message) bool {
 	}
 }
 
-// Stop gracefully shuts down the queue and workers
+// Stop gracefully shuts down the queue and workers.
+// Signals via stopCh to avoid a send-on-closed-channel panic if Enqueue
+// races with Stop.
 func (beq *BoundedEventQueue) Stop() {
-	close(beq.queue)
+	close(beq.stopCh)
 	beq.wg.Wait()
 }
 

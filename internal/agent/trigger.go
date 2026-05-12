@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/internal/watcher"
+	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
@@ -247,7 +248,13 @@ func (t *TriggerEngine) HandleWebhook(providerName string, pCfg config.ProviderC
 		return err
 	}
 
-	val, err := prov.GetSecret(sec.Name)
+	// Use context-aware GetSecret if provider supports it; otherwise fall back to non-context version
+	var val map[string]string
+	if provCtx, ok := prov.(api.SecretProviderWithContext); ok {
+		val, err = provCtx.GetSecretWithContext(context.Background(), sec.Name)
+	} else {
+		val, err = prov.GetSecret(sec.Name)
+	}
 	if err != nil {
 		return err
 	}

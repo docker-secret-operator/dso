@@ -71,10 +71,10 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Agent connection failed (%v). Proceeding without dynamic env injection.\n", err)
 		} else {
+			defer client.Close()
 			injectedSecrets, err = client.FetchAllEnvs(cfg)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: Injection failed: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("injection failed: %w", err)
 			}
 			for k, v := range injectedSecrets {
 				envMap[k] = v

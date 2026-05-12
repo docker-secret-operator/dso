@@ -43,6 +43,7 @@ func NewFetchCmd() *cobra.Command {
 				fmt.Printf("Error connecting to agent: %v (Ensure 'docker dso up' or 'dso-agent' is running)\n", err)
 				os.Exit(1)
 			}
+			defer client.Close()
 
 			secretName := args[0]
 			var secMapping *config.SecretMapping

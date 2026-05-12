@@ -16,13 +16,20 @@ type AgentClient struct {
 }
 
 func NewAgentClient(socketPath string) (*AgentClient, error) {
+	return NewAgentClientWithTimeout(socketPath, 30*time.Second)
+}
+
+func NewAgentClientWithTimeout(socketPath string, timeout time.Duration) (*AgentClient, error) {
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
 	client, err := rpc.Dial("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to the DSO agent socket at %s: %w", socketPath, err)
 	}
 	return &AgentClient{
 		client:         client,
-		requestTimeout: 30 * time.Second,
+		requestTimeout: timeout,
 	}, nil
 }
 
@@ -77,6 +84,11 @@ func (ac *AgentClient) FetchSecretWithContext(ctx context.Context, providerName 
 
 // FetchAllEnvs aggregates all secrets mapped to environments for a given config.
 func (ac *AgentClient) FetchAllEnvs(cfg *config.Config) (map[string]string, error) {
+	return ac.FetchAllEnvsWithContext(context.Background(), cfg)
+}
+
+// FetchAllEnvsWithContext aggregates all secrets mapped to environments with context propagation.
+func (ac *AgentClient) FetchAllEnvsWithContext(ctx context.Context, cfg *config.Config) (map[string]string, error) {
 	envs := make(map[string]string)
 	for _, sec := range cfg.Secrets {
 		if sec.Inject.Type == "env" || sec.Inject.Type == "" { // default to env
@@ -93,7 +105,7 @@ func (ac *AgentClient) FetchAllEnvs(cfg *config.Config) (map[string]string, erro
 				return nil, fmt.Errorf("provider %s not found for secret %s", pName, sec.Name)
 			}
 
-			data, err := ac.FetchSecret(pName, pCfg.Config, sec.Name)
+			data, err := ac.FetchSecretWithContext(ctx, pName, pCfg.Config, sec.Name)
 			if err != nil {
 				return nil, err
 			}
@@ -116,4 +128,12 @@ func (ac *AgentClient) GetEvents() (*api.AgentResponse, error) {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// Close closes the RPC connection and releases resources
+func (ac *AgentClient) Close() error {
+	if ac.client != nil {
+		return ac.client.Close()
+	}
+	return nil
 }

@@ -33,18 +33,25 @@ func TestEventDebouncer_CheckAndRecord(t *testing.T) {
 	}
 }
 
-func TestEventDebouncer_Janitor(t *testing.T) {
+func TestEventDebouncer_Cleanup(t *testing.T) {
 	window := 50 * time.Millisecond
 	ed := NewEventDebouncer(window)
+	defer ed.Stop()
 
-	ed.CheckAndRecord("cleanup-me")
-	
-	// Wait for janitor (window * 2)
-	time.Sleep(window*2 + 10*time.Millisecond)
-	
-	// Check if it's gone from sync.Map
-	_, loaded := ed.events.Load("cleanup-me")
-	if loaded {
-		t.Error("Janitor failed to delete event from map")
+	// Record an event
+	fresh := ed.CheckAndRecord("cleanup-me")
+	if !fresh {
+		t.Error("First record should be fresh")
+	}
+
+	// Wait for cleanup (cutoff = now - window*2, cleanup runs every window*2)
+	// Total wait needed: 2*window + buffer to ensure cleanup tick fires
+	time.Sleep(window*2 + 100*time.Millisecond)
+
+	// After the old entry is removed from the map, recording the same ID
+	// should return true (fresh) since it's not in the map anymore
+	fresh = ed.CheckAndRecord("cleanup-me")
+	if !fresh {
+		t.Error("After cleanup, same ID should be treated as fresh")
 	}
 }

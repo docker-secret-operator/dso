@@ -36,6 +36,9 @@ func NewWatchCmd() *cobra.Command {
 
 			// Legacy Agent connection for DSO local events
 			client, _ := injector.NewAgentClient(socketPath)
+			if client != nil {
+				defer client.Close()
+			}
 
 			fmt.Println("\033[1;36mDSO Watcher Active\033[0m (Strategy: " + strategy + ") - Monitoring live container events...")
 			fmt.Println("-----------------------------------------------------------------------------------")

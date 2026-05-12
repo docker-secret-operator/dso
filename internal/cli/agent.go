@@ -42,7 +42,9 @@ func NewAgentCmd() *cobra.Command {
 
 			// Initialize Cache & Store
 			cache := agent.NewSecretCache(5 * time.Minute)
+			defer cache.Close()
 			storeManager := providers.NewSecretStoreManager(logger)
+			defer storeManager.Shutdown()
 
 			// Initialize Reloader (Watcher)
 			reloader, err := watcher.NewReloaderController(logger)
@@ -61,6 +63,10 @@ func NewAgentCmd() *cobra.Command {
 			trigger.Server = agentServer
 			reloader.Server = agentServer
 
+			// Handle Termination with Graceful Shutdown
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
 			// 2. Start Docker Secret Driver Server (V2 Plugin)
 			go func() {
 				if err := agent.StartDriverServer(driverSocket, cache, storeManager, logger, cfg); err != nil {
@@ -69,7 +75,8 @@ func NewAgentCmd() *cobra.Command {
 			}()
 
 			// 3. Start REST API Server (Health Checks & Monitoring)
-			go server.StartRESTServer(apiAddr, cache, trigger, cfg, logger)
+			restShutdown := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
+			defer restShutdown()
 
 			// 4. Start Reconciliation Loop
 			if err := trigger.StartAll(); err != nil {
@@ -81,10 +88,6 @@ func NewAgentCmd() *cobra.Command {
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
-
-			// Handle Termination with Graceful Shutdown
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
 
 			// 5. Start Docker Event Loop for the Reloader (CRITICAL BUG FIX)
 			reloader.StartEventLoop(ctx)

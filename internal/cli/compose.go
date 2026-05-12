@@ -109,6 +109,7 @@ func NewComposeCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "Agent connection failed. Is the DSO agent running? Error: %v\n", err)
 				os.Exit(1)
 			}
+			defer client.Close()
 
 			injectedEnvs, err := client.FetchAllEnvs(cfg)
 			if err != nil {
