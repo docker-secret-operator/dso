@@ -1,10 +1,12 @@
-# DSO CLI Reference
+# DSO CLI Reference (Phase 1-6)
 
-> **DSO v3.2** — Docker Secret Operator CLI Plugin
+> **Docker Secret Operator CLI Plugin**
 >
-> All commands are invoked as `docker dso <command>`. DSO supports two execution modes:
-> - **Cloud Mode** (default): uses `/etc/dso/dso.yaml` + systemd agent + provider plugins.
-> - **Local Mode** (add-on): uses `~/.dso/vault.enc` after running `docker dso init`.
+> All commands are invoked as `docker dso <command>`. DSO provides four phases of functionality:
+> - **Phase 1: Bootstrap** — Initialize local or agent mode with `docker dso bootstrap [local|agent]`
+> - **Phase 2: Diagnose** — Check environment health with `docker dso doctor`
+> - **Phase 3: Monitor** — View status and manage configuration with `docker dso status` and `docker dso config`
+> - **Phase 4: Operate** — Manage systemd service with `docker dso system`
 
 ---
 
@@ -12,42 +14,270 @@
 
 ```
 docker dso
-├── up                       # Deploy a stack with secret injection (primary entrypoint)
-├── down                     # Stop and remove containers via docker compose
-├── init                     # Initialize the Local Vault (~/.dso/vault.enc)
-├── compose                  # Secret-injecting wrapper for docker compose
-├── fetch [secret-name]      # Manually fetch and display a secret from the agent
-├── export                   # Export injected secrets to a local file (CI/testing)
-├── inspect <container-id>   # Inspect secrets injected into a running container
-├── watch                    # Real-time monitor of secret rotations and events
-├── logs                     # View DSO agent logs (journald or REST API)
-├── validate                 # Validate the dso.yaml config file
-├── diff [stack-name]        # Show config differences vs. deployed stack
-├── version                  # Print the DSO version
-├── secret
-│   ├── set <project>/<path> # Store a secret in the Local Vault
-│   ├── get <project>/<path> # Retrieve a secret from the Local Vault
-│   └── list [project]       # List all secret paths in the Local Vault
-├── env
-│   └── import <file> [proj] # Bulk-import a .env file into the Local Vault
-└── system
-    ├── setup                # Install systemd service + provider plugins (Cloud Mode)
-    └── doctor               # Diagnose installation and runtime environment
+├── bootstrap                # Initialize DSO runtime (Phase 1)
+│   ├── local               # Setup local development mode (~/.dso/)
+│   └── agent               # Setup production agent mode with systemd
+├── doctor                  # Check environment health and connectivity (Phase 2)
+│   ├── --level [default|full]  # Detail level
+│   └── --json              # Machine-readable output
+├── status                  # View real-time system metrics (Phase 3)
+│   ├── --watch             # Auto-refresh every 2 seconds
+│   └── --json              # Machine-readable output
+├── config                  # Manage configuration (Phase 3)
+│   ├── show                # Display current configuration
+│   ├── edit                # Open configuration in $EDITOR
+│   ├── validate            # Validate configuration syntax
+└── system                  # Systemd service management (Phase 4)
+    ├── status              # Show service status and logs
+    ├── enable              # Enable and start dso-agent service
+    ├── disable             # Stop and disable service
+    ├── restart             # Restart dso-agent service
+    └── logs                # View journald logs with filtering
+        ├── -f              # Follow logs in real-time
+        ├── -n <lines>      # Show last N lines
+        ├── -p <level>      # Filter by level (err, warning, etc)
+        └── --since <time>  # Show logs since time (e.g., 1h, 30m)
 ```
 
-> **Stub commands** (not yet implemented, will error): `apply`, `inject`, `sync`
+---
+
+## Phase 1: Bootstrap
+
+Initialize DSO for local development or production deployment.
+
+### Local Bootstrap (Development)
+```bash
+docker dso bootstrap local
+```
+- Creates `~/.dso/` directory structure
+- Generates encrypted local vault
+- Creates development configuration
+- No root required, non-root user only
+
+**Success output:**
+```
+✓ DSO local environment initialized
+✓ Configuration: ~/.dso/config.yaml
+✓ Next steps:
+  - Review config: docker dso config show
+  - Deploy: docker compose up
+```
+
+### Agent Bootstrap (Production)
+```bash
+sudo docker dso bootstrap agent
+```
+- Creates `/etc/dso/` and `/var/lib/dso/` directories
+- Generates production configuration
+- Creates systemd service file
+- Requires root and systemd
+- Does NOT start the service yet
+
+**Success output:**
+```
+✓ DSO agent initialized
+✓ Configuration: /etc/dso/config.yaml
+✓ Service: /etc/systemd/system/dso-agent.service
+✓ Next steps:
+  - Review config: docker dso config show
+  - Enable service: sudo docker dso system enable
+  - Monitor: docker dso system logs -f
+```
+
+---
+
+## Phase 2: Doctor (Environment Diagnostics)
+
+Check system health and provider connectivity.
+
+### Basic Health Check
+```bash
+docker dso doctor
+```
+
+Output includes:
+- Docker connectivity status
+- Runtime environment validation
+- Provider availability checks
+- System permissions
+- systemd service state (if agent mode)
+
+### Detailed Diagnostics
+```bash
+docker dso doctor --level full
+```
+
+Includes:
+- All basic checks
+- Provider connection details
+- Container health status
+- Cache effectiveness
+- System resource usage
+
+### Machine-Readable Output
+```bash
+docker dso doctor --json
+```
+
+Returns JSON with all diagnostic data for integration with monitoring systems.
+
+---
+
+## Phase 3: Status (Real-Time Monitoring)
+
+View current system metrics and state.
+
+### Current Status
+```bash
+docker dso status
+```
+
+Shows:
+- Runtime information and uptime
+- Provider health status
+- Container information
+- Cache hit rates and size
+- Rotation statistics
+- System metrics
+
+### Live Monitoring
+```bash
+docker dso status --watch
+```
+
+Auto-refreshes every 2 seconds. Press Ctrl+C to exit.
+
+### Machine-Readable Status
+```bash
+docker dso status --json
+```
+
+Returns structured JSON for scripting and monitoring integration.
+
+---
+
+## Phase 3: Config (Configuration Management)
+
+View, edit, and validate configuration.
+
+### Show Configuration
+```bash
+docker dso config show
+```
+
+Displays current configuration from:
+1. `/etc/dso/config.yaml` (agent mode)
+2. `~/.dso/config.yaml` (local mode)
+3. `./dso.yaml` (current directory)
+
+### Edit Configuration
+```bash
+docker dso config edit
+```
+
+Opens configuration in `$EDITOR`. After saving:
+- Validates YAML syntax
+- Confirms changes are valid
+- Suggests next steps (usually `docker dso system restart`)
+
+**Typical workflow:**
+```bash
+docker dso config edit
+# Make changes, save and exit
+docker dso config validate    # Verify syntax
+sudo docker dso system restart # Apply changes
+```
+
+### Validate Configuration
+```bash
+docker dso config validate
+```
+
+Checks:
+- YAML syntax validity
+- Required fields present
+- Version compatibility
+- Provider configuration
+- Size format validity (100Mi, 1Gi, 500MB, etc)
+
+Exit code 0 = valid, non-zero = errors with details.
+
+---
+
+## Phase 4: System (Systemd Service Management)
+
+Manage the dso-agent systemd service (agent mode only).
+
+### Service Status
+```bash
+docker dso system status
+```
+
+Shows:
+- Service running/stopped state
+- Enabled/disabled state
+- Recent log lines
+- Last activity timestamp
+
+### Enable Service
+```bash
+sudo docker dso system enable
+```
+
+Enables and starts the dso-agent service:
+```
+sudo systemctl enable dso-agent
+sudo systemctl start dso-agent
+```
+
+### Disable Service
+```bash
+sudo docker dso system disable
+```
+
+Stops and disables the service:
+```
+sudo systemctl disable dso-agent
+sudo systemctl stop dso-agent
+```
+
+### Restart Service
+```bash
+sudo docker dso system restart
+```
+
+Restarts the service. Use after:
+- Configuration changes
+- Plugin updates
+- Recovery from errors
+
+### View Logs
+```bash
+docker dso system logs
+```
+
+Shows last 20 lines from journald.
+
+**Common log filters:**
+```bash
+docker dso system logs -f                    # Follow in real-time
+docker dso system logs -n 100                # Last 100 lines
+docker dso system logs -p err                # Errors only
+docker dso system logs -p warning            # Warnings and errors
+docker dso system logs --since 1h            # Last hour
+docker dso system logs --since 1h -p err     # Errors in last hour
+```
 
 ---
 
 ## Global Flags
 
-These flags are available on every command:
+Available on all commands:
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
-| `--config <path>` | `-c` | `dso.yaml` | Override the DSO config file. Resolved in order: flag → `/etc/dso/dso.yaml` → `./dso.yaml` |
-
-### Environment Variables
+| `--help` | `-h` | - | Show help for command |
+| `--version` | `-v` | - | Show version information |
 
 | Variable | Description |
 |---|---|

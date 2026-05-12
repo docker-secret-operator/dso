@@ -65,7 +65,7 @@ Thumbs.db
 .env.*
 secrets/
 test_local_secret
-
+.claude
 # Dependencies
 vendor/
 node_modules/

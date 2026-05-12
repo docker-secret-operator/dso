@@ -1,52 +1,231 @@
-# Installation Guide (v3.2)
+# Installation Guide — Docker Plugin
+
+DSO is a Docker CLI plugin. This guide covers installation as `docker dso` command.
 
 ---
 
 ## Quick Install
 
-**User install (Local Mode — recommended for development):**
+### User-Level Install (Local Development)
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
 ```
 
-**Global install (required for Cloud Mode / systemd):**
+Installs to: `~/.docker/cli-plugins/docker-dso`
+
+### System-Wide Install (Production)
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
 ```
 
-Verify:
+Installs to: `/usr/local/lib/docker/cli-plugins/docker-dso`
+
+### Verify Installation
+
 ```bash
 docker dso version
-# Docker Secret Operator (DSO) v3.2.0
+# Docker Secret Operator (DSO) vX.Y.Z
+```
+
+If not found, restart Docker:
+```bash
+docker ps  # Reloads plugins
+docker dso version
 ```
 
 ---
 
-## What the Installer Does
+## How DSO Works as a Docker Plugin
 
-`install.sh` installs **only the DSO CLI binary**. It does not install provider plugins or configure systemd.
+Docker automatically discovers binaries named `docker-<pluginname>` in plugin directories:
 
-| Action | Done by |
-|---|---|
-| Download CLI binary | `install.sh` |
-| Verify SHA256 checksum | `install.sh` |
-| Place binary in plugin dir | `install.sh` |
-| Install provider plugins | `sudo docker dso system setup` |
-| Configure systemd | `sudo docker dso system setup` |
-| Initialize local vault | `docker dso init` |
+1. **User plugins** (checked first): `~/.docker/cli-plugins/`
+2. **System plugins** (checked second): `/usr/local/lib/docker/cli-plugins/`
+
+When you run `docker dso bootstrap local`, Docker:
+1. Looks for `docker-dso` in plugin directories
+2. Executes it with `dso bootstrap local` as arguments
+3. DSO strips duplicate "dso" argument and processes
+
+This allows seamless integration with the `docker` command itself.
+
+---
+
+## Installation Methods
+
+### Method 1: Automated Script (Recommended)
+
+**User-level:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+```
+
+**System-wide:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
+```
+
+The script:
+- Downloads the binary for your OS/architecture (amd64, arm64)
+- Verifies SHA256 checksum
+- Places it in the appropriate plugin directory
+- Sets executable permissions
+
+### Method 2: Manual Install
+
+**User-level:**
+```bash
+mkdir -p ~/.docker/cli-plugins
+curl -Lo ~/.docker/cli-plugins/docker-dso \
+  https://github.com/docker-secret-operator/dso/releases/download/vX.Y.Z/dso-linux-amd64
+chmod +x ~/.docker/cli-plugins/docker-dso
+```
+
+**System-wide:**
+```bash
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -Lo /usr/local/lib/docker/cli-plugins/docker-dso \
+  https://github.com/docker-secret-operator/dso/releases/download/vX.Y.Z/dso-linux-amd64
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-dso
+```
+
+### Method 3: Build from Source
+
+```bash
+git clone https://github.com/docker-secret-operator/dso.git
+cd dso
+
+# Build the binary
+make build
+
+# Install to user plugins directory
+mkdir -p ~/.docker/cli-plugins
+cp docker-dso ~/.docker/cli-plugins/
+
+# Or system-wide
+sudo install -m 755 docker-dso /usr/local/lib/docker/cli-plugins/
+```
 
 ---
 
 ## Requirements
 
-| | Local Mode | Cloud Mode |
+| | Local Bootstrap | Agent Bootstrap |
 |---|---|---|
-| **OS** | Linux or macOS | Linux only |
+| **OS** | Linux, macOS | Linux only |
 | **Architecture** | amd64, arm64 | amd64, arm64 |
-| **Docker** | Any recent version | Any recent version |
+| **Docker** | Any recent version (20.10+) | Any recent version |
 | **systemd** | Not required | Required |
-| **Root** | Not required | Required for `system setup` |
+| **Root** | Not required | Required |
 | **Go** | Not required | Not required |
+
+---
+
+## Verification
+
+```bash
+# List installed plugins
+docker plugin ls
+# (Note: CLI plugins not shown here, only daemon plugins)
+
+# Check DSO plugin specifically
+docker dso version
+
+# Check plugin location
+which docker-dso
+# or
+ls ~/.docker/cli-plugins/docker-dso
+ls /usr/local/lib/docker/cli-plugins/docker-dso
+```
+
+---
+
+## Troubleshooting Installation
+
+### Plugin Not Found
+
+```bash
+docker: 'dso' is not a docker command
+```
+
+**Solutions:**
+
+1. Verify plugin exists:
+   ```bash
+   ls ~/.docker/cli-plugins/docker-dso
+   # or
+   ls /usr/local/lib/docker/cli-plugins/docker-dso
+   ```
+
+2. Fix permissions:
+   ```bash
+   chmod +x ~/.docker/cli-plugins/docker-dso
+   # or
+   sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-dso
+   ```
+
+3. Reload plugins:
+   ```bash
+   docker ps
+   docker dso version
+   ```
+
+### Cannot Execute Binary
+
+```bash
+Permission denied while trying to connect to Docker daemon socket
+```
+
+**Solutions:**
+
+1. Check Docker is running:
+   ```bash
+   docker ps
+   ```
+
+2. Add user to docker group:
+   ```bash
+   sudo usermod -aG docker $USER
+   newgrp docker
+   ```
+
+3. Or use `sudo`:
+   ```bash
+   sudo docker dso bootstrap agent
+   ```
+
+---
+
+## Next Steps
+
+After installation:
+
+1. **Bootstrap environment:**
+   ```bash
+   # Local development
+   docker dso bootstrap local
+   
+   # Or production (requires root)
+   sudo docker dso bootstrap agent
+   ```
+
+2. **Check health:**
+   ```bash
+   docker dso doctor
+   ```
+
+3. **View status:**
+   ```bash
+   docker dso status
+   ```
+
+For detailed setup instructions, see [Getting Started](getting-started.md).
+
+---
+
+For Docker plugin details, see [Docker Plugin Integration](docker-plugin.md).
 
 ---
 

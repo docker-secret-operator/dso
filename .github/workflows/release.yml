@@ -39,9 +39,15 @@ jobs:
 
       # ── 4. Validate build before release ──────────────────────────────────
       - name: Verify build
-        run: go build ./...
+        run: make build && ls -lh docker-dso
 
-      # ── 5. Run GoReleaser ─────────────────────────────────────────────────
+      # ── 5. Clean artifacts before release ──────────────────────────────────
+      - name: Clean build artifacts
+        run: |
+          make clean
+          echo "✅ Build artifacts cleaned"
+
+      # ── 6. Run GoReleaser ─────────────────────────────────────────────────
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
