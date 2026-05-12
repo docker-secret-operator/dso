@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/providers"
+	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -15,18 +16,21 @@ import (
 )
 
 type TriggerEngine struct {
-	Cache     *SecretCache
-	Store     *providers.SecretStoreManager
-	Reloader  *watcher.ReloaderController
-	Logger    *zap.Logger
-	rotations     sync.Map
-	events        sync.Map
-	secretHashes  sync.Map
-	lastRotations sync.Map
-	Server        *AgentServer
-	Config        *config.Config
-	ctx           context.Context
-	cancel        context.CancelFunc
+	Cache             *SecretCache
+	Store             *providers.SecretStoreManager
+	Reloader          *watcher.ReloaderController
+	Logger            *zap.Logger
+	rotations         sync.Map
+	events            sync.Map
+	secretHashes      sync.Map
+	lastRotations     sync.Map
+	Server            *AgentServer
+	Config            *config.Config
+	ctx               context.Context
+	cancel            context.CancelFunc
+	StateTracker      *StateTracker
+	LockManager       *rotation.LockManager
+	TimeoutController *TimeoutController
 }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config) *TriggerEngine {
@@ -35,23 +39,97 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 		rw.Config = cfg
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Initialize state tracker and lock manager for crash recovery and synchronization
+	stateTracker, err := NewStateTracker("/var/lib/dso/state", logger)
+	if err != nil {
+		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
+			zap.Error(err))
+		// Continue without state tracker - less safe but functional
+		stateTracker = nil
+	}
+
+	lockManager, err := rotation.NewLockManager("/var/lib/dso/locks", logger)
+	if err != nil {
+		logger.Warn("Failed to initialize lock manager - concurrent rotation protection disabled",
+			zap.Error(err))
+		// Continue without lock manager - unsafe but functional
+		lockManager = nil
+	}
+
+	timeoutController := NewTimeoutController(logger)
+
 	return &TriggerEngine{
-		Cache:    cache,
-		Store:    storeManager,
-		Reloader: rw,
-		Logger:   logger,
-		Config:   cfg,
-		ctx:      ctx,
-		cancel:   cancel,
+		Cache:             cache,
+		Store:             storeManager,
+		Reloader:          rw,
+		Logger:            logger,
+		Config:            cfg,
+		ctx:               ctx,
+		cancel:            cancel,
+		StateTracker:      stateTracker,
+		LockManager:       lockManager,
+		TimeoutController: timeoutController,
+	}
+}
+
+// recoverPendingRotations detects and recovers from crashed rotations
+// This is CRITICAL for preventing orphaned containers after agent crashes
+func (t *TriggerEngine) recoverPendingRotations() {
+	if t.StateTracker == nil {
+		return
+	}
+
+	pending := t.StateTracker.GetPendingRotations()
+	if len(pending) == 0 {
+		return
+	}
+
+	t.Logger.Warn("CRITICAL: Detected crashed rotations, attempting recovery",
+		zap.Int("count", len(pending)))
+
+	for _, rotation := range pending {
+		t.Logger.Info("Recovering crashed rotation",
+			zap.String("provider", rotation.ProviderName),
+			zap.String("secret", rotation.SecretName),
+			zap.String("status", rotation.Status),
+			zap.Time("started", rotation.StartTime),
+			zap.Duration("elapsed", time.Since(rotation.StartTime)))
+
+		// For in_progress rotations older than 5 minutes, attempt rollback
+		if rotation.Status == "in_progress" && time.Since(rotation.StartTime) > 5*time.Minute {
+			t.Logger.Error("Rotation appears to have crashed, marking for manual review",
+				zap.String("secret", rotation.SecretName),
+				zap.String("original_container", rotation.OriginalContainerID),
+				zap.String("new_container", rotation.NewContainerID))
+
+			// Mark as requiring manual intervention
+			if err := t.StateTracker.MarkRollback(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID); err != nil {
+				t.Logger.Error("Failed to mark rotation for rollback", zap.Error(err))
+			}
+		}
+
+		// For rollback_required, log for operator intervention
+		if rotation.Status == "rollback_required" {
+			t.Logger.Error("MANUAL INTERVENTION REQUIRED",
+				zap.String("secret", rotation.SecretName),
+				zap.String("action", "verify container state and run dso-cli recover or manually cleanup"))
+		}
 	}
 }
 
 func (t *TriggerEngine) Stop() {
 	t.cancel()
+	if t.StateTracker != nil {
+		t.StateTracker.Close()
+	}
 	t.Logger.Info("Trigger engine stopped")
 }
 
 func (t *TriggerEngine) StartAll() error {
+	// CRITICAL: Recover from any crashed rotations before starting normal operations
+	t.recoverPendingRotations()
+
 	for pName, pCfg := range t.Config.Providers {
 		t.Logger.Info("Starting trigger engine for provider", zap.String("provider", pName))
 		for _, sec := range t.Config.Secrets {
@@ -117,11 +195,13 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		t.Server.Emit(msg)
 	}
 
-	// 3. Unified Rotation System (restart | signal | none)
+	// 3. Unified Rotation System (restart | signal | none) with crash recovery and distributed locking
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		
+		// Per-secret timeout isolation (prevents cascading timeouts)
+		perSecretTimeout := 30 * time.Second
+		ctx, cleanup := t.TimeoutController.CreateSecretContext(t.ctx, secretName, perSecretTimeout)
+		defer cleanup()
+
 		rotationMode := sec.Rotation.Strategy
 		if rotationMode == "" {
 			rotationMode = t.Config.Defaults.Rotation.Strategy
@@ -138,10 +218,37 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		if t.Server != nil {
 			t.Server.Emit(fmt.Sprintf("Triggering %s for containers linked to %s", rotationMode, secretName))
 		}
-		
+
+		// Use distributed lock to prevent concurrent rotations of same secret
+		if t.LockManager != nil {
+			if err := t.LockManager.AcquireLock(secretName, 5*time.Second); err != nil {
+				t.Logger.Warn("Failed to acquire rotation lock", zap.String("secret", secretName), zap.Error(err))
+				return
+			}
+			defer t.LockManager.ReleaseLock(secretName)
+		}
+
+		// Record rotation start for crash recovery
+		if t.StateTracker != nil {
+			if err := t.StateTracker.StartRotation(providerName, secretName, "", ""); err != nil {
+				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
+			}
+		}
+
 		// Note: The Reloader internally handles the strategy logic (restart/signal)
 		if err := t.Reloader.TriggerReload(ctx, secretName); err != nil {
 			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
+			if t.StateTracker != nil {
+				t.StateTracker.MarkRollback(providerName, secretName, "")
+			}
+			return
+		}
+
+		// Mark rotation as complete
+		if t.StateTracker != nil {
+			if err := t.StateTracker.CompleteRotation(providerName, secretName, ""); err != nil {
+				t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
+			}
 		}
 	}()
 }

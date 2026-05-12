@@ -149,18 +149,42 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			zap.String("new_container_id", newContainerID),
 			zap.String("original_name", originalName),
 			zap.Error(err))
-		// Try to restore the original container to its original name
-		if err := rs.cli.ContainerRename(ctx, backupName, originalName); err != nil {
-			rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
-				zap.String("backup_name", backupName),
-				zap.String("original_name", originalName),
-				zap.Error(err))
-			return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
+
+		// CRITICAL FIX: Verify current state before recovery
+		// The rename might have partially succeeded
+		newInspect, inspectErr := rs.cli.ContainerInspect(ctx, newContainerID)
+		if inspectErr == nil && newInspect.Name != "" {
+			// Container still exists - check its current name
+			currentName := strings.TrimPrefix(newInspect.Name, "/")
+			if currentName == originalName {
+				// Rename actually succeeded! Continue normally
+				rs.logger.Info("Rename verification: new container successfully renamed (race condition)")
+				// Fall through to success path
+			} else {
+				// Rename failed and new container is stuck with temp name
+				// Try to restore the original container to its original name
+				if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+					rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
+						zap.String("container_id", containerID),
+						zap.String("original_name", originalName),
+						zap.Error(err))
+					return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
+				}
+				// Restore succeeded, remove the new container
+				_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
+				_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+				return fmt.Errorf("failed to finalize swap: %w", err)
+			}
+		} else {
+			// Container disappeared - assume partial failure, try restore
+			if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+				rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
+					zap.String("container_id", containerID),
+					zap.String("original_name", originalName),
+					zap.Error(err))
+				return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
+			}
 		}
-		// Restore succeeded, remove the new container
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		return fmt.Errorf("failed to finalize swap: %w", err)
 	}
 
 	// Success! The new container is now the active one

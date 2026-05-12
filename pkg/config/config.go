@@ -394,3 +394,28 @@ func LoadConfig(cfgFile string) (*Config, error) {
 
 	return &cfg, nil
 }
+
+// LoadConfigWithDecryption loads config and decrypts credentials using provided master key
+// masterKey should be 32 bytes (for AES-256). If empty, credentials are not decrypted.
+func LoadConfigWithDecryption(cfgFile string, masterKey []byte) (*Config, error) {
+	cfg, err := LoadConfig(cfgFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only decrypt if master key is provided
+	if len(masterKey) == 0 {
+		return cfg, nil
+	}
+
+	cm, err := NewCryptoManager(masterKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create crypto manager: %w", err)
+	}
+
+	if err := cm.DecryptProviderConfig(cfg); err != nil {
+		return nil, fmt.Errorf("failed to decrypt config: %w", err)
+	}
+
+	return cfg, nil
+}

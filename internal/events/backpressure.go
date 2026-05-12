@@ -60,6 +60,7 @@ type BoundedEventQueue struct {
 	wg            sync.WaitGroup
 	maxDepth      int32
 	handler       EventHandler
+	dropsReported int64
 }
 
 // NewBoundedEventQueue creates a new bounded queue with worker pool
@@ -196,6 +197,24 @@ func (beq *BoundedEventQueue) Enqueue(msg events.Message) bool {
 	default:
 		// Queue full - drop event and record metric
 		EventsDropped.Inc()
+		drops := atomic.AddInt64(&beq.dropsReported, 1)
+
+		// Alert on event drops - this is a critical condition
+		beq.logger.Error("Event dropped due to queue overflow",
+			zap.String("container_id", msg.Actor.ID),
+			zap.String("action", string(msg.Action)),
+			zap.Int64("total_drops", drops),
+			zap.Int("queue_depth", len(beq.queue)),
+			zap.Int("max_queue_size", beq.maxQueueSize))
+
+		// Alert if drops exceed threshold (every 10 drops)
+		if drops%10 == 0 {
+			beq.logger.Warn("CRITICAL: High event drop rate detected",
+				zap.Int64("drops_since_start", drops),
+				zap.Int("num_workers", beq.numWorkers),
+				zap.String("action", "increase queue size or number of workers"))
+		}
+
 		return false
 	}
 }
