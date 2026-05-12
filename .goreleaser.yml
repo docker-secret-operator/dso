@@ -64,29 +64,3 @@ release:
   draft: false
   prerelease: auto
   name_template: "DSO {{ .Version }}"
-  body_template: |
-    ## Docker Secret Operator (DSO) {{ .Version }}
-
-    This release includes updates to the DSO Docker CLI plugin.
-
-    ### Installation
-
-    **User-level (local development):**
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
-    ```
-
-    **System-wide (production):**
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
-    ```
-
-    ### What's Changed
-
-    {{ .Changelog }}
-
-    ### Binary Downloads
-
-    Pre-built binaries are available below for Linux and macOS (amd64 and arm64).
-
-    To verify integrity, compare the binary SHA256 hash against the checksums file.
