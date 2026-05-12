@@ -40,7 +40,7 @@ This is a one-time injection useful for:
 - Emergency secret rotation
 
 The secret is mounted as a file inside the container. This does NOT
-persist to the vault or configuration - use 'dso apply' for persistent changes.
+persist to the vault or configuration - use configuration for persistent changes.
 
 Examples:
   docker dso inject --container my-app --secret db_password --value "secret123"
