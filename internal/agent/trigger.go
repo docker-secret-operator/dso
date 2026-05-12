@@ -284,9 +284,9 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 
 			prov, err := t.Store.GetProvider(providerName, pCfg)
 			if err != nil {
-				// Retry loop handled inside GetProvider usually, 
+				// Retry loop handled inside GetProvider usually,
 				// but here we wait between polling attempts if it fails.
-				time.Sleep(baseBackoff) 
+				time.Sleep(baseBackoff)
 				continue
 			}
 
@@ -325,7 +325,7 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 
 				t.ExecuteRotation(providerName, sec.Name, update.Data, sec)
 			}
-			
+
 			select {
 			case <-t.ctx.Done():
 				return
@@ -369,4 +369,3 @@ func (t *TriggerEngine) HandleWebhook(providerName string, pCfg config.ProviderC
 	t.ExecuteRotation(providerName, sec.Name, val, sec)
 	return nil
 }
-

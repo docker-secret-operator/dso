@@ -90,8 +90,6 @@ func TestInjectOptions_RequiredFields(t *testing.T) {
 	}
 }
 
-
-
 // TestInjectCmd_RequiresContainer enforces container flag
 func TestInjectCmd_RequiresContainer(t *testing.T) {
 	// Test that command handler validates container requirement
@@ -213,8 +211,6 @@ func TestInjectCmd_CustomMountPath(t *testing.T) {
 	}
 }
 
-
-
 // TestInjectCmd_HandlesPipedInput processes stdin value
 func TestInjectCmd_StdinCapable(t *testing.T) {
 	// Verify command can accept piped input
@@ -258,8 +254,6 @@ func TestInjectCmd_RequiresDocker(t *testing.T) {
 	}
 }
 
-
-
 // TestInjectCmd_TimeoutHandling handles operation timeout
 func TestInjectCmd_TimingSupport(t *testing.T) {
 	cmd := NewInjectCmd()
@@ -288,11 +282,11 @@ func TestInjectOptions_AllFields(t *testing.T) {
 func TestInjectCmd_ContainerFormats(t *testing.T) {
 	// Should handle both short and long container IDs
 	tests := []string{
-		"abc123",                    // Short ID
-		"abc123def456789012345",     // Long ID
-		"my-app",                    // Name
-		"my-app-v2",                // Name with version
-		"app_instance_1",            // Name with underscore
+		"abc123",                // Short ID
+		"abc123def456789012345", // Long ID
+		"my-app",                // Name
+		"my-app-v2",             // Name with version
+		"app_instance_1",        // Name with underscore
 	}
 
 	for _, containerRef := range tests {

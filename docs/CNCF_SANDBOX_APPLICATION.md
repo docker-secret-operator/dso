@@ -88,7 +88,7 @@ As the cloud-native ecosystem matures, we believe the reconciliation pattern sho
 
 ## References
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — Technical deep-dive
-- [GOVERNANCE.md](../GOVERNANCE.md) — Project governance model
+- [ARCHITECTURE.md](architecture.md) — Technical deep-dive
+- [GOVERNANCE.md](../CONTRIBUTING.md) — Project governance model
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — How to contribute
 - [SECURITY.md](../SECURITY.md) — Security policy

@@ -9,12 +9,12 @@ func TestParseKey(t *testing.T) {
 	if err != nil || p != "proj" || path != "path" {
 		t.Fatal("parseKey failed")
 	}
-	
+
 	p, path, err = parseKey("path")
 	if err != nil {
 		t.Fatal("parseKey default failed")
 	}
-	
+
 	_, _, err = parseKey("")
 	if err == nil {
 		t.Fatal("expected error")

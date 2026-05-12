@@ -54,10 +54,10 @@ type SecretCache struct {
 
 func NewSecretCache(ttl time.Duration) *SecretCache {
 	sc := &SecretCache{
-		items:      make(map[string]CacheItem),
-		ttl:        ttl,
-		maxSize:    100 * 1024 * 1024, // 100MB limit
-		stopCh:     make(chan struct{}),
+		items:   make(map[string]CacheItem),
+		ttl:     ttl,
+		maxSize: 100 * 1024 * 1024, // 100MB limit
+		stopCh:  make(chan struct{}),
 	}
 	// Start background cleanup
 	go sc.cleanupExpiredEntries()

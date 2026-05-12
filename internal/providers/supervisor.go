@@ -69,21 +69,21 @@ const (
 
 // ProviderSupervisor monitors and manages provider process lifecycle
 type ProviderSupervisor struct {
-	logger              *zap.Logger
-	providerName        string
-	startTime           time.Time
-	lastHeartbeat       time.Time
-	consecutiveCrashes  int32
-	maxConsecutiveCrashes int32
-	consecutiveFailures int32
+	logger                 *zap.Logger
+	providerName           string
+	startTime              time.Time
+	lastHeartbeat          time.Time
+	consecutiveCrashes     int32
+	maxConsecutiveCrashes  int32
+	consecutiveFailures    int32
 	maxConsecutiveFailures int32
-	health              atomic.Int32 // ProviderHealthState
-	mu                  sync.RWMutex
-	heartbeatTimeout    time.Duration
-	restartBackoff      time.Duration
-	maxRestartBackoff   time.Duration
-	restartCount        int32
-	crashCount          int32
+	health                 atomic.Int32 // ProviderHealthState
+	mu                     sync.RWMutex
+	heartbeatTimeout       time.Duration
+	restartBackoff         time.Duration
+	maxRestartBackoff      time.Duration
+	restartCount           int32
+	crashCount             int32
 }
 
 // NewProviderSupervisor creates a new provider supervisor
@@ -93,11 +93,11 @@ func NewProviderSupervisor(logger *zap.Logger, providerName string) *ProviderSup
 		providerName:           providerName,
 		startTime:              time.Now(),
 		lastHeartbeat:          time.Now(),
-		maxConsecutiveCrashes: 3,
+		maxConsecutiveCrashes:  3,
 		maxConsecutiveFailures: 5,
-		heartbeatTimeout:      10 * time.Second,
-		restartBackoff:        time.Second,
-		maxRestartBackoff:     30 * time.Second,
+		heartbeatTimeout:       10 * time.Second,
+		restartBackoff:         time.Second,
+		maxRestartBackoff:      30 * time.Second,
 	}
 	ps.health.Store(int32(HealthUnknown))
 	return ps
@@ -276,14 +276,14 @@ func (ps *ProviderSupervisor) GetStats() map[string]interface{} {
 	defer ps.mu.RUnlock()
 
 	return map[string]interface{}{
-		"provider":               ps.providerName,
-		"health":                 int(ProviderHealthState(ps.health.Load())),
-		"uptime_seconds":         time.Since(ps.startTime).Seconds(),
-		"restart_count":          atomic.LoadInt32(&ps.restartCount),
-		"crash_count":            atomic.LoadInt32(&ps.crashCount),
-		"consecutive_crashes":    atomic.LoadInt32(&ps.consecutiveCrashes),
-		"consecutive_failures":   atomic.LoadInt32(&ps.consecutiveFailures),
-		"time_since_heartbeat":   time.Since(ps.lastHeartbeat).Seconds(),
-		"heartbeat_stale":        ps.IsHeartbeatStale(),
+		"provider":             ps.providerName,
+		"health":               int(ProviderHealthState(ps.health.Load())),
+		"uptime_seconds":       time.Since(ps.startTime).Seconds(),
+		"restart_count":        atomic.LoadInt32(&ps.restartCount),
+		"crash_count":          atomic.LoadInt32(&ps.crashCount),
+		"consecutive_crashes":  atomic.LoadInt32(&ps.consecutiveCrashes),
+		"consecutive_failures": atomic.LoadInt32(&ps.consecutiveFailures),
+		"time_since_heartbeat": time.Since(ps.lastHeartbeat).Seconds(),
+		"heartbeat_stale":      ps.IsHeartbeatStale(),
 	}
 }

@@ -57,9 +57,9 @@ func TestDecideStrategy(t *testing.T) {
 			name: "Multiple risks",
 			result: analyzer.AnalysisResult{
 				ContainerName:    "risk",
-				IsStateful:       true,      // -20
-				HasRestartAlways: true,      // -20
-				HasHealthCheck:   false,     // -10
+				IsStateful:       true,  // -20
+				HasRestartAlways: true,  // -20
+				HasHealthCheck:   false, // -10
 			},
 			expectedStrategy: "restart", // 100 - 20 - 20 - 10 = 50 < 70
 			minScore:         50,

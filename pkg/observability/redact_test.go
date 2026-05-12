@@ -40,7 +40,7 @@ func TestShouldRedactKey(t *testing.T) {
 		{"USER_NAME", false},
 		{"APP_PORT", false},
 		{"LOG_LEVEL", false},
-		{"MY_KEY_VAL", true}, // contains "key"
+		{"MY_KEY_VAL", true},    // contains "key"
 		{"PASSWORD_HINT", true}, // contains "password"
 	}
 

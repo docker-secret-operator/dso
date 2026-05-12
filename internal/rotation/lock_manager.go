@@ -19,8 +19,8 @@ type FileLock struct {
 
 // LockManager manages locks for containers during rotation
 type LockManager struct {
-	locks   map[string]*sync.Mutex
-	mu      sync.Mutex
+	locks    map[string]*sync.Mutex
+	mu       sync.Mutex
 	fileLock *FileLock
 }
 

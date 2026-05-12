@@ -15,24 +15,32 @@ func TestVault_Coverage_Combined(t *testing.T) {
 	// 1. Env Key
 	os.Setenv("DSO_MASTER_KEY", "env-key")
 	key, _ := getMasterKey()
-	if key != "env-key" { t.Error("env key failed") }
+	if key != "env-key" {
+		t.Error("env key failed")
+	}
 	os.Unsetenv("DSO_MASTER_KEY")
 
 	// 2. Init Error (block .dso)
 	os.WriteFile(tmpDir+"/.dso", []byte("blocked"), 0644)
 	_ = InitDefault()
-	os.Remove(tmpDir+"/.dso")
+	os.Remove(tmpDir + "/.dso")
 
 	// 3. Proper Init
-	if err := InitDefault(); err != nil { t.Fatal(err) }
-	
+	if err := InitDefault(); err != nil {
+		t.Fatal(err)
+	}
+
 	// 4. Re-Init (existing)
-	if err := InitDefault(); err != nil { t.Fatal(err) }
+	if err := InitDefault(); err != nil {
+		t.Fatal(err)
+	}
 
 	// 5. Load Error (missing file - manually delete it)
 	os.Remove(filepath.Join(tmpDir, ".dso", "vault.enc"))
 	_, err := LoadDefault()
-	if err == nil { t.Error("expected load error") }
+	if err == nil {
+		t.Error("expected load error")
+	}
 
 	// 6. Restore and test Get/List
 	InitDefault()
@@ -42,7 +50,7 @@ func TestVault_Coverage_Combined(t *testing.T) {
 	v.List("p")
 	v.List("missing")
 	v.SetBatch("p", nil)
-	
+
 	// 7. Save Error (permissions)
 	os.Chmod(filepath.Join(tmpDir, ".dso"), 0500)
 	v.Set("p", "k2", "v2")

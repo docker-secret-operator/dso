@@ -314,10 +314,10 @@ func TestKeyDerivationWithLongMasterKey(t *testing.T) {
 func TestEncryptDecryptUnicodeContent(t *testing.T) {
 	tests := []string{
 		"Hello, World!",
-		"مرحبا، العالم",       // Arabic
-		"你好世界",            // Simplified Chinese
-		"こんにちは世界",       // Japanese
-		"🔐🔑🛡️",            // Emoji
+		"مرحبا، العالم",     // Arabic
+		"你好世界",              // Simplified Chinese
+		"こんにちは世界",           // Japanese
+		"🔐🔑🛡️",              // Emoji
 		"Mixed: مرحبا 世界 🔐", // Mixed
 	}
 

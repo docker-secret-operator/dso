@@ -59,7 +59,7 @@ func TestSecureJitterMillis(t *testing.T) {
 func TestShutdown_Empty(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	manager := NewSecretStoreManager(logger)
-	
+
 	// Should not panic on empty store
 	manager.Shutdown()
 }

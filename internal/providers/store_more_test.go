@@ -1,10 +1,10 @@
 package providers
 
 import (
-	"testing"
 	"github.com/docker-secret-operator/dso/pkg/config"
-	"go.uber.org/zap/zaptest"
 	"github.com/hashicorp/go-plugin"
+	"go.uber.org/zap/zaptest"
+	"testing"
 )
 
 func TestSecretStoreManager_GetProvider_ConfigMapping(t *testing.T) {
@@ -41,15 +41,15 @@ func (d *dummyClient) Kill() {
 func TestShutdown_WithEntries(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	manager := NewSecretStoreManager(logger)
-	
+
 	// Create a dummy client to avoid panic during Kill()
 	// plugin.Client is a struct, we can just instantiate an empty one or a mock
 	client := &plugin.Client{}
-	
+
 	manager.store.Store("prov1", &StoreEntry{
 		Provider: nil,
 		Client:   client,
 	})
-	
+
 	manager.Shutdown()
 }

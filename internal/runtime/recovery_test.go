@@ -10,13 +10,13 @@ import (
 
 // RecoveryScenario simulates a failure and recovery sequence
 type RecoveryScenario struct {
-	mu                     sync.RWMutex
-	containerState         map[string]int // container_id -> state
-	appliedOperations      map[string]int // operation_id -> count
-	inconsistencies        []string
-	daemonConnected        bool
-	failureTime            time.Time
-	recoveryTime           time.Time
+	mu                      sync.RWMutex
+	containerState          map[string]int // container_id -> state
+	appliedOperations       map[string]int // operation_id -> count
+	inconsistencies         []string
+	daemonConnected         bool
+	failureTime             time.Time
+	recoveryTime            time.Time
 	operationsBeforeFailure int
 	operationsAfterRecovery int
 }

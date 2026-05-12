@@ -26,7 +26,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func getBaseInspect() container.InspectResponse {
 	return container.InspectResponse{
 		ContainerJSONBase: &types.ContainerJSONBase{
-			Name: "/my-container",
+			Name:       "/my-container",
 			HostConfig: &container.HostConfig{},
 		},
 		Config: &container.Config{

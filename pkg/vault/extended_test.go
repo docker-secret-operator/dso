@@ -17,13 +17,15 @@ func TestVault_Coverage_Extended(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, ".dso", "master.key")
 	os.Chmod(keyPath, 0000)
 	_, err := getMasterKey()
-	if err == nil { /* Expected */ }
+	if err == nil { /* Expected */
+	}
 	os.Chmod(keyPath, 0600)
 
 	// 2. InitDefault existing vault but missing key (force getMasterKey failure)
 	os.Remove(keyPath)
 	err = InitDefault()
-	if err == nil { /* Expected */ }
+	if err == nil { /* Expected */
+	}
 
 	// 3. InitDefault existing key but failed to write vault (permissions)
 	os.WriteFile(keyPath, []byte("key"), 0600)

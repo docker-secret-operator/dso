@@ -312,8 +312,6 @@ func TestDisplayApplyResult_ProducesOutput(t *testing.T) {
 	}
 }
 
-
-
 // TestApplyCmd_HelpText displays help
 func TestApplyCmd_HelpText(t *testing.T) {
 	cmd := NewApplyCmd()
@@ -366,8 +364,6 @@ func TestApplyResult_ZeroUpdates(t *testing.T) {
 		t.Error("ContainersInjected should be 0")
 	}
 }
-
-
 
 // TestExecuteApplyPlan_ResultHasDuration verifies timing
 func TestExecuteApplyPlan_ResultsHaveDuration(t *testing.T) {

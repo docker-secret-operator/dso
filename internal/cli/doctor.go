@@ -59,7 +59,7 @@ type Diagnostics struct {
 
 type Check struct {
 	Name     string `json:"name"`
-	Status   string `json:"status"`  // healthy, unhealthy, warning, disabled
+	Status   string `json:"status"` // healthy, unhealthy, warning, disabled
 	Message  string `json:"message"`
 	Critical bool   `json:"critical"`
 }

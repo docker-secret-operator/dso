@@ -41,12 +41,12 @@ func startMockServer(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -56,11 +56,11 @@ func startMockServer(t *testing.T) string {
 			go server.ServeConn(conn)
 		}
 	}()
-	
+
 	t.Cleanup(func() {
 		listener.Close()
 	})
-	
+
 	return socketPath
 }
 
@@ -106,8 +106,8 @@ func TestAgentClient_FetchAllEnvs(t *testing.T) {
 		},
 		Secrets: []config.SecretMapping{
 			{
-				Name: "valid_secret",
-				Inject: config.InjectionConfig{Type: "env"},
+				Name:     "valid_secret",
+				Inject:   config.InjectionConfig{Type: "env"},
 				Mappings: map[string]string{"key": "MY_ENV"},
 			},
 		},

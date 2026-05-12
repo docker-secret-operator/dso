@@ -1188,4 +1188,4 @@ docker dso inspect <container-id>
 - **Local Vault**: See [`docker dso init`](#docker-dso-init) → [`docker dso secret set`](#docker-dso-secret-set)
 - **Troubleshooting**: Run [`docker dso system doctor`](#docker-dso-system-doctor)
 - **Config Format**: See [`docs/docker-compose.md`](docker-compose.md)
-- **Architecture**: See [`ARCHITECTURE.md`](../ARCHITECTURE.md)
+- **Architecture**: See [`ARCHITECTURE.md`](architecture.md)

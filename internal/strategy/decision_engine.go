@@ -73,10 +73,10 @@ func DecideStrategy(result analyzer.AnalysisResult) StrategyDecision {
 		healthStr = "YES"
 	}
 
-	analyzerLog := fmt.Sprintf("\033[1;36m[DSO ANALYZER]\033[0m\nContainer: %s\n- Fixed Port: %s\n- Restart Policy: %s\n- Stateful: %s\n- Health Check: %s", 
+	analyzerLog := fmt.Sprintf("\033[1;36m[DSO ANALYZER]\033[0m\nContainer: %s\n- Fixed Port: %s\n- Restart Policy: %s\n- Stateful: %s\n- Health Check: %s",
 		result.ContainerName, portStr, restartStr, statefulStr, healthStr)
 
-	strategyLog := fmt.Sprintf("\033[1;36m[DSO STRATEGY]\033[0m\nSelected: %s\nScore: %d\nReason:\n- %s", 
+	strategyLog := fmt.Sprintf("\033[1;36m[DSO STRATEGY]\033[0m\nSelected: %s\nScore: %d\nReason:\n- %s",
 		decision.Strategy, decision.Score, decision.Reason)
 
 	decision.Report = analyzerLog + "\n\n" + strategyLog

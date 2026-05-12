@@ -16,13 +16,13 @@ func TestNewStatusCmd(t *testing.T) {
 
 func TestStatusCmd_Flags(t *testing.T) {
 	cmd := NewStatusCmd()
-	
+
 	// Check for watch flag
 	watchFlag := cmd.Flag("watch")
 	if watchFlag == nil {
 		t.Fatal("expected 'watch' flag")
 	}
-	
+
 	// Check for json flag
 	jsonFlag := cmd.Flag("json")
 	if jsonFlag == nil {
@@ -104,9 +104,9 @@ func TestStatusGatherCache(t *testing.T) {
 
 func TestFormatDuration(t *testing.T) {
 	tests := map[string]bool{
-		"0m":  true,  // Valid
-		"1h":  true,  // Valid
-		"30m": true,  // Valid
+		"0m":  true, // Valid
+		"1h":  true, // Valid
+		"30m": true, // Valid
 	}
 
 	for expected := range tests {

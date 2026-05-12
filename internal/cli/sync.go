@@ -110,10 +110,10 @@ func verifyAgentRunning(socketPath string) error {
 
 // SyncResult holds the results of sync operation
 type SyncResult struct {
-	SecretsUpdated      int
-	ContainersAffected  int
-	Succeeded           bool
-	ErrorMessage        string
+	SecretsUpdated       int
+	ContainersAffected   int
+	Succeeded            bool
+	ErrorMessage         string
 	SpecificSecretSynced string
 }
 

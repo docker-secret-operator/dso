@@ -26,8 +26,8 @@ func TestCache_MultipleSecrets(t *testing.T) {
 
 	// Verify all secrets are stored
 	tests := []struct {
-		hash      string
-		expected  string
+		hash        string
+		expected    string
 		shouldExist bool
 	}{
 		{"hash-db-pass", "postgres-password", true},
@@ -332,7 +332,7 @@ func TestCache_FullWorkflow(t *testing.T) {
 	initialSeed := &resolver.AgentSeed{
 		ProjectName: "myapp",
 		SecretPool: map[string]string{
-			"hash-db": "database-password",
+			"hash-db":  "database-password",
 			"hash-api": "api-key",
 		},
 		Services: map[string]resolver.ServiceSecrets{

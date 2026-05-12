@@ -13,13 +13,13 @@ import (
 
 // RotationState tracks in-flight rotations to enable recovery after crashes
 type RotationState struct {
-	ProviderName   string    `json:"provider_name"`
-	SecretName     string    `json:"secret_name"`
+	ProviderName        string    `json:"provider_name"`
+	SecretName          string    `json:"secret_name"`
 	OriginalContainerID string    `json:"original_container_id"`
-	NewContainerID string    `json:"new_container_id"`
-	Status         string    `json:"status"` // in_progress, completed, rollback_required
-	StartTime      time.Time `json:"start_time"`
-	LastUpdate     time.Time `json:"last_update"`
+	NewContainerID      string    `json:"new_container_id"`
+	Status              string    `json:"status"` // in_progress, completed, rollback_required
+	StartTime           time.Time `json:"start_time"`
+	LastUpdate          time.Time `json:"last_update"`
 }
 
 // StateTracker persists rotation state to enable recovery from crashes
@@ -57,13 +57,13 @@ func (st *StateTracker) StartRotation(providerName, secretName, originalContaine
 
 	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
 	state := &RotationState{
-		ProviderName:   providerName,
-		SecretName:     secretName,
+		ProviderName:        providerName,
+		SecretName:          secretName,
 		OriginalContainerID: originalContainerID,
-		NewContainerID: newContainerID,
-		Status:         "in_progress",
-		StartTime:      time.Now(),
-		LastUpdate:     time.Now(),
+		NewContainerID:      newContainerID,
+		Status:              "in_progress",
+		StartTime:           time.Now(),
+		LastUpdate:          time.Now(),
 	}
 
 	st.states[key] = state

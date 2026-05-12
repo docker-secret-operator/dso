@@ -16,7 +16,7 @@ import (
 type PluginVerifier struct {
 	logger        *zap.Logger
 	trustedHashes map[string]string // plugin name -> expected SHA256 hash
-	allowUnsigned bool               // whether to allow unsigned plugins in dev mode
+	allowUnsigned bool              // whether to allow unsigned plugins in dev mode
 }
 
 // NewPluginVerifier creates a plugin verifier

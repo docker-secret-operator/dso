@@ -74,12 +74,12 @@ type ContainerStatus struct {
 }
 
 type CacheStatus struct {
-	Entries  int64   `json:"entries"`
-	Size     string  `json:"size"`
-	MaxSize  string  `json:"max_size"`
-	Hits     int64   `json:"hits"`
-	Misses   int64   `json:"misses"`
-	HitRate  float64 `json:"hit_rate"`
+	Entries int64   `json:"entries"`
+	Size    string  `json:"size"`
+	MaxSize string  `json:"max_size"`
+	Hits    int64   `json:"hits"`
+	Misses  int64   `json:"misses"`
+	HitRate float64 `json:"hit_rate"`
 }
 
 type RotationStatus struct {
@@ -98,13 +98,13 @@ type QueueStatus struct {
 }
 
 type SystemStatus struct {
-	Runtime    RuntimeStatus      `json:"runtime"`
-	Providers  []ProviderStatus   `json:"providers"`
-	Containers []ContainerStatus  `json:"containers"`
-	Cache      CacheStatus        `json:"cache"`
-	Rotations  RotationStatus     `json:"rotations"`
-	Queue      QueueStatus        `json:"queue"`
-	Health     string             `json:"health"`
+	Runtime    RuntimeStatus     `json:"runtime"`
+	Providers  []ProviderStatus  `json:"providers"`
+	Containers []ContainerStatus `json:"containers"`
+	Cache      CacheStatus       `json:"cache"`
+	Rotations  RotationStatus    `json:"rotations"`
+	Queue      QueueStatus       `json:"queue"`
+	Health     string            `json:"health"`
 }
 
 // ════════════════════════════════════════════════════════════════════════════

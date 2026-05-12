@@ -166,10 +166,10 @@ func TestSetMapValueHandlesNonMappingNode(t *testing.T) {
 // TestExtractUIDGIDFromString parses "uid" format
 func TestExtractUIDGIDFromString(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantUID  int
-		wantGID  int
-		name     string
+		input   string
+		wantUID int
+		wantGID int
+		name    string
 	}{
 		{"1000", 1000, 1000, "uid only"},
 		{"1000:2000", 1000, 2000, "uid:gid"},
@@ -436,7 +436,7 @@ func TestAddTmpfsMountPreservesOtherFields(t *testing.T) {
 // BenchmarkGetMapValue measures lookup performance
 func BenchmarkGetMapValue(b *testing.B) {
 	node := &yaml.Node{
-		Kind: yaml.MappingNode,
+		Kind:    yaml.MappingNode,
 		Content: make([]*yaml.Node, 100),
 	}
 
@@ -525,10 +525,10 @@ func TestGetMapValueWithOddContent(t *testing.T) {
 // TestExtractUIDGIDWithWhitespace handles whitespace edge case
 func TestExtractUIDGIDWithWhitespace(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantUID  int
-		wantGID  int
-		name     string
+		input   string
+		wantUID int
+		wantGID int
+		name    string
 	}{
 		{"1000", 1000, 1000, "plain uid"},
 		{"1000:2000", 1000, 2000, "uid:gid"},

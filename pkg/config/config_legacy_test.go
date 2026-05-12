@@ -91,7 +91,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 	tmpDir := t.TempDir()
 	badYaml := filepath.Join(tmpDir, "bad.yaml")
 	os.WriteFile(badYaml, []byte("invalid: yaml: :"), 0644)
-	
+
 	_, err = LoadConfig(badYaml)
 	if err == nil {
 		t.Fatal("Expected error for invalid YAML")
@@ -110,7 +110,7 @@ secrets:
 	err := yaml.Unmarshal([]byte(yamlContent), &s) // Note: decoding into SecretMapping directly
 	// Wait, Unmarshal into a struct doesn't use the UnmarshalYAML if called on the struct unless it's a pointer and the data matches.
 	// Actually yaml.v3 uses UnmarshalYAML if defined.
-	
+
 	if err == nil && s.Rotation.Strategy != "signal" {
 		// If the above failed to use the custom unmarshaler, try wrapping in a node
 		var node yaml.Node

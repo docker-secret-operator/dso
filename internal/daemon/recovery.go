@@ -23,14 +23,14 @@ const (
 
 // RecoveryManager handles Docker daemon reconnection and state recovery
 type RecoveryManager struct {
-	logger             *zap.Logger
-	client             *client.Client
-	state              atomic.Int32
-	lastHealthyTime    time.Time
+	logger              *zap.Logger
+	client              *client.Client
+	state               atomic.Int32
+	lastHealthyTime     time.Time
 	consecutiveFailures int32
-	maxFailures        int32
-	mu                 sync.RWMutex
-	onStateChange      func(oldState, newState ConnectionState)
+	maxFailures         int32
+	mu                  sync.RWMutex
+	onStateChange       func(oldState, newState ConnectionState)
 	healthCheckInterval time.Duration
 }
 

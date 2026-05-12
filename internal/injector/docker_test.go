@@ -2,11 +2,11 @@ package injector
 
 import (
 	"context"
+	"go.uber.org/zap/zaptest"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
-	"go.uber.org/zap/zaptest"
 )
 
 func TestDockerInjector_LogInjectionEvent(t *testing.T) {

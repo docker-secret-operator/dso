@@ -2,9 +2,9 @@ package resolver
 
 import (
 	"context"
-	"testing"
 	"github.com/docker-secret-operator/dso/test/testutil"
 	"gopkg.in/yaml.v3"
+	"testing"
 )
 
 func TestResolveComposeWithCommandString(t *testing.T) {

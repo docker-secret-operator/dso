@@ -12,16 +12,16 @@ import (
 
 // BenchmarkMetrics captures performance metrics for validation
 type BenchmarkMetrics struct {
-	OperationCount  int64
-	SuccessCount    int64
-	ErrorCount      int64
-	TotalDuration   time.Duration
-	AvgLatency      time.Duration
-	MaxLatency      time.Duration
-	MinLatency      time.Duration
-	MemoryBefore    uint64
-	MemoryAfter     uint64
-	AllocsPerOp     uint64
+	OperationCount   int64
+	SuccessCount     int64
+	ErrorCount       int64
+	TotalDuration    time.Duration
+	AvgLatency       time.Duration
+	MaxLatency       time.Duration
+	MinLatency       time.Duration
+	MemoryBefore     uint64
+	MemoryAfter      uint64
+	AllocsPerOp      uint64
 	GoroutinesBefore int
 	GoroutinesAfter  int
 }
@@ -75,7 +75,7 @@ func SustainedLoadTest(t *testing.T, duration time.Duration, concurrency int,
 	defer cancel()
 
 	metrics := &BenchmarkMetrics{
-		MemoryBefore:    m1.Alloc,
+		MemoryBefore:     m1.Alloc,
 		GoroutinesBefore: goroutinesBefore,
 	}
 
