@@ -3,9 +3,9 @@ package injector
 import (
 	"context"
 	"encoding/base64"
+	"github.com/docker/docker/client"
 	"strings"
 	"testing"
-	"github.com/docker/docker/client"
 )
 
 func TestBuildInjectCmd(t *testing.T) {
@@ -44,11 +44,11 @@ func TestInjectFiles_Empty(t *testing.T) {
 
 func TestInjectFiles_DockerFailFast(t *testing.T) {
 	cli, _ := client.NewClientWithOpts(client.WithHost("tcp://127.0.0.1:12345"))
-	
+
 	files := map[string]string{
 		"test1": "content",
 	}
-	
+
 	err := InjectFiles(context.Background(), cli, "cid", files, 0, 0)
 	if err == nil {
 		t.Fatal("expected error due to invalid docker connection")

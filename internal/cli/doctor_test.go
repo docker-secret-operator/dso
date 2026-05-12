@@ -16,13 +16,13 @@ func TestNewDoctorCmd(t *testing.T) {
 
 func TestDoctorCmd_Flags(t *testing.T) {
 	cmd := NewDoctorCmd()
-	
+
 	// Check for level flag
 	levelFlag := cmd.Flag("level")
 	if levelFlag == nil {
 		t.Fatal("expected 'level' flag")
 	}
-	
+
 	// Check for json flag
 	jsonFlag := cmd.Flag("json")
 	if jsonFlag == nil {

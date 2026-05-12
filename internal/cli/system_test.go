@@ -16,13 +16,13 @@ func TestSortedKeys(t *testing.T) {
 
 func TestCheckPath(t *testing.T) {
 	dir := t.TempDir()
-	
+
 	// Exists
 	_, st := checkPath(dir)
 	if st == "❌ " {
 		t.Fatal("expected dir to exist")
 	}
-	
+
 	// Doesn't exist
 	checkPath(filepath.Join(dir, "missing"))
 }
@@ -32,7 +32,7 @@ func TestValidateProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal("expected valid providers")
 	}
-	
+
 	_, err = validateProviders("invalid")
 	if err == nil {
 		t.Fatal("expected error")
@@ -44,7 +44,7 @@ func TestResolveProviders(t *testing.T) {
 	if len(res) == 0 {
 		t.Fatal("expected defaults")
 	}
-	
+
 	res2, _ := resolveProviders("aws,vault")
 	if len(res2) != 2 {
 		t.Fatal("expected 2")
@@ -67,7 +67,7 @@ func TestCopyFile(t *testing.T) {
 	src := filepath.Join(dir, "src")
 	dst := filepath.Join(dir, "dst")
 	os.WriteFile(src, []byte("data"), 0644)
-	
+
 	err := copyFile(src, dst)
 	if err != nil {
 		t.Fatal(err)

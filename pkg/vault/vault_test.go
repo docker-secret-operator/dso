@@ -684,8 +684,6 @@ func TestGetMasterKey_NotFound(t *testing.T) {
 	}
 }
 
-
-
 // TestLoadDefault_InvalidJSON verifies loading invalid JSON
 func TestLoadDefault_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -717,7 +715,7 @@ func TestLoadDefault_InvalidJSON(t *testing.T) {
 // TestSave_TempFileWriteError verifies Save error handling
 func TestSave_TempFileWriteError(t *testing.T) {
 	v := &Vault{
-		store: &VaultStore{},
+		store:     &VaultStore{},
 		vaultPath: "/non-existent-dir-for-vault-save/vault.enc",
 		masterKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
@@ -730,22 +728,22 @@ func TestSave_TempFileWriteError(t *testing.T) {
 // TestVaultGet_InvalidInputs verifies Get input validation
 func TestVaultGet_InvalidInputs(t *testing.T) {
 	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
-	
+
 	_, err := v.Get("", "path")
 	if err == nil {
 		t.Error("Expected Get to fail with empty project")
 	}
-	
+
 	_, err = v.Get("proj", "")
 	if err == nil {
 		t.Error("Expected Get to fail with empty path")
 	}
-	
+
 	_, err = v.Get("../proj", "path")
 	if err == nil {
 		t.Error("Expected Get to fail with .. in project")
 	}
-	
+
 	_, err = v.Get("proj", "../path")
 	if err == nil {
 		t.Error("Expected Get to fail with .. in path")
@@ -755,12 +753,12 @@ func TestVaultGet_InvalidInputs(t *testing.T) {
 // TestVaultList_InvalidInputs verifies List input validation
 func TestVaultList_InvalidInputs(t *testing.T) {
 	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
-	
+
 	_, err := v.List("")
 	if err == nil {
 		t.Error("Expected List to fail with empty project")
 	}
-	
+
 	_, err = v.List("../proj")
 	if err == nil {
 		t.Error("Expected List to fail with .. in project")
@@ -770,22 +768,22 @@ func TestVaultList_InvalidInputs(t *testing.T) {
 // TestVaultSetBatch_InvalidInputs verifies SetBatch input validation
 func TestVaultSetBatch_InvalidInputs(t *testing.T) {
 	v := &Vault{store: &VaultStore{Projects: make(map[string]map[string]Secret)}}
-	
+
 	err := v.SetBatch("", map[string]string{"k": "v"})
 	if err == nil {
 		t.Error("Expected SetBatch to fail with empty project")
 	}
-	
+
 	err = v.SetBatch("../proj", map[string]string{"k": "v"})
 	if err == nil {
 		t.Error("Expected SetBatch to fail with .. in project")
 	}
-	
+
 	err = v.SetBatch("proj", map[string]string{"../path": "v"})
 	if err == nil {
 		t.Error("Expected SetBatch to fail with .. in path")
 	}
-	
+
 	err = v.SetBatch("proj", map[string]string{"path": string(make([]byte, 1024*1024+1))})
 	if err == nil {
 		t.Error("Expected SetBatch to fail with oversized secret")

@@ -12,22 +12,22 @@ import (
 
 // BenchmarkResult captures measured performance metrics
 type BenchmarkResult struct {
-	Name              string
-	Duration          time.Duration
-	Operations        int64
-	SuccessfulOps     int64
-	FailedOps         int64
-	P50Latency        time.Duration
-	P95Latency        time.Duration
-	P99Latency        time.Duration
-	MaxLatency        time.Duration
-	MinLatency        time.Duration
-	MemoryBefore      uint64
-	MemoryAfter       uint64
-	MemoryGrowth      uint64
-	GoroutinesBefore  int
-	GoroutinesAfter   int
-	GoroutinesLeak    int
+	Name             string
+	Duration         time.Duration
+	Operations       int64
+	SuccessfulOps    int64
+	FailedOps        int64
+	P50Latency       time.Duration
+	P95Latency       time.Duration
+	P99Latency       time.Duration
+	MaxLatency       time.Duration
+	MinLatency       time.Duration
+	MemoryBefore     uint64
+	MemoryAfter      uint64
+	MemoryGrowth     uint64
+	GoroutinesBefore int
+	GoroutinesAfter  int
+	GoroutinesLeak   int
 }
 
 // String returns formatted benchmark result

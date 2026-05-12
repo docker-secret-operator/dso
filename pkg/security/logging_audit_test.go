@@ -215,10 +215,10 @@ func TestLoggingAuditValidator_LogFieldSafety_AllSafe(t *testing.T) {
 	validator := NewLoggingAuditValidator()
 
 	fields := map[string]interface{}{
-		"container_id":  "abc123def",
-		"action":        "start",
-		"project_name":  "myapp",
-		"duration_ms":   42,
+		"container_id": "abc123def",
+		"action":       "start",
+		"project_name": "myapp",
+		"duration_ms":  42,
 	}
 
 	result := validator.AuditLogFieldSafety(fields)

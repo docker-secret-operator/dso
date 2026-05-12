@@ -25,7 +25,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestInjectOneFile_Success(t *testing.T) {
 	execCreateResponse := types.IDResponse{ID: "mock-exec-id"}
 	b1, _ := json.Marshal(execCreateResponse)
-	
+
 	execInspectResponse := container.ExecInspect{
 		Running:  false,
 		ExitCode: 0,
@@ -69,7 +69,7 @@ func TestInjectOneFile_Success(t *testing.T) {
 func TestInjectOneFile_Timeout(t *testing.T) {
 	execCreateResponse := types.IDResponse{ID: "mock-exec-id"}
 	b1, _ := json.Marshal(execCreateResponse)
-	
+
 	execInspectResponse := container.ExecInspect{
 		Running:  true,
 		ExitCode: 0,

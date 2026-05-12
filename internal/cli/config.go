@@ -207,10 +207,10 @@ func validateConfig(configPath string) error {
 // ════════════════════════════════════════════════════════════════════════════
 
 type ConfigFile struct {
-	Version string                 `yaml:"version"`
-	Runtime map[string]interface{} `yaml:"runtime"`
+	Version   string                 `yaml:"version"`
+	Runtime   map[string]interface{} `yaml:"runtime"`
 	Providers map[string]interface{} `yaml:"providers"`
-	Agent   map[string]interface{} `yaml:"agent"`
+	Agent     map[string]interface{} `yaml:"agent"`
 }
 
 func validateConfigFile(configPath string) error {

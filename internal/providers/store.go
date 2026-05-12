@@ -15,12 +15,12 @@ import (
 )
 
 type StoreEntry struct {
-	mu            sync.Mutex
-	Provider      api.SecretProvider
-	Client        *plugin.Client
-	LastHealthy   time.Time
-	ConsecFails   int
-	MaxFailures   int
+	mu          sync.Mutex
+	Provider    api.SecretProvider
+	Client      *plugin.Client
+	LastHealthy time.Time
+	ConsecFails int
+	MaxFailures int
 }
 
 type SecretStoreManager struct {

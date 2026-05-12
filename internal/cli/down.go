@@ -2,10 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"github.com/spf13/cobra"
 	"os"
 	"os/exec"
 	"strings"
-	"github.com/spf13/cobra"
 )
 
 func NewDownCmd() *cobra.Command {
@@ -30,13 +30,13 @@ func NewDownCmd() *cobra.Command {
 			}
 
 			fullArgs := append([]string{"compose", "down"}, args...)
-			
+
 			// #nosec G204 -- docker execution uses strictly validated arguments
 			child := exec.Command(dockerPath, fullArgs...)
 			child.Stdout = os.Stdout
 			child.Stderr = os.Stderr
 			child.Stdin = os.Stdin
-			
+
 			if err := child.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error running down: %v\n", err)
 				os.Exit(1)

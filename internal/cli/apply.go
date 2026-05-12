@@ -193,12 +193,12 @@ func displayApplyPlan(plan *ApplyPlan) {
 
 // ApplyResult holds the results of applying changes
 type ApplyResult struct {
-	SecretsUpdated       int
-	ContainersInjected   int
-	Duration             time.Duration
-	Succeeded            bool
-	FailedSecrets        []string
-	ErrorMessage         string
+	SecretsUpdated     int
+	ContainersInjected int
+	Duration           time.Duration
+	Succeeded          bool
+	FailedSecrets      []string
+	ErrorMessage       string
 }
 
 // executeApplyPlan applies the planned changes
@@ -217,8 +217,8 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 
 	// Try agent communication first
 	result := &ApplyResult{
-		Duration: 0,
-		Succeeded: false,
+		Duration:      0,
+		Succeeded:     false,
 		FailedSecrets: make([]string, 0),
 	}
 

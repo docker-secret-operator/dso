@@ -117,8 +117,8 @@ func TestDockerWatcher_SubscribeContextCancellation(t *testing.T) {
 
 	// Channels should eventually close on context cancellation
 	// (Docker API will close them when context is cancelled)
-	_ = msgCh  // Suppress unused variable warning
-	_ = errCh  // Suppress unused variable warning
+	_ = msgCh // Suppress unused variable warning
+	_ = errCh // Suppress unused variable warning
 }
 
 // TestDockerWatcher_MultipleSubscribes handles multiple subscriptions
@@ -162,8 +162,8 @@ func TestDockerWatcher_ContextTimeout(t *testing.T) {
 	defer cancel()
 
 	msgCh, errCh := watcher.Subscribe(ctx)
-	_ = msgCh  // Suppress unused variable warning
-	_ = errCh  // Suppress unused variable warning
+	_ = msgCh // Suppress unused variable warning
+	_ = errCh // Suppress unused variable warning
 
 	// Wait for timeout
 	<-time.After(150 * time.Millisecond)

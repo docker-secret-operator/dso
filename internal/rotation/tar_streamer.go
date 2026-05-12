@@ -20,7 +20,7 @@ func StreamSecretToContainer(ctx context.Context, cli *client.Client, containerI
 	for name, content := range data {
 		// Prevent path traversal by only using the base name
 		safeName := filepath.Base(name)
-		
+
 		hdr := &tar.Header{
 			Name: filepath.Join(targetPath, safeName),
 			Mode: 0400, // Read-only for the owner

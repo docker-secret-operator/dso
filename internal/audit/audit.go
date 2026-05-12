@@ -23,9 +23,9 @@ type AuditEvent struct {
 var auditLogger *zap.Logger
 
 func InitAuditLogger(l *zap.Logger) {
-    if l == nil {
-        l, _ = zap.NewProduction()
-    }
+	if l == nil {
+		l, _ = zap.NewProduction()
+	}
 	auditLogger = l.Named("audit")
 }
 
@@ -34,9 +34,9 @@ func Log(_ context.Context, action string, user string, provider string, secretN
 	if auditLogger == nil {
 		InitAuditLogger(nil)
 	}
-	
+
 	fields := []zap.Field{
-        zap.String("event", action),
+		zap.String("event", action),
 		zap.String("user", user),
 		zap.String("provider", provider),
 		zap.String("secret_name", secretName),

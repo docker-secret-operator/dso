@@ -188,13 +188,13 @@ func TestReloaderController_ReconciliationCleanup(t *testing.T) {
 // Helper function to create mock container start event
 func mockContainerStartEvent(containerID, secrets string) events.Message {
 	return events.Message{
-		Type: "container",
+		Type:   "container",
 		Action: "start",
 		Actor: events.Actor{
 			ID: containerID,
 			Attributes: map[string]string{
-				"dso.reloader": "true",
-				"dso.secrets": secrets,
+				"dso.reloader":        "true",
+				"dso.secrets":         secrets,
 				"dso.update.strategy": "restart",
 			},
 		},
@@ -281,4 +281,3 @@ func TestReloaderController_LockContentionUnderChurn(t *testing.T) {
 		t.Errorf("Expected all locks to be released, but found %d locks remaining", lockCount)
 	}
 }
-

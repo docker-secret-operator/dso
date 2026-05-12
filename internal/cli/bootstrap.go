@@ -85,8 +85,8 @@ func bootstrapLocal() error {
 	vaultPath := filepath.Join(dsoDir, "vault.enc")
 	if _, err := os.Stat(vaultPath); err == nil {
 		return fmt.Errorf(
-			"vault already exists at %s\n" +
-				"  To reset, remove: rm -rf %s\n" +
+			"vault already exists at %s\n"+
+				"  To reset, remove: rm -rf %s\n"+
 				"  Then run: dso bootstrap local",
 			vaultPath, dsoDir,
 		)
@@ -437,9 +437,9 @@ func printBootstrapSuccessAgent() {
 func validateDockerConnectivity() error {
 	// Try to connect to Docker socket
 	socketPaths := []string{
-		"/var/run/docker.sock",         // Linux
-		"/var/run/docker/docker.sock",  // Docker Desktop on Linux
-		"/Users/docker.sock",            // Docker Desktop on Mac (common location)
+		"/var/run/docker.sock",        // Linux
+		"/var/run/docker/docker.sock", // Docker Desktop on Linux
+		"/Users/docker.sock",          // Docker Desktop on Mac (common location)
 	}
 
 	for _, socketPath := range socketPaths {
@@ -467,8 +467,8 @@ func validateSystemd() error {
 
 func padRight(s string, length int) string {
 	if len(s) >= length {
-		return s + " │"
+		return s + " "
 	}
-	padding := strings.Repeat(" ", length-len(s))
-	return s + padding + "│"
+	padding := strings.Repeat(" ", length-len(s)+1)
+	return s + padding
 }

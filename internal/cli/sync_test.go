@@ -109,10 +109,6 @@ func TestSyncCmd_HelpText(t *testing.T) {
 	}
 }
 
-
-
-
-
 // TestSyncResult_SuccessfulResult verifies success state
 func TestSyncResult_SuccessfulResult(t *testing.T) {
 	result := &SyncResult{

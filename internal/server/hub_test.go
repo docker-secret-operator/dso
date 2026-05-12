@@ -432,8 +432,6 @@ func TestHub_DuplicateUnregister(t *testing.T) {
 	hub.mutex.Unlock()
 }
 
-
-
 // TestHub_LargeEventBroadcast handles large event payloads
 func TestHub_LargeEventBroadcast(t *testing.T) {
 	logger, _ := zap.NewDevelopment()

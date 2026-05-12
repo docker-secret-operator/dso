@@ -93,7 +93,7 @@ func (hv *HealthVerifier) DetectDualRunningContainers(ctx context.Context, baseN
 
 			// Check if this is related to the base container (dso naming pattern)
 			if name == baseName ||
-			   (len(name) > len(baseName) && name[:len(baseName)+1] == baseName+"_") {
+				(len(name) > len(baseName) && name[:len(baseName)+1] == baseName+"_") {
 				dualRunning = append(dualRunning, c.ID)
 			}
 		}

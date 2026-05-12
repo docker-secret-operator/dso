@@ -98,7 +98,7 @@ func TestProviderSupervisor_ExponentialBackoff(t *testing.T) {
 		minBackoff   time.Duration
 		maxBackoff   time.Duration
 	}{
-		{0, 0, 0},                          // No backoff on first restart
+		{0, 0, 0}, // No backoff on first restart
 		{1, 1 * time.Second, 2 * time.Second},
 		{2, 2 * time.Second, 4 * time.Second},
 		{3, 4 * time.Second, 8 * time.Second},

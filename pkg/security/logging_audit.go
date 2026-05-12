@@ -146,7 +146,7 @@ func (lav *LoggingAuditValidator) AuditSerializationError(err error, requestSumm
 	if err != nil {
 		errChain := lav.getErrorChain(err)
 		for _, chainErr := range errChain {
-				if !lav.isSafeForLogging(chainErr) {
+			if !lav.isSafeForLogging(chainErr) {
 				result.Safe = false
 				msg := chainErr
 				if len(msg) > 50 {

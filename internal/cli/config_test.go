@@ -18,7 +18,7 @@ func TestNewConfigCmd(t *testing.T) {
 
 func TestConfigCmd_Subcommands(t *testing.T) {
 	cmd := NewConfigCmd()
-	
+
 	// Should have show, edit, validate subcommands
 	subcommands := map[string]bool{
 		"show":     false,

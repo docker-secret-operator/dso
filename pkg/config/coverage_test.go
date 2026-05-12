@@ -1,16 +1,16 @@
 package config
 
 import (
-	"testing"
 	"gopkg.in/yaml.v3"
+	"testing"
 )
 
 func TestConfig_LegacyUnmarshal_Full(t *testing.T) {
 	t.Parallel()
-	
+
 	tests := []struct {
-		name string
-		yaml string
+		name  string
+		yaml  string
 		check func(*testing.T, *SecretMapping)
 	}{
 		{
