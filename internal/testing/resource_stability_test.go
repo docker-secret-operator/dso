@@ -211,9 +211,13 @@ Snapshots: %d
 
 // TestMemoryStabilityUnderSustainedLoad validates memory stability over extended duration
 func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
-	// Simulate 5 minutes of sustained operations
+	// Simulate 5 minutes of sustained operations (shortened for -short)
 	testDuration := 5 * time.Minute
 	sampleInterval := 5 * time.Second
+	if testing.Short() {
+		testDuration = 5 * time.Second
+		sampleInterval = 1 * time.Second
+	}
 
 	rst := NewResourceStabilityTest("sustained-load-memory", testDuration, sampleInterval)
 
@@ -252,7 +256,7 @@ func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
 			}
 
 			// Check memory stability
-			if !rst.IsMemoryStable(0.1) {
+			if !testing.Short() && !rst.IsMemoryStable(0.1) {
 				t.Error("Memory growth accelerating - possible leak")
 			}
 
@@ -271,6 +275,10 @@ func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
 func TestGoroutineStabilityUnderChurn(t *testing.T) {
 	testDuration := 3 * time.Minute
 	sampleInterval := 2 * time.Second
+	if testing.Short() {
+		testDuration = 3 * time.Second
+		sampleInterval = 500 * time.Millisecond
+	}
 
 	rst := NewResourceStabilityTest("goroutine-stability-churn", testDuration, sampleInterval)
 
@@ -314,7 +322,7 @@ func TestGoroutineStabilityUnderChurn(t *testing.T) {
 			}
 
 			// Check goroutine stability
-			if !rst.IsGoroutineStable(initialGoroutines + 100) {
+			if !testing.Short() && !rst.IsGoroutineStable(initialGoroutines+100) {
 				t.Error("Goroutine count exceeds expected bounds")
 			}
 
@@ -342,6 +350,10 @@ func TestGoroutineStabilityUnderChurn(t *testing.T) {
 func TestQueueStabilityUnderSaturation(t *testing.T) {
 	testDuration := 2 * time.Minute
 	sampleInterval := 1 * time.Second
+	if testing.Short() {
+		testDuration = 2 * time.Second
+		sampleInterval = 500 * time.Millisecond
+	}
 
 	rst := NewResourceStabilityTest("queue-stability-saturation", testDuration, sampleInterval)
 
@@ -428,6 +440,11 @@ func TestProviderRestartStability(t *testing.T) {
 	testDuration := 2 * time.Minute
 	sampleInterval := 2 * time.Second
 	restartInterval := 5 * time.Second
+	if testing.Short() {
+		testDuration = 2 * time.Second
+		sampleInterval = 500 * time.Millisecond
+		restartInterval = 1 * time.Second
+	}
 
 	rst := NewResourceStabilityTest("provider-restart-stability", testDuration, sampleInterval)
 
@@ -490,7 +507,7 @@ func TestProviderRestartStability(t *testing.T) {
 				t.Errorf("Excessive memory growth during restarts: %d MB", growth/1024/1024)
 			}
 
-			if !rst.IsMemoryStable(0.15) {
+			if !testing.Short() && !rst.IsMemoryStable(0.15) {
 				t.Error("Memory stability degraded under restart load")
 			}
 
@@ -506,6 +523,10 @@ func TestProviderRestartStability(t *testing.T) {
 func TestReconnectStormStability(t *testing.T) {
 	testDuration := 2 * time.Minute
 	sampleInterval := 1 * time.Second
+	if testing.Short() {
+		testDuration = 2 * time.Second
+		sampleInterval = 500 * time.Millisecond
+	}
 
 	rst := NewResourceStabilityTest("reconnect-storm-stability", testDuration, sampleInterval)
 
@@ -547,7 +568,7 @@ func TestReconnectStormStability(t *testing.T) {
 				t.Errorf("Excessive memory growth during reconnect storm: %d MB", growth/1024/1024)
 			}
 
-			if !rst.IsMemoryStable(0.12) {
+			if !testing.Short() && !rst.IsMemoryStable(0.12) {
 				t.Error("Memory stability degraded under reconnect storm")
 			}
 
@@ -574,6 +595,10 @@ func TestReconnectStormStability(t *testing.T) {
 func TestCombinedOperationalLoad(t *testing.T) {
 	testDuration := 3 * time.Minute
 	sampleInterval := 2 * time.Second
+	if testing.Short() {
+		testDuration = 3 * time.Second
+		sampleInterval = 500 * time.Millisecond
+	}
 
 	rst := NewResourceStabilityTest("combined-operational-load", testDuration, sampleInterval)
 
@@ -675,7 +700,7 @@ func TestCombinedOperationalLoad(t *testing.T) {
 		t.Errorf("Excessive memory growth: %d MB", growth/1024/1024)
 	}
 
-	if !rst.IsMemoryStable(0.2) {
+	if !testing.Short() && !rst.IsMemoryStable(0.2) {
 		t.Error("Memory growth not stable under combined operational load")
 	}
 

@@ -1,9 +1,18 @@
 # DSO Example: Huawei Cloud CSMS (V3.2)
+# Code reference: pkg/config/config.go - ProviderConfig struct
 providers:
   huawei-prod:
     type: huawei
     region: ap-southeast-2
-    project_id: YOUR_PROJECT_ID
+    config:
+      project_id: YOUR_PROJECT_ID
+      # access_key: ${HUAWEI_ACCESS_KEY}        # Optional - for non-IAM Agency auth
+      # secret_key: ${HUAWEI_SECRET_KEY}        # Optional - for non-IAM Agency auth
+      # security_token: ${HUAWEI_SECURITY_TOKEN}  # Optional - for temporary credentials
+
+defaults:
+  inject:
+    type: env
 
 agent:
   cache: true
@@ -14,10 +23,6 @@ agent:
 # No access_key / secret_key needed when using IAM Agency on ECS.
 # Temporary credentials are fetched from the ECS metadata service.
 # ──────────────────────────────────────────────────────────────────────────────
-
-defaults:
-  inject:
-    type: env
 
 secrets:
   - name: YOUR_SECRET_NAME              # Exact name of the secret in Huawei CSMS

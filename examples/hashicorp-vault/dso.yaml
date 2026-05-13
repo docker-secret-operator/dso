@@ -1,10 +1,13 @@
 # DSO Example: HashiCorp Vault (V3.2)
+# Code reference: pkg/config/config.go - ProviderConfig struct
+# Note: Vault configuration goes in the 'config' map as it's not a direct field
 providers:
   dev-vault:
     type: vault
-    address: http://example.com:8200
-    token: YOUR_VAULT_TOKEN
-    mount: secret
+    config:
+      address: http://example.com:8200
+      token: ${VAULT_TOKEN}  # Recommended: Use environment variable
+      mount: secret
 
 agent:
   cache: true

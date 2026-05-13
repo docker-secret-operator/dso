@@ -68,9 +68,6 @@ type BoundedEventQueue struct {
 // numWorkers: number of concurrent workers (e.g., 16)
 // handler: function to process each event
 func NewBoundedEventQueue(logger *zap.Logger, maxQueueSize, numWorkers int, handler EventHandler) *BoundedEventQueue {
-	if maxQueueSize < 100 {
-		maxQueueSize = 100 // Minimum sensible queue size
-	}
 	if numWorkers < 1 {
 		numWorkers = 1
 	}

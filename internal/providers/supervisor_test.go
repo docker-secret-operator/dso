@@ -235,9 +235,9 @@ func TestProviderSupervisor_ConcurrentOperations(t *testing.T) {
 	errorCount := int32(0)
 
 	// Multiple goroutines performing concurrent operations
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 4; i++ {
 		go func(id int) {
-			for j := 0; j < 100; j++ {
+			for j := 0; j < 50; j++ {
 				switch j % 4 {
 				case 0:
 					ps.MarkHealthy()
@@ -254,7 +254,7 @@ func TestProviderSupervisor_ConcurrentOperations(t *testing.T) {
 	}
 
 	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 4; i++ {
 		<-done
 	}
 

@@ -1,8 +1,11 @@
 # DSO Example: AWS Secrets Manager (V3.2)
+# Code reference: pkg/config/config.go - ProviderConfig struct
+# Provider implementation: cmd/plugins/dso-provider-aws/main.go
 providers:
   aws-prod:
     type: aws
     region: us-east-2    # Change to your AWS region
+    # credentials_source: iam_role  # Use IAM role (ECS/Lambda); omit for local AWS credentials
 
 agent:
   cache: true

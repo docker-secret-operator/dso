@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"sync"
+
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -14,6 +16,7 @@ import (
 type DockerWatcher struct {
 	cli   *client.Client
 	Debug bool
+	mu    sync.Mutex
 }
 
 func NewDockerWatcher(debug bool) (*DockerWatcher, error) {
@@ -44,5 +47,7 @@ func (dw *DockerWatcher) Subscribe(ctx context.Context) (<-chan events.Message, 
 	filter.Add("event", "restart")
 	filter.Add("event", "kill")
 
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
 	return dw.cli.Events(ctx, events.ListOptions{Filters: filter})
 }

@@ -58,13 +58,6 @@ type DedupCache struct {
 // ttl: how long to remember events (default: 30 seconds)
 // maxSize: maximum entries before cleanup (default: 1000)
 func NewDedupCache(ttl time.Duration, maxSize int) *DedupCache {
-	if ttl < time.Second {
-		ttl = time.Second
-	}
-	if maxSize < 100 {
-		maxSize = 100
-	}
-
 	dc := &DedupCache{
 		cache:   make(map[EventFingerprint]time.Time),
 		ttl:     ttl,
@@ -102,6 +95,13 @@ func (dc *DedupCache) IsDuplicate(msg events.Message) bool {
 	}
 
 	// Record new event
+	if len(dc.cache) >= dc.maxSize {
+		// Remove one entry to make room (simplest is to remove any one, but ideally oldest)
+		for key := range dc.cache {
+			delete(dc.cache, key)
+			break
+		}
+	}
 	dc.cache[fp] = now.Add(dc.ttl)
 	dc.updateMetrics()
 
@@ -193,10 +193,6 @@ type ImmediateDedup struct {
 
 // NewImmediateDedup creates a new immediate deduplication tracker
 func NewImmediateDedup(maxSize int) *ImmediateDedup {
-	if maxSize < 100 {
-		maxSize = 100
-	}
-
 	return &ImmediateDedup{
 		seen:    make(map[EventFingerprint]bool),
 		maxSize: maxSize,

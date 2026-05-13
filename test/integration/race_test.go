@@ -147,6 +147,11 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 	}
 	defer cli.Close()
 
+	// Clean up any leftover containers from prior runs with these fixed names.
+	for _, name := range []string{"atomic-test", "atomic-test_new", "atomic-test_backup"} {
+		_ = cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+	}
+
 	// Create a test container
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: "alpine:latest",

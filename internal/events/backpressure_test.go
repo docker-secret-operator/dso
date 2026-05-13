@@ -197,7 +197,7 @@ func TestBoundedEventQueue_ContextCancellation(t *testing.T) {
 	}
 
 	queue := NewBoundedEventQueue(logger, 100, 4, handler)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 
 	queue.Start(ctx)
 

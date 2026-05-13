@@ -28,6 +28,7 @@ func getBaseInspect() container.InspectResponse {
 		ContainerJSONBase: &types.ContainerJSONBase{
 			Name:       "/my-container",
 			HostConfig: &container.HostConfig{},
+			State:      &container.State{Running: true},
 		},
 		Config: &container.Config{
 			Image: "nginx",
@@ -64,7 +65,7 @@ func TestRollingStrategy_Execute_Success(t *testing.T) {
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
 					healthyInspect := inspectResp
-					healthyInspect.State = &container.State{Health: &container.Health{Status: "healthy"}}
+					healthyInspect.State.Health = &container.Health{Status: "healthy"}
 					bHealthy, _ := json.Marshal(healthyInspect)
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/stop":
@@ -115,7 +116,7 @@ func TestRollingStrategy_Execute_HealthTimeout(t *testing.T) {
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
 					unhealthyInspect := inspectResp
-					unhealthyInspect.State = &container.State{Health: &container.Health{Status: "unhealthy"}}
+					unhealthyInspect.State.Health = &container.Health{Status: "unhealthy"}
 					bUnhealthy, _ := json.Marshal(unhealthyInspect)
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bUnhealthy))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/stop":

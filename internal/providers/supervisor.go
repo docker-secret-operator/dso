@@ -109,8 +109,8 @@ func (ps *ProviderSupervisor) MarkHealthy() {
 	defer ps.mu.Unlock()
 
 	ps.lastHeartbeat = time.Now()
-	atomic.StoreInt32(&ps.consecutiveCrashes, 0)
-	atomic.StoreInt32(&ps.consecutiveFailures, 0)
+	ps.consecutiveCrashes = 0
+	ps.consecutiveFailures = 0
 	ps.health.Store(int32(HealthHealthy))
 
 	ps.logger.Debug("Provider marked healthy",
@@ -138,7 +138,8 @@ func (ps *ProviderSupervisor) RecordHeartbeatFailure() bool {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	failures := atomic.AddInt32(&ps.consecutiveFailures, 1)
+	ps.consecutiveFailures++
+	failures := ps.consecutiveFailures
 
 	ps.logger.Warn("Provider heartbeat failed",
 		zap.String("provider", ps.providerName),
@@ -161,8 +162,10 @@ func (ps *ProviderSupervisor) RecordCrash() bool {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	crashes := atomic.AddInt32(&ps.consecutiveCrashes, 1)
-	totalCrashes := atomic.AddInt32(&ps.crashCount, 1)
+	ps.consecutiveCrashes++
+	ps.crashCount++
+	crashes := ps.consecutiveCrashes
+	totalCrashes := ps.crashCount
 
 	ps.logger.Error("Provider process crashed",
 		zap.String("provider", ps.providerName),
@@ -215,8 +218,8 @@ func (ps *ProviderSupervisor) RecordRestart(reason string) {
 
 	ps.restartCount++
 	ps.startTime = time.Now()
-	atomic.StoreInt32(&ps.consecutiveCrashes, 0)
-	atomic.StoreInt32(&ps.consecutiveFailures, 0)
+	ps.consecutiveCrashes = 0
+	ps.consecutiveFailures = 0
 
 	ps.logger.Info("Provider process restarting",
 		zap.String("provider", ps.providerName),
@@ -279,11 +282,11 @@ func (ps *ProviderSupervisor) GetStats() map[string]interface{} {
 		"provider":             ps.providerName,
 		"health":               int(ProviderHealthState(ps.health.Load())),
 		"uptime_seconds":       time.Since(ps.startTime).Seconds(),
-		"restart_count":        atomic.LoadInt32(&ps.restartCount),
-		"crash_count":          atomic.LoadInt32(&ps.crashCount),
-		"consecutive_crashes":  atomic.LoadInt32(&ps.consecutiveCrashes),
-		"consecutive_failures": atomic.LoadInt32(&ps.consecutiveFailures),
+		"restart_count":        ps.restartCount,
+		"crash_count":          ps.crashCount,
+		"consecutive_crashes":  ps.consecutiveCrashes,
+		"consecutive_failures": ps.consecutiveFailures,
 		"time_since_heartbeat": time.Since(ps.lastHeartbeat).Seconds(),
-		"heartbeat_stale":      ps.IsHeartbeatStale(),
+		"heartbeat_stale":      time.Since(ps.lastHeartbeat) > ps.heartbeatTimeout,
 	}
 }

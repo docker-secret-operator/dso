@@ -11,18 +11,22 @@ func TestNewSystemCmd(t *testing.T) {
 		t.Fatal("Expected system command")
 	}
 
-	foundSetup := false
-	foundDoctor := false
+	foundStatus := false
+	foundEnable := false
+	foundLogs := false
 	for _, c := range cmd.Commands() {
-		if c.Name() == "setup" {
-			foundSetup = true
+		if c.Name() == "status" {
+			foundStatus = true
 		}
-		if c.Name() == "doctor" {
-			foundDoctor = true
+		if c.Name() == "enable" {
+			foundEnable = true
+		}
+		if c.Name() == "logs" {
+			foundLogs = true
 		}
 	}
-	if !foundSetup || !foundDoctor {
-		t.Fatal("Expected setup and doctor subcommands")
+	if !foundStatus || !foundEnable || !foundLogs {
+		t.Fatal("Expected status, enable, and logs subcommands")
 	}
 }
 

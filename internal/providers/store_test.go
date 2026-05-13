@@ -63,3 +63,53 @@ func TestShutdown_Empty(t *testing.T) {
 	// Should not panic on empty store
 	manager.Shutdown()
 }
+
+func TestMarkProviderHealthy(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	manager := NewSecretStoreManager(logger)
+
+	manager.store.Store("prov1", &StoreEntry{
+		ConsecFails: 3,
+		LastHealthy: time.Time{},
+	})
+
+	manager.MarkProviderHealthy("prov1")
+
+	val, _ := manager.store.Load("prov1")
+	entry := val.(*StoreEntry)
+	if entry.ConsecFails != 0 {
+		t.Fatalf("expected ConsecFails=0 after MarkProviderHealthy, got %d", entry.ConsecFails)
+	}
+	if entry.LastHealthy.IsZero() {
+		t.Fatal("expected LastHealthy to be set after MarkProviderHealthy")
+	}
+
+	// Should not panic for unknown provider
+	manager.MarkProviderHealthy("unknown")
+}
+
+func TestMarkProviderFailure(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	manager := NewSecretStoreManager(logger)
+
+	manager.store.Store("prov1", &StoreEntry{
+		ConsecFails: 0,
+		MaxFailures: 3,
+	})
+
+	// Two failures below threshold — entry should remain
+	manager.MarkProviderFailure("prov1")
+	manager.MarkProviderFailure("prov1")
+	if _, ok := manager.store.Load("prov1"); !ok {
+		t.Fatal("provider should still be present below failure threshold")
+	}
+
+	// Third failure reaches threshold — entry should be removed
+	manager.MarkProviderFailure("prov1")
+	if _, ok := manager.store.Load("prov1"); ok {
+		t.Fatal("provider should be removed after exceeding failure threshold")
+	}
+
+	// Should not panic for unknown provider
+	manager.MarkProviderFailure("unknown")
+}

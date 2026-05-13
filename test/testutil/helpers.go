@@ -118,7 +118,7 @@ func NewMockProvider() *MockProvider {
 
 // DockerTestHelper provides Docker-related test utilities
 type DockerTestHelper struct {
-	t      testing.TB
+	t         testing.TB
 	HasDocker bool
 }
 
@@ -148,16 +148,16 @@ func (dth *DockerTestHelper) IsDockerAvailable() bool {
 
 // TestSecretValues provides common test secret values
 var TestSecretValues = map[string]string{
-	"simple":            "mysecret123",
-	"withSpecialChars":  "p@$$w0rd!#%&*()[]{}~`^",
-	"withUnicode":       "パスワード密碼🔐",
-	"empty":             "",
-	"long":              string(make([]byte, 10000)), // 10KB secret
-	"base64":            "dXNlcm5hbWU6cGFzc3dvcmQ=",
-	"json":              `{"username":"admin","password":"secret"}`,
-	"multiline":         "line1\nline2\nline3",
-	"withWhitespace":    "  secret with spaces  ",
-	"numeric":           "1234567890",
+	"simple":           "mysecret123",
+	"withSpecialChars": "p@$$w0rd!#%&*()[]{}~`^",
+	"withUnicode":      "パスワード密碼🔐",
+	"empty":            "",
+	"long":             string(make([]byte, 10000)), // 10KB secret
+	"base64":           "dXNlcm5hbWU6cGFzc3dvcmQ=",
+	"json":             `{"username":"admin","password":"secret"}`,
+	"multiline":        "line1\nline2\nline3",
+	"withWhitespace":   "  secret with spaces  ",
+	"numeric":          "1234567890",
 }
 
 // AssertSecretEqual asserts two secrets are equal

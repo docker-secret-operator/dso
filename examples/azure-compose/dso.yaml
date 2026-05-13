@@ -1,9 +1,14 @@
 # DSO Example: Azure Key Vault (V3.2)
+# Code reference: pkg/config/config.go - ProviderConfig struct
+# Provider implementation: cmd/plugins/dso-provider-azure/main.go
 providers:
   azure-prod:
     type: azure
     config:
       vault_url: "https://YOUR_VAULT_NAME.vault.azure.net/"
+      # tenant_id: ${AZURE_TENANT_ID}  # Optional - for service principal auth
+      # client_id: ${AZURE_CLIENT_ID}  # Optional - for service principal auth
+      # client_secret: ${AZURE_CLIENT_SECRET}  # Optional - for service principal auth
 
 agent:
   cache: true

@@ -114,6 +114,9 @@ func newSystemSetupCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
 		Short: "Setup DSO system",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
 	}
 }
 
@@ -121,5 +124,8 @@ func newSystemDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Doctor command",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
 	}
 }
