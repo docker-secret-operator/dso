@@ -51,11 +51,12 @@ func TestLongRunStability_72Hours(t *testing.T) {
 	rotationCount := 0
 	errorCount := 0
 
+StabilityLoop:
 	for {
 		select {
 		case <-ctx.Done():
 			// Test completed
-			break
+			break StabilityLoop
 
 		case <-ticker.C:
 			// Simulate secret rotation workload
@@ -99,10 +100,6 @@ func TestLongRunStability_72Hours(t *testing.T) {
 					t.Logf("WARNING: Possible goroutine leak detected!")
 				}
 			}
-		}
-
-		if ctx.Err() != nil {
-			break
 		}
 	}
 

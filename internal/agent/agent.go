@@ -90,24 +90,19 @@ func (a *Agent) Start(ctx context.Context) error {
 		reconnectAttempts = 0
 		log.Println("✅ [DSO Agent] Docker event stream connected")
 
-		streamActive := false
+	EventStream:
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case err := <-errCh:
 				log.Printf("⚠️ [DSO Agent] Docker event stream error: %v, reconnecting in %v", err, reconnectDelay)
-				streamActive = false
-				break
+				break EventStream
 			case msg := <-msgCh:
-				streamActive = true
 				// Enqueue event with backpressure protection
 				if !a.eventQueue.Enqueue(msg) {
 					log.Printf("⚠️ [DSO Agent] Event queue full, dropping event: %s/%s", msg.Actor.ID[:12], string(msg.Action))
 				}
-			}
-			if !streamActive {
-				break
 			}
 		}
 
