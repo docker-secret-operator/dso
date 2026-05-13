@@ -73,3 +73,4 @@ node_modules/
 # Local testing and tools
 ffmpeg-*
 reports/
+CLAUDE.md
