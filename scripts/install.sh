@@ -160,7 +160,15 @@ curl -fsSL \
 
 # ── Validate checksum ──────────────────────────────────────────────────────────
 echo -e "  Validating integrity (SHA256)..."
-EXPECTED_HASH="$(awk '{print $1}' "${CHECKSUM_PATH}")"
+EXPECTED_HASH="$(grep "${TARBALL_NAME}" "${CHECKSUM_PATH}" | awk '{print $1}')"
+
+if [ -z "${EXPECTED_HASH}" ]; then
+    echo -e "${RED}Error: Checksum for ${TARBALL_NAME} not found in ${CHECKSUM_PATH}${NC}"
+    echo -e "${RED}       Contents of checksum file:${NC}"
+    cat "${CHECKSUM_PATH}"
+    exit 1
+fi
+
 if command -v sha256sum &>/dev/null; then
     ACTUAL_HASH="$(sha256sum "${TARBALL_PATH}" | awk '{print $1}')"
 elif command -v shasum &>/dev/null; then
