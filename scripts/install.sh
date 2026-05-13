@@ -187,7 +187,7 @@ fi
 
 # ── Extract binary ─────────────────────────────────────────────────────────────
 echo -e "  Extracting binary..."
-tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}"
+tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}" --strip-components=1
 
 # ── Validate extracted binary exists ───────────────────────────────────────────
 # Try multiple possible binary names from the tarball
