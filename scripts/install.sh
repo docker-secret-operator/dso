@@ -100,7 +100,7 @@ if [ -z "${DSO_VERSION}" ]; then
     echo -e "${RED}       This may be caused by a GitHub API rate limit.${NC}"
     echo -e ""
     echo -e "${YELLOW}Fix: Set the version manually and re-run:${NC}"
-    echo -e "       export DSO_VERSION=v3.2.0"
+    echo -e "       export DSO_VERSION=v3.3.0"
     echo -e "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash"
     exit 1
 fi
@@ -112,9 +112,10 @@ else
 fi
 
 # ── Construct download URL ─────────────────────────────────────────────────────
-TARBALL_NAME="${BINARY_NAME}_${DSO_VERSION}_${GOOS}_${GOARCH}.tar.gz"
+# File naming convention: dso-VERSION-OS-ARCH.tar.gz (e.g., dso-3.3.0-linux-amd64.tar.gz)
+TARBALL_NAME="dso-${DSO_VERSION#v}-${GOOS}-${GOARCH}.tar.gz"
 TARBALL_URL="${RELEASE_BASE}/${DSO_VERSION}/${TARBALL_NAME}"
-CHECKSUM_URL="${TARBALL_URL}.sha256"
+CHECKSUM_URL="${RELEASE_BASE}/${DSO_VERSION}/dso-${DSO_VERSION#v}-checksums.txt"
 
 # ── PATH shadowing guard ───────────────────────────────────────────────────────
 # If a global binary exists but we are running without root, warn loudly.
@@ -181,17 +182,21 @@ echo -e "  Extracting binary..."
 tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}"
 
 # ── Validate extracted binary exists ───────────────────────────────────────────
-EXTRACTED_BINARY="${TMP_DIR}/${BINARY_NAME}"
-if [ ! -f "${EXTRACTED_BINARY}" ]; then
-    # Fallback: some GoReleaser configs drop a plain 'dso' binary
-    if [ -f "${TMP_DIR}/dso" ]; then
-        EXTRACTED_BINARY="${TMP_DIR}/dso"
-    else
-        echo -e "${RED}Error: Neither '${BINARY_NAME}' nor 'dso' found in tarball after extraction.${NC}"
-        echo -e "${RED}       Contents of extraction dir:${NC}"
-        ls -la "${TMP_DIR}/"
-        exit 1
+# Try multiple possible binary names from the tarball
+EXTRACTED_BINARY=""
+for possible_name in "${BINARY_NAME}" "dso" "docker-dso"; do
+    if [ -f "${TMP_DIR}/${possible_name}" ]; then
+        EXTRACTED_BINARY="${TMP_DIR}/${possible_name}"
+        break
     fi
+done
+
+if [ -z "${EXTRACTED_BINARY}" ]; then
+    echo -e "${RED}Error: Binary not found in tarball after extraction.${NC}"
+    echo -e "${RED}       Looked for: docker-dso, dso${NC}"
+    echo -e "${RED}       Contents of extraction dir:${NC}"
+    ls -la "${TMP_DIR}/"
+    exit 1
 fi
 
 # ── Install binary ─────────────────────────────────────────────────────────────

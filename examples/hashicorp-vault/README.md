@@ -42,7 +42,7 @@ The **Docker Secret Operator (DSO)** intercepts the container startup process to
 ## 3. Prerequisites
 
 - **Docker** installed and running.
-- **DSO CLI** installed (`curl -fsSL https://get.dso.dev | sh`).
+- **DSO CLI** installed (`curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash`).
 - **Make** (optional, for the automated Quick Start).
 
 ---
