@@ -89,7 +89,7 @@ sudo docker dso bootstrap agent
 Output:
 ```
 ✓ DSO agent initialized
-✓ Configuration: /etc/dso/config.yaml
+✓ Configuration: /etc/dso/dso.yaml
 ✓ Service: /etc/systemd/system/dso-agent.service
 ✓ Vault: configured per provider
 ✓ Next steps:
@@ -100,7 +100,7 @@ Output:
 
 **What was created:**
 - `/etc/dso/` — Production configuration directory
-- `/etc/dso/config.yaml` — Production configuration
+- `/etc/dso/dso.yaml` — Production configuration
 - `/var/lib/dso/` — State and cache directory
 - `/var/log/dso/` — Log directory
 - `/run/dso/` — Runtime socket directory
@@ -419,12 +419,24 @@ sudo docker dso system setup
 ```
 
 This command:
-- Writes `/etc/dso/dso-agent.service` (systemd unit)
+- Writes `/etc/systemd/system/dso-agent.service` (systemd unit)
 - Downloads and verifies provider plugins from the GitHub release
-- Runs `systemctl enable --now dso-agent`
+- Creates `/etc/dso/dso.yaml` (source of truth)
 
-### 2. Create `/etc/dso/dso.yaml`
+### 2. Enable and start the agent
 
+```bash
+sudo docker dso system enable
+```
+
+### 3. Configure providers in `/etc/dso/dso.yaml`
+
+Edit the configuration file:
+```bash
+sudo nano /etc/dso/dso.yaml
+```
+
+Example configuration:
 ```yaml
 providers:
   vault-prod:
@@ -439,11 +451,12 @@ secrets:
     provider: vault-prod
 ```
 
-Cloud mode is auto-detected when `/etc/dso/dso.yaml` exists. You do not need to pass `--mode=cloud` explicitly.
+The `/etc/dso/dso.yaml` is the source of truth. It is auto-loaded and determines all runtime behavior.
 
-### 3. Deploy
+### 4. Deploy with docker-compose.yaml
+
 ```bash
-docker dso up -d
+docker compose up -d
 ```
 
 ---

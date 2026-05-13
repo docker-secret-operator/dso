@@ -133,7 +133,7 @@ docker dso system logs | grep cache_miss
 **Solutions**:
 ```bash
 # 1. Increase cache TTL
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 # Change: cache.ttl: 1h → 4h
 
 # 2. Increase cache size
@@ -197,7 +197,7 @@ docker inspect <container> --format '{{json .State.Health}}'
 **Solutions**:
 ```bash
 # 1. Reduce health check timeout
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 # Change: rotation.timeout: 30s → 15s
 
 # 2. Reduce container health check frequency
@@ -270,7 +270,7 @@ sudo docker dso system restart
 **Backup State**:
 ```bash
 # Backup configuration
-sudo cp /etc/dso/config.yaml /backup/dso-config-$(date +%Y%m%d).yaml
+sudo cp /etc/dso/dso.yaml /backup/dso-config-$(date +%Y%m%d).yaml
 
 # Backup state directory
 sudo tar -czf /backup/dso-state-$(date +%Y%m%d).tar.gz /var/lib/dso/state/
@@ -326,7 +326,7 @@ docker dso doctor
 docker dso config validate
 
 # 2. Make changes
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 
 # 3. Validate new config
 docker dso config validate

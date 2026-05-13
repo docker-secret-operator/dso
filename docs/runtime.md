@@ -14,7 +14,7 @@ This document covers how DSO operates as a runtime service, with emphasis on the
 2. Bootstrap Agent
    └─ sudo docker dso bootstrap agent
       ├─ Create directories (/etc/dso, /var/lib/dso, /var/log/dso, /run/dso)
-      ├─ Generate config (/etc/dso/config.yaml)
+      ├─ Generate config (/etc/dso/dso.yaml)
       ├─ Create systemd service (/etc/systemd/system/dso-agent.service)
       └─ Verify permissions
 
@@ -47,7 +47,7 @@ User=root
 Group=root
 WorkingDirectory=/var/lib/dso
 
-ExecStart=/usr/local/bin/dso agent --config /etc/dso/config.yaml
+ExecStart=/usr/local/bin/dso agent --config /etc/dso/dso.yaml
 
 Restart=on-failure
 RestartSec=10
@@ -166,7 +166,7 @@ docker dso system logs --since 1h         # Last hour
 
 ### Priority Order
 1. CLI flag: `dso agent -c /custom/path/config.yaml`
-2. Agent config: `/etc/dso/config.yaml` (requires root)
+2. Agent config: `/etc/dso/dso.yaml` (requires root)
 3. Local config: `~/.dso/config.yaml`
 4. Current directory: `./dso.yaml`
 
@@ -182,7 +182,7 @@ On startup, DSO validates:
 Configuration changes:
 ```bash
 # Edit configuration
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 
 # Validate changes
 docker dso config validate
@@ -347,7 +347,7 @@ journalctl -u dso-agent -o json
 ### Key Log Events
 ```
 [INFO] Agent started, version v1.0.0
-[INFO] Configuration loaded from /etc/dso/config.yaml
+[INFO] Configuration loaded from /etc/dso/dso.yaml
 [INFO] Docker socket connected
 [INFO] Secret backend connected: vault
 [INFO] Event watcher started
@@ -381,7 +381,7 @@ ls -la /etc/dso /var/lib/dso /run/dso
 docker dso status | grep -i cache
 
 # Reduce cache if needed
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 # Reduce max_size: 500Mi → 100Mi
 sudo docker dso system restart
 ```
@@ -421,7 +421,7 @@ docker dso status --json > ~/dso-backup.json
 sudo docker dso system disable
 
 # 3. Make changes (e.g., update config)
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 
 # 4. Validate changes
 docker dso config validate
