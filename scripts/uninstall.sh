@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Docker Secret Operator (DSO) - Uninstaller (v3.2)
+# Docker Secret Operator (DSO) - Uninstaller (v3.3)
 # ==============================================================================
 # Removes all DSO binaries, plugins, sockets, services, and optionally
 # the local Native Vault (~/.dso).
@@ -18,7 +18,7 @@ NC='\033[0m'
 
 DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
 
-# Resolve install paths (mirroras install.sh)
+# Resolve install paths (mirrors install.sh)
 if [ "$EUID" -eq 0 ]; then
     PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
     SYSTEM_BIN_DIR="/usr/local/bin"
@@ -31,7 +31,7 @@ fi
 
 echo -e "${BLUE}==========================================${NC}"
 echo -e "${RED}    Uninstalling Docker Secret Operator    ${NC}"
-echo -e "${BLUE}    Version: v3.2                         ${NC}"
+echo -e "${BLUE}    Version: v3.3                         ${NC}"
 echo -e "${BLUE}==========================================${NC}"
 
 # ------------------------------------------------------------------------------
@@ -68,17 +68,16 @@ safe_remove_dir() {
 echo -e "\n${GREEN}[1/4] Stopping services...${NC}"
 
 if [ "$IS_SYSTEM_INSTALL" = true ]; then
-    for svc in dso dso-agent; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            systemctl stop "$svc" 2>/dev/null \
-                && echo -e "  Stopped $svc" \
-                || echo -e "  ${YELLOW}Warning: could not stop $svc${NC}"
-        fi
-        if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
-            systemctl disable "$svc" 2>/dev/null || true
-        fi
-        safe_remove "/etc/systemd/system/${svc}.service"
-    done
+    # Stop and disable dso-agent service
+    if systemctl is-active --quiet dso-agent 2>/dev/null; then
+        systemctl stop dso-agent 2>/dev/null \
+            && echo -e "  ${GREEN}Stopped:${NC} dso-agent" \
+            || echo -e "  ${YELLOW}Warning: could not stop dso-agent${NC}"
+    fi
+    if systemctl is-enabled --quiet dso-agent 2>/dev/null; then
+        systemctl disable dso-agent 2>/dev/null || true
+    fi
+    safe_remove "/etc/systemd/system/dso-agent.service"
     systemctl daemon-reload 2>/dev/null || true
 else
     echo -e "  Skipped (user-level install — no systemd services managed)."
@@ -111,6 +110,13 @@ if [ "$IS_SYSTEM_INSTALL" = true ]; then
     safe_remove_dir "/usr/local/lib/dso"   # old plugin binary directory
 fi
 
+# Remove agent configuration and state (system installs only)
+if [ "$IS_SYSTEM_INSTALL" = true ]; then
+    echo -e "\n${GREEN}[3.5/4] Removing agent configuration...${NC}"
+    safe_remove_dir "/etc/dso"              # Configuration files (config.yaml, dso.yaml)
+    safe_remove_dir "/var/lib/dso"          # Agent state directory
+fi
+
 # ------------------------------------------------------------------------------
 # Step 4 — Optionally remove Native Vault data
 # ------------------------------------------------------------------------------
@@ -141,5 +147,5 @@ fi
 # Done
 # ------------------------------------------------------------------------------
 echo -e "\n${BLUE}==========================================${NC}"
-echo -e "${GREEN}   DSO v3.2 successfully uninstalled.     ${NC}"
+echo -e "${GREEN}   DSO v3.3 successfully uninstalled.     ${NC}"
 echo -e "${BLUE}==========================================${NC}"

@@ -48,7 +48,7 @@ func newConfigShowCmd() *cobra.Command {
 
 The configuration file location is determined by:
 1. CLI flag (-c/--config)
-2. /etc/dso/config.yaml (if running as root)
+2. /etc/dso/dso.yaml (if running as root)
 3. ~/.dso/config.yaml (if in local mode)
 4. ./dso.yaml (current directory)
 
@@ -320,8 +320,8 @@ func getConfigPath() string {
 
 	// Check for agent config (root only)
 	if os.Geteuid() == 0 {
-		if _, err := os.Stat("/etc/dso/config.yaml"); err == nil {
-			return "/etc/dso/config.yaml"
+		if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
+			return "/etc/dso/dso.yaml"
 		}
 	}
 

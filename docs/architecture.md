@@ -128,7 +128,7 @@ Host Machine (systemd)
     ↓
 [sudo docker dso bootstrap agent]
     ↓
-/etc/dso/config.yaml + systemd service
+/etc/dso/dso.yaml + systemd service
     ↓
 [sudo docker dso system enable]
     ↓
@@ -194,7 +194,7 @@ Rotation complete (or failed)
 
 ### Configuration Files
 - **Local mode**: `~/.dso/config.yaml`
-- **Agent mode**: `/etc/dso/config.yaml`
+- **Agent mode**: `/etc/dso/dso.yaml`
 
 **Example structure**:
 ```yaml

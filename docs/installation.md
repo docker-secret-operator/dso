@@ -341,7 +341,7 @@ DSO System Diagnostics — v3.3.0
 Component         Status       Detail
 ────────────────────────────────────────────────────────────────────
 Binary            OK           /usr/local/lib/docker/cli-plugins/docker-dso (v3.3.0)
-Effective UID     1000
+Effective UID     root
 Detected Mode     CLOUD        Reason: auto-detected (/etc/dso/dso.yaml)
 Config            OK           /etc/dso/dso.yaml
 Vault             NOT FOUND    /home/user/.dso/vault.enc

@@ -238,7 +238,7 @@ func bootstrapAgent() error {
 
 	// Step 5: Generate configuration
 	fmt.Print("  Generating configuration... ")
-	if err := generateAgentConfig("/etc/dso/config.yaml"); err != nil {
+	if err := generateAgentConfig("/etc/dso/dso.yaml"); err != nil {
 		fmt.Println("✗")
 		return err
 	}
@@ -351,7 +351,7 @@ Group=root
 
 WorkingDirectory=/var/lib/dso
 
-ExecStart=/usr/local/bin/dso agent --config /etc/dso/config.yaml
+ExecStart=/usr/local/bin/dso agent --config /etc/dso/dso.yaml
 
 Restart=on-failure
 RestartSec=10
@@ -403,7 +403,7 @@ func printBootstrapSuccessAgent() {
 	fmt.Println("│ DSO Agent Runtime Initialized       │")
 	fmt.Println("├─────────────────────────────────────┤")
 	fmt.Println("│ Mode: production (systemd)          │")
-	fmt.Println("│ Config: /etc/dso/config.yaml        │")
+	fmt.Println("│ Config: /etc/dso/dso.yaml        │")
 	fmt.Println("│ State: /var/lib/dso/state           │")
 	fmt.Println("│ Logs: journalctl -u dso-agent       │")
 	fmt.Println("│ Socket: /run/dso/agent.sock         │")
@@ -413,19 +413,16 @@ func printBootstrapSuccessAgent() {
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Edit configuration:")
-	fmt.Println("     sudo nano /etc/dso/config.yaml")
+	fmt.Println("     sudo nano /etc/dso/dso.yaml")
 	fmt.Println()
-	fmt.Println("  2. Start agent:")
-	fmt.Println("     sudo systemctl enable --now dso-agent")
+	fmt.Println("  2. Enable and start agent:")
+	fmt.Println("     sudo docker dso system enable")
 	fmt.Println()
-	fmt.Println("  3. Verify agent:")
+	fmt.Println("  3. Verify installation:")
 	fmt.Println("     docker dso doctor")
 	fmt.Println("     docker dso status")
 	fmt.Println()
-	fmt.Println("  4. Create docker-compose.yaml:")
-	fmt.Println("     dso://vault:secret_name")
-	fmt.Println()
-	fmt.Println("  5. Deploy:")
+	fmt.Println("  4. Deploy with docker-compose.yaml:")
 	fmt.Println("     docker compose up")
 	fmt.Println()
 }

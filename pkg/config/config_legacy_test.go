@@ -67,7 +67,7 @@ func TestIsSafePath_SystemDirs(t *testing.T) {
 		path string
 		safe bool
 	}{
-		{"/etc/dso/config.yaml", true},
+		{"/etc/dso/dso.yaml", true},
 		{"/usr/local/bin/dso", true},
 		{"/tmp/escape", false},
 		{"/etc/passwd", false},

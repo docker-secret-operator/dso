@@ -76,7 +76,7 @@ sudo docker dso bootstrap agent
 **Success output:**
 ```
 ✓ DSO agent initialized
-✓ Configuration: /etc/dso/config.yaml
+✓ Configuration: /etc/dso/dso.yaml
 ✓ Service: /etc/systemd/system/dso-agent.service
 ✓ Next steps:
   - Review config: docker dso config show
@@ -166,7 +166,7 @@ docker dso config show
 ```
 
 Displays current configuration from:
-1. `/etc/dso/config.yaml` (agent mode)
+1. `/etc/dso/dso.yaml` (agent mode)
 2. `~/.dso/config.yaml` (local mode)
 3. `./dso.yaml` (current directory)
 

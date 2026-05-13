@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scr
 sudo docker dso bootstrap agent
 
 # 3. Configure providers and settings
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 
 # 4. Enable and start the agent
 sudo docker dso system enable
@@ -1307,7 +1307,7 @@ sudo docker dso doctor --level full
 **Configuration mismatch:**
 ```bash
 # Edit configuration
-sudo nano /etc/dso/config.yaml
+sudo nano /etc/dso/dso.yaml
 
 # Validate changes
 sudo docker dso config validate
