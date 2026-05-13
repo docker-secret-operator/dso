@@ -32,7 +32,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 ```bash
 # 1. Install DSO as a Docker plugin
-curl -fsSL https://get.dso.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
 
 # 2. Initialize your local environment
 docker dso bootstrap local
@@ -54,7 +54,7 @@ docker dso compose up
 
 ```bash
 # 1. Install DSO binary
-curl -fsSL https://get.dso.dev/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
 
 # 2. Initialize agent runtime
 sudo docker dso bootstrap agent
@@ -185,18 +185,18 @@ For detailed workflows, see [docs/architecture.md](docs/architecture.md) and [do
 
 **User install (Local Mode only):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
 ```
 
 **Global install (Cloud Mode + systemd):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
 ```
 
 **Manual install:**
 ```bash
 # Download for your platform
-curl -Lo dso https://github.com/docker-secret-operator/dso/releases/download/v1.0.0/dso-linux-amd64
+curl -Lo dso https://github.com/docker-secret-operator/dso/releases/download/v3.3.0/dso-linux-amd64
 
 # Verify checksum (optional but recommended)
 echo "..." | sha256sum -c -
@@ -216,7 +216,7 @@ sudo chmod +x /usr/local/lib/docker/cli-plugins/dso
 
 ```bash
 docker dso version
-# Docker Secret Operator v1.0.0
+# Docker Secret Operator v3.3.0
 
 docker dso doctor
 # ┌─────────────────────────────────────────┐
@@ -387,7 +387,7 @@ docker dso secret set app/postgres_password
 
 **1. Install globally**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
 ```
 
 **2. Create configuration**
@@ -1361,7 +1361,7 @@ docker dso status --watch
 
 ```bash
 # Download and install binary
-curl -fsSL https://get.dso.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
 ```
 
 ### Step 2: Initialize

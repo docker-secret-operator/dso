@@ -990,7 +990,7 @@ docker dso up
 [DSO] Starting Cloud Mode setup...
 [DSO] Creating /etc/dso...
 [DSO] Writing systemd service to /etc/systemd/system/dso-agent.service...
-[DSO] Downloading plugin tarball from https://github.com/.../dso-plugins-linux-amd64-v3.2.0.tar.gz...
+[DSO] Downloading plugin tarball from https://github.com/.../dso-plugins-linux-amd64-v3.3.0.tar.gz...
 [DSO] Validating plugin integrity (SHA256)...
 [DSO] Extracting plugins to /usr/local/lib/dso/plugins/...
 [DSO] Plugins verified: aws, azure, vault, huawei
@@ -1040,20 +1040,20 @@ sudo docker dso system setup && docker dso system doctor
 #### Output
 
 ```
-DSO System Diagnostics — v3.2.0
+DSO System Diagnostics — v3.3.0
 ════════════════════════════════════════════════════════════════════
 Component         Status     Detail
 ────────────────────────────────────────────────────────────────────
-Binary            OK         /usr/local/lib/docker/cli-plugins/docker-dso (v3.2.0)
+Binary            OK         /usr/local/lib/docker/cli-plugins/docker-dso (v3.3.0)
 Effective UID     0 (root)
 Detected Mode     CLOUD      Reason: auto-detected (/etc/dso/dso.yaml)
 Config            OK         /etc/dso/dso.yaml
 Vault             NOT FOUND  /home/user/.dso/vault.enc
 Systemd Service   OK         File: /etc/systemd/system/dso-agent.service | Runtime: active
-Plugin: aws       OK         /usr/local/lib/dso/plugins/dso-provider-aws (version: v3.2.0)
-Plugin: azure     OK         /usr/local/lib/dso/plugins/dso-provider-azure (version: v3.2.0)
-Plugin: vault     OK         /usr/local/lib/dso/plugins/dso-provider-vault (version: v3.2.0)
-Plugin: huawei    OK         /usr/local/lib/dso/plugins/dso-provider-huawei (version: v3.2.0)
+Plugin: aws       OK         /usr/local/lib/dso/plugins/dso-provider-aws (version: v3.3.0)
+Plugin: azure     OK         /usr/local/lib/dso/plugins/dso-provider-azure (version: v3.3.0)
+Plugin: vault     OK         /usr/local/lib/dso/plugins/dso-provider-vault (version: v3.3.0)
+Plugin: huawei    OK         /usr/local/lib/dso/plugins/dso-provider-huawei (version: v3.3.0)
 ════════════════════════════════════════════════════════════════════
 ```
 
@@ -1078,7 +1078,7 @@ docker dso version
 #### Output
 
 ```
-Docker Secret Operator (DSO) v3.2.0
+Docker Secret Operator (DSO) v3.3.0
 ```
 
 ---
@@ -1129,7 +1129,7 @@ The following commands exist in the CLI tree and are registered, but return `not
 
 ```bash
 # 1. Install DSO
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
 
 # 2. Initialize vault
 docker dso init

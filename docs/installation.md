@@ -336,11 +336,11 @@ docker dso system doctor
 Example output after installing Vault only:
 
 ```
-DSO System Diagnostics — v3.2.0
+DSO System Diagnostics — v3.3.0
 ════════════════════════════════════════════════════════════════════
 Component         Status       Detail
 ────────────────────────────────────────────────────────────────────
-Binary            OK           /usr/local/lib/docker/cli-plugins/docker-dso (v3.2.0)
+Binary            OK           /usr/local/lib/docker/cli-plugins/docker-dso (v3.3.0)
 Effective UID     1000
 Detected Mode     CLOUD        Reason: auto-detected (/etc/dso/dso.yaml)
 Config            OK           /etc/dso/dso.yaml
@@ -349,7 +349,7 @@ Systemd Service   OK           File: /etc/systemd/system/dso-agent.service | Run
 ────────────────────────────────────────────────────────────────────
 Provider Plugins
 ────────────────────────────────────────────────────────────────────
-Plugin: vault     OK           /usr/local/lib/dso/plugins/dso-provider-vault (v3.2.0)
+Plugin: vault     OK           /usr/local/lib/dso/plugins/dso-provider-vault (v3.3.0)
 Plugin: aws       NOT INSTALLED  Install: sudo docker dso system setup --providers aws
 Plugin: azure     NOT INSTALLED  Install: sudo docker dso system setup --providers azure
 Plugin: huawei    NOT INSTALLED  Install: sudo docker dso system setup --providers huawei
@@ -391,7 +391,7 @@ sudo rm -rf /etc/dso
 
 | Variable | Description |
 |---|---|
-| `DSO_VERSION` | Override the version to install (e.g. `v3.2.0`) |
+| `DSO_VERSION` | Override the version to install (e.g. `v3.3.0`) |
 | `DSO_PROVIDERS` | Comma-separated providers for `system setup` (e.g. `aws,vault`) |
 | `DSO_SOCKET_PATH` | Override agent socket path (default: `/var/run/dso.sock`) |
 | `DSO_PLUGIN_DIR` | Override plugin directory (default: `/usr/local/lib/dso/plugins`) |

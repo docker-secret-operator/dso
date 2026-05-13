@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"   # Trigger on any tag matching v*, e.g. v3.2.0, v3.2.1-rc1
+      - "v*"   # Trigger on any tag matching v*, e.g. v3.3.0, v3.3.1-rc1
 
 permissions:
   contents: write  # Required for GoReleaser to create GitHub Releases
