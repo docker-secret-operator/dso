@@ -95,10 +95,19 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 
 	// Step 8: Build and execute transaction
-	configPath := opts.Context.Value("config_path").(string)
-	if configPath == "" {
-		configPath = "/etc/dso/dso.yaml"
+	// Safely retrieve config path from options or context, with fallback
+	configPath := "/etc/dso/dso.yaml" // Default path
+
+	// Check if context has config_path set (defensive check)
+	if opts.Context != nil {
+		if val := opts.Context.Value("config_path"); val != nil {
+			if path, ok := val.(string); ok && path != "" {
+				configPath = path
+			}
+		}
 	}
+
+	ab.logger.Debug("Using config path", "path", configPath)
 
 	// Determine DSO group ID (placeholder - would be looked up or created)
 	dsoGID := 1001 // Typical DSO group ID

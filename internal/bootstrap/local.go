@@ -50,14 +50,17 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	lb.logger.Info("Current user", "username", currentUser.Username, "uid", currentUser.Uid)
 
 	// Determine config path (default to user's home directory)
-	var configPath string
-	if opts.Context.Value("config_path") != nil {
-		configPath = opts.Context.Value("config_path").(string)
-	}
-	if configPath == "" {
-		// Use ~/.dso/dso.yaml for local mode
-		homeDir := currentUser.HomeDir
-		configPath = filepath.Join(homeDir, ".dso", "dso.yaml")
+	homeDir := currentUser.HomeDir
+	configPath := filepath.Join(homeDir, ".dso", "dso.yaml") // Default path
+
+	// Safely retrieve config path from context if provided
+	if opts.Context != nil {
+		if val := opts.Context.Value("config_path"); val != nil {
+			if path, ok := val.(string); ok && path != "" {
+				configPath = path
+				lb.logger.Debug("Using config path from context", "path", configPath)
+			}
+		}
 	}
 
 	lb.logger.Info("Local config path", "path", configPath)
