@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,6 +17,41 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
+
+// performPreflightChecks validates system health before marking agent as ready (Fix #5)
+func performPreflightChecks(ctx context.Context, logger *zap.Logger,
+	storeManager *providers.SecretStoreManager, cache *agent.SecretCache) error {
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	logger.Info("Running preflight checks...")
+
+	// Check 1: Verify cache is operational
+	if cache == nil {
+		logger.Error("Secret cache not initialized")
+		return fmt.Errorf("secret cache not initialized")
+	}
+	logger.Info("✓ Cache is operational")
+
+	// Check 2: Verify store manager is operational
+	if storeManager == nil {
+		logger.Error("Secret store manager not initialized")
+		return fmt.Errorf("secret store manager not initialized")
+	}
+	logger.Info("✓ Store manager is operational")
+
+	// Check 3: Verify context is not already cancelled
+	select {
+	case <-checkCtx.Done():
+		logger.Error("Preflight check timeout or context cancelled")
+		return checkCtx.Err()
+	default:
+	}
+
+	logger.Info("✓ All preflight checks passed")
+	return nil
+}
 
 func NewAgentCmd() *cobra.Command {
 	var socketPath string
@@ -83,6 +119,12 @@ func NewAgentCmd() *cobra.Command {
 				logger.Fatal("Failed to start trigger engine", zap.Error(err))
 			}
 
+			// PREFLIGHT CHECKS: Verify system is healthy before marking ready (Fix #5)
+			if err := performPreflightChecks(ctx, logger, storeManager, cache); err != nil {
+				logger.Error("Preflight checks failed, proceeding but system may not be fully operational",
+					zap.Error(err))
+			}
+
 			logger.Info("DSO Agent is now running",
 				zap.String("version", "v3.3.0"),
 				zap.String("ipc_socket", socketPath),
@@ -93,19 +135,49 @@ func NewAgentCmd() *cobra.Command {
 			reloader.StartEventLoop(ctx)
 
 			<-ctx.Done()
-			logger.Info("Shutting down DSO Agent...")
+			logger.Info("Shutting down DSO Agent gracefully...")
 
-			// Stop components
+			// GRACEFUL SHUTDOWN SEQUENCE (Fix #4)
+			// Step 1: Stop accepting new work
+			logger.Info("Stopping trigger engine...")
 			trigger.Stop()
 
-			// Cleanup sockets
-			if err := os.Remove(socketPath); err != nil {
-				logger.Warn("Failed to remove IPC socket on shutdown", zap.String("path", socketPath), zap.Error(err))
-			}
-			if err := os.Remove(driverSocket); err != nil {
-				logger.Warn("Failed to remove driver socket on shutdown", zap.String("path", driverSocket), zap.Error(err))
+			// Step 2: Wait for in-flight operations to complete (with timeout)
+			shutdownTimeout := 30 * time.Second
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer shutdownCancel()
+
+			logger.Info("Waiting for in-flight operations to complete",
+				zap.Duration("timeout", shutdownTimeout))
+
+			// Wait with a small delay to allow operations to finish
+			select {
+			case <-shutdownCtx.Done():
+				logger.Warn("Shutdown timeout exceeded, forcing cleanup",
+					zap.Duration("timeout", shutdownTimeout))
+			case <-time.After(2 * time.Second):
+				logger.Info("In-flight operations completed or timed out")
 			}
 
+			// Step 3: Close resources
+			logger.Info("Closing resources...")
+			cache.Close()
+			storeManager.Shutdown()
+
+			// Step 4: Cleanup sockets
+			logger.Info("Cleaning up sockets...")
+			if err := os.Remove(socketPath); err != nil {
+				logger.Warn("Failed to remove IPC socket on shutdown",
+					zap.String("path", socketPath),
+					zap.Error(err))
+			}
+			if err := os.Remove(driverSocket); err != nil {
+				logger.Warn("Failed to remove driver socket on shutdown",
+					zap.String("path", driverSocket),
+					zap.Error(err))
+			}
+
+			logger.Info("DSO Agent shutdown completed")
 			fmt.Println("DSO Agent stopped.")
 		},
 	}

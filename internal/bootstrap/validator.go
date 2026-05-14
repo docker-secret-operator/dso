@@ -39,9 +39,9 @@ func (cv *ConfigValidator) ValidateBootstrapOptions(opts *BootstrapOptions) erro
 		return ErrInvalidProvider("validation", opts.Provider)
 	}
 
-	// Validate context
+	// Validate context is provided
 	if opts.Context == nil {
-		return ErrConfigValidation("validation", "context is required")
+		return ErrConfigValidation("validation", "context is required for bootstrap options")
 	}
 
 	// Validate timeout

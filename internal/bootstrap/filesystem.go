@@ -3,10 +3,10 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -104,7 +104,7 @@ func (fs *FilesystemOps) SafeWriteFile(ctx context.Context, path string, content
 	}
 
 	// Write to temporary file first
-	tmpFile, err := ioutil.TempFile(filepath.Dir(validPath), ".tmp-*")
+	tmpFile, err := os.CreateTemp(filepath.Dir(validPath), ".tmp-*")
 	if err != nil {
 		return ErrFileWrite("filesystem", validPath, err)
 	}
@@ -191,15 +191,37 @@ func (fs *FilesystemOps) ValidateFileOwnership(path string, expectedUID, expecte
 		return fmt.Errorf("cannot stat file: %w", err)
 	}
 
-	// Cast to unix stat info
+	// Get unix stat info
 	sysStat := stat.Sys()
 	if sysStat == nil {
-		return fmt.Errorf("cannot get unix stat info")
+		return fmt.Errorf("cannot get unix stat info for file: %s", path)
 	}
 
-	// Check ownership
-	// Note: This is simplified - real implementation would check Unix stat fields
-	fs.logger.Info("File ownership validated", "path", path)
+	// Cast to unix Stat_t to access UID/GID
+	unixStat, ok := sysStat.(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("cannot access unix stat fields for file: %s", path)
+	}
+
+	// Check UID matches
+	if int(unixStat.Uid) != expectedUID {
+		fs.logger.Warn("File owner mismatch",
+			"path", path,
+			"expected_uid", expectedUID,
+			"actual_uid", unixStat.Uid)
+		return fmt.Errorf("file owner mismatch for %s: expected UID %d, got %d", path, expectedUID, unixStat.Uid)
+	}
+
+	// Check GID matches
+	if int(unixStat.Gid) != expectedGID {
+		fs.logger.Warn("File group mismatch",
+			"path", path,
+			"expected_gid", expectedGID,
+			"actual_gid", unixStat.Gid)
+		return fmt.Errorf("file group mismatch for %s: expected GID %d, got %d", path, expectedGID, unixStat.Gid)
+	}
+
+	fs.logger.Info("File ownership validated", "path", path, "uid", expectedUID, "gid", expectedGID)
 	return nil
 }
 

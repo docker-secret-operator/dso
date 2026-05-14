@@ -187,6 +187,11 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		provider = p
 	}
 
+	// Validate provider is not empty
+	if provider == "" {
+		return nil, ErrConfigValidation("bootstrap", "no provider selected")
+	}
+
 	// Configure provider-specific settings
 	switch provider {
 	case ProviderAWS:
@@ -249,6 +254,9 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 			return nil, ErrConfigValidation("bootstrap", "Vault address required")
 		}
 		builder.WithVaultProvider("vault-prod", address, "${VAULT_TOKEN}")
+
+	default:
+		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("unknown provider: %s", provider))
 	}
 
 	// Configure secrets
@@ -267,6 +275,12 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		for _, secret := range secrets {
 			builder.WithSecret(secret.Name, provider, secret.Mappings)
 		}
+	}
+
+	// Check for builder errors immediately
+	if builder.HasErrors() {
+		errs := builder.GetErrors()
+		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("configuration errors: %v", errs))
 	}
 
 	return builder, nil
