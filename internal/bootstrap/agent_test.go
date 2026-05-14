@@ -42,7 +42,7 @@ func TestAgentBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 
 	bootstrapper := NewAgentBootstrapper(logger, opts)
 	if bootstrapper == nil {
-		t.Fatal("NewAgentBootstrapper returned nil")
+		t.Fatal("NewAgentBootstrapper returned nil - should create successfully")
 	}
 
 	// This should NOT panic, even though opts.Context.Value("config_path") returns nil
@@ -79,7 +79,7 @@ func TestAgentBootstrapWithValidContextPath(t *testing.T) {
 		AzureVaultURL:  "https://test.vault.azure.net/",
 	}
 
-	bootstrapper := NewAgentBootstrapper(logger, opts)
+	_ = NewAgentBootstrapper(logger, opts) // Verify bootstrapper can be created
 
 	// Extract the context path safely - this tests the defensive check
 	retrievedPath := "/etc/dso/dso.yaml" // default
@@ -111,7 +111,7 @@ func TestAgentBootstrapWithNilContext(t *testing.T) {
 
 	bootstrapper := NewAgentBootstrapper(logger, opts)
 	if bootstrapper == nil {
-		t.Fatal("NewAgentBootstrapper returned nil with nil context")
+		t.Fatal("NewAgentBootstrapper returned nil with nil context - should create successfully")
 	}
 
 	// This is the defensive pattern: check if context is nil before using it
@@ -131,7 +131,6 @@ func TestAgentBootstrapWithNilContext(t *testing.T) {
 
 // TestAgentBootstrapWithInvalidTypeInContext verifies wrong type is safely ignored
 func TestAgentBootstrapWithInvalidTypeInContext(t *testing.T) {
-	logger := &MockLogger{}
 	// Store an integer instead of string - tests type assertion safety
 	ctx := context.WithValue(context.Background(), "config_path", 12345)
 

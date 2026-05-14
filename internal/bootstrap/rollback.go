@@ -3,10 +3,12 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // TransactionExecutor executes bootstrap operations with transactional rollback on failure
 type TransactionExecutor struct {
+	mu         sync.Mutex
 	operations []Operation
 	rollbacks  []RollbackFunc
 	logger     Logger
@@ -23,6 +25,9 @@ func NewTransactionExecutor(logger Logger) *TransactionExecutor {
 
 // AddOperation adds an operation and its rollback function
 func (te *TransactionExecutor) AddOperation(op Operation, rollback RollbackFunc) {
+	te.mu.Lock()
+	defer te.mu.Unlock()
+
 	te.operations = append(te.operations, op)
 	te.rollbacks = append(te.rollbacks, rollback)
 	te.logger.Info("Operation queued", "operation", op.Name())
@@ -30,10 +35,26 @@ func (te *TransactionExecutor) AddOperation(op Operation, rollback RollbackFunc)
 
 // Execute executes all operations in sequence, rolling back on first failure
 func (te *TransactionExecutor) Execute(ctx context.Context) error {
+	te.mu.Lock()
+	// Take a snapshot of operations to avoid holding the lock during execution
+	operations := make([]Operation, len(te.operations))
+	copy(operations, te.operations)
+	te.mu.Unlock()
+
 	completed := 0
 
-	for i, op := range te.operations {
-		te.logger.Info("Executing operation", "operation", op.Name(), "step", i+1, "of", len(te.operations))
+	for i, op := range operations {
+		// Check context cancellation before each operation
+		select {
+		case <-ctx.Done():
+			te.logger.Error("Bootstrap cancelled via context", "error", ctx.Err().Error())
+			// Rollback on cancellation
+			rollbackErr := te.rollback(ctx, completed)
+			return fmt.Errorf("bootstrap cancelled: %w (rollback: %v)", ctx.Err(), rollbackErr)
+		default:
+		}
+
+		te.logger.Info("Executing operation", "operation", op.Name(), "step", i+1, "of", len(operations))
 
 		if err := op.Execute(ctx); err != nil {
 			te.logger.Error("Operation failed, initiating rollback", "operation", op.Name(), "error", err.Error())
@@ -49,7 +70,7 @@ func (te *TransactionExecutor) Execute(ctx context.Context) error {
 		te.logger.Info("Operation completed", "operation", op.Name())
 	}
 
-	te.logger.Info("Transaction completed successfully", "operations", len(te.operations))
+	te.logger.Info("Transaction completed successfully", "operations", len(operations))
 	return nil
 }
 
@@ -60,14 +81,22 @@ func (te *TransactionExecutor) rollback(ctx context.Context, completedCount int)
 		return nil
 	}
 
+	te.mu.Lock()
+	// Take snapshot of operations to rollback
+	rollbackOps := make([]Operation, completedCount)
+	rollbackFuncs := make([]RollbackFunc, completedCount)
+	copy(rollbackOps, te.operations[:completedCount])
+	copy(rollbackFuncs, te.rollbacks[:completedCount])
+	te.mu.Unlock()
+
 	te.logger.Warn("Rolling back", "operations", completedCount)
 
 	var rollbackErrors []string
 
 	// Execute rollbacks in reverse order (LIFO)
 	for i := completedCount - 1; i >= 0; i-- {
-		op := te.operations[i]
-		rollback := te.rollbacks[i]
+		op := rollbackOps[i]
+		rollback := rollbackFuncs[i]
 
 		te.logger.Info("Rolling back operation", "operation", op.Name())
 
@@ -90,11 +119,16 @@ func (te *TransactionExecutor) rollback(ctx context.Context, completedCount int)
 
 // GetOperationCount returns the number of queued operations
 func (te *TransactionExecutor) GetOperationCount() int {
+	te.mu.Lock()
+	defer te.mu.Unlock()
 	return len(te.operations)
 }
 
 // ClearOperations clears all queued operations and rollbacks
 func (te *TransactionExecutor) ClearOperations() {
+	te.mu.Lock()
+	defer te.mu.Unlock()
+
 	te.operations = []Operation{}
 	te.rollbacks = []RollbackFunc{}
 	te.logger.Info("Transaction cleared")
@@ -171,7 +205,8 @@ func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) 
 }
 
 // InstallServiceOp installs systemd service with rollback
-func (bo *BootstrapOperations) InstallServiceOp(ctx context.Context) (Operation, RollbackFunc) {
+// Note: Context is provided at execution time, not construction time
+func (bo *BootstrapOperations) InstallServiceOp() (Operation, RollbackFunc) {
 	op := NewSimpleOperation("install-service", func(ctx context.Context) error {
 		return bo.svc.InstallServiceFile(ctx, bo.fsOps)
 	})
@@ -268,7 +303,8 @@ func BuildBootstrapTransaction(logger Logger, fsOps *FilesystemOps, svc *Systemd
 	tx.AddOperation(cfgOp, cfgRollback)
 
 	// 3. Install systemd service file
-	svcOp, svcRollback := ops.InstallServiceOp(context.Background())
+	// Context is passed when Execute() is called, not here
+	svcOp, svcRollback := ops.InstallServiceOp()
 	tx.AddOperation(svcOp, svcRollback)
 
 	// 4. Reload systemd daemon

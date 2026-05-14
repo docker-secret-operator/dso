@@ -187,6 +187,32 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		}
 	}
 
+	// VERIFICATION: Ensure atomic swap actually completed
+	// This is critical for detecting partial swap failures due to daemon crashes
+	if err := rs.verifyAtomicSwap(ctx, containerID, newContainerID,
+		originalName, backupName); err != nil {
+		rs.logger.Error("Atomic swap verification failed - state may be corrupted",
+			zap.String("original_id", containerID),
+			zap.String("new_id", newContainerID),
+			zap.Error(err))
+
+		// Attempt to restore to consistent state
+		// Try to rename containers back if swap failed
+		if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+			rs.logger.Error("FATAL: Could not restore original name. State is corrupted.",
+				zap.String("container_id", containerID),
+				zap.Error(err))
+			return fmt.Errorf("FATAL: State corruption - could not restore consistency: %w", err)
+		}
+
+		// If we got here, managed to restore original container to original name
+		// Remove the new container that's stuck with temp/wrong name
+		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
+		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+
+		return fmt.Errorf("atomic swap verification failed, rolled back to original state")
+	}
+
 	// Success! The new container is now the active one
 	rs.logger.Info("Rotation complete, new container is active",
 		zap.String("original_name", originalName),
@@ -212,5 +238,56 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 
 	rs.logger.Info("Rotation finished successfully",
 		zap.String("original_name", originalName))
+	return nil
+}
+
+// verifyAtomicSwap checks that both containers have expected names after swap.
+// This ensures the atomic swap actually completed despite any errors.
+func (rs *RollingStrategy) verifyAtomicSwap(ctx context.Context,
+	originalContainerID, newContainerID string,
+	originalName, backupName string) error {
+
+	// Verify original container renamed to backup
+	originalInspect, err := rs.cli.ContainerInspect(ctx, originalContainerID)
+	if err != nil {
+		rs.logger.Error("Cannot verify original container after swap",
+			zap.String("container_id", originalContainerID),
+			zap.Error(err))
+		return fmt.Errorf("cannot verify original container: %w", err)
+	}
+
+	actualBackupName := strings.TrimPrefix(originalInspect.Name, "/")
+	if actualBackupName != backupName {
+		rs.logger.Error("Original container has wrong name after swap",
+			zap.String("expected", backupName),
+			zap.String("actual", actualBackupName),
+			zap.String("container_id", originalContainerID))
+		return fmt.Errorf("original container name mismatch: expected %s, got %s",
+			backupName, actualBackupName)
+	}
+
+	// Verify new container renamed to original name
+	newInspect, err := rs.cli.ContainerInspect(ctx, newContainerID)
+	if err != nil {
+		rs.logger.Error("Cannot verify new container after swap",
+			zap.String("container_id", newContainerID),
+			zap.Error(err))
+		return fmt.Errorf("cannot verify new container: %w", err)
+	}
+
+	actualNewName := strings.TrimPrefix(newInspect.Name, "/")
+	if actualNewName != originalName {
+		rs.logger.Error("New container has wrong name after swap",
+			zap.String("expected", originalName),
+			zap.String("actual", actualNewName),
+			zap.String("container_id", newContainerID))
+		return fmt.Errorf("new container name mismatch: expected %s, got %s",
+			originalName, actualNewName)
+	}
+
+	rs.logger.Info("Atomic swap verification passed",
+		zap.String("backup_name", backupName),
+		zap.String("active_name", originalName))
+
 	return nil
 }

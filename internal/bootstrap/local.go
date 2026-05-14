@@ -148,6 +148,11 @@ func (lb *LocalBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		return nil, ErrConfigValidation("bootstrap", "provider required in non-interactive mode")
 	}
 
+	// Validate provider is not empty
+	if provider == "" {
+		return nil, ErrConfigValidation("bootstrap", "no provider selected")
+	}
+
 	// Configure provider-specific settings
 	switch provider {
 	case ProviderAWS:
@@ -210,6 +215,9 @@ func (lb *LocalBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 			return nil, ErrConfigValidation("bootstrap", "Vault address required")
 		}
 		builder.WithVaultProvider("vault-dev", address, "${VAULT_TOKEN}")
+
+	default:
+		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("unknown provider: %s", provider))
 	}
 
 	// Configure secrets
@@ -228,6 +236,12 @@ func (lb *LocalBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		for _, secret := range secrets {
 			builder.WithSecret(secret.Name, provider, secret.Mappings)
 		}
+	}
+
+	// Check for builder errors immediately
+	if builder.HasErrors() {
+		errs := builder.GetErrors()
+		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("configuration errors: %v", errs))
 	}
 
 	return builder, nil

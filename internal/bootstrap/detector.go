@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,9 +92,8 @@ func (cd *CloudDetector) detectAWS(ctx context.Context) *CloudProviderInfo {
 
 // getIMDSv2Token requests a token from AWS IMDSv2
 func (cd *CloudDetector) getIMDSv2Token(ctx context.Context, tokenURL string) (string, error) {
-	client := &http.Client{
-		Timeout: cd.timeout,
-	}
+	// Use context timeout instead of client timeout to avoid conflicts
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(ctx, "PUT", tokenURL, nil)
 	if err != nil {
@@ -123,9 +123,8 @@ func (cd *CloudDetector) getIMDSv2Token(ctx context.Context, tokenURL string) (s
 
 // fetchAWSMetadata fetches AWS metadata using IMDSv2 token
 func (cd *CloudDetector) fetchAWSMetadata(ctx context.Context, metadataURL, token string) (string, error) {
-	client := &http.Client{
-		Timeout: cd.timeout,
-	}
+	// Use context timeout instead of client timeout to avoid conflicts
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
@@ -162,9 +161,8 @@ func (cd *CloudDetector) detectAzure(ctx context.Context) *CloudProviderInfo {
 	detectionCtx, cancel := context.WithTimeout(ctx, cd.timeout)
 	defer cancel()
 
-	client := &http.Client{
-		Timeout: cd.timeout,
-	}
+	// Use context timeout instead of client timeout to avoid conflicts
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(detectionCtx, "GET", metadataURL, nil)
 	if err != nil {
@@ -194,11 +192,17 @@ func (cd *CloudDetector) detectAzure(ctx context.Context) *CloudProviderInfo {
 		return &CloudProviderInfo{Detected: false}
 	}
 
+	// Validate that response is valid JSON
+	var metadataJSON map[string]interface{}
+	if err := json.Unmarshal(body, &metadataJSON); err != nil {
+		cd.logger.Debug("Azure metadata is not valid JSON", "error", err.Error())
+		return &CloudProviderInfo{Detected: false}
+	}
+
 	// Extract basic info from response
 	metadata := make(map[string]string)
-	if len(body) > 0 {
-		metadata["response_size"] = fmt.Sprintf("%d bytes", len(body))
-	}
+	metadata["response_size"] = fmt.Sprintf("%d bytes", len(body))
+	metadata["detected_via"] = "azure_imds"
 
 	return &CloudProviderInfo{
 		Provider:  ProviderAzure,
@@ -218,9 +222,8 @@ func (cd *CloudDetector) detectHuawei(ctx context.Context) *CloudProviderInfo {
 	detectionCtx, cancel := context.WithTimeout(ctx, cd.timeout)
 	defer cancel()
 
-	client := &http.Client{
-		Timeout: cd.timeout,
-	}
+	// Use context timeout instead of client timeout to avoid conflicts
+	client := &http.Client{}
 
 	req, err := http.NewRequestWithContext(detectionCtx, "GET", metadataURL, nil)
 	if err != nil {
@@ -247,11 +250,17 @@ func (cd *CloudDetector) detectHuawei(ctx context.Context) *CloudProviderInfo {
 		return &CloudProviderInfo{Detected: false}
 	}
 
+	// Validate that response is valid JSON
+	var metadataJSON map[string]interface{}
+	if err := json.Unmarshal(body, &metadataJSON); err != nil {
+		cd.logger.Debug("Huawei metadata is not valid JSON", "error", err.Error())
+		return &CloudProviderInfo{Detected: false}
+	}
+
 	// Extract basic info from response
 	metadata := make(map[string]string)
-	if len(body) > 0 {
-		metadata["response_size"] = fmt.Sprintf("%d bytes", len(body))
-	}
+	metadata["response_size"] = fmt.Sprintf("%d bytes", len(body))
+	metadata["detected_via"] = "huawei_metadata"
 
 	return &CloudProviderInfo{
 		Provider:  ProviderHuawei,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"syscall"
@@ -86,10 +87,58 @@ func (pm *PermissionManager) ensureDSOGroup() (int, error) {
 		return gid, nil
 	}
 
-	// Group doesn't exist - would need to create via system command
-	// This is done via shell command in the actual bootstrap workflow
-	// For this API, we assume the group was created by caller
-	return 0, fmt.Errorf("DSO group does not exist and must be created via system command")
+	// Group doesn't exist - create it via groupadd command
+	// This requires root privileges
+	if pm.dryRun {
+		pm.logger.Info("DRY_RUN: Would create dso group")
+		return 1001, nil // Return a placeholder GID in dry-run mode
+	}
+
+	pm.logger.Info("DSO group does not exist, attempting to create it")
+
+	// Use groupadd to create the group with a specific GID
+	// Try GID 1001 first, then fallback to system-assigned GID
+	cmd := fmt.Sprintf("groupadd -g 1001 dso 2>/dev/null || groupadd dso")
+	if err := runSystemCommand(cmd); err != nil {
+		return 0, fmt.Errorf("failed to create dso group: %w", err)
+	}
+
+	// Look up the newly created group
+	dsoGroup, err = user.LookupGroup("dso")
+	if err != nil {
+		return 0, fmt.Errorf("created dso group but failed to look it up: %w", err)
+	}
+
+	gid, err := strconv.Atoi(dsoGroup.Gid)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse newly created DSO group GID: %w", err)
+	}
+
+	pm.logger.Info("DSO group created successfully", "gid", gid)
+	return gid, nil
+}
+
+// runSystemCommand executes groupadd command safely (used for DSO group creation)
+// This function is restricted to creating the "dso" group only - no arbitrary commands
+func runSystemCommand(cmd string) error {
+	// Safety check: only allow groupadd commands for dso group
+	// Never expose user input to this function
+	if cmd != "groupadd -g 1001 dso 2>/dev/null || groupadd dso" &&
+	   cmd != "groupadd dso" {
+		return fmt.Errorf("invalid command (safety check failed)")
+	}
+
+	// Execute: groupadd -g 1001 dso (try with specific GID first)
+	groupaddCmd := exec.Command("groupadd", "-g", "1001", "dso")
+	if err := groupaddCmd.Run(); err != nil {
+		// If GID 1001 is taken, try without specifying GID (system will assign)
+		groupaddCmd = exec.Command("groupadd", "dso")
+		if err := groupaddCmd.Run(); err != nil {
+			return fmt.Errorf("groupadd failed: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // addUserToDSOGroup adds a user to the DSO group

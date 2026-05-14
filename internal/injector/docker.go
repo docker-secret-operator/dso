@@ -2,6 +2,8 @@ package injector
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -14,12 +16,23 @@ import (
 
 type DockerInjector struct {
 	Logger *zap.Logger
+	cli    *client.Client
+	mu     sync.Mutex
 }
 
-func NewDockerInjector(logger *zap.Logger) *DockerInjector {
+func NewDockerInjector(logger *zap.Logger) (*DockerInjector, error) {
+	cli, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Docker client: %w", err)
+	}
+
 	return &DockerInjector{
 		Logger: logger,
-	}
+		cli:    cli,
+	}, nil
 }
 
 // LogInjectionEvent standardizes logging outputs with explicit boundaries mapping to the metrics requested.
@@ -59,33 +72,43 @@ func (d *DockerInjector) LogInjectionEvent(secretName, containerName, eventType,
 
 // SignalContainers searches for containers with the DSO label and sends SIGHUP
 func (d *DockerInjector) SignalContainers(ctx context.Context, secretName string) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cli == nil {
+		return fmt.Errorf("Docker client not initialized")
 	}
-	defer func() {
-		_ = cli.Close()
-	}()
 
 	// Filter for containers that opted into signaling for this secret
 	filter := filters.NewArgs()
 	filter.Add("label", "dso.reloader=true")
 	filter.Add("label", "dso.update.strategy=signal")
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: filter})
+	containers, err := d.cli.ContainerList(ctx, container.ListOptions{Filters: filter})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	for _, c := range containers {
 		// Send SIGHUP - High efficiency, zero downtime
-		if err := cli.ContainerKill(ctx, c.ID, "SIGHUP"); err != nil {
+		if err := d.cli.ContainerKill(ctx, c.ID, "SIGHUP"); err != nil {
 			d.Logger.Error("Failed to signal container", zap.String("id", c.ID), zap.Error(err))
 			d.LogInjectionEvent(secretName, c.ID, "signal_failed", "failure", "signal failed")
 			continue
 		}
 		d.Logger.Info("Sent SIGHUP to container", zap.String("id", c.ID))
 		d.LogInjectionEvent(secretName, c.ID, "signal_success", "success", "signal SIGHUP sent")
+	}
+	return nil
+}
+
+// Close gracefully shuts down the DockerInjector and releases the Docker client
+func (d *DockerInjector) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cli != nil {
+		return d.cli.Close()
 	}
 	return nil
 }

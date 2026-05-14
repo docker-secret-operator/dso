@@ -72,10 +72,15 @@ func (a *Agent) Start(ctx context.Context) error {
 	filterArgs.Add("event", "die")
 	filterArgs.Add("event", "destroy")
 
-	reconnectDelay := time.Second
-	maxReconnectDelay := 30 * time.Second
-	maxReconnectAttempts := 100
-	reconnectAttempts := 0
+	const (
+		initialReconnectDelay  = 1 * time.Second
+		maxReconnectDelay      = 5 * time.Minute  // Increased from 30s to prevent spam
+		maxConsecutiveAttempts = 20                // Exit after 20 failed attempts
+	)
+
+	reconnectDelay := initialReconnectDelay
+	consecutiveFailures := 0
+	totalReconnectAttempts := 0
 
 	for {
 		select {
@@ -86,8 +91,8 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 
 		msgCh, errCh := a.docker.Events(ctx, events.ListOptions{Filters: filterArgs})
-		reconnectDelay = time.Second
-		reconnectAttempts = 0
+		reconnectDelay = initialReconnectDelay
+		consecutiveFailures = 0
 		log.Println("✅ [DSO Agent] Docker event stream connected")
 
 	EventStream:
@@ -96,7 +101,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			case err := <-errCh:
-				log.Printf("⚠️ [DSO Agent] Docker event stream error: %v, reconnecting in %v", err, reconnectDelay)
+				log.Printf("⚠️ [DSO Agent] Docker event stream error: %v", err)
 				break EventStream
 			case msg := <-msgCh:
 				// Enqueue event with backpressure protection
@@ -106,21 +111,26 @@ func (a *Agent) Start(ctx context.Context) error {
 			}
 		}
 
-		reconnectAttempts++
-		if reconnectAttempts > maxReconnectAttempts {
-			log.Printf("❌ [DSO Agent] Max reconnect attempts (%d) exceeded, giving up", maxReconnectAttempts)
-			return fmt.Errorf("docker daemon connection exhausted after %d attempts", maxReconnectAttempts)
+		consecutiveFailures++
+		totalReconnectAttempts++
+
+		// If too many consecutive failures, give up to avoid slamming Docker daemon
+		if consecutiveFailures > maxConsecutiveAttempts {
+			log.Printf("❌ [DSO Agent] Too many consecutive failures (%d), exiting gracefully", consecutiveFailures)
+			return fmt.Errorf("docker daemon unreachable after %d attempts", totalReconnectAttempts)
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(reconnectDelay):
+			// Apply exponential backoff with ceiling
 			reconnectDelay = time.Duration(float64(reconnectDelay) * 1.5)
 			if reconnectDelay > maxReconnectDelay {
 				reconnectDelay = maxReconnectDelay
 			}
-			log.Printf("✅ [DSO Agent] Reconnecting to Docker daemon (delay: %v, attempt: %d)", reconnectDelay, reconnectAttempts)
+			log.Printf("✅ [DSO Agent] Reconnecting to Docker daemon (delay: %v, attempt: %d/%d)",
+				reconnectDelay, consecutiveFailures, totalReconnectAttempts)
 		}
 	}
 }

@@ -44,20 +44,33 @@ func getBaseInspect() container.InspectResponse {
 
 func TestRollingStrategy_Execute_Success(t *testing.T) {
 	inspectResp := getBaseInspect()
-	bInspect, _ := json.Marshal(inspectResp)
 
 	createResp := container.CreateResponse{
 		ID: "new-container-id",
 	}
 	bCreate, _ := json.Marshal(createResp)
 
+	// Track container names for verification after rename
+	containerNames := map[string]string{
+		"cid":                "my-container",
+		"new-container-id":   "my-container",
+	}
+
 	httpClient := &http.Client{
 		Transport: &mockTransport{
 			reqFunc: func(req *http.Request) (*http.Response, error) {
 				switch {
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
-					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bInspect))}, nil
+					resp := inspectResp
+					resp.Name = "/" + containerNames["cid"]
+					bResp, _ := json.Marshal(resp)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/rename":
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["cid"] = newName
+					}
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
 					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
@@ -65,9 +78,17 @@ func TestRollingStrategy_Execute_Success(t *testing.T) {
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
 					healthyInspect := inspectResp
+					healthyInspect.Name = "/" + containerNames["new-container-id"]
 					healthyInspect.State.Health = &container.Health{Status: "healthy"}
 					bHealthy, _ := json.Marshal(healthyInspect)
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/rename":
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["new-container-id"] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/stop":
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/cid":

@@ -56,7 +56,7 @@ func TestLocalBootstrapWithValidContextPath(t *testing.T) {
 		VaultAddress:   "https://vault.local",
 	}
 
-	bootstrapper := NewLocalBootstrapper(logger, opts)
+	_ = NewLocalBootstrapper(logger, opts) // Verify bootstrapper can be created
 
 	// Extract the context path safely using the defensive pattern
 	currentUser, _ := getTestUser()
@@ -91,7 +91,7 @@ func TestLocalBootstrapWithNilContext(t *testing.T) {
 
 	bootstrapper := NewLocalBootstrapper(logger, opts)
 	if bootstrapper == nil {
-		t.Fatal("NewLocalBootstrapper returned nil with nil context")
+		t.Fatal("NewLocalBootstrapper returned nil with nil context - should create successfully")
 	}
 
 	// Test the defensive pattern with nil context
@@ -114,7 +114,6 @@ func TestLocalBootstrapWithNilContext(t *testing.T) {
 
 // TestLocalBootstrapWithInvalidTypeInContext verifies wrong type is safely ignored
 func TestLocalBootstrapWithInvalidTypeInContext(t *testing.T) {
-	logger := &MockLogger{}
 	// Store a slice instead of string - tests type assertion safety
 	ctx := context.WithValue(context.Background(), "config_path", []string{"invalid"})
 

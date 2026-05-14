@@ -47,8 +47,6 @@ RestartSec=10
 StartLimitInterval=60s
 StartLimitBurst=3
 
-StandardOutput=journal
-StandardError=journal
 SyslogIdentifier=dso-agent
 
 # Security Hardening

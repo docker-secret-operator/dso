@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"golang.org/x/term"
 	"io"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -125,17 +127,33 @@ func (p *InteractivePrompter) PromptAzureVaultURL() (string, error) {
 	fmt.Fprintf(p.stdout, "===================\n\n")
 	fmt.Fprintf(p.stdout, "Example: https://my-vault.vault.azure.net/\n\n")
 
-	url, err := p.promptInput("Enter Azure Key Vault URL")
-	if err != nil {
-		return "", err
-	}
+	for {
+		urlStr, err := p.promptInput("Enter Azure Key Vault URL")
+		if err != nil {
+			return "", err
+		}
 
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return "", fmt.Errorf("vault URL cannot be empty")
-	}
+		urlStr = strings.TrimSpace(urlStr)
 
-	return url, nil
+		// Validate URL format
+		if err := p.validateURL(urlStr); err != nil {
+			fmt.Fprintf(p.stdout, "Error: %v. Please try again.\n", err)
+			continue
+		}
+
+		// Ensure it's HTTPS for Azure Key Vault
+		if !strings.HasPrefix(urlStr, "https://") && !strings.HasPrefix(urlStr, "http://") {
+			fmt.Fprintf(p.stdout, "Error: URL must start with http:// or https://. Please try again.\n")
+			continue
+		}
+
+		// Check it looks like an Azure vault URL
+		if !strings.Contains(urlStr, "vault.azure.net") {
+			fmt.Fprintf(p.stdout, "Warning: URL doesn't look like an Azure Key Vault URL (should contain 'vault.azure.net')\n")
+		}
+
+		return urlStr, nil
+	}
 }
 
 // PromptHuaweiRegionAndProject asks user for Huawei region and project ID
@@ -173,22 +191,34 @@ func (p *InteractivePrompter) PromptVaultAddress() (string, error) {
 	fmt.Fprintf(p.stdout, "==============================\n\n")
 	fmt.Fprintf(p.stdout, "Example: http://vault.internal:8200\n\n")
 
-	address, err := p.promptInput("Enter Vault server address")
-	if err != nil {
-		return "", err
-	}
+	for {
+		address, err := p.promptInput("Enter Vault server address")
+		if err != nil {
+			return "", err
+		}
 
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return "", fmt.Errorf("vault address cannot be empty")
-	}
+		address = strings.TrimSpace(address)
 
-	return address, nil
+		// Validate URL format
+		if err := p.validateURL(address); err != nil {
+			fmt.Fprintf(p.stdout, "Error: %v. Please try again.\n", err)
+			continue
+		}
+
+		// Ensure it has http:// or https://
+		if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+			fmt.Fprintf(p.stdout, "Error: Address must start with http:// or https://. Please try again.\n")
+			continue
+		}
+
+		return address, nil
+	}
 }
 
 // PromptSecrets asks user to define secrets
 func (p *InteractivePrompter) PromptSecrets(provider string) ([]SecretDefinition, error) {
 	var secrets []SecretDefinition
+	seenSecrets := make(map[string]bool) // Track secret names to prevent duplicates
 
 	fmt.Fprintf(p.stdout, "\nSecret Definition\n")
 	fmt.Fprintf(p.stdout, "=================\n\n")
@@ -200,8 +230,20 @@ func (p *InteractivePrompter) PromptSecrets(provider string) ([]SecretDefinition
 		}
 
 		secretName = strings.TrimSpace(secretName)
-		if secretName == "done" || secretName == "" {
+		if secretName == "done" {
 			break
+		}
+
+		// Validate secret name
+		if err := p.validateSecretName(secretName); err != nil {
+			fmt.Fprintf(p.stdout, "Error: %v. Please try again.\n", err)
+			continue
+		}
+
+		// Check for duplicates
+		if seenSecrets[secretName] {
+			fmt.Fprintf(p.stdout, "Error: Secret '%s' already defined. Please use a different name.\n", secretName)
+			continue
 		}
 
 		// Display provider-specific prompt
@@ -244,6 +286,12 @@ func (p *InteractivePrompter) PromptSecrets(provider string) ([]SecretDefinition
 				continue
 			}
 
+			// Validate environment variable name
+			if err := p.validateEnvVarName(envVar); err != nil {
+				fmt.Fprintf(p.stdout, "Error: %v. Please try again.\n", err)
+				continue
+			}
+
 			mappings[secretKey] = envVar
 		}
 
@@ -251,6 +299,9 @@ func (p *InteractivePrompter) PromptSecrets(provider string) ([]SecretDefinition
 			fmt.Fprintf(p.stdout, "Secret must have at least one mapping, skipping\n")
 			continue
 		}
+
+		// Mark this secret as seen
+		seenSecrets[secretName] = true
 
 		secrets = append(secrets, SecretDefinition{
 			Name:     secretName,
@@ -365,6 +416,51 @@ func (p *InteractivePrompter) DisplayCompletionMessage(configPath string, mode B
 	}
 
 	fmt.Fprintf(p.stdout, "\n")
+
+	return nil
+}
+
+// validateURL checks if a string is a valid URL
+func (p *InteractivePrompter) validateURL(urlStr string) error {
+	if urlStr == "" {
+		return fmt.Errorf("URL cannot be empty")
+	}
+
+	_, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	return nil
+}
+
+// validateEnvVarName checks if a string is a valid environment variable name
+// Valid names: [A-Za-z_][A-Za-z0-9_]*
+func (p *InteractivePrompter) validateEnvVarName(name string) error {
+	if name == "" {
+		return fmt.Errorf("environment variable name cannot be empty")
+	}
+
+	envVarRegex := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	if !envVarRegex.MatchString(name) {
+		return fmt.Errorf("invalid environment variable name '%s': must start with letter or underscore, contain only alphanumerics and underscores", name)
+	}
+
+	return nil
+}
+
+// validateSecretName checks if a string is a valid secret name
+// Allows alphanumerics, hyphens, underscores, dots (common in secret naming)
+func (p *InteractivePrompter) validateSecretName(name string) error {
+	if name == "" {
+		return fmt.Errorf("secret name cannot be empty")
+	}
+
+	// Allow alphanumerics, hyphens, underscores, dots, slashes (for paths)
+	secretNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_\-./]+$`)
+	if !secretNameRegex.MatchString(name) {
+		return fmt.Errorf("invalid secret name '%s': use only alphanumerics, hyphens, underscores, dots, and slashes", name)
+	}
 
 	return nil
 }

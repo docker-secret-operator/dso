@@ -189,6 +189,14 @@ func (cb *ConfigBuilder) WithSecret(name, provider string, mappings map[string]s
 		return cb
 	}
 
+	// Check for duplicate secret names
+	for _, existing := range cb.config.Secrets {
+		if existing.Name == name {
+			cb.errors = append(cb.errors, fmt.Errorf("duplicate secret name: '%s'", name))
+			return cb
+		}
+	}
+
 	// Validate that provider exists
 	if _, exists := cb.config.Providers[provider]; !exists {
 		cb.errors = append(cb.errors, fmt.Errorf("provider '%s' does not exist", provider))
@@ -201,6 +209,16 @@ func (cb *ConfigBuilder) WithSecret(name, provider string, mappings map[string]s
 		Mappings: mappings,
 	})
 	return cb
+}
+
+// GetErrors returns accumulated builder errors
+func (cb *ConfigBuilder) GetErrors() []error {
+	return cb.errors
+}
+
+// HasErrors returns true if there are accumulated errors
+func (cb *ConfigBuilder) HasErrors() bool {
+	return len(cb.errors) > 0
 }
 
 // WithDefaults sets default injection and rotation settings

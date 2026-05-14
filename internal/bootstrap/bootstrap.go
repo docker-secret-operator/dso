@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"gopkg.in/yaml.v3"
 )
 
 // Bootstrapper is the public API for DSO bootstrap operations
@@ -167,9 +168,15 @@ func UnmarshalConfig(data []byte, config *Config) error {
 
 // UnmarshalYAML is a helper for YAML unmarshaling
 func UnmarshalYAML(data []byte, v interface{}) error {
-	// This would use gopkg.in/yaml.v3 in production
-	// For now, importing it at the top level
-	panic("This should be implemented in config.go or similar")
+	if len(data) == 0 {
+		return fmt.Errorf("cannot unmarshal empty YAML")
+	}
+
+	if err := yaml.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("YAML unmarshal error: %w", err)
+	}
+
+	return nil
 }
 
 // BootstrapPhase represents different bootstrap phases for progress tracking

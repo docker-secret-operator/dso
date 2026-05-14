@@ -11,7 +11,11 @@ import (
 
 func TestDockerInjector_LogInjectionEvent(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	injector := NewDockerInjector(logger)
+	injector, err := NewDockerInjector(logger)
+	if err != nil {
+		t.Fatalf("Failed to create injector: %v", err)
+	}
+	defer injector.Close()
 
 	// Should not panic or block
 	injector.LogInjectionEvent("my-secret", "container-1", "update", "success", "")
@@ -20,7 +24,11 @@ func TestDockerInjector_LogInjectionEvent(t *testing.T) {
 
 func TestDockerInjector_SignalContainers_DockerMissing(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	injector := NewDockerInjector(logger)
+	injector, err := NewDockerInjector(logger)
+	if err != nil {
+		t.Fatalf("Failed to create injector: %v", err)
+	}
+	defer injector.Close()
 
 	// Set invalid DOCKER_HOST to force ContainerList or NewClient to fail fast
 	os.Setenv("DOCKER_HOST", "tcp://127.0.0.1:12345")
@@ -32,7 +40,11 @@ func TestDockerInjector_SignalContainers_DockerMissing(t *testing.T) {
 
 func TestDockerInjector_SignalContainers_MockServer(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	injector := NewDockerInjector(logger)
+	injector, err := NewDockerInjector(logger)
+	if err != nil {
+		t.Fatalf("Failed to create injector: %v", err)
+	}
+	defer injector.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/containers/json" || r.URL.Path == "/v1.41/containers/json" {
@@ -64,7 +76,11 @@ func TestDockerInjector_SignalContainers_MockServer(t *testing.T) {
 
 func TestDockerInjector_SignalContainers_MockServer_KillFail(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	injector := NewDockerInjector(logger)
+	injector, err := NewDockerInjector(logger)
+	if err != nil {
+		t.Fatalf("Failed to create injector: %v", err)
+	}
+	defer injector.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/containers/json" || r.URL.Path == "/v1.41/containers/json" {
