@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.1] - 2026-05-14
+
+### Fixed - Production Hardening
+
+**Critical Security & Stability Fixes:**
+
+- **Ready Channel Double-Close Panic**: Fixed agent restart failure caused by premature channel closure
+  - Issue: Channel closed before Docker event stream connected, causing panic on restart
+  - Fix: Added sync.Once to ensure single close after successful connection
+  - Impact: Prevents crash when restarting agent after Docker connection loss
+
+- **WebSocket CORS Vulnerability (CSWSH)**: Closed cross-site WebSocket hijacking attack vector
+  - Issue: All origins allowed, enabling malicious sites to monitor secret events
+  - Fix: Implemented proper origin validation (checkWebSocketOrigin function)
+  - Impact: WebSocket connections now restricted to same-origin and loopback variants
+  - Security: Fails closed - mismatched origins are rejected
+
+- **Event Queue Spin-Loop Race Condition**: Eliminated busy-wait CAS loop causing 100% CPU
+  - Issue: Atomic operation without backoff caused CPU exhaustion under concurrency
+  - Fix: Improved atomic logic to avoid infinite loop
+  - Impact: Reduces CPU usage during high-load scenarios
+
+- **HTTP Response Header Race**: Fixed Content-Type sent after body write
+  - Issue: First response with no events defaulted to text/plain instead of application/json
+  - Fix: Moved header set before Write() call
+  - Impact: Clients receive correct JSON content type consistently
+
+- **File Path Injection Vulnerability**: Prevented secret file collision from path loss
+  - Issue: Using basename only caused files in different directories to overwrite each other
+  - Fix: Use full file path instead of truncating to basename
+  - Impact: Multiple secrets with same filename in different paths now isolated
+
+- **Missing UID/GID Validation**: Added validation to prevent root ownership for file secrets
+  - Issue: Secrets could be injected as root (UID 0) without warning, breaking non-root containers
+  - Fix: Validate and reject file injection with UID/GID = 0
+  - Impact: Configuration validation fails early with clear error message
+
+- **Incomplete Graceful Shutdown**: Fixed incomplete in-flight operation handling
+  - Issue: Trigger engine stop didn't wait for operations to complete
+  - Fix: Wait properly for context cancellation during shutdown
+  - Impact: Secret rotations complete before service termination
+
+- **Authorization Bypass on Health Endpoint**: Replaced hardcoded exception list with safe whitelist
+  - Issue: Hardcoded path checks could miss future public endpoints
+  - Fix: Use explicit whitelist map for public paths
+  - Impact: Future endpoints default to requiring authorization
+
+- **Docker Socket Validation Only Advisory**: Changed to validation error for missing socket
+  - Issue: Invalid Docker socket config silently passed, failing later at runtime
+  - Fix: Validation now returns error if socket not accessible
+  - Impact: Configuration errors detected early during bootstrap
+
+- **Cache Cleanup Goroutine Leak**: Prevented double-close panic on cache shutdown
+  - Issue: Cleanup goroutine not safely cancelled, potential leak on double close
+  - Fix: Added sync.Once to ensure single channel close
+  - Impact: Cache cleanup guaranteed to stop exactly once
+
+- **Hash Collision Risk**: Increased file hash length from 8 to 16 characters
+  - Issue: 8-character hash truncation vulnerable to birthday paradox collisions
+  - Fix: Increased to 16-character hash
+  - Impact: Collision probability negligible for practical secret counts
+
+- **Missing Nil Pointer Check**: Added guard for uninitialized Cache in secrets listing
+  - Issue: Cache.ListKeys() could panic if Cache not initialized
+  - Fix: Check Cache != nil before dereferencing
+  - Impact: Graceful error response instead of server panic
+
+- **Logger Initialization Error Ignored**: Added fallback logger initialization
+  - Issue: Logger creation errors silently discarded, proceeding with nil logger
+  - Fix: Fallback to development logger if production logger fails
+  - Impact: Agent always has working logger regardless of configuration
+
+- **JSON Encoding Error Handling**: Added error logging for response encoding failures
+  - Issue: JSON encoding errors silently dropped, malformed responses sent to clients
+  - Fix: Log encoding errors when they occur
+  - Impact: Server errors now visible in logs for debugging
+
+### Security Impact
+- **CSWSH Attack Prevention**: WebSocket origin validation closes remote attack surface
+- **Configuration Validation**: Docker socket and UID/GID checks prevent misconfiguration at startup
+- **Resource Safety**: Goroutine and channel cleanup improvements prevent leaks and panics
+
+### Operational Impact
+- **Stability**: Ready channel, graceful shutdown, and cache cleanup fixes prevent crashes
+- **Performance**: Event queue race condition fix eliminates CPU exhaustion
+- **Reliability**: Proper error logging and validation enable faster troubleshooting
+
 ## [3.4.0] - 2026-05-14
 
 ### Added

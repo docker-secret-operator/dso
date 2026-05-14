@@ -194,7 +194,7 @@ func (bo *BootstrapOperations) CreateDirectoriesOp(dsoGID int) (Operation, Rollb
 // WriteConfigOp writes configuration file with rollback
 func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) (Operation, RollbackFunc) {
 	op := NewSimpleOperation("write-config", func(ctx context.Context) error {
-		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0640)
+		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0644)
 	})
 
 	rollback := func(ctx context.Context) error {

@@ -245,6 +245,10 @@ func (c *Config) Validate() error {
 			sec.Inject.UID = c.Defaults.Inject.UID
 			sec.Inject.GID = c.Defaults.Inject.GID
 		}
+		// Ensure UID/GID is not root (0) for file injection
+		if sec.Inject.Type == "file" && (sec.Inject.UID == 0 || sec.Inject.GID == 0) {
+			return fmt.Errorf("secret '%s' file injection requires non-root UID/GID (got UID=%d, GID=%d)", sec.Name, sec.Inject.UID, sec.Inject.GID)
+		}
 
 		// Merge Rotation Defaults
 		if !sec.Rotation.Enabled && c.Defaults.Rotation.Enabled {
@@ -280,16 +284,18 @@ func (c *Config) Validate() error {
 		c.Secrets[i] = sec
 	}
 
-	// Validate Docker socket accessibility (skip in test/CI environments)
+	// Validate Docker socket accessibility
 	dockerSocket := os.Getenv("DOCKER_HOST")
 	if dockerSocket == "" {
 		dockerSocket = "/var/run/docker.sock"
 	}
+	// Only check file system paths, not network addresses
 	if !strings.HasPrefix(dockerSocket, "unix://") && !strings.HasPrefix(dockerSocket, "tcp://") {
 		if _, err := os.Stat(dockerSocket); err != nil {
-			// Non-fatal: docker may not be available in CI/test environments
-			// The socket check is advisory — providers will fail at runtime if docker is unavailable
-			_ = err // socket not accessible but we continue
+			if os.IsNotExist(err) {
+				return fmt.Errorf("docker socket not accessible at %s: file does not exist", dockerSocket)
+			}
+			return fmt.Errorf("docker socket validation failed at %s: %w", dockerSocket, err)
 		}
 	}
 

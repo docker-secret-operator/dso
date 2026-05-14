@@ -59,9 +59,9 @@ func NewAgentCmd() *cobra.Command {
 	var apiAddr string
 
 	cmd := &cobra.Command{
-		Use:   "legacy-agent",
-		Short: "Run the DSO background reconciliation engine (Legacy V2)",
-		Long:  `The legacy-agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
+		Use:   "agent",
+		Short: "Run the DSO background reconciliation engine",
+		Long:  `The agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			logger, _ := observability.NewLogger("info", "console", false)
 			defer func() {
@@ -150,13 +150,11 @@ func NewAgentCmd() *cobra.Command {
 			logger.Info("Waiting for in-flight operations to complete",
 				zap.Duration("timeout", shutdownTimeout))
 
-			// Wait with a small delay to allow operations to finish
-			select {
-			case <-shutdownCtx.Done():
+			// Wait for context cancellation to propagate to all goroutines
+			<-shutdownCtx.Done()
+			if shutdownCtx.Err() == context.DeadlineExceeded {
 				logger.Warn("Shutdown timeout exceeded, forcing cleanup",
 					zap.Duration("timeout", shutdownTimeout))
-			case <-time.After(2 * time.Second):
-				logger.Info("In-flight operations completed or timed out")
 			}
 
 			// Step 3: Close resources

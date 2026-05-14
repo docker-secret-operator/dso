@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -27,18 +26,23 @@ type Agent struct {
 	mu         sync.Mutex
 	Ready      chan struct{} // Signaled when the agent is listening
 	eventQueue *eventqueue.BoundedEventQueue
+	readyOnce  sync.Once     // Ensures Ready channel closes exactly once
 }
 
 // NewAgent creates a new Agent daemon.
 func NewAgent(docker *client.Client) *Agent {
-	// Use no-op logger for backward compatibility
-	logger, _ := zap.NewProduction()
+	// Initialize logger with fallback to development logger if production fails
+	logger, err := zap.NewProduction()
+	if err != nil {
+		logger = zap.Must(zap.NewDevelopment())
+	}
 	return &Agent{
 		cache:    NewCache(),
 		docker:   docker,
 		logger:   logger,
 		injected: make(map[string]bool),
 		Ready:    make(chan struct{}),
+		readyOnce: sync.Once{},
 	}
 }
 
@@ -61,9 +65,6 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.eventQueue = eventqueue.NewBoundedEventQueue(a.logger, 1000, 16, a.handleEventWithContext)
 	a.eventQueue.Start(ctx)
 	defer a.eventQueue.Stop()
-
-	close(a.Ready)
-	log.Println("✅ [DSO Agent] Started listening for Docker lifecycle events...")
 
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("type", "container")
@@ -94,6 +95,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		reconnectDelay = initialReconnectDelay
 		consecutiveFailures = 0
 		log.Println("✅ [DSO Agent] Docker event stream connected")
+		a.readyOnce.Do(func() { close(a.Ready) })
 
 	EventStream:
 		for {
@@ -202,7 +204,7 @@ func (a *Agent) inject(ctx context.Context, containerID string, serviceSecrets r
 		if !ok {
 			return fmt.Errorf("secret missing from cache pool")
 		}
-		filesToInject[filepath.Base(filePath)] = val
+		filesToInject[filePath] = val
 	}
 
 	return injector.InjectFiles(ctx, a.docker, containerID, filesToInject, serviceSecrets.UID, serviceSecrets.GID)

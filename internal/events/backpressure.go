@@ -140,9 +140,9 @@ func (beq *BoundedEventQueue) worker(ctx context.Context, id int) {
 			// Update queue depth
 			depth := int32(len(beq.queue))
 			EventQueueDepth.Set(float64(depth))
-			for {
-				currentMax := atomic.LoadInt32(&beq.maxDepth)
-				if depth <= currentMax || atomic.CompareAndSwapInt32(&beq.maxDepth, currentMax, depth) {
+			// Update max depth if current depth is greater
+			for currentMax := atomic.LoadInt32(&beq.maxDepth); depth > currentMax; currentMax = atomic.LoadInt32(&beq.maxDepth) {
+				if atomic.CompareAndSwapInt32(&beq.maxDepth, currentMax, depth) {
 					break
 				}
 			}

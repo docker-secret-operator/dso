@@ -226,9 +226,9 @@ func processSecretURI(uri string, v *vault.Vault, composeProject, serviceName, k
 			return "", false, fmt.Errorf("env key '%s': failed to read vault: %w", key, err)
 		}
 
-		// Generate deterministic file name: <service>_<hash(project:path)[:8]>
+		// Generate deterministic file name: <service>_<hash(project:path)[:16]>
 		hashInput := fmt.Sprintf("%s:%s", targetProject, secretPath)
-		pathHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))[:8]
+		pathHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))[:16]
 		fileName := fmt.Sprintf("%s_%s", serviceName, pathHash)
 		filePath := fmt.Sprintf("/run/secrets/dso/%s", fileName)
 

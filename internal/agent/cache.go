@@ -50,6 +50,7 @@ type SecretCache struct {
 	maxSize    int64
 	currentLen int64
 	stopCh     chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewSecretCache(ttl time.Duration) *SecretCache {
@@ -171,11 +172,10 @@ func (c *SecretCache) Close() {
 	}
 	c.items = make(map[string]CacheItem)
 
-	select {
-	case <-c.stopCh:
-	default:
+	// Close stopCh exactly once to signal cleanup goroutine
+	c.closeOnce.Do(func() {
 		close(c.stopCh)
-	}
+	})
 }
 
 // Cache holds the in-memory state of active DSO Native Vault secrets.

@@ -23,9 +23,56 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all for now
-	},
+	CheckOrigin: checkWebSocketOrigin,
+}
+
+// checkWebSocketOrigin validates WebSocket origin headers to prevent CSWSH attacks
+func checkWebSocketOrigin(r *http.Request) bool {
+	// Get origin from request header (set by browser on cross-origin requests)
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+
+	// If no origin header, allow (same-origin requests don't send Origin)
+	if origin == "" {
+		return true
+	}
+
+	// Get the host from request
+	host := r.Host
+	if host == "" {
+		return false
+	}
+
+	// Extract origin host (remove protocol)
+	// origin format: "http://example.com:8080" or "https://example.com"
+	originURL := origin
+	if idx := strings.Index(originURL, "://"); idx != -1 {
+		originURL = originURL[idx+3:]
+	}
+
+	// For loopback addresses, allow localhost variants
+	if isLoopbackHost(host) {
+		return isLoopbackHost(originURL)
+	}
+
+	// For non-loopback, origin must match host exactly
+	return originURL == host
+}
+
+// isLoopbackHost checks if a host is a loopback address (localhost, 127.0.0.1, ::1)
+func isLoopbackHost(host string) bool {
+	// Remove port
+	h := host
+	if idx := strings.LastIndex(h, ":"); idx != -1 {
+		h = h[:idx]
+	}
+
+	// Check for IPv6
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	}
+
+	// Check common loopback patterns
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
 }
 
 type WebhookPayload struct {
@@ -47,7 +94,13 @@ type RESTServer struct {
 }
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/health" && r.URL.Path != "/api/events/secret-update" && !s.authorized(r) {
+	// Public endpoints that don't require authorization
+	publicPaths := map[string]bool{
+		"/health": true,
+	}
+
+	isPublic := publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, "/api/events/secret-update")
+	if !isPublic && !s.authorized(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -93,14 +146,16 @@ func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	severity := r.URL.Query().Get("severity")
 
+	w.Header().Set("Content-Type", "application/json")
 	events := s.EventStore.GetLast(limit, severity)
 
-	w.Header().Set("Content-Type", "application/json")
 	if len(events) == 0 {
 		_, _ = w.Write([]byte("[]"))
 		return
 	}
-	_ = json.NewEncoder(w).Encode(events)
+	if err := json.NewEncoder(w).Encode(events); err != nil {
+		s.Logger.Error("Failed to encode events response", zap.Error(err))
+	}
 }
 
 func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +269,12 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	// For production, we would want more detail here.
 	// For now, listing keys in the cache.
 	w.Header().Set("Content-Type", "application/json")
+
+	if s.Cache == nil {
+		http.Error(w, "Cache not initialized", http.StatusInternalServerError)
+		return
+	}
+
 	keys := s.Cache.ListKeys()
 
 	type SecretResponse struct {
@@ -262,10 +323,12 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"active_secrets": res,
 		"total_count":    len(res),
-	})
+	}); err != nil {
+		s.Logger.Error("Failed to encode secrets list response", zap.Error(err))
+	}
 }
 
 // StartRESTServer starts the REST API server on the specified address with secure timeouts
