@@ -12,6 +12,7 @@ import (
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
+	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
 
@@ -31,9 +32,10 @@ type TriggerEngine struct {
 	StateTracker      *StateTracker
 	LockManager       *rotation.LockManager
 	TimeoutController *TimeoutController
+	DockerClient      *client.Client // For crash recovery
 }
 
-func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config) *TriggerEngine {
+func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) *TriggerEngine {
 	if rw != nil {
 		rw.Cache = cache
 		rw.Config = cfg
@@ -70,6 +72,40 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 		StateTracker:      stateTracker,
 		LockManager:       lockManager,
 		TimeoutController: timeoutController,
+		DockerClient:      dockerCli,
+	}
+}
+
+// performAutomaticRecovery automatically recovers from agent crashes by cleaning up
+// orphaned containers and restoring the original containers to active state.
+//
+// This is CRITICAL for preventing orphaned containers and ensuring deterministic
+// recovery from agent failures without operator intervention.
+func (t *TriggerEngine) performAutomaticRecovery() {
+	if t.DockerClient == nil {
+		t.Logger.Warn("Docker client not available, skipping automatic recovery")
+		return
+	}
+
+	// Create a recovery handler
+	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
+
+	// Validate state file integrity and cleanup stale state
+	ar.ValidateStateOnStartup(t.ctx)
+
+	// Perform automatic recovery from any pending rotations
+	if err := ar.RecoverFromCrash(t.ctx); err != nil {
+		t.Logger.Error("Automatic recovery encountered errors",
+			zap.Error(err))
+		// Don't fail startup; recovery is best-effort
+	}
+
+	// Perform a broad cleanup of any orphaned DSO containers
+	// This catches containers that might not be tracked in state
+	if err := ar.CleanupOrphanedContainers(t.ctx); err != nil {
+		t.Logger.Warn("Failed to cleanup orphaned containers",
+			zap.Error(err))
+		// Don't fail startup; cleanup is best-effort
 	}
 }
 
@@ -127,8 +163,17 @@ func (t *TriggerEngine) Stop() {
 }
 
 func (t *TriggerEngine) StartAll() error {
-	// CRITICAL: Recover from any crashed rotations before starting normal operations
-	t.recoverPendingRotations()
+	// CRITICAL: Perform automatic recovery from any crashed rotations before starting normal operations
+	// This ensures orphaned containers are cleaned up and state is consistent.
+	t.performAutomaticRecovery()
+
+	// Clean up old completed/recovered rotations from state file
+	if t.StateTracker != nil {
+		if err := t.StateTracker.CleanupOldStates(168 * time.Hour); err != nil { // 7 days retention
+			t.Logger.Warn("Failed to cleanup old rotation states",
+				zap.Error(err))
+		}
+	}
 
 	for pName, pCfg := range t.Config.Providers {
 		t.Logger.Info("Starting trigger engine for provider", zap.String("provider", pName))

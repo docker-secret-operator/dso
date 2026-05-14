@@ -990,7 +990,7 @@ docker dso up
 [DSO] Starting Cloud Mode setup...
 [DSO] Creating /etc/dso...
 [DSO] Writing systemd service to /etc/systemd/system/dso-agent.service...
-[DSO] Downloading plugin tarball from https://github.com/.../dso-plugins-linux-amd64-v3.4.0.tar.gz...
+[DSO] Downloading plugin tarball from https://github.com/.../dso-plugins-linux-amd64-v3.5.0.tar.gz...
 [DSO] Validating plugin integrity (SHA256)...
 [DSO] Extracting plugins to /usr/local/lib/dso/plugins/...
 [DSO] Plugins verified: aws, azure, vault, huawei
@@ -1040,20 +1040,20 @@ sudo docker dso system setup && docker dso system doctor
 #### Output
 
 ```
-DSO System Diagnostics — v3.4.0
+DSO System Diagnostics — v3.5.0
 ════════════════════════════════════════════════════════════════════
 Component         Status     Detail
 ────────────────────────────────────────────────────────────────────
-Binary            OK         /usr/local/lib/docker/cli-plugins/docker-dso (v3.4.0)
+Binary            OK         /usr/local/lib/docker/cli-plugins/docker-dso (v3.5.0)
 Effective UID     0 (root)
 Detected Mode     CLOUD      Reason: auto-detected (/etc/dso/dso.yaml)
 Config            OK         /etc/dso/dso.yaml
 Vault             NOT FOUND  /home/user/.dso/vault.enc
 Systemd Service   OK         File: /etc/systemd/system/dso-agent.service | Runtime: active
-Plugin: aws       OK         /usr/local/lib/dso/plugins/dso-provider-aws (version: v3.4.0)
-Plugin: azure     OK         /usr/local/lib/dso/plugins/dso-provider-azure (version: v3.4.0)
-Plugin: vault     OK         /usr/local/lib/dso/plugins/dso-provider-vault (version: v3.4.0)
-Plugin: huawei    OK         /usr/local/lib/dso/plugins/dso-provider-huawei (version: v3.4.0)
+Plugin: aws       OK         /usr/local/lib/dso/plugins/dso-provider-aws (version: v3.5.0)
+Plugin: azure     OK         /usr/local/lib/dso/plugins/dso-provider-azure (version: v3.5.0)
+Plugin: vault     OK         /usr/local/lib/dso/plugins/dso-provider-vault (version: v3.5.0)
+Plugin: huawei    OK         /usr/local/lib/dso/plugins/dso-provider-huawei (version: v3.5.0)
 ════════════════════════════════════════════════════════════════════
 ```
 
@@ -1078,8 +1078,74 @@ docker dso version
 #### Output
 
 ```
-Docker Secret Operator (DSO) v3.4.0
+Docker Secret Operator (DSO) v3.5.0
 ```
+
+---
+
+## Utility Commands
+
+---
+
+### `docker dso completion`
+
+**Generate shell completion script for bash, zsh, fish, or powershell.**
+
+Enables tab-completion support for your shell. After installing the completion script, you can tab-complete DSO subcommands and flags.
+
+#### Usage
+
+```bash
+docker dso completion <shell>
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `powershell`
+
+#### Installation
+
+**Bash:**
+```bash
+docker dso completion bash | sudo tee /etc/bash_completion.d/dso
+# Then reload: source ~/.bashrc
+```
+
+**Zsh:**
+```bash
+docker dso completion zsh | sudo tee /usr/share/zsh/site-functions/_dso
+# Then reload: exec zsh
+```
+
+**Fish:**
+```bash
+docker dso completion fish | sudo tee /usr/share/fish/vendor_completions.d/dso.fish
+# Then reload: exec fish
+```
+
+**PowerShell:**
+```powershell
+docker dso completion powershell | Out-String | Invoke-Expression
+# Make permanent by adding to your PowerShell profile:
+docker dso completion powershell >> $PROFILE
+```
+
+#### Examples
+
+```bash
+# Generate bash completion script
+docker dso completion bash
+
+# Install for current user (bash)
+docker dso completion bash >> ~/.bash_completion
+
+# Install for current user (zsh)
+docker dso completion zsh >> ~/.zshrc
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| ✅ Yes | ✅ Yes | No | No |
 
 ---
 
@@ -1129,7 +1195,7 @@ The following commands exist in the CLI tree and are registered, but return `not
 
 ```bash
 # 1. Install DSO
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # 2. Initialize vault
 docker dso init

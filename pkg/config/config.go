@@ -262,7 +262,7 @@ func (c *Config) Validate() error {
 		}
 
 		// Validate rotation strategy
-		validStrategies := map[string]bool{"restart": true, "signal": true, "auto": true, "none": true}
+		validStrategies := map[string]bool{"restart": true, "signal": true, "auto": true, "rolling": true, "none": true}
 		if !validStrategies[sec.Rotation.Strategy] {
 			return fmt.Errorf("secret '%s' has invalid rotation strategy '%s'", sec.Name, sec.Rotation.Strategy)
 		}

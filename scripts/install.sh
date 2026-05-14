@@ -35,10 +35,12 @@ if [ "$(id -u)" -eq 0 ]; then
     IS_ROOT=true
     INSTALL_DIR="/usr/local/bin"
     PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
+    PROVIDER_PLUGIN_DIR="/usr/local/lib/dso/plugins"
 else
     IS_ROOT=false
     INSTALL_DIR="${HOME}/.local/bin"
     PLUGIN_DIR="${HOME}/.docker/cli-plugins"
+    PROVIDER_PLUGIN_DIR="${HOME}/.dso/plugins"
 fi
 
 # ── Docker Daemon Check ────────────────────────────────────────────────────────
@@ -54,8 +56,8 @@ case "${OS}" in
     linux)  
         GOOS="linux"
         if [ "${IS_ROOT}" = true ] && ! command -v systemctl &>/dev/null; then
-            echo -e "${RED}Error: Systemd is required for Cloud Mode installation${NC}"
-            exit 1
+            echo -e "${YELLOW}⚠️  WARNING: systemctl was not found.${NC}"
+            echo -e "${YELLOW}   The CLI plugin will still be installed, but Cloud Mode service setup requires systemd.${NC}"
         fi
         if command -v systemctl &>/dev/null; then
             SYS_STATE="$(systemctl is-system-running 2>/dev/null || true)"
@@ -187,14 +189,15 @@ fi
 
 # ── Extract binary ─────────────────────────────────────────────────────────────
 echo -e "  Extracting binary..."
-tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}" --strip-components=1
+tar -xzf "${TARBALL_PATH}" -C "${TMP_DIR}"
 
 # ── Validate extracted binary exists ───────────────────────────────────────────
 # Try multiple possible binary names from the tarball
 EXTRACTED_BINARY=""
 for possible_name in "${BINARY_NAME}" "dso" "docker-dso"; do
-    if [ -f "${TMP_DIR}/${possible_name}" ]; then
-        EXTRACTED_BINARY="${TMP_DIR}/${possible_name}"
+    found_path="$(find "${TMP_DIR}" -maxdepth 2 -type f -name "${possible_name}" | head -1)"
+    if [ -n "${found_path}" ]; then
+        EXTRACTED_BINARY="${found_path}"
         break
     fi
 done
@@ -216,11 +219,27 @@ chmod +x "${PLUGIN_DIR}/${BINARY_NAME}"
 # Symlink for standalone dso usage
 ln -sf "${PLUGIN_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/dso"
 
+# Install bundled provider plugins when present in the release archive.
+# Cloud Mode loads providers from /usr/local/lib/dso/plugins by default.
+PROVIDER_COUNT=0
+while IFS= read -r provider_binary; do
+    [ -n "${provider_binary}" ] || continue
+    mkdir -p "${PROVIDER_PLUGIN_DIR}"
+    cp "${provider_binary}" "${PROVIDER_PLUGIN_DIR}/$(basename "${provider_binary}")"
+    chmod +x "${PROVIDER_PLUGIN_DIR}/$(basename "${provider_binary}")"
+    PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
+done < <(find "${TMP_DIR}" -maxdepth 2 -type f -name 'dso-provider-*' | sort)
+
 # ── Print result and context-aware next steps ──────────────────────────────────
 echo ""
 echo -e "${GREEN}✅ DSO ${DSO_VERSION} installed successfully!${NC}"
 echo -e "   Plugin:     ${PLUGIN_DIR}/${BINARY_NAME}"
 echo -e "   Standalone: ${INSTALL_DIR}/dso (symlink)"
+if [ "${PROVIDER_COUNT}" -gt 0 ]; then
+    echo -e "   Providers:  ${PROVIDER_COUNT} plugin(s) installed to ${PROVIDER_PLUGIN_DIR}"
+else
+    echo -e "${YELLOW}   Providers:  no provider plugins found in release archive${NC}"
+fi
 echo ""
 
 if [ "${IS_ROOT}" = true ]; then
@@ -228,16 +247,19 @@ if [ "${IS_ROOT}" = true ]; then
     echo ""
     echo "Next steps:"
     echo ""
-    echo "  For LOCAL mode (each user runs):"
-    echo "    docker dso init"
+    echo "  Choose your deployment mode:"
     echo ""
-    echo "  For AGENT mode (cloud / production systemd deployment):"
-    echo "    sudo docker dso bootstrap agent"
+    echo "  1. LOCAL Mode (development, single user):"
+    echo "     docker dso bootstrap local"
     echo ""
-    echo "  Additional system commands:"
-    echo "    sudo docker dso system status              # Check agent status"
-    echo "    sudo docker dso system enable              # Enable agent service"
-    echo "    sudo docker dso system logs                # View agent logs"
+    echo "  2. CLOUD Mode (production, systemd agent):"
+    echo "     sudo docker dso bootstrap agent"
+    echo ""
+    echo "  Then verify installation:"
+    echo "     docker dso doctor"
+    echo ""
+    echo "  See the full setup guide:"
+    echo "     https://github.com/docker-secret-operator/dso/blob/main/docs/getting-started.md"
     echo ""
 else
     echo -e "${BLUE}Installed for current user.${NC} Context: non-root"
@@ -251,27 +273,31 @@ else
         echo ""
     fi
 
-    echo "Next steps:"
+    echo "Next steps (LOCAL Mode):"
     echo ""
-    echo "  Initialize your local vault:"
-    echo "    docker dso init"
+    echo "  1. Bootstrap your local environment:"
+    echo "     docker dso bootstrap local"
     echo ""
-    echo "  Store a secret:"
-    echo "    docker dso secret set app/db_pass"
+    echo "  2. Verify installation:"
+    echo "     docker dso doctor"
     echo ""
-    echo "  Deploy:"
-    echo "    docker dso up -d"
+    echo "  3. Review configuration:"
+    echo "     docker dso config show"
     echo ""
-    echo -e "${YELLOW}⚠️  Note: Mode is NOT yet configured. 'docker dso init' is required before first use.${NC}"
+    echo "  4. Check status:"
+    echo "     docker dso status"
+    echo ""
+    echo "  See the full setup guide:"
+    echo "     https://github.com/docker-secret-operator/dso/blob/main/docs/getting-started.md"
+    echo ""
 fi
 
 # ── Post-install Verification ──────────────────────────────────────────────────
 if [ "${IS_ROOT}" = true ]; then
-    echo -e "${BLUE}Running post-install system diagnostics...${NC}"
-    if ! "${PLUGIN_DIR}/${BINARY_NAME}" system doctor; then
-        echo -e "${RED}Error: Post-install diagnostics failed. Please review the output above.${NC}"
-        echo -e "${YELLOW}Fix: Run 'sudo docker dso system setup' to properly initialize Cloud Mode.${NC}"
+    echo -e "${BLUE}Verifying installed binary...${NC}"
+    if ! "${PLUGIN_DIR}/${BINARY_NAME}" version >/dev/null 2>&1; then
+        echo -e "${RED}Error: Installed binary did not run successfully.${NC}"
+        echo -e "${YELLOW}Fix: Re-run the installer or inspect ${PLUGIN_DIR}/${BINARY_NAME}.${NC}"
         exit 1
     fi
 fi
-

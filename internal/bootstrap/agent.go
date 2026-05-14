@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -236,7 +237,7 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 	// Add default injection and rotation settings
 	builder.WithDefaults(
 		&InjectionConfig{Type: "env"},
-		&RotationConfig{Enabled: true, Strategy: "rolling"},
+		&RotationConfig{Enabled: true, Strategy: "restart"},
 	)
 
 	return builder, nil

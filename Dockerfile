@@ -15,12 +15,14 @@ COPY . .
 
 # Build DSO Core
 # Use -ldflags to reduce binary size and remove symbol tables
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o docker-dso cmd/docker-dso/main.go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o docker-dso ./cmd/dso
 
 # Build Secret Provider Plugins
 RUN mkdir -p /app/plugins
 RUN cd cmd/plugins/dso-provider-vault && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-vault main.go
-# Add other plugins as they become available
+RUN cd cmd/plugins/dso-provider-aws && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-aws main.go
+RUN cd cmd/plugins/dso-provider-azure && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-azure main.go
+RUN cd cmd/plugins/dso-provider-huawei && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-huawei main.go
 
 # Final Stage
 FROM alpine:3.20

@@ -1,6 +1,6 @@
-# DSO Quick Reference (v3.4.2)
+# DSO Quick Reference (v3.5.0)
 
-Essential commands for daily DSO operations. Full details in [CLI Reference](cli.md) and [Setup Guide](SETUP_GUIDE.md).
+Essential commands for daily DSO operations. Full details in [CLI Reference](cli.md) and [Getting Started](getting-started.md).
 
 ---
 
@@ -8,7 +8,7 @@ Essential commands for daily DSO operations. Full details in [CLI Reference](cli
 
 ```bash
 # Install as Docker plugin
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # For global/production install (requires sudo)
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
@@ -451,7 +451,7 @@ docker dso system logs -p err
 
 ## Useful Links
 
-- **Setup Guide:** [SETUP_GUIDE.md](SETUP_GUIDE.md)
+- **Getting Started:** [getting-started.md](getting-started.md)
 - **CLI Reference:** [cli.md](cli.md)
 - **Configuration:** [configuration.md](configuration.md)
 - **Operational Guide:** [operational-guide.md](operational-guide.md)
@@ -461,6 +461,6 @@ docker dso system logs -p err
 
 ## Version
 
-This quick reference is for **DSO v3.4.2**
+This quick reference is for **DSO v3.5.0**
 
 Last updated: 2026-05-14

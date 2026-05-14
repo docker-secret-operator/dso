@@ -37,6 +37,15 @@ func (fs *FilesystemOps) ValidatePath(baseDir, path string) (string, error) {
 	// Normalize paths
 	cleanBase := filepath.Clean(baseDir)
 	cleanPath := filepath.Clean(path)
+	realBase, err := filepath.EvalSymlinks(cleanBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			realBase = cleanBase
+		} else {
+			return "", ErrPathValidation("filesystem", cleanBase, "cannot resolve base directory")
+		}
+	}
+	realBase = filepath.Clean(realBase)
 
 	// If path is absolute, use it directly; if relative, join with base
 	var fullPath string
@@ -73,12 +82,12 @@ func (fs *FilesystemOps) ValidatePath(baseDir, path string) (string, error) {
 	}
 
 	// Verify we're still within baseDir
-	prefix := cleanBase
+	prefix := realBase
 	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
 		prefix += string(filepath.Separator)
 	}
 
-	if !strings.HasPrefix(realPath, prefix) && realPath != cleanBase {
+	if !strings.HasPrefix(realPath, prefix) && realPath != realBase {
 		return "", ErrPathTraversal("filesystem", realPath)
 	}
 

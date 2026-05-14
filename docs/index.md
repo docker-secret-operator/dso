@@ -21,7 +21,7 @@ permalink: /
 ### 1. Install DSO as a Docker Plugin
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
 ### 2. Bootstrap Your Environment
@@ -56,11 +56,8 @@ For detailed setup, see [Getting Started](getting-started.md).
 
 ### Getting Started
 
-- **[Installation Guide](installation.md)** — Install DSO as a Docker plugin  
-  Three methods: automated script, manual, from source
-
-- **[Getting Started](getting-started.md)** — Complete Phase 1-6 setup workflow  
-  Bootstrap, diagnose, monitor, and operate DSO in under 15 minutes
+- **[Getting Started](getting-started.md)** — Installation and setup  
+  Install, bootstrap, verify health, configure, and deploy in minutes
 
 ### Architecture & Design
 
@@ -94,8 +91,8 @@ For detailed setup, see [Getting Started](getting-started.md).
 
 ### Security
 
-- **[Security Model](security.md)** — Security guarantees, encryption, access control  
-  How DSO protects your secrets
+- **[Security Model](../SECURITY.md)** — Security guarantees, encryption, access control  
+  Threat model, trust boundaries, and security controls
 
 ### Examples
 
@@ -171,7 +168,7 @@ docker dso system [status|enable|disable|restart|logs]
 
 ### Set Up Local Development
 
-1. Install: `curl -fsSL https://... | sh`
+1. Install: `curl -fsSL https://... | bash`
 2. Bootstrap: `docker dso bootstrap local`
 3. Check: `docker dso doctor`
 4. Configure: `docker dso config edit`
@@ -181,7 +178,7 @@ docker dso system [status|enable|disable|restart|logs]
 
 ### Set Up Production with Systemd
 
-1. Install: `curl -fsSL https://... | sudo sh`
+1. Install: `curl -fsSL https://... | sudo bash`
 2. Bootstrap: `sudo docker dso bootstrap agent`
 3. Check: `docker dso doctor`
 4. Configure: `docker dso config edit`
@@ -225,8 +222,7 @@ docker dso system logs --since 1h -p err
 ```
 docs/
 ├── index.md                          # This file - navigation hub
-├── getting-started.md                # Quick start guide
-├── installation.md                   # Installation guide
+├── getting-started.md                # Installation and setup
 ├── cli.md                            # CLI reference for all 4 phases
 │
 ├── architecture.md                   # System design & components
@@ -237,14 +233,13 @@ docs/
 ├── configuration.md                  # YAML config reference
 ├── providers.md                      # Secret provider details
 ├── docker-compose.md                 # Compose integration
-├── security.md                       # Security model
 │
 ├── concepts.md                       # Core concepts
 ├── examples/                         # Example configurations
-│   ├── aws.md
-│   ├── azure.md
-│   ├── vault.md
-│   └── ...
+│   ├── aws-compose/
+│   ├── azure-compose/
+│   ├── hashicorp-vault/
+│   └── huawei-compose/
 ```
 
 ---

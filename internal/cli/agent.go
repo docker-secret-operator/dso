@@ -14,6 +14,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
+	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -88,8 +89,15 @@ func NewAgentCmd() *cobra.Command {
 				logger.Fatal("Failed to initialize reloader controller", zap.Error(err))
 			}
 
+			// Initialize Docker Client (for crash recovery and container management)
+			dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
+				logger.Fatal("Failed to initialize Docker client",
+					zap.Error(err))
+			}
+
 			// Initialize Trigger Engine
-			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg)
+			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, err := agent.StartSocketServer(socketPath, cache, storeManager, logger, cfg)
@@ -161,6 +169,9 @@ func NewAgentCmd() *cobra.Command {
 			logger.Info("Closing resources...")
 			cache.Close()
 			storeManager.Shutdown()
+			if dockerCli != nil {
+				dockerCli.Close()
+			}
 
 			// Step 4: Cleanup sockets
 			logger.Info("Cleaning up sockets...")

@@ -20,7 +20,7 @@ func TestNewTriggerEngine(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg)
+	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
 
 	if engine == nil {
 		t.Fatal("NewTriggerEngine returned nil")
@@ -51,7 +51,7 @@ func TestTriggerEngine_Stop(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	// Context should be alive initially
 	select {
@@ -82,7 +82,7 @@ func TestTriggerEngine_StartAll_EmptyProviders(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	// Should not panic with empty providers
 	err := engine.StartAll()
@@ -123,7 +123,7 @@ func TestTriggerEngine_StartAll_WithProviders(t *testing.T) {
 	}
 
 	cache := NewSecretCache(1 * time.Hour)
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg)
+	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
 
 	// StartAll should complete without error
 	err := engine.StartAll()
@@ -141,7 +141,7 @@ func TestTriggerEngine_ContextPropagation(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	// Should be able to use context
 	select {
@@ -161,7 +161,7 @@ func TestTriggerEngine_ConcurrentStop(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	done := make(chan bool)
 
@@ -200,7 +200,7 @@ func TestTriggerEngine_WithReloaderController(t *testing.T) {
 	// Create mock reloader
 	reloader := &watcher.ReloaderController{}
 
-	engine := NewTriggerEngine(cache, store, reloader, logger, cfg)
+	engine := NewTriggerEngine(cache, store, reloader, logger, cfg, nil)
 
 	if engine.Reloader != reloader {
 		t.Error("Reloader should be set in engine")
@@ -222,7 +222,7 @@ func TestTriggerEngine_Logger(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	if engine.Logger != logger {
 		t.Error("Logger should be set in engine")
@@ -238,7 +238,7 @@ func TestTriggerEngine_Config(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	if engine.Config != cfg {
 		t.Error("Config should be set in engine")
@@ -279,7 +279,7 @@ func TestTriggerEngine_MultipleProviders(t *testing.T) {
 	}
 
 	cache := NewSecretCache(1 * time.Hour)
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg)
+	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -312,7 +312,7 @@ func TestTriggerEngine_StartAll_WithCustomPollingInterval(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -350,7 +350,7 @@ func TestTriggerEngine_NonRotatingSecrets(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -383,7 +383,7 @@ func TestTriggerEngine_DefaultPollingInterval(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -416,7 +416,7 @@ func TestTriggerEngine_ConcurrentStartAndStop(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg)
+	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
 
 	done := make(chan bool)
 

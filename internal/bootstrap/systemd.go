@@ -40,8 +40,12 @@ WorkingDirectory=/var/lib/dso
 StateDirectory=dso
 CacheDirectory=dso
 LogsDirectory=dso
+RuntimeDirectory=dso
+RuntimeDirectoryMode=0750
 
-ExecStart=/usr/local/bin/dso agent --config /etc/dso/dso.yaml
+ExecStartPre=/usr/bin/install -d -m 0750 /run/dso
+ExecStartPre=/usr/bin/install -d -m 0755 /run/docker/plugins
+ExecStart=/usr/local/bin/dso --config /etc/dso/dso.yaml agent --socket /run/dso/dso.sock --driver-socket /run/docker/plugins/dso.sock
 Restart=on-failure
 RestartSec=10
 StartLimitInterval=60s
@@ -65,6 +69,7 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 PrivateDevices=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/etc/dso /var/lib/dso /var/log/dso /run/dso /run/docker/plugins
 
 # Resource Limits
 LimitNOFILE=65535

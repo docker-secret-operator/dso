@@ -17,9 +17,10 @@ type RotationState struct {
 	SecretName          string    `json:"secret_name"`
 	OriginalContainerID string    `json:"original_container_id"`
 	NewContainerID      string    `json:"new_container_id"`
-	Status              string    `json:"status"` // in_progress, completed, rollback_required
+	Status              string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
 	StartTime           time.Time `json:"start_time"`
 	LastUpdate          time.Time `json:"last_update"`
+	ErrorMessage        string    `json:"error_message,omitempty"` // For critical_error status
 }
 
 // StateTracker persists rotation state to enable recovery from crashes
@@ -98,7 +99,7 @@ func (st *StateTracker) MarkRollback(providerName, secretName, originalContainer
 	return nil
 }
 
-// GetPendingRotations returns all rotations that require recovery (in_progress > 5 minutes)
+// GetPendingRotations returns all rotations that require recovery
 func (st *StateTracker) GetPendingRotations() []*RotationState {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
@@ -106,14 +107,73 @@ func (st *StateTracker) GetPendingRotations() []*RotationState {
 	var pending []*RotationState
 	now := time.Now()
 	for _, state := range st.states {
+		// Include in_progress rotations older than 5 minutes (assume crashed)
 		if state.Status == "in_progress" && now.Sub(state.LastUpdate) > 5*time.Minute {
 			pending = append(pending, state)
 		}
-		if state.Status == "rollback_required" {
+		// Include explicit rollback_required or critical_error states
+		if state.Status == "rollback_required" || state.Status == "critical_error" {
 			pending = append(pending, state)
 		}
 	}
 	return pending
+}
+
+// CleanupOldStates removes completed and recovered rotations older than retentionPeriod.
+// This prevents state file bloat from long-running agents.
+func (st *StateTracker) CleanupOldStates(retentionPeriod time.Duration) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	cutoff := time.Now().Add(-retentionPeriod)
+	var removedCount int
+
+	for key, state := range st.states {
+		if state.Status == "completed" || state.Status == "recovered" {
+			if state.LastUpdate.Before(cutoff) {
+				delete(st.states, key)
+				removedCount++
+			}
+		}
+	}
+
+	if removedCount > 0 {
+		st.logger.Debug("Cleaned up old rotation states",
+			zap.Int("removed_count", removedCount),
+			zap.Duration("retention_period", retentionPeriod))
+		return st.persistState()
+	}
+
+	return nil
+}
+
+// MarkRecovered marks a rotation as recovered after automatic recovery completed
+func (st *StateTracker) MarkRecovered(providerName, secretName, originalContainerID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
+	if state, ok := st.states[key]; ok {
+		state.Status = "recovered"
+		state.LastUpdate = time.Now()
+		return st.persistState()
+	}
+	return nil
+}
+
+// MarkCriticalError marks a rotation as having a critical error that requires operator intervention
+func (st *StateTracker) MarkCriticalError(providerName, secretName, originalContainerID, errorMsg string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
+	if state, ok := st.states[key]; ok {
+		state.Status = "critical_error"
+		state.ErrorMessage = errorMsg
+		state.LastUpdate = time.Now()
+		return st.persistState()
+	}
+	return nil
 }
 
 // DeleteState removes a completed rotation from tracking

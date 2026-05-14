@@ -43,7 +43,7 @@ git clone $RepoUrl .
 # 3. Build Core Binary
 Write-Host "[3/5] Building docker-dso.exe..." -ForegroundColor Green
 $env:CGO_ENABLED = "0"
-go build -ldflags="-s -w" -o $BinaryName ./cmd/docker-dso/
+go build -ldflags="-s -w" -o $BinaryName ./cmd/dso/
 
 # 4. Install Docker CLI Plugin
 Write-Host "[4/5] Installing plugin to $PluginDir..." -ForegroundColor Green

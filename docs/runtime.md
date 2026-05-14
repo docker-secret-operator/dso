@@ -4,6 +4,55 @@
 
 This document covers how DSO operates as a runtime service, with emphasis on the systemd-managed agent mode (Phase 4 integration).
 
+---
+
+## v3.5 Runtime Enhancements
+
+### Automatic Crash Recovery
+
+On agent startup, DSO v3.5 automatically recovers from incomplete rotations:
+
+1. **Detection Phase** — Scans state file for rotations older than 5 minutes
+2. **Recovery Phase** — Identifies orphaned containers using naming patterns (`_dso_backup_`, `_dso_new_`)
+3. **Cleanup Phase** — Removes orphaned containers automatically
+4. **Validation Phase** — Verifies original container state
+5. **Completion Phase** — Marks recovery in state tracker
+
+**Result**: Most agent crashes require zero operator intervention.
+
+### Enhanced State Tracking
+
+The state tracker now persists additional metadata:
+- **New statuses**: `recovered`, `critical_error`
+- **7-day retention**: Automatic cleanup of completed rotations prevents state file bloat
+- **24-hour stale detection**: Rotations without progress marked for operator review
+
+### Observability Monitoring
+
+v3.5 includes comprehensive monitoring:
+- **Per-rotation tracing**: Unique trace IDs for end-to-end correlation
+- **Provider latency monitoring**: Tracks min/max/average response times
+- **Lock contention detection**: Alerts on slow acquisitions (>1s)
+- **Health check diagnostics**: Captures exit codes and output for debugging
+- **Circuit breaker status**: Monitors provider failure isolation
+
+Access via:
+```bash
+docker dso status --json | jq '.observability'
+```
+
+### Provider Failure Isolation (Circuit Breaker)
+
+When a provider fails:
+1. **Closed State** — Normal operation
+2. **Open State** — After failure threshold, rejects requests
+3. **Half-Open State** — Tests recovery periodically
+4. **Auto-Recovery** — Returns to closed when provider recovers
+
+Prevents cascade failures when one provider is unavailable.
+
+---
+
 ## Agent Lifecycle
 
 ### Initialization Phase

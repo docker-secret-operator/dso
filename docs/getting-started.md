@@ -12,6 +12,49 @@ This guide covers fresh installation and your first deployment using the Phase 1
 
 ---
 
+## CHOOSE YOUR MODE (Before Starting)
+
+**DSO runs in two modes. Choose one:**
+
+### Local Mode (Development)
+Use if you are:
+- Developing locally
+- Testing DSO
+- Using docker-compose without a daemon
+- A single developer on one machine
+
+**Characteristics**:
+- No root required
+- No systemd service
+- Simple setup (~5 minutes)
+- Secrets in encrypted local vault
+- Manual deployment via `docker dso compose up`
+
+**Install**: `curl ... | bash` (user install)
+
+### Cloud Mode (Production)
+Use if you are:
+- Running production workloads
+- Need automatic secret rotation
+- Using cloud provider secrets (Vault, AWS, Azure)
+- Running on a server with systemd
+
+**Characteristics**:
+- Root required (systemd)
+- Long-running daemon service
+- Automatic rotation from providers
+- Complete setup (~15 minutes)
+- Observability and monitoring included
+- Automatic crash recovery (v3.5+)
+
+**Install**: `curl ... | sudo bash` (global install)
+
+---
+
+**Not sure?** Start with Local Mode. You can always switch to Cloud Mode later.
+
+---
+
 ## Step 1 — Install DSO Plugin
 
 DSO is a Docker CLI plugin. Install it to make `docker dso` available.
@@ -19,7 +62,7 @@ DSO is a Docker CLI plugin. Install it to make `docker dso` available.
 ### Local User Install (Development)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
 Installs to: `~/.docker/cli-plugins/docker-dso`
@@ -27,7 +70,7 @@ Installs to: `~/.docker/cli-plugins/docker-dso`
 ### System-Wide Install (Production)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 ```
 
 Installs to: `/usr/local/lib/docker/cli-plugins/docker-dso`
@@ -44,7 +87,7 @@ docker ps  # Reload plugins
 docker dso version
 ```
 
-See [Installation Guide](installation.md) for troubleshooting.
+See [CLI Reference](cli.md) or [Docker Plugin Integration](docker-plugin.md) for troubleshooting.
 
 ---
 
@@ -318,7 +361,7 @@ Here's a full setup for local development:
 
 ```bash
 # 1. Install
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # 2. Bootstrap local environment
 docker dso bootstrap local
@@ -353,8 +396,8 @@ For production agent setup, replace step 2 with `sudo docker dso bootstrap agent
 - **For architecture details**, see [System Architecture](architecture.md)
 - **For day-2 operations**, see [Operational Guide](operational-guide.md)
 - **For runtime details**, see [Runtime Operation](runtime.md)
-
-→ Continue to [Cloud Mode Setup](#cloud-mode-setup) below.
+- **For security details**, see [Security Model](../SECURITY.md)
+- **For recovery procedures**, see [Recovery Guide](RECOVERY_PROCEDURES.md)
 
 ---
 
@@ -477,4 +520,5 @@ This shows your detected mode, vault status, config file presence, systemd servi
 - [CLI Reference](cli.md) — all commands explained
 - [Docker Compose Guide](docker-compose.md) — `dso://` vs `dsofile://` in depth
 - [Examples](examples/) — PostgreSQL, Redis, Django, Node.js
-- [Security](security.md) — threat model and design decisions
+- [Security Model](../SECURITY.md) — threat model and design decisions
+- [Recovery Procedures](RECOVERY_PROCEDURES.md) — handling failures

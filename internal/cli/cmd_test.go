@@ -57,8 +57,8 @@ func TestNewSecretCmd(t *testing.T) {
 
 func TestNewAgentCmd(t *testing.T) {
 	cmd := NewAgentCmd()
-	if cmd == nil || cmd.Use != "legacy-agent" {
-		t.Fatal("Expected legacy-agent command")
+	if cmd == nil || cmd.Use != "agent" {
+		t.Fatal("Expected agent command")
 	}
 }
 

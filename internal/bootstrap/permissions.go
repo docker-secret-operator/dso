@@ -124,7 +124,7 @@ func runSystemCommand(cmd string) error {
 	// Safety check: only allow groupadd commands for dso group
 	// Never expose user input to this function
 	if cmd != "groupadd -g 1001 dso 2>/dev/null || groupadd dso" &&
-	   cmd != "groupadd dso" {
+		cmd != "groupadd dso" {
 		return fmt.Errorf("invalid command (safety check failed)")
 	}
 
@@ -250,7 +250,7 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso/dso.yaml", 0664}, // rw-rw-r--: readable/writable by dso group, readable by others
+		{"/etc/dso/dso.yaml", 0640}, // rw-r-----: readable by dso group, not world-readable
 	}
 
 	for _, file := range files {

@@ -41,8 +41,8 @@ func checkCloudAgent() {
 	} else {
 		fmt.Fprintf(os.Stderr, "Reason: Connection refused or socket %s is missing.\n", socketPath)
 		fmt.Fprintln(os.Stderr, "\nFix: Cloud mode requires the systemd agent to be active.")
-		fmt.Fprintln(os.Stderr, "Run next: sudo docker dso system setup")
-		fmt.Fprintln(os.Stderr, "Diagnostics: docker dso system doctor")
+		fmt.Fprintln(os.Stderr, "Run next: sudo docker dso bootstrap agent")
+		fmt.Fprintln(os.Stderr, "Diagnostics: docker dso doctor")
 	}
 	os.Exit(1)
 }
@@ -211,7 +211,7 @@ func NewUpCmd() *cobra.Command {
 
 			if mode == "cloud" {
 				if reason == "default fallback" {
-					fmt.Fprintln(os.Stderr, "No configuration found.\n\nChoose a mode:\n- Local: docker dso init\n- Cloud: sudo docker dso system setup")
+					fmt.Fprintln(os.Stderr, "No configuration found.\n\nChoose a mode:\n- Local: docker dso init\n- Cloud: sudo docker dso bootstrap agent")
 					os.Exit(1)
 				}
 

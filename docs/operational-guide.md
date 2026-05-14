@@ -29,7 +29,7 @@ docker dso doctor
 docker dso status --watch
 ```
 
-### 2. Monitoring
+### 2. Monitoring (v3.5+)
 
 **Setup Real-Time Monitoring**:
 ```bash
@@ -48,6 +48,20 @@ docker ps --filter name=app --format "table {{.Names}}\t{{.Status}}"
 - Rotation success rate (should be 100% or very close)
 - Queue depth (should be <100)
 - Container health status (all HEALTHY)
+- Provider latency (should be <5 seconds for most operations)
+- Lock contention (high contention >1s indicates scaling issues)
+
+**v3.5 Observability Features**:
+- Per-rotation trace IDs for end-to-end correlation
+- Provider latency monitoring (tracks min/max/avg response times)
+- Lock contention detection (alerts on slow acquisitions)
+- Health check diagnostics (captures exit codes and output)
+- Circuit breaker status (tracks provider failure isolation)
+
+View details in status output:
+```bash
+docker dso status --json | jq '.observability'
+```
 
 ### 3. Configuration Management
 
@@ -81,6 +95,31 @@ agent:
   watch:
     polling_interval: 15m  # from 5m
 ```
+
+## v3.5 Automatic Recovery
+
+DSO v3.5 automatically recovers from agent crashes:
+
+**What Happens on Agent Restart**:
+1. Detects incomplete rotations older than 5 minutes
+2. Automatically cleans up orphaned containers (using naming patterns: `_dso_backup_`, `_dso_new_`)
+3. Validates original container state
+4. Resumes normal operations
+
+**Operator Actions**:
+- None required for most scenarios
+- Check logs for automatic recovery confirmation:
+  ```bash
+  docker dso system logs | grep "Automatic recovery"
+  ```
+- For critical errors, review recovery procedures documentation
+
+**View Recovery Status**:
+```bash
+docker dso status --json | jq '.recovery'
+```
+
+See **[Recovery Procedures](RECOVERY_PROCEDURES.md)** for manual recovery steps.
 
 ## Troubleshooting
 

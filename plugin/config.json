@@ -45,5 +45,5 @@
       "settable": ["source"]
     }
   ],
-  "propogatedMount": "/var/run/dso"
+  "propagatedMount": "/var/run/dso"
 }

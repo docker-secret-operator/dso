@@ -30,10 +30,10 @@ Docker automatically discovers binaries named `docker-<pluginname>` in designate
 ### Method 1: Automated Install Script
 ```bash
 # User install (local development)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # System install (production)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 ```
 
 ### Method 2: Manual Install
@@ -278,7 +278,7 @@ sudo systemctl restart docker
 docker dso version
 
 # Download latest
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # Verify update
 docker dso version
@@ -297,7 +297,7 @@ docker dso status
 ### 3. Keep Plugin Updated
 ```bash
 # Add to weekly cron
-0 9 * * 1 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sh
+0 9 * * 1 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
 ### 4. Multiple Host Support
@@ -367,6 +367,6 @@ docker compose up  # Built-in docker compose (not DSO)
 
 ---
 
-For installation help, see [installation.md](installation.md).
+For installation and setup help, see [Getting Started](getting-started.md).
 For CLI reference, see [cli.md](cli.md).
 For Docker Compose integration, see [docker-compose.md](docker-compose.md).

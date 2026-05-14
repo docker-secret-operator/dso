@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,6 +18,16 @@ import (
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
 )
+
+func prepareSocketPath(socketPath string, perm os.FileMode) error {
+	if socketPath == "" {
+		return fmt.Errorf("socket path cannot be empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), perm); err != nil {
+		return fmt.Errorf("failed to create socket directory: %w", err)
+	}
+	return nil
+}
 
 type AgentServer struct {
 	Cache  *SecretCache
@@ -145,6 +156,10 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		Config: cfg,
 	}
 
+	if err := prepareSocketPath(socketPath, 0750); err != nil {
+		return nil, fmt.Errorf("failed to prepare socket path %s: %w", socketPath, err)
+	}
+
 	if err := rpc.RegisterName("Agent", server); err != nil {
 		return nil, fmt.Errorf("failed to register RPC service: %w", err)
 	}
@@ -245,6 +260,10 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 		Store:  store,
 		Logger: logger,
 		Config: cfg,
+	}
+
+	if err := prepareSocketPath(socketPath, 0755); err != nil {
+		return fmt.Errorf("failed to prepare driver socket path %s: %w", socketPath, err)
 	}
 
 	if _, err := os.Stat(socketPath); err == nil {
