@@ -350,6 +350,56 @@ func (cb *ConfigBuilder) BuildYAMLString() (string, error) {
 	return string(data), nil
 }
 
+// BuildYAMLWithTemplate builds YAML with comments and examples
+func (cb *ConfigBuilder) BuildYAMLWithTemplate() ([]byte, error) {
+	baseYAML, err := cb.BuildYAML()
+	if err != nil {
+		return nil, err
+	}
+
+	// Build template with comments
+	template := fmt.Sprintf(`# DSO Configuration (V3.4)
+# Reference: pkg/config/config.go
+
+%s
+
+# ── Agent Configuration ────────────────────────────────────────────────────────
+agent:
+  cache: true
+  watch:
+    polling_interval: 1m
+
+# ── Default Injection Settings ─────────────────────────────────────────────────
+defaults:
+  inject:
+    type: env   # Options: env, file
+
+# ── Secret Mappings ────────────────────────────────────────────────────────────
+# For Azure Key Vault: Azure secrets are plain strings. DSO wraps as {"value": "<string>"}
+# For AWS Secrets Manager: JSON strings are parsed automatically
+# For Vault: Values stored exactly as provided
+# For Huawei KMS: Plain strings
+
+secrets:
+  # Example: Uncomment and customize for your secrets
+  # - name: MYSQL-ROOT-PASSWORD    # Exact secret name in provider
+  #   provider: %s
+  #   mappings:
+  #     value: MYSQL_ROOT_PASSWORD
+
+`, string(baseYAML), cb.getFirstProviderName())
+
+	return []byte(template), nil
+}
+
+// getFirstProviderName returns the first configured provider name
+func (cb *ConfigBuilder) getFirstProviderName() string {
+	for name := range cb.config.Providers {
+		return name
+	}
+	return "my-provider"
+}
+
 // GetConfig returns the underlying Config object without validation
 // Use Build() for validated configuration
 func (cb *ConfigBuilder) GetConfig() *Config {

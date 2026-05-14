@@ -66,7 +66,7 @@ func TestValidate_InvalidRotationStrategy(t *testing.T) {
 		Secrets: []SecretMapping{
 			{
 				Name:   "test-secret",
-				Inject: InjectionConfig{Type: "file", Path: "/tmp/secret"},
+				Inject: InjectionConfig{Type: "file", Path: "/tmp/secret", UID: 1000, GID: 1000},
 				Rotation: RotationConfigV2{
 					Strategy: "invalid_strategy",
 				},
@@ -141,7 +141,7 @@ func TestValidate_ProviderReferenceExists(t *testing.T) {
 			{
 				Name:     "test-secret",
 				Provider: "nonexistent",
-				Inject:   InjectionConfig{Type: "file", Path: "/tmp/secret"},
+				Inject:   InjectionConfig{Type: "file", Path: "/tmp/secret", UID: 1000, GID: 1000},
 			},
 		},
 	}
@@ -165,7 +165,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 			{
 				Name:     "test-secret",
 				Provider: "vault",
-				Inject:   InjectionConfig{Type: "file", Path: "/etc/secrets"},
+				Inject:   InjectionConfig{Type: "file", Path: "/etc/secrets", UID: 1000, GID: 1000},
 				Rotation: RotationConfigV2{
 					Strategy: "restart",
 					Enabled:  true,

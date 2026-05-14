@@ -158,3 +158,210 @@ func TestAgentBootstrapWithInvalidTypeInContext(t *testing.T) {
 		t.Errorf("Expected default path when context has wrong type, got %s", configPath)
 	}
 }
+
+// TestGetProviderConfigWithMetadata_AWS verifies AWS auto-detection from metadata
+func TestGetProviderConfigWithMetadata_AWS(t *testing.T) {
+	logger := &MockLogger{}
+	bootstrapper := &AgentBootstrapper{
+		logger:    logger,
+		detector:  nil,
+		validator: nil,
+		prompter:  nil,
+		provCfg:   nil,
+		cfgBuilder: nil,
+		fsOps:     nil,
+		svc:       nil,
+		perm:      nil,
+	}
+
+	opts := &BootstrapOptions{
+		Mode:           ModeAgent,
+		NonInteractive: true,
+		AWSRegion:      "eu-west-1",
+	}
+
+	cloudInfo := &CloudProviderInfo{
+		Provider: ProviderAWS,
+		Detected: true,
+		Metadata: map[string]string{"instance_id": "i-0123456789abcdef0"},
+	}
+
+	config := bootstrapper.getProviderConfigWithMetadata(ProviderAWS, cloudInfo, opts)
+
+	if config == nil {
+		t.Fatal("Expected config, got nil")
+	}
+
+	if config["name"] != "aws-i-012345" {
+		t.Errorf("Expected name 'aws-i-012345', got %v", config["name"])
+	}
+
+	if config["region"] != "eu-west-1" {
+		t.Errorf("Expected region 'eu-west-1', got %v", config["region"])
+	}
+}
+
+// TestGetProviderConfigWithMetadata_Azure verifies Azure auto-configuration
+func TestGetProviderConfigWithMetadata_Azure(t *testing.T) {
+	logger := &MockLogger{}
+	bootstrapper := &AgentBootstrapper{
+		logger:    logger,
+		detector:  nil,
+		validator: nil,
+		prompter:  nil,
+		provCfg:   nil,
+		cfgBuilder: nil,
+		fsOps:     nil,
+		svc:       nil,
+		perm:      nil,
+	}
+
+	opts := &BootstrapOptions{
+		Mode:           ModeAgent,
+		NonInteractive: true,
+		AzureVaultURL:  "https://testvault.vault.azure.net/",
+	}
+
+	cloudInfo := &CloudProviderInfo{
+		Provider: ProviderAzure,
+		Detected: true,
+		Metadata: map[string]string{"detected_via": "azure_imds"},
+	}
+
+	config := bootstrapper.getProviderConfigWithMetadata(ProviderAzure, cloudInfo, opts)
+
+	if config == nil {
+		t.Fatal("Expected config, got nil")
+	}
+
+	if config["name"] != "azure-provider" {
+		t.Errorf("Expected name 'azure-provider', got %v", config["name"])
+	}
+
+	if config["vault_url"] != "https://testvault.vault.azure.net/" {
+		t.Errorf("Expected vault_url 'https://testvault.vault.azure.net/', got %v", config["vault_url"])
+	}
+}
+
+// TestGetProviderConfigWithMetadata_Huawei verifies Huawei auto-configuration
+func TestGetProviderConfigWithMetadata_Huawei(t *testing.T) {
+	logger := &MockLogger{}
+	bootstrapper := &AgentBootstrapper{
+		logger:    logger,
+		detector:  nil,
+		validator: nil,
+		prompter:  nil,
+		provCfg:   nil,
+		cfgBuilder: nil,
+		fsOps:     nil,
+		svc:       nil,
+		perm:      nil,
+	}
+
+	opts := &BootstrapOptions{
+		Mode:              ModeAgent,
+		NonInteractive:    true,
+		HuaweiRegion:      "cn-south-1",
+		HuaweiProjectID:   "12345abcde",
+	}
+
+	cloudInfo := &CloudProviderInfo{
+		Provider: ProviderHuawei,
+		Detected: true,
+		Metadata: map[string]string{"detected_via": "huawei_metadata"},
+	}
+
+	config := bootstrapper.getProviderConfigWithMetadata(ProviderHuawei, cloudInfo, opts)
+
+	if config == nil {
+		t.Fatal("Expected config, got nil")
+	}
+
+	if config["name"] != "huawei-provider" {
+		t.Errorf("Expected name 'huawei-provider', got %v", config["name"])
+	}
+
+	if config["region"] != "cn-south-1" {
+		t.Errorf("Expected region 'cn-south-1', got %v", config["region"])
+	}
+
+	if config["project_id"] != "12345abcde" {
+		t.Errorf("Expected project_id '12345abcde', got %v", config["project_id"])
+	}
+}
+
+// TestGetProviderConfigWithMetadata_Vault verifies Vault auto-configuration
+func TestGetProviderConfigWithMetadata_Vault(t *testing.T) {
+	logger := &MockLogger{}
+	bootstrapper := &AgentBootstrapper{
+		logger:    logger,
+		detector:  nil,
+		validator: nil,
+		prompter:  nil,
+		provCfg:   nil,
+		cfgBuilder: nil,
+		fsOps:     nil,
+		svc:       nil,
+		perm:      nil,
+	}
+
+	opts := &BootstrapOptions{
+		Mode:            ModeAgent,
+		NonInteractive:  true,
+		VaultAddress:    "https://vault.example.com:8200",
+	}
+
+	cloudInfo := &CloudProviderInfo{
+		Provider: "local",
+		Detected: false,
+		Metadata: map[string]string{},
+	}
+
+	config := bootstrapper.getProviderConfigWithMetadata(ProviderVault, cloudInfo, opts)
+
+	if config == nil {
+		t.Fatal("Expected config, got nil")
+	}
+
+	if config["name"] != "vault-provider" {
+		t.Errorf("Expected name 'vault-provider', got %v", config["name"])
+	}
+
+	if config["address"] != "https://vault.example.com:8200" {
+		t.Errorf("Expected address 'https://vault.example.com:8200', got %v", config["address"])
+	}
+}
+
+// TestGetProviderConfigWithMetadata_MissingVaultAddress verifies Vault fails without address
+func TestGetProviderConfigWithMetadata_MissingVaultAddress(t *testing.T) {
+	logger := &MockLogger{}
+	bootstrapper := &AgentBootstrapper{
+		logger:    logger,
+		detector:  nil,
+		validator: nil,
+		prompter:  nil,
+		provCfg:   nil,
+		cfgBuilder: nil,
+		fsOps:     nil,
+		svc:       nil,
+		perm:      nil,
+	}
+
+	opts := &BootstrapOptions{
+		Mode:           ModeAgent,
+		NonInteractive: true,
+		VaultAddress:   "", // No address provided
+	}
+
+	cloudInfo := &CloudProviderInfo{
+		Provider: "local",
+		Detected: false,
+		Metadata: map[string]string{},
+	}
+
+	config := bootstrapper.getProviderConfigWithMetadata(ProviderVault, cloudInfo, opts)
+
+	if config != nil {
+		t.Fatal("Expected nil config for missing Vault address in non-interactive mode, got config")
+	}
+}

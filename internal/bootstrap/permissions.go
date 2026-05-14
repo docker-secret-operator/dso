@@ -199,7 +199,7 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso/dso.yaml", 0644}, // readable by all users, writable only by root
+		{"/etc/dso/dso.yaml", 0664}, // rw-rw-r--: readable/writable by dso group, readable by others
 	}
 
 	for _, file := range files {

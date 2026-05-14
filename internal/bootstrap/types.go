@@ -47,6 +47,9 @@ type BootstrapOptions struct {
 	// Timing
 	Timeout time.Duration
 	Context context.Context
+
+	// Cached cloud detection result (to avoid duplicate detection)
+	CloudInfo *CloudProviderInfo
 }
 
 // SecretDefinition represents a secret to be injected

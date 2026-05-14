@@ -207,13 +207,17 @@ func (bm *BootstrapManager) BootstrapWithProgress(ctx context.Context, opts *Boo
 		return nil, err
 	}
 
-	// Phase 2: Detection (for cloud mode)
+	// Phase 2: Detection (for cloud mode) - detect once and reuse
 	if opts.Mode == ModeAgent {
 		callback(PhaseDetection, "Detecting cloud provider", 20)
 		detector := NewCloudDetector(0, bm.logger)
-		_, err := detector.DetectCloudProvider(ctx)
+		cloudInfo, err := detector.DetectCloudProvider(ctx)
 		if err != nil {
 			bm.logger.Warn("Cloud detection failed, continuing", "error", err.Error())
+		}
+		// Store detected cloud info in options to avoid duplicate detection
+		if opts.CloudInfo == nil && cloudInfo != nil {
+			opts.CloudInfo = cloudInfo
 		}
 	}
 

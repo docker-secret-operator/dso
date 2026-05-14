@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"os"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,10 +51,14 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 	ab.logger.Info("Current user", "username", currentUser.Username, "uid", currentUser.UID, "gid", currentUser.GID)
 
-	// Step 3: Detect cloud provider
-	cloudInfo, err := ab.detector.DetectCloudProvider(ctx)
-	if err != nil {
-		return nil, err
+	// Step 3: Detect cloud provider (reuse cached result if available)
+	cloudInfo := opts.CloudInfo
+	if cloudInfo == nil {
+		var err error
+		cloudInfo, err = ab.detector.DetectCloudProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Step 4: Collect configuration from user
@@ -73,8 +78,8 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		return nil, err
 	}
 
-	// Step 5: Generate YAML
-	configYAML, err := builder.BuildYAML()
+	// Step 5: Generate YAML with template and examples
+	configYAML, err := builder.BuildYAMLWithTemplate()
 	if err != nil {
 		return nil, err
 	}
@@ -152,28 +157,9 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		provider = opts.Provider
 		ab.logger.Info("Using specified provider", "provider", provider)
 	} else if cloudInfo.Detected {
-		// Cloud provider detected
-		if opts.NonInteractive {
-			provider = cloudInfo.Provider
-			ab.logger.Info("Using detected cloud provider", "provider", provider)
-		} else {
-			// Ask user to confirm
-			useDetected, err := ab.prompter.PromptCloudProviderConfirmation(cloudInfo)
-			if err != nil {
-				return nil, ErrInteractivePrompt("bootstrap", err)
-			}
-
-			if useDetected {
-				provider = cloudInfo.Provider
-			} else {
-				// User declined, ask for manual selection
-				p, err := ab.prompter.PromptProviderSelection()
-				if err != nil {
-					return nil, ErrInteractivePrompt("bootstrap", err)
-				}
-				provider = p
-			}
-		}
+		// Cloud provider detected - auto-use without confirmation
+		provider = cloudInfo.Provider
+		ab.logger.Info("Using detected cloud provider", "provider", provider)
 	} else {
 		// No cloud detection, ask user
 		if opts.NonInteractive {
@@ -193,68 +179,21 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 	}
 
 	// Configure provider-specific settings
+	// Try to use detected cloud metadata first
+	providerConfig := ab.getProviderConfigWithMetadata(provider, cloudInfo, opts)
+	if providerConfig == nil {
+		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("failed to configure provider: %s", provider))
+	}
+
 	switch provider {
 	case ProviderAWS:
-		var region string
-		if opts.AWSRegion != "" {
-			region = opts.AWSRegion
-		} else if !opts.NonInteractive {
-			var err error
-			region, err = ab.prompter.PromptAWSRegion()
-			if err != nil {
-				return nil, ErrInteractivePrompt("bootstrap", err)
-			}
-		} else {
-			return nil, ErrConfigValidation("bootstrap", "AWS region required")
-		}
-		builder.WithAWSProvider("aws-prod", region)
-
+		builder.WithAWSProvider(providerConfig["name"].(string), providerConfig["region"].(string))
 	case ProviderAzure:
-		var vaultURL string
-		if opts.AzureVaultURL != "" {
-			vaultURL = opts.AzureVaultURL
-		} else if !opts.NonInteractive {
-			var err error
-			vaultURL, err = ab.prompter.PromptAzureVaultURL()
-			if err != nil {
-				return nil, ErrInteractivePrompt("bootstrap", err)
-			}
-		} else {
-			return nil, ErrConfigValidation("bootstrap", "Azure Key Vault URL required")
-		}
-		builder.WithAzureProvider("azure-prod", vaultURL)
-
+		builder.WithAzureProvider(providerConfig["name"].(string), providerConfig["vault_url"].(string))
 	case ProviderHuawei:
-		var region, projectID string
-		if opts.HuaweiRegion != "" && opts.HuaweiProjectID != "" {
-			region = opts.HuaweiRegion
-			projectID = opts.HuaweiProjectID
-		} else if !opts.NonInteractive {
-			var err error
-			region, projectID, err = ab.prompter.PromptHuaweiRegionAndProject()
-			if err != nil {
-				return nil, ErrInteractivePrompt("bootstrap", err)
-			}
-		} else {
-			return nil, ErrConfigValidation("bootstrap", "Huawei region and project ID required")
-		}
-		builder.WithHuaweiProvider("huawei-prod", region, projectID)
-
+		builder.WithHuaweiProvider(providerConfig["name"].(string), providerConfig["region"].(string), providerConfig["project_id"].(string))
 	case ProviderVault:
-		var address string
-		if opts.VaultAddress != "" {
-			address = opts.VaultAddress
-		} else if !opts.NonInteractive {
-			var err error
-			address, err = ab.prompter.PromptVaultAddress()
-			if err != nil {
-				return nil, ErrInteractivePrompt("bootstrap", err)
-			}
-		} else {
-			return nil, ErrConfigValidation("bootstrap", "Vault address required")
-		}
-		builder.WithVaultProvider("vault-prod", address, "${VAULT_TOKEN}")
-
+		builder.WithVaultProvider(providerConfig["name"].(string), providerConfig["address"].(string), "${VAULT_TOKEN}")
 	default:
 		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -299,10 +238,14 @@ func (ab *AgentBootstrapper) BootstrapNonInteractive(ctx context.Context, opts *
 
 // GetBootstrapYAML returns the generated YAML for inspection before apply
 func (ab *AgentBootstrapper) GetBootstrapYAML(ctx context.Context, opts *BootstrapOptions) (string, error) {
-	// Detect cloud provider
-	cloudInfo, err := ab.detector.DetectCloudProvider(ctx)
-	if err != nil {
-		return "", err
+	// Detect cloud provider (reuse cached result if available)
+	cloudInfo := opts.CloudInfo
+	if cloudInfo == nil {
+		var err error
+		cloudInfo, err = ab.detector.DetectCloudProvider(ctx)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	// Collect configuration (non-interactive)
@@ -314,6 +257,147 @@ func (ab *AgentBootstrapper) GetBootstrapYAML(ctx context.Context, opts *Bootstr
 
 	// Return YAML
 	return builder.BuildYAMLString()
+}
+
+// getProviderConfigWithMetadata extracts configuration from cloud metadata and options
+func (ab *AgentBootstrapper) getProviderConfigWithMetadata(provider string, cloudInfo *CloudProviderInfo, opts *BootstrapOptions) map[string]interface{} {
+	config := make(map[string]interface{})
+
+	switch provider {
+	case ProviderAWS:
+		// AWS: Use instance ID or default name
+		name := "aws-provider"
+		if cloudInfo.Detected && cloudInfo.Metadata["instance_id"] != "" {
+			name = "aws-" + cloudInfo.Metadata["instance_id"][:8]
+		}
+
+		// Use region from options if provided, otherwise try environment or default
+		region := opts.AWSRegion
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		if region == "" {
+			region = os.Getenv("AWS_DEFAULT_REGION")
+		}
+		if region == "" && !opts.NonInteractive {
+			// Prompt user for region if not found
+			var err error
+			region, err = ab.prompter.PromptAWSRegion()
+			if err != nil {
+				ab.logger.Error("Failed to prompt for AWS region", "error", err.Error())
+				return nil
+			}
+		}
+		if region == "" {
+			region = "us-east-1" // Default fallback
+		}
+
+		ab.logger.Info("AWS provider configured", "name", name, "region", region)
+		config["name"] = name
+		config["region"] = region
+		return config
+
+	case ProviderAzure:
+		// Azure: Use default name
+		name := "azure-provider"
+
+		// Use vault URL from options if provided, otherwise try environment
+		vaultURL := opts.AzureVaultURL
+		if vaultURL == "" {
+			vaultURL = os.Getenv("AZURE_VAULT_URL")
+		}
+		if vaultURL == "" && !opts.NonInteractive {
+			// Prompt user for vault URL
+			var err error
+			vaultURL, err = ab.prompter.PromptAzureVaultURL()
+			if err != nil {
+				ab.logger.Error("Failed to prompt for Azure Vault URL", "error", err.Error())
+				return nil
+			}
+		}
+		if vaultURL == "" {
+			ab.logger.Error("Azure Vault URL not provided")
+			return nil
+		}
+
+		ab.logger.Info("Azure provider configured", "name", name, "vault_url", vaultURL)
+		config["name"] = name
+		config["vault_url"] = vaultURL
+		return config
+
+	case ProviderHuawei:
+		// Huawei: Use default name
+		name := "huawei-provider"
+
+		// Use region and project ID from options if provided
+		region := opts.HuaweiRegion
+		projectID := opts.HuaweiProjectID
+
+		// Try environment variables
+		if region == "" {
+			region = os.Getenv("HUAWEI_REGION")
+		}
+		if projectID == "" {
+			projectID = os.Getenv("HUAWEI_PROJECT_ID")
+		}
+
+		// Prompt if needed
+		if (region == "" || projectID == "") && !opts.NonInteractive {
+			var err error
+			region, projectID, err = ab.prompter.PromptHuaweiRegionAndProject()
+			if err != nil {
+				ab.logger.Error("Failed to prompt for Huawei configuration", "error", err.Error())
+				return nil
+			}
+		}
+
+		// Apply defaults if still empty
+		if region == "" {
+			region = "cn-north-4"
+		}
+		if projectID == "" {
+			ab.logger.Error("Huawei project ID not provided")
+			return nil
+		}
+
+		ab.logger.Info("Huawei provider configured", "name", name, "region", region)
+		config["name"] = name
+		config["region"] = region
+		config["project_id"] = projectID
+		return config
+
+	case ProviderVault:
+		// Vault: Must have address (can't auto-detect self-hosted)
+		name := "vault-provider"
+
+		// Use vault address from options if provided, otherwise try environment
+		vaultAddr := opts.VaultAddress
+		if vaultAddr == "" {
+			vaultAddr = os.Getenv("VAULT_ADDR")
+		}
+		if vaultAddr == "" && !opts.NonInteractive {
+			// Prompt user for vault address
+			var err error
+			vaultAddr, err = ab.prompter.PromptVaultAddress()
+			if err != nil {
+				ab.logger.Error("Failed to prompt for Vault address", "error", err.Error())
+				return nil
+			}
+		}
+		if vaultAddr == "" {
+			ab.logger.Error("Vault address not provided")
+			return nil
+		}
+
+		ab.logger.Info("Vault provider configured", "name", name, "address", vaultAddr)
+		config["name"] = name
+		config["address"] = vaultAddr
+		return config
+
+	default:
+		ab.logger.Error("Unknown provider", "provider", provider)
+		return nil
+	}
 }
 
 // ValidateConfiguration validates a configuration without executing bootstrap
