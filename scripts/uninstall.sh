@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Docker Secret Operator (DSO) - Uninstaller (v3.3)
+# Docker Secret Operator (DSO) - Uninstaller (v3.4)
 # ==============================================================================
 # Removes all DSO binaries, plugins, sockets, services, and optionally
 # the local Native Vault (~/.dso).
@@ -31,7 +31,7 @@ fi
 
 echo -e "${BLUE}==========================================${NC}"
 echo -e "${RED}    Uninstalling Docker Secret Operator    ${NC}"
-echo -e "${BLUE}    Version: v3.3                         ${NC}"
+echo -e "${BLUE}    Version: v3.4                         ${NC}"
 echo -e "${BLUE}==========================================${NC}"
 
 # ------------------------------------------------------------------------------
@@ -147,5 +147,5 @@ fi
 # Done
 # ------------------------------------------------------------------------------
 echo -e "\n${BLUE}==========================================${NC}"
-echo -e "${GREEN}   DSO v3.3 successfully uninstalled.     ${NC}"
+echo -e "${GREEN}   DSO v3.4 successfully uninstalled.     ${NC}"
 echo -e "${BLUE}==========================================${NC}"

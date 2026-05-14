@@ -100,7 +100,7 @@ if [ -z "${DSO_VERSION}" ]; then
     echo -e "${RED}       This may be caused by a GitHub API rate limit.${NC}"
     echo -e ""
     echo -e "${YELLOW}Fix: Set the version manually and re-run:${NC}"
-    echo -e "       export DSO_VERSION=v3.3.0"
+    echo -e "       export DSO_VERSION=v3.4.0"
     echo -e "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash"
     exit 1
 fi
