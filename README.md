@@ -196,7 +196,7 @@ curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scr
 **Manual install:**
 ```bash
 # Download for your platform
-curl -Lo dso https://github.com/docker-secret-operator/dso/releases/download/v3.3.0/dso-linux-amd64
+curl -Lo dso https://github.com/docker-secret-operator/dso/releases/download/v3.4.0/dso-linux-amd64
 
 # Verify checksum (optional but recommended)
 echo "..." | sha256sum -c -
@@ -216,7 +216,7 @@ sudo chmod +x /usr/local/lib/docker/cli-plugins/dso
 
 ```bash
 docker dso version
-# Docker Secret Operator v3.3.0
+# Docker Secret Operator v3.4.0
 
 docker dso doctor
 # ┌─────────────────────────────────────────┐
