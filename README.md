@@ -57,7 +57,8 @@ docker dso compose up
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo sh
 
 # 2. Initialize agent runtime
-sudo docker dso bootstrap agent
+# Optional: Add --enable-nonroot to auto-configure current user for non-root CLI access
+sudo docker dso bootstrap agent --enable-nonroot
 
 # 3. Configure providers and settings
 sudo nano /etc/dso/dso.yaml

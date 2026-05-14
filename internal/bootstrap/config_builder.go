@@ -357,7 +357,8 @@ func (cb *ConfigBuilder) BuildYAMLWithTemplate() ([]byte, error) {
 		return nil, err
 	}
 
-	// Build template with comments
+	// Build template with comments and examples
+	// Note: Defaults (inject and rotation) are included from YAML marshaling above
 	template := fmt.Sprintf(`# DSO Configuration (V3.4)
 # Reference: pkg/config/config.go
 
@@ -368,11 +369,6 @@ agent:
   cache: true
   watch:
     polling_interval: 1m
-
-# ── Default Injection Settings ─────────────────────────────────────────────────
-defaults:
-  inject:
-    type: env   # Options: env, file
 
 # ── Secret Mappings ────────────────────────────────────────────────────────────
 # For Azure Key Vault: Azure secrets are plain strings. DSO wraps as {"value": "<string>"}

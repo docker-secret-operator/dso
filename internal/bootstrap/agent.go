@@ -124,7 +124,21 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		return nil, ErrRollback("bootstrap", "transaction_execution", err)
 	}
 
-	// Step 9: Display completion message
+	// Step 9: Configure non-root access if requested
+	warnings := []string{}
+	if opts.EnableNonRootAccess && currentUser.UID != 0 {
+		ab.logger.Info("Configuring non-root access for user", "uid", currentUser.UID, "username", currentUser.Username)
+		if err := ab.perm.ConfigureNonRootAccess(currentUser.UID); err != nil {
+			ab.logger.Warn("Non-root access configuration had issues", "error", err.Error())
+			warnings = append(warnings, fmt.Sprintf("Non-root access setup: %v", err))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("User %s configured for non-root access - log out and log back in to apply group changes", currentUser.Username))
+		}
+	} else if !opts.EnableNonRootAccess && currentUser.UID != 0 {
+		warnings = append(warnings, fmt.Sprintf("To enable non-root CLI access for %s, run: sudo docker dso bootstrap agent --enable-nonroot", currentUser.Username))
+	}
+
+	// Step 10: Display completion message
 	if opts.NonInteractive {
 		ab.logger.Info("Agent bootstrap completed successfully")
 	} else {
@@ -136,10 +150,7 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		ConfigPath:     configPath,
 		ServicePath:    "/etc/systemd/system/dso-agent.service",
 		PermissionsSet: true,
-		Warnings: []string{
-			"Run 'sudo usermod -aG dso $USER' and 'sudo usermod -aG docker $USER' for non-root access",
-			"User must log out and log back in for group membership changes to take effect",
-		},
+		Warnings:       warnings,
 	}, nil
 }
 
@@ -221,6 +232,12 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		errs := builder.GetErrors()
 		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("configuration errors: %v", errs))
 	}
+
+	// Add default injection and rotation settings
+	builder.WithDefaults(
+		&InjectionConfig{Type: "env"},
+		&RotationConfig{Enabled: true, Strategy: "rolling"},
+	)
 
 	return builder, nil
 }

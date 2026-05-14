@@ -68,7 +68,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 # Resource Limits
 LimitNOFILE=65535
-MemoryLimit=500M
+MemoryMax=500M
 CPUQuota=50%
 
 # Logging
@@ -331,8 +331,8 @@ RestrictAddressFamilies
 
 Resource Limits:
   - LimitNOFILE=65535 - Max 65535 open files
-  - MemoryLimit=500M   - Max 500MB memory usage
-  - CPUQuota=50%       - Max 50% CPU usage
+  - MemoryMax=500M    - Max 500MB memory usage
+  - CPUQuota=50%      - Max 50% CPU usage
 
 These settings provide defense-in-depth security while maintaining operational functionality.
 `

@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Automated Non-Root Access Configuration**: New `--enable-nonroot` flag for bootstrap agent
+  - Automatically adds invoking user to `dso` and `docker` groups
+  - Eliminates manual `usermod` commands during setup
+  - Usage: `sudo docker dso bootstrap agent --enable-nonroot`
+  - Enables non-root users to run `docker dso` commands without sudo after login
+
 - **Cloud Provider Auto-Configuration**: Comprehensive auto-detection and configuration for all cloud providers
   - **AWS Auto-Detection**: Extracts instance ID from metadata for naming, uses AWS_REGION environment variable or user-provided region
   - **Azure Auto-Configuration**: Reads vault URL from AZURE_VAULT_URL environment variable with interactive fallback
@@ -24,8 +30,28 @@ All notable changes to this project will be documented in this file.
   - Impact: Bootstrap completes reliably even on systems with slow or limited IMDS access
   - Performance: 50-100% reduction in IMDS requests during bootstrap
 
+- **Configuration Directory Permissions**: Fixed /etc/dso directory access for non-root CLI users
+  - Issue: `/etc/dso` directory had 0750 permissions, preventing non-root users from reading config even though file was 0664
+  - Impact: Non-root users can now run `docker dso up` without permission errors
+  - Fix: Changed `/etc/dso` permissions from 0750 (rwxr-x---) to 0755 (rwxr-xr-x)
+  - Allows non-root users to access dso.yaml configuration file
+
+- **Bootstrap Configuration Defaults**: Ensured rotation defaults are included in generated dso.yaml
+  - Generated bootstrap config now includes: `defaults: inject: {type: env}, rotation: {enabled: true, strategy: rolling}`
+  - Rotation defaults set via ConfigBuilder.WithDefaults() during bootstrap collection
+  - Ensures all generated configs have consistent default settings for secret injection and rotation behavior
+
 - **Configuration Validation Tests**: Fixed test fixtures using file injection without specifying required UID/GID
   - Tests now properly validate non-root user configuration requirements
+
+- **Systemd Service Configuration**: Updated deprecated memory resource limit parameter
+  - Replaced `MemoryLimit=500M` with `MemoryMax=500M` in systemd service file
+  - MemoryLimit was deprecated in systemd 231; MemoryMax is the current standard
+  - Eliminates deprecation warnings in systemd logs on modern systems
+
+- **CLI Configuration Help Text**: Clarified config file discovery order
+  - Help text now explicitly shows search order: `/etc/dso/dso.yaml` → `./dso.yaml` → `dso.yaml`
+  - Reduces confusion about configuration file location and precedence
 
 ### Testing
 

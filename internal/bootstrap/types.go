@@ -44,6 +44,9 @@ type BootstrapOptions struct {
 	OwnerUserID  int // Current user UID (auto-detected if 0)
 	OwnerGroupID int // Current group GID (auto-detected if 0)
 
+	// Non-root access (agent mode only)
+	EnableNonRootAccess bool // Automatically configure user for non-root access
+
 	// Timing
 	Timeout time.Duration
 	Context context.Context

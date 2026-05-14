@@ -52,7 +52,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 		},
 	}
 
-	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (default: /etc/dso/dso.yaml or ./dso.yaml)")
+	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml)")
 
 	cmd.AddCommand(NewBootstrapCmd())
 	cmd.AddCommand(NewDoctorCmd())

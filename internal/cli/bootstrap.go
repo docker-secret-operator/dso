@@ -54,8 +54,9 @@ Bootstrap creates the runtime directory structure, generates configuration,
 initializes encryption, and validates your environment.
 
 Examples:
-  docker dso bootstrap local              # For local development
-  sudo docker dso bootstrap agent         # For production deployment`,
+  docker dso bootstrap local                           # For local development
+  sudo docker dso bootstrap agent                      # For production deployment
+  sudo docker dso bootstrap agent --enable-nonroot     # Production + non-root CLI access`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode := args[0]
@@ -70,6 +71,10 @@ Examples:
 			}
 		},
 	}
+
+	// Add flag for non-root access configuration
+	cmd.Flags().BoolVar(&enableNonRootAccess, "enable-nonroot", false,
+		"Automatically configure current user for non-root DSO access (agent mode only)")
 
 	return cmd
 }
@@ -123,6 +128,8 @@ func bootstrapLocal() error {
 // AGENT MODE BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════════
 
+var enableNonRootAccess bool
+
 func bootstrapAgent() error {
 	fmt.Println()
 	fmt.Println("Initializing DSO Agent Runtime...")
@@ -135,13 +142,14 @@ func bootstrapAgent() error {
 	// Create bootstrap options for agent mode
 	ctx := context.Background()
 	opts := &bootstrap.BootstrapOptions{
-		Mode:           bootstrap.ModeAgent,
-		Provider:       "", // Will prompt user or detect
-		NonInteractive: false,
-		Force:          false,
-		DryRun:         false,
-		Timeout:        30 * 60,
-		Context:        ctx,
+		Mode:                  bootstrap.ModeAgent,
+		Provider:              "", // Will prompt user or detect
+		NonInteractive:        false,
+		Force:                 false,
+		DryRun:                false,
+		EnableNonRootAccess:   enableNonRootAccess,
+		Timeout:               30 * 60,
+		Context:               ctx,
 	}
 
 	// Execute with progress reporting

@@ -144,15 +144,66 @@ func runSystemCommand(cmd string) error {
 // addUserToDSOGroup adds a user to the DSO group
 // This typically requires root privileges
 func (pm *PermissionManager) addUserToDSOGroup(uid int) error {
-	// In a real system, this would require:
-	// - Reading /etc/group
-	// - Adding user to dso group
-	// - Writing back /etc/group
-	// Or using system calls like add_group_member
+	u, err := user.LookupId(fmt.Sprintf("%d", uid))
+	if err != nil {
+		return fmt.Errorf("could not lookup user: %w", err)
+	}
 
-	// For now, we log the operation that should be performed
-	pm.logger.Info("User should be added to DSO group via: usermod -aG dso <username>",
-		"uid", uid)
+	// Use usermod to add user to dso group
+	cmd := exec.Command("usermod", "-aG", "dso", u.Username)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to add user to dso group: %w", err)
+	}
+
+	pm.logger.Info("User added to dso group", "username", u.Username, "uid", uid)
+	return nil
+}
+
+// ConfigureNonRootAccess automatically sets up non-root user access to DSO
+// This adds the user to dso and docker groups for command-line usage
+func (pm *PermissionManager) ConfigureNonRootAccess(invokerUID int) error {
+	if pm.dryRun {
+		pm.logger.Info("DRY_RUN: Would configure non-root access",
+			"invoker_uid", invokerUID)
+		return nil
+	}
+
+	if invokerUID == 0 {
+		pm.logger.Warn("ConfigureNonRootAccess called for root user, skipping")
+		return nil
+	}
+
+	u, err := user.LookupId(fmt.Sprintf("%d", invokerUID))
+	if err != nil {
+		return fmt.Errorf("could not lookup user: %w", err)
+	}
+
+	username := u.Username
+
+	// Add user to dso group
+	cmd := exec.Command("usermod", "-aG", "dso", username)
+	if err := cmd.Run(); err != nil {
+		pm.logger.Warn("Could not add user to dso group",
+			"username", username, "error", err.Error())
+		// Not fatal - continue anyway
+	} else {
+		pm.logger.Info("User added to dso group", "username", username)
+	}
+
+	// Add user to docker group (if exists)
+	cmd = exec.Command("usermod", "-aG", "docker", username)
+	if err := cmd.Run(); err != nil {
+		pm.logger.Warn("Could not add user to docker group (group may not exist)",
+			"username", username, "error", err.Error())
+		// Not fatal - docker group may not exist
+	} else {
+		pm.logger.Info("User added to docker group", "username", username)
+	}
+
+	pm.logger.Info("Non-root access configured", "username", username)
+	pm.logger.Warn("User must log out and log back in for group changes to take effect",
+		"username", username)
+
 	return nil
 }
 
@@ -162,7 +213,7 @@ func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso", 0750},     // root:dso, readable/writable by group
+		{"/etc/dso", 0755},     // root:dso, readable by all (config must be accessible to CLI users)
 		{"/var/lib/dso", 0770}, // root:dso, readable/writable by group
 		{"/var/run/dso", 0775}, // root:dso, readable/writable by group, others can cd into
 		{"/var/log/dso", 0770}, // root:dso, readable/writable by group
@@ -273,7 +324,7 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso", 0750},
+		{"/etc/dso", 0755},
 		{"/var/lib/dso", 0770},
 		{"/var/run/dso", 0775},
 		{"/var/log/dso", 0770},
