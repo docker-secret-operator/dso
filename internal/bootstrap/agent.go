@@ -125,6 +125,19 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		return nil, ErrRollback("bootstrap", "transaction_execution", err)
 	}
 
+	// Step 8a: Install required provider plugins
+	requiredProviders := GetRequiredProviders(builder.GetProviders())
+	if len(requiredProviders) > 0 {
+		ab.logger.Info("Installing provider plugins", "providers", requiredProviders)
+		pluginInstaller := NewProviderPluginInstaller(ab.logger, opts.DryRun)
+		if err := pluginInstaller.InstallProviderPlugins(ctx, requiredProviders); err != nil {
+			ab.logger.Warn("Provider plugin installation failed, continuing anyway",
+				"error", err.Error())
+			// Don't fail bootstrap if plugin installation fails
+			// User can install manually later with docker dso system setup
+		}
+	}
+
 	// Step 9: Configure non-root access if requested
 	warnings := []string{}
 	if opts.EnableNonRootAccess && currentUser.UID != 0 {
@@ -168,7 +181,7 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 // collectConfiguration gathers configuration from user or arguments
 func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *BootstrapOptions, cloudInfo *CloudProviderInfo) (*ConfigBuilder, error) {
 	builder := NewConfigBuilder().
-		WithVersion("1.0").
+		WithVersion("v1.0.0").
 		WithMode(ModeAgent)
 
 	var provider string
