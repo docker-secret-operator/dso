@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.1] - 2026-05-15
+
+### Added
+
+- **Improved Bootstrap UX**: Bootstrap now generates config template instead of interactive prompts
+  - Bootstrap creates `/etc/dso/dso.yaml` with provider and agent settings pre-configured
+  - Secrets configuration moved to manual YAML editing (cleaner UX, avoids confusing prompts)
+  - Clear next steps provided at bootstrap completion
+  - YAML template includes detailed examples for different providers
+
+### Changed
+
+- **Bootstrap Secret Configuration**: Removed interactive secret definition prompts
+  - Users now configure secrets directly in `/etc/dso/dso.yaml` after bootstrap
+  - Eliminates confusing provider-specific format prompts
+  - YAML template includes commented examples for all provider types
+  - Clearer documentation on secret name and mapping format
+
+---
+
 ## [3.5.0] - 2026-05-14
 
 ### Added

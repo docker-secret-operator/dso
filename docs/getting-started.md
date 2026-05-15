@@ -456,42 +456,86 @@ DSO reads your compose file, resolves all `dso://` and `dsofile://` references i
 
 Cloud mode requires root and runs the `dso-agent` as a systemd service.
 
-### 1. Run system setup (once, as root)
+### 1. Bootstrap Agent (once, as root)
+
 ```bash
-sudo docker dso system setup
+sudo docker dso bootstrap agent
 ```
 
 This command:
+- Creates `/etc/dso/dso.yaml` with provider pre-configured
 - Writes `/etc/systemd/system/dso-agent.service` (systemd unit)
-- Downloads and verifies provider plugins from the GitHub release
-- Creates `/etc/dso/dso.yaml` (source of truth)
+- Sets up system directories with proper permissions
+- (Optional) Adds your user to `dso` and `docker` groups with `--enable-nonroot` flag
 
-### 2. Enable and start the agent
+Output includes:
+```
+✓ DSO Agent Runtime Initialized
+✓ Configuration: /etc/dso/dso.yaml
+✓ Service: /etc/systemd/system/dso-agent.service
 
-```bash
-sudo docker dso system enable
+🔧 NEXT STEPS:
+1. Edit configuration: sudo nano /etc/dso/dso.yaml
+2. Add your secrets under the 'secrets:' section
+3. Validate: sudo docker dso config validate
+4. Enable service: sudo docker dso system enable
+5. Check status: docker dso status --watch
 ```
 
-### 3. Configure providers in `/etc/dso/dso.yaml`
+### 2. Configure Secrets in `/etc/dso/dso.yaml`
 
-Edit the configuration file:
+The bootstrap process created your config file. Now you need to add your secrets:
+
 ```bash
 sudo nano /etc/dso/dso.yaml
 ```
 
-Example configuration:
-```yaml
-providers:
-  vault-prod:
-    type: vault
-    address: https://vault.example.com
-    auth:
-      method: token
-      token: ${VAULT_TOKEN}
+The file already contains:
+- ✅ **Provider configured** (AWS/Azure/Vault/Huawei)
+- ✅ **Agent settings** (cache, watch, rotation strategy)
+- ❌ **Secrets** (you need to add these manually)
 
+**Example for Vault:**
+```yaml
 secrets:
   - name: prod/db_password
-    provider: vault-prod
+    provider: vault
+    mappings:
+      value: POSTGRES_PASSWORD
+  
+  - name: prod/api-credentials
+    provider: vault
+    mappings:
+      username: API_USER
+      password: API_PASSWORD
+```
+
+**Example for AWS:**
+```yaml
+secrets:
+  - name: prod/mysql-password
+    provider: aws
+    mappings:
+      value: MYSQL_ROOT_PASSWORD
+  
+  - name: prod/app-secrets          # JSON secret with multiple values
+    provider: aws
+    mappings:
+      api_key: API_KEY
+      db_pass: DB_PASSWORD
+```
+
+### 3. Validate and Enable Service
+
+```bash
+# Validate configuration syntax
+sudo docker dso config validate
+
+# Enable and start the systemd service
+sudo docker dso system enable
+
+# Watch logs in real-time
+docker dso status --watch
 ```
 
 The `/etc/dso/dso.yaml` is the source of truth. It is auto-loaded and determines all runtime behavior.
@@ -501,6 +545,8 @@ The `/etc/dso/dso.yaml` is the source of truth. It is auto-loaded and determines
 ```bash
 docker compose up -d
 ```
+
+Containers automatically fetch secrets from the configured provider.
 
 ---
 

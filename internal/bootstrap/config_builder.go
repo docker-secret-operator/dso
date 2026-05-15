@@ -370,20 +370,44 @@ agent:
   watch:
     polling_interval: 1m
 
-# ── Secret Mappings ────────────────────────────────────────────────────────────
-# For Azure Key Vault: Azure secrets are plain strings. DSO wraps as {"value": "<string>"}
-# For AWS Secrets Manager: JSON strings are parsed automatically
-# For Vault: Values stored exactly as provided
-# For Huawei KMS: Plain strings
+# ── Secret Configuration ────────────────────────────────────────────────────────
+# INSTRUCTIONS:
+# 1. Add your secrets under the 'secrets:' section below
+# 2. Use the 'name' that matches your secret in the provider
+# 3. Define 'mappings' to map secret values to environment variables
+#
+# Provider-specific notes:
+# - AWS Secrets Manager: JSON strings are parsed; use 'name' as secret key in AWS
+# - Azure Key Vault: Plain strings; use 'name' as secret name in Azure
+# - Vault: Values stored exactly as provided; use 'name' as secret path
+# - Huawei KMS: Plain strings; use 'name' as secret name in Huawei
 
 secrets:
-  # Example: Uncomment and customize for your secrets
-  # - name: MYSQL-ROOT-PASSWORD    # Exact secret name in provider
+  # EXAMPLE 1: Database password
+  # - name: prod/db_password           # Secret name in your provider
+  #   provider: %s                     # Provider configured above
+  #   mappings:
+  #     value: POSTGRES_PASSWORD       # Map to environment variable
+
+  # EXAMPLE 2: Multiple values from JSON secret (AWS)
+  # - name: prod/db-credentials        # Secret in AWS containing: {"username": "...", "password": "..."}
   #   provider: %s
   #   mappings:
-  #     value: MYSQL_ROOT_PASSWORD
+  #     username: DB_USER              # Extract 'username' → DB_USER env var
+  #     password: DB_PASSWORD          # Extract 'password' → DB_PASSWORD env var
 
-`, string(baseYAML), cb.getFirstProviderName())
+  # EXAMPLE 3: API key
+  # - name: prod/api_key               # Secret in your provider
+  #   provider: %s
+  #   mappings:
+  #     value: API_KEY                 # Map to environment variable
+
+# After adding secrets above:
+# 1. Validate: sudo docker dso config validate
+# 2. Enable service: sudo docker dso system enable
+# 3. Check status: docker dso status --watch
+
+`, string(baseYAML), cb.getFirstProviderName(), cb.getFirstProviderName(), cb.getFirstProviderName())
 
 	return []byte(template), nil
 }

@@ -139,6 +139,16 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		warnings = append(warnings, fmt.Sprintf("To enable non-root CLI access for %s, run: sudo docker dso bootstrap agent --enable-nonroot", currentUser.Username))
 	}
 
+	// Step 10: Add next steps for configuration
+	warnings = append(warnings, "")
+	warnings = append(warnings, "🔧 NEXT STEPS:")
+	warnings = append(warnings, "1. Edit configuration: sudo nano /etc/dso/dso.yaml")
+	warnings = append(warnings, "2. Add your secrets under the 'secrets:' section (see examples)")
+	warnings = append(warnings, "3. Configure environment variable mappings for each secret")
+	warnings = append(warnings, "4. Validate configuration: sudo docker dso config validate")
+	warnings = append(warnings, "5. Enable service: sudo docker dso system enable")
+	warnings = append(warnings, "6. Start monitoring: docker dso status --watch")
+
 	// Step 10: Display completion message
 	if opts.NonInteractive {
 		ab.logger.Info("Agent bootstrap completed successfully")
@@ -210,23 +220,15 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("unknown provider: %s", provider))
 	}
 
-	// Configure secrets
+	// Configure secrets (if provided via options, otherwise skip for manual configuration)
 	if opts.Secrets != nil && len(opts.Secrets) > 0 {
-		// Secrets provided via options
+		// Secrets provided via options (e.g., from CI/CD)
 		for _, secret := range opts.Secrets {
 			builder.WithSecret(secret.Name, secret.Provider, secret.Mappings)
 		}
-	} else if !opts.NonInteractive {
-		// Ask user for secrets
-		secrets, err := ab.prompter.PromptSecrets(provider)
-		if err != nil {
-			return nil, ErrInteractivePrompt("bootstrap", err)
-		}
-
-		for _, secret := range secrets {
-			builder.WithSecret(secret.Name, provider, secret.Mappings)
-		}
 	}
+	// Note: Secrets are NOT prompted interactively. Users configure them manually in /etc/dso/dso.yaml
+	// This provides better UX and avoids confusing interactive prompts with provider-specific formats
 
 	// Check for builder errors immediately
 	if builder.HasErrors() {
