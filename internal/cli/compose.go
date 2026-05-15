@@ -99,7 +99,7 @@ func NewComposeCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			socketPath := "/var/run/dso.sock"
+			socketPath := "/run/dso/dso.sock"
 			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 				socketPath = custom
 			}

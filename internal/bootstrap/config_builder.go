@@ -16,7 +16,7 @@ type ConfigBuilder struct {
 func NewConfigBuilder() *ConfigBuilder {
 	return &ConfigBuilder{
 		config: &Config{
-			Version: "1.0",
+			Version: "v1.0.0",
 			Runtime: RuntimeConfig{
 				Mode:     "agent",
 				LogLevel: "info",

@@ -19,7 +19,7 @@ func NewWatchCmd() *cobra.Command {
 		Use:   "watch",
 		Short: "Real-time monitor of secret rotations and container lifecycles",
 		Run: func(cmd *cobra.Command, args []string) {
-			socketPath := "/var/run/dso.sock"
+			socketPath := "/run/dso/dso.sock"
 			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 				socketPath = custom
 			}

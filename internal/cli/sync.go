@@ -45,7 +45,7 @@ Examples:
 		RunE: syncCommand,
 	}
 
-	cmd.Flags().StringVar(&syncOpts.AgentSocket, "agent-socket", "/var/run/dso.sock",
+	cmd.Flags().StringVar(&syncOpts.AgentSocket, "agent-socket", "/run/dso/dso.sock",
 		"Agent socket path")
 	cmd.Flags().DurationVar(&syncOpts.Timeout, "timeout", 30*time.Second,
 		"Reconciliation timeout")

@@ -191,7 +191,7 @@ func NewAgentCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&socketPath, "socket", "/var/run/dso.sock", "Path to DSO internal IPC socket")
+	cmd.Flags().StringVar(&socketPath, "socket", "/run/dso/dso.sock", "Path to DSO internal IPC socket")
 	cmd.Flags().StringVar(&driverSocket, "driver-socket", "/run/docker/plugins/dso.sock", "Path to Docker Secret Driver socket")
 	cmd.Flags().StringVar(&apiAddr, "api-addr", "127.0.0.1:8080", "Address to bind the REST API server")
 

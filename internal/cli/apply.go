@@ -210,7 +210,7 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 	defer logger.Sync()
 
 	// Try to connect to the running agent to trigger reconciliation
-	socketPath := "/var/run/dso.sock"
+	socketPath := "/run/dso/dso.sock"
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
 	}

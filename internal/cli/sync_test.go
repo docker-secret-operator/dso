@@ -60,10 +60,10 @@ func TestSyncOptions_DefaultTimeout(t *testing.T) {
 
 // TestSyncOptions_DefaultSocket verifies default socket path
 func TestSyncOptions_DefaultSocket(t *testing.T) {
-	opts := SyncOptions{AgentSocket: "/var/run/dso.sock"}
+	opts := SyncOptions{AgentSocket: "/run/dso/dso.sock"}
 
-	if opts.AgentSocket != "/var/run/dso.sock" {
-		t.Errorf("Expected default socket /var/run/dso.sock, got %q", opts.AgentSocket)
+	if opts.AgentSocket != "/run/dso/dso.sock" {
+		t.Errorf("Expected default socket /run/dso/dso.sock, got %q", opts.AgentSocket)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestSyncOptions_VariousTimeouts(t *testing.T) {
 // TestSyncCmd_SocketPathVariations handles various socket paths
 func TestSyncCmd_SocketPaths(t *testing.T) {
 	paths := []string{
-		"/var/run/dso.sock",
+		"/run/dso/dso.sock",
 		"/tmp/dso.sock",
 		"/run/dso.sock",
 		"./dso.sock",
@@ -337,7 +337,7 @@ func TestSyncCmd_ErrorHandling(t *testing.T) {
 // TestSyncOptions_AllFieldsPopulated verifies all fields work
 func TestSyncOptions_AllFields(t *testing.T) {
 	opts := SyncOptions{
-		AgentSocket: "/var/run/dso.sock",
+		AgentSocket: "/run/dso/dso.sock",
 		Timeout:     30 * time.Second,
 		Secret:      "db_password",
 	}

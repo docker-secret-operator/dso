@@ -63,7 +63,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 			envMap[k] = v
 		}
 	} else if cfg != nil {
-		socketPath := "/var/run/dso.sock"
+		socketPath := "/run/dso/dso.sock"
 		if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 			socketPath = custom
 		}
