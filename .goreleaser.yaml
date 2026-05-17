@@ -5,8 +5,14 @@ project_name: dso
 before:
   hooks:
     - go mod tidy
-    # Pre-build all provider plugins to ensure they're available for archiving
-    - sh -c 'mkdir -p ./dist/plugins && for provider in aws azure vault huawei; do echo "Pre-building dso-provider-$provider..." && CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-$provider ./cmd/plugins/dso-provider-$provider || exit 1; done'
+    # Pre-build AWS provider plugin
+    - sh -c 'mkdir -p ./dist/plugins && CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-aws ./cmd/plugins/dso-provider-aws'
+    # Pre-build Azure provider plugin
+    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-azure ./cmd/plugins/dso-provider-azure'
+    # Pre-build Vault provider plugin
+    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-vault ./cmd/plugins/dso-provider-vault'
+    # Pre-build Huawei provider plugin
+    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-huawei ./cmd/plugins/dso-provider-huawei'
 
 builds:
   - id: docker-dso
