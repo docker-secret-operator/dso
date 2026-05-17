@@ -5,6 +5,8 @@ project_name: dso
 before:
   hooks:
     - go mod tidy
+    # Pre-build all provider plugins to ensure they're available for archiving
+    - sh -c 'mkdir -p ./dist/plugins && for provider in aws azure vault huawei; do echo "Pre-building dso-provider-$provider..." && CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-$provider ./cmd/plugins/dso-provider-$provider || exit 1; done'
 
 builds:
   - id: docker-dso
@@ -80,6 +82,10 @@ archives:
       - dso-provider-azure
       - dso-provider-huawei
       - dso-provider-vault
+    files:
+      - src: dist/plugins/dso-provider-*
+        dst: .
+        strip_parent: true
     name_template: "dso-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - tar.gz
