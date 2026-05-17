@@ -1,0 +1,205 @@
+# Docker Secret Operator - Complete Configuration Template
+# This file shows ALL available configuration options.
+# Most fields are optional and have sensible defaults.
+#
+# Required sections: providers, secrets
+# Optional sections: agent, defaults, logging
+#
+# See docs/CONFIG_REFERENCE.md for detailed documentation
+
+version: v1.0.0
+mode: agent  # local or agent
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDERS - Define where secrets are stored (AWS, Azure, Vault, Huawei, etc)
+# ═══════════════════════════════════════════════════════════════════════════════
+providers:
+  aws:
+    type: aws
+    region: us-east-1           # AWS region containing Secrets Manager
+    auth:
+      method: iam_role          # iam_role, access_key, token, env
+      # params:
+      #   access_key_id: YOUR_ACCESS_KEY
+      #   secret_access_key: YOUR_SECRET_KEY
+    retry:
+      attempts: 3               # Number of retry attempts
+      backoff: "1s"             # Backoff duration between retries
+    # config:
+    #   custom_endpoint: https://secrets-manager.us-east-1.amazonaws.com
+
+  # Example Azure configuration
+  # azure:
+  #   type: azure
+  #   region: eastus
+  #   auth:
+  #     method: managed_identity  # or service_principal
+  #     params:
+  #       vault_name: my-keyvault
+  #       tenant_id: YOUR_TENANT_ID
+  #   config:
+  #     api_version: "7.3"
+
+  # Example Vault configuration
+  # vault:
+  #   type: vault
+  #   auth:
+  #     method: token            # token, kubernetes, jwt, appRole
+  #     params:
+  #       address: https://vault.example.com:8200
+  #       token: YOUR_VAULT_TOKEN
+  #   config:
+  #     namespace: admin
+
+  # Example Huawei configuration
+  # huawei:
+  #   type: huawei
+  #   region: cn-north-4
+  #   auth:
+  #     method: access_key       # access_key, iam_role
+  #     params:
+  #       access_key: YOUR_ACCESS_KEY
+  #       secret_key: YOUR_SECRET_KEY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT - Configure the DSO agent runtime behavior (optional)
+# ═══════════════════════════════════════════════════════════════════════════════
+agent:
+  # Cache secrets in memory for faster access
+  cache: true
+
+  # Refresh cached secrets at this interval
+  refresh_interval: "5m"
+
+  # Automatically sync secrets without explicit trigger
+  auto_sync: false
+
+  # How to handle container restarts after secret rotation
+  restart_strategy:
+    type: rolling               # rolling, all-at-once, none
+    grace_period: "30s"         # Wait before restarting
+
+  # Watch for secret changes
+  watch:
+    mode: polling               # polling, event, hybrid
+    polling_interval: "5m"      # How often to check for changes
+    webhook:
+      enabled: false            # Enable webhook for provider events
+      # endpoint: https://your-webhook-endpoint
+      # auth_token: YOUR_TOKEN
+
+  # Secret rotation behavior
+  rotation:
+    enabled: true
+    strategy: rolling           # restart, signal, none
+    # signal: "SIGHUP"          # Signal to send if strategy=signal
+    health_check_timeout: "30s"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFAULTS - Default behavior for all secrets (optional)
+# ═══════════════════════════════════════════════════════════════════════════════
+defaults:
+  # Default injection method for all secrets
+  inject:
+    type: env                   # env or file
+    # path: /run/secrets        # For file injection
+    # uid: 1000
+    # gid: 1000
+
+  # Default rotation behavior for all secrets
+  rotation:
+    enabled: true
+    strategy: rolling           # restart, signal, none
+    health_check_timeout: "30s"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOGGING - Configure logging output (optional)
+# ═══════════════════════════════════════════════════════════════════════════════
+logging:
+  level: info                   # debug, info, warn, error
+  format: json                  # json or text
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECRETS - Define which secrets to sync and how to inject them
+# ═══════════════════════════════════════════════════════════════════════════════
+secrets:
+  # Simple secret example
+  - name: database_password
+    provider: aws               # Which provider to fetch from
+    inject:
+      type: env                 # Inject as environment variable
+    targets:
+      containers:               # Target specific containers
+        - app
+        - web-server
+      # OR use labels
+      # labels:
+      #   app: myapp
+      #   env: prod
+    mappings:                   # How to map secret to container variables
+      DB_PASSWORD: prod/database/password  # ENV_VAR_NAME: secret_name_in_provider
+      DB_USER: prod/database/username
+
+  # Secret with file injection
+  - name: api_certificates
+    provider: aws
+    inject:
+      type: file                # Inject as files
+      path: /etc/ssl/certs      # Where to write files
+      uid: 0                    # File owner UID
+      gid: 0                    # File owner GID
+    mappings:
+      cert.pem: prod/api/certificate
+      key.pem: prod/api/private-key
+
+  # Secret with rotation enabled
+  - name: jwt_signing_key
+    provider: aws
+    inject:
+      type: env
+    rotation:                   # Override global rotation settings
+      enabled: true
+      strategy: signal          # Use signal instead of restart
+      signal: "SIGHUP"
+      health_check_timeout: "60s"
+    mappings:
+      JWT_KEY: prod/jwt/signing-key
+
+  # Multi-container secret
+  - name: shared_credentials
+    provider: aws
+    targets:
+      containers:
+        - frontend
+        - backend
+        - api
+      # OR filter by labels
+      # labels:
+      #   tier: application
+    mappings:
+      API_KEY: prod/credentials/api-key
+      AUTH_TOKEN: prod/credentials/auth-token
+
+  # Example with Azure Key Vault
+  # - name: azure_secret_example
+  #   provider: azure
+  #   inject:
+  #     type: env
+  #   targets:
+  #     containers:
+  #       - myapp
+  #   mappings:
+  #     CONNECTION_STRING: my-connection-string
+  #     API_KEY: my-api-key
+
+  # Example with HashiCorp Vault
+  # - name: vault_secret_example
+  #   provider: vault
+  #   inject:
+  #     type: env
+  #   targets:
+  #     containers:
+  #       - myapp
+  #   mappings:
+  #     VAULT_SECRET: secret/data/myapp/credentials
+  #     VAULT_KEY: secret/data/myapp/api-key
