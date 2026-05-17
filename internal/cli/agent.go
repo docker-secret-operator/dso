@@ -134,7 +134,7 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent is now running",
-				zap.String("version", "v3.5.6"),
+				zap.String("version", "v3.5.7"),
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))

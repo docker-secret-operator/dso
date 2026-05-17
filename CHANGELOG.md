@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.7] - 2026-05-17
+
+### Fixed
+
+- **Provider Plugin Release Issue**: Fixed critical GoReleaser v2 configuration bug preventing provider plugins from being included in releases
+  - Corrected `before` hooks syntax for GoReleaser v2 compatibility (added explicit `cmd:` format)
+  - Simplified build configuration by removing redundant provider plugin build definitions
+  - Provider plugins now reliably build and include in all release archives
+  - Verified all four provider plugins (AWS, Azure, Vault, Huawei) build successfully
+
+---
+
 ## [3.5.6] - 2026-05-17
 
 ### Added
@@ -292,8 +304,8 @@ Each release is:
 
 ## Support
 
-- **Latest version**: v3.5.0 (fully supported)
-- **Previous versions**: v3.4.x (security patches only)
+- **Latest version**: v3.5.7 (fully supported)
+- **Previous versions**: v3.5.x (all supported), v3.4.x (security patches only)
 - **End of life**: Versions older than v3.4 are no longer supported
 
 See [Installation Guide](docs/getting-started.md) for upgrade instructions.
