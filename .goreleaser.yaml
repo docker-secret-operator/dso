@@ -4,15 +4,20 @@ project_name: dso
 
 before:
   hooks:
-    - go mod tidy
-    # Pre-build AWS provider plugin
-    - sh -c 'mkdir -p ./dist/plugins && CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-aws ./cmd/plugins/dso-provider-aws'
-    # Pre-build Azure provider plugin
-    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-azure ./cmd/plugins/dso-provider-azure'
-    # Pre-build Vault provider plugin
-    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-vault ./cmd/plugins/dso-provider-vault'
-    # Pre-build Huawei provider plugin
-    - sh -c 'CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-huawei ./cmd/plugins/dso-provider-huawei'
+    - cmd: go mod tidy
+    - cmd: mkdir -p ./dist/plugins
+    - cmd: go build -o ./dist/plugins/dso-provider-aws ./cmd/plugins/dso-provider-aws
+      env:
+        - CGO_ENABLED=0
+    - cmd: go build -o ./dist/plugins/dso-provider-azure ./cmd/plugins/dso-provider-azure
+      env:
+        - CGO_ENABLED=0
+    - cmd: go build -o ./dist/plugins/dso-provider-vault ./cmd/plugins/dso-provider-vault
+      env:
+        - CGO_ENABLED=0
+    - cmd: go build -o ./dist/plugins/dso-provider-huawei ./cmd/plugins/dso-provider-huawei
+      env:
+        - CGO_ENABLED=0
 
 builds:
   - id: docker-dso
@@ -28,66 +33,10 @@ builds:
       - amd64
       - arm64
 
-  - id: dso-provider-aws
-    main: ./cmd/plugins/dso-provider-aws
-    binary: dso-provider-aws
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
-  - id: dso-provider-azure
-    main: ./cmd/plugins/dso-provider-azure
-    binary: dso-provider-azure
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
-  - id: dso-provider-huawei
-    main: ./cmd/plugins/dso-provider-huawei
-    binary: dso-provider-huawei
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
-  - id: dso-provider-vault
-    main: ./cmd/plugins/dso-provider-vault
-    binary: dso-provider-vault
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
 archives:
   - id: dso
     ids:
       - docker-dso
-      - dso-provider-aws
-      - dso-provider-azure
-      - dso-provider-huawei
-      - dso-provider-vault
     files:
       - src: dist/plugins/dso-provider-*
         dst: .
