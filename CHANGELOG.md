@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.8] - 2026-05-17
+
+### Fixed
+
+- **Provider Plugin Build Hooks**: Further refinement of GoReleaser v2 before hooks syntax
+  - Changed from `cmd: go build` with `env:` field to `cmd: sh` with `args:` array format
+  - This is the standard GoReleaser v2 format for complex shell commands
+  - Inline environment variables directly in shell command strings
+  - Before hooks now execute reliably in GitHub Actions CI/CD environment
+
+---
+
 ## [3.5.7] - 2026-05-17
 
 ### Fixed

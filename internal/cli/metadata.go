@@ -14,7 +14,7 @@ func NewMetadataCmd() *cobra.Command {
 			metadata := `{
   "SchemaVersion": "0.1.0",
   "Vendor": "Umair",
-  "Version": "v3.5.7",
+  "Version": "v3.5.8",
   "ShortDescription": "Docker Secret Operator CLI"
 }`
 			fmt.Println(metadata)
