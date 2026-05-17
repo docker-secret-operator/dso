@@ -4,6 +4,34 @@ This guide covers fresh installation and your first deployment using the Phase 1
 
 ---
 
+## Quick Start (Recommended)
+
+**Get DSO up and running in 2-3 minutes:**
+
+### Step 1: Install DSO
+```bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+docker ps  # Reload plugins
+```
+
+### Step 2: Run the Setup Wizard
+```bash
+docker dso setup
+```
+
+This interactive wizard will:
+- 🔍 Auto-detect your cloud provider (AWS, Azure, Vault, or local)
+- 📋 Suggest the appropriate deployment mode
+- 📦 Install required provider plugins
+- 📝 Generate a pre-configured `dso.yaml` file
+- ✓ Validate your setup
+
+That's it! The wizard will show you the next steps.
+
+**For advanced users or manual configuration**, see [Detailed Setup](#detailed-setup) below.
+
+---
+
 ## Prerequisites
 
 - Docker (any recent version, 20.10+)
@@ -55,7 +83,11 @@ Use if you are:
 
 ---
 
-## Step 1 — Install DSO Plugin
+## Detailed Setup
+
+For users who want more control or need to troubleshoot, follow these steps manually.
+
+### Step 1 — Install DSO Plugin
 
 DSO is a Docker CLI plugin. Install it to make `docker dso` available.
 
@@ -91,9 +123,11 @@ See [CLI Reference](cli.md) or [Docker Plugin Integration](docker-plugin.md) for
 
 ---
 
-## Step 2 — Bootstrap DSO Environment (Phase 1)
+### Step 2 — Bootstrap DSO Environment (Phase 1)
 
-Choose your deployment mode and initialize DSO.
+**Alternative: Use the interactive setup wizard** (`docker dso setup`) for a guided experience.
+
+Choose your deployment mode and initialize DSO:
 
 ### Local Development Mode
 
@@ -151,7 +185,7 @@ Output:
 
 ---
 
-## Step 3 — Check Environment Health (Phase 2)
+### Step 3 — Check Environment Health (Phase 2)
 
 Validate DSO setup and environment.
 

@@ -36,12 +36,14 @@ func NewRootCmd() *cobra.Command {
 		Long: `Docker Secret Operator (DSO) is a cloud-native secret injection runtime for Docker Compose.
 It fetches and injects secrets into containers at runtime without exposing them to the host filesystem.
 
-DSO is a Docker CLI plugin. Usage:
+Quick start:
+  docker dso setup                  # Interactive setup wizard (recommended)
+
+Usage:
   docker dso bootstrap local        # For development
   sudo docker dso bootstrap agent   # For production
 
 Quick reference:
-  docker dso bootstrap              # Initialize runtime environment
   docker dso doctor                 # Validate environment
   docker dso status                 # Check operational status
   docker dso config show            # View configuration
@@ -54,6 +56,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 
 	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml)")
 
+	cmd.AddCommand(NewSetupCmd())
 	cmd.AddCommand(NewBootstrapCmd())
 	cmd.AddCommand(NewDoctorCmd())
 	cmd.AddCommand(NewStatusCmd())
@@ -78,7 +81,6 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewLogsCmd())
 	cmd.AddCommand(NewSecretCmd())
 	cmd.AddCommand(NewEnvImportCmd())
-	cmd.AddCommand(NewSystemCmd())
 
 	return cmd
 }

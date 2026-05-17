@@ -114,10 +114,24 @@ if [ "$IS_ROOT" != true ]; then
     echo ""
 fi
 
-read -r -p "Are you sure? Type 'yes' to continue: " confirm
-if [ "$confirm" != "yes" ]; then
-    echo "Uninstall cancelled."
-    exit 0
+# Check if running interactively (not piped)
+if [ -t 0 ]; then
+    # Interactive mode - prompt for confirmation
+    read -r -p "Are you sure? Type 'yes' to continue: " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "Uninstall cancelled."
+        exit 0
+    fi
+else
+    # Non-interactive mode (piped) - require explicit --force flag or env var
+    if [ "${DSO_UNINSTALL_FORCE:-false}" != "true" ] && [ "$1" != "--force" ]; then
+        echo "Error: Uninstall must be run interactively or with --force flag"
+        echo "Usage:"
+        echo "  Interactive: bash scripts/uninstall.sh"
+        echo "  Non-interactive: DSO_UNINSTALL_FORCE=true bash scripts/uninstall.sh"
+        echo "  Or: bash scripts/uninstall.sh --force"
+        exit 1
+    fi
 fi
 
 echo ""

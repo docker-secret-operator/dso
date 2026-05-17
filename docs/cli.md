@@ -3,7 +3,8 @@
 > **Docker Secret Operator CLI Plugin**
 >
 > All commands are invoked as `docker dso <command>`. DSO provides four phases of functionality:
-> - **Phase 1: Bootstrap** — Initialize local or agent mode with `docker dso bootstrap [local|agent]`
+> - **Quick Start** — Run `docker dso setup` for an interactive setup wizard (recommended)
+> - **Phase 1: Bootstrap** — Initialize local or agent mode with `docker dso bootstrap [local|agent]` (manual alternative)
 > - **Phase 2: Diagnose** — Check environment health with `docker dso doctor`
 > - **Phase 3: Monitor** — View status and manage configuration with `docker dso status` and `docker dso config`
 > - **Phase 4: Operate** — Manage systemd service with `docker dso system`
@@ -14,36 +15,86 @@
 
 ```
 docker dso
-├── bootstrap                # Initialize DSO runtime (Phase 1)
-│   ├── local               # Setup local development mode (~/.dso/)
-│   └── agent               # Setup production agent mode with systemd
-├── doctor                  # Check environment health and connectivity (Phase 2)
+├── setup                   # ★ Interactive setup wizard (recommended, Phase 1)
+│   ├── --auto-detect      # Auto-detect cloud provider
+│   ├── --mode [local|agent] # Specify deployment mode
+│   ├── --provider <name>  # Specify cloud provider
+│   └── --enable-nonroot   # Enable non-root access
+├── bootstrap               # Initialize DSO runtime (Phase 1, manual alternative)
+│   ├── local              # Setup local development mode (~/.dso/)
+│   └── agent              # Setup production agent mode with systemd
+├── doctor                 # Check environment health and connectivity (Phase 2)
 │   ├── --level [default|full]  # Detail level
-│   └── --json              # Machine-readable output
-├── status                  # View real-time system metrics (Phase 3)
-│   ├── --watch             # Auto-refresh every 2 seconds
-│   └── --json              # Machine-readable output
-├── config                  # Manage configuration (Phase 3)
-│   ├── show                # Display current configuration
-│   ├── edit                # Open configuration in $EDITOR
-│   ├── validate            # Validate configuration syntax
-└── system                  # Systemd service management (Phase 4)
-    ├── status              # Show service status and logs
-    ├── enable              # Enable and start dso-agent service
-    ├── disable             # Stop and disable service
-    ├── restart             # Restart dso-agent service
-    └── logs                # View journald logs with filtering
-        ├── -f              # Follow logs in real-time
-        ├── -n <lines>      # Show last N lines
-        ├── -p <level>      # Filter by level (err, warning, etc)
-        └── --since <time>  # Show logs since time (e.g., 1h, 30m)
+│   └── --json             # Machine-readable output
+├── status                 # View real-time system metrics (Phase 3)
+│   ├── --watch            # Auto-refresh every 2 seconds
+│   └── --json             # Machine-readable output
+├── config                 # Manage configuration (Phase 3)
+│   ├── show               # Display current configuration
+│   ├── edit               # Open configuration in $EDITOR
+│   ├── validate           # Validate configuration syntax
+└── system                 # Systemd service management (Phase 4)
+    ├── status             # Show service status and logs
+    ├── enable             # Enable and start dso-agent service
+    ├── disable            # Stop and disable service
+    ├── restart            # Restart dso-agent service
+    ├── setup              # Manually install provider plugins
+    └── logs               # View journald logs with filtering
+        ├── -f             # Follow logs in real-time
+        ├── -n <lines>     # Show last N lines
+        ├── -p <level>     # Filter by level (err, warning, etc)
+        └── --since <time> # Show logs since time (e.g., 1h, 30m)
 ```
 
 ---
 
-## Phase 1: Bootstrap
+## Quick Start: Interactive Setup Wizard
 
-Initialize DSO for local development or production deployment.
+**Recommended for first-time users.** The setup wizard guides you through configuration with auto-detection and validation.
+
+### Basic Usage
+```bash
+docker dso setup
+```
+
+The wizard will:
+1. Auto-detect your cloud provider (AWS, Azure, Vault, Huawei, or local)
+2. Suggest deployment mode (local for development or agent for production)
+3. Install required provider plugins
+4. Generate a pre-configured `dso.yaml` file
+5. Show next steps
+
+### Flags
+- `--auto-detect` — Auto-detect cloud provider without prompting
+- `--mode local|agent` — Skip mode selection, use specified mode
+- `--provider <name>` — Skip provider detection, use specified provider
+- `--enable-nonroot` — Configure non-root user access during setup
+
+### Examples
+```bash
+# Interactive setup (recommended)
+docker dso setup
+
+# Auto-detect cloud provider
+docker dso setup --auto-detect
+
+# Force local development mode
+docker dso setup --mode local
+
+# Force AWS provider
+docker dso setup --provider aws
+
+# Complete setup in one command
+docker dso setup --mode agent --provider aws --enable-nonroot
+```
+
+---
+
+## Phase 1: Bootstrap (Manual Alternative)
+
+Initialize DSO for local development or production deployment manually.
+
+**Note:** Most users should use `docker dso setup` instead. Manual bootstrap is for advanced users who need more control.
 
 ### Local Bootstrap (Development)
 ```bash

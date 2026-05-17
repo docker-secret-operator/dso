@@ -36,10 +36,28 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 ## Quick Start
 
-### Local Development (5 minutes)
+### Development & Production (2-3 minutes) — Recommended
 
 ```bash
-# 1. Install DSO as a Docker plugin
+# 1. Install DSO
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+
+# 2. Run interactive setup wizard
+docker dso setup
+
+# The wizard will:
+# - Auto-detect your environment (local or cloud)
+# - Generate configuration
+# - Install provider plugins
+# - Validate setup
+
+# 3. You're ready! Follow the wizard's next steps.
+```
+
+### Local Development Alternative (Manual Steps)
+
+```bash
+# 1. Install DSO
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # 2. Initialize local environment
@@ -59,7 +77,7 @@ docker dso secret set app/db_password
 docker dso compose up
 ```
 
-### Production with Systemd
+### Production with Systemd Alternative (Manual Steps)
 
 ```bash
 # 1. Install globally

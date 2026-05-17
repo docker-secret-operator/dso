@@ -33,6 +33,7 @@ Examples:
 	cmd.AddCommand(newSystemDisableCmd())
 	cmd.AddCommand(newSystemRestartCmd())
 	cmd.AddCommand(newSystemLogsCmd())
+	cmd.AddCommand(newSystemSetupCmd())
 
 	return cmd
 }

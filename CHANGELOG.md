@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.6] - 2026-05-17
+
+### Added
+
+- **Simplified Setup Wizard**: `docker dso setup` command for easy initialization
+  - Interactive mode prompts user to select cloud provider
+  - Auto-detection mode automatically detects AWS, Azure, Huawei from instance metadata
+  - Automatic provider plugin installation during setup
+  - Generates pre-configured `dso.yaml` files for different environments
+  - Works with both local (development) and agent (production) modes
+  - Provides clear next steps after setup completion
+  - Reduces setup time from 10-15 minutes to 2-3 minutes
+
+### Changed
+
+- Updated root command help to highlight `docker dso setup` as recommended entry point
+- Improved UX by consolidating bootstrap process into single wizard command
+
+---
+
+## [3.5.5] - 2026-05-17
+
+### Added
+
+- **System Setup Command**: `docker dso system setup --provider <name>`
+  - Manually install provider plugins from source
+  - Auto-detects root vs user-level installations
+  - Provides clear error messages when source not available
+  - Supports all providers: aws, azure, vault, huawei
+
+### Fixed
+
+- **Uninstall Script**: Now works in both interactive and piped modes
+  - Interactive: prompts for confirmation
+  - Piped: requires `--force` flag or `DSO_UNINSTALL_FORCE=true`
+  - Removed nested sudo calls for cleaner execution
+  - Proper root permission checks
+
+- **Error Messages**: Improved guidance when provider plugins missing
+  - Clear instructions to run `docker dso system setup`
+  - Fallback to manual build instructions
+
+### Changed
+
+- Bootstrap now suggests `docker dso system setup` when plugins unavailable
+
+---
+
 ## [3.5.4] - 2026-05-15
 
 ### Added
