@@ -5,19 +5,16 @@ project_name: dso
 before:
   hooks:
     - cmd: go mod tidy
-    - cmd: mkdir -p ./dist/plugins
-    - cmd: go build -o ./dist/plugins/dso-provider-aws ./cmd/plugins/dso-provider-aws
-      env:
-        - CGO_ENABLED=0
-    - cmd: go build -o ./dist/plugins/dso-provider-azure ./cmd/plugins/dso-provider-azure
-      env:
-        - CGO_ENABLED=0
-    - cmd: go build -o ./dist/plugins/dso-provider-vault ./cmd/plugins/dso-provider-vault
-      env:
-        - CGO_ENABLED=0
-    - cmd: go build -o ./dist/plugins/dso-provider-huawei ./cmd/plugins/dso-provider-huawei
-      env:
-        - CGO_ENABLED=0
+    - cmd: sh
+      args: ["-c", "mkdir -p ./dist/plugins"]
+    - cmd: sh
+      args: ["-c", "CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-aws ./cmd/plugins/dso-provider-aws"]
+    - cmd: sh
+      args: ["-c", "CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-azure ./cmd/plugins/dso-provider-azure"]
+    - cmd: sh
+      args: ["-c", "CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-vault ./cmd/plugins/dso-provider-vault"]
+    - cmd: sh
+      args: ["-c", "CGO_ENABLED=0 go build -o ./dist/plugins/dso-provider-huawei ./cmd/plugins/dso-provider-huawei"]
 
 builds:
   - id: docker-dso
