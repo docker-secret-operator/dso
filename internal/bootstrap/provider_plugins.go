@@ -29,8 +29,21 @@ func (ppi *ProviderPluginInstaller) InstallProviderPlugins(ctx context.Context, 
 		return nil
 	}
 
-	// Determine plugin install directory
-	pluginDir := "/usr/local/lib/dso/plugins"
+	// Determine plugin install directory based on permissions
+	var pluginDir string
+	if os.Geteuid() == 0 {
+		// Running as root - use system-wide directory
+		pluginDir = "/usr/local/lib/dso/plugins"
+	} else {
+		// Running as non-root - use user directory
+		home, err := os.UserHomeDir()
+		if err != nil {
+			ppi.logger.Warn("Could not determine home directory, using system default")
+			pluginDir = "/usr/local/lib/dso/plugins" // Fallback
+		} else {
+			pluginDir = filepath.Join(home, ".dso", "plugins")
+		}
+	}
 
 	if ppi.dryRun {
 		ppi.logger.Info("DRY_RUN: Would install provider plugins",
@@ -62,19 +75,33 @@ func (ppi *ProviderPluginInstaller) InstallProviderPlugins(ctx context.Context, 
 
 // buildAndInstallPlugin builds and installs a single provider plugin
 func (ppi *ProviderPluginInstaller) buildAndInstallPlugin(ctx context.Context, provider string, pluginDir string) error {
+	pluginBinary := filepath.Join(pluginDir, fmt.Sprintf("dso-provider-%s", provider))
+
+	// Check if plugin already exists
+	if _, err := os.Stat(pluginBinary); err == nil {
+		ppi.logger.Info("Provider plugin already exists, skipping build",
+			"provider", provider,
+			"path", pluginBinary)
+		return nil
+	}
+
 	// Map provider name to plugin command directory
 	cmdDir := filepath.Join("cmd", "plugins", fmt.Sprintf("dso-provider-%s", provider))
 
 	// Check if plugin source exists
 	if _, err := os.Stat(cmdDir); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("provider plugin source not found: %s", cmdDir)
+			ppi.logger.Warn("Provider plugin source not found - running from released binary",
+				"provider", provider,
+				"source_dir", cmdDir)
+			ppi.logger.Warn("To install provider plugins, run:",
+				"command", fmt.Sprintf("sudo docker dso system setup --provider %s", provider))
+			return fmt.Errorf("provider plugin source not found (running from released binary)")
 		}
 		return fmt.Errorf("failed to stat plugin source: %w", err)
 	}
 
-	pluginBinary := filepath.Join(pluginDir, fmt.Sprintf("dso-provider-%s", provider))
-	ppi.logger.Info("Building provider plugin", "provider", provider)
+	ppi.logger.Info("Building provider plugin from source", "provider", provider)
 
 	// Build the plugin binary
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", pluginBinary, fmt.Sprintf("./%s", cmdDir))
@@ -88,6 +115,15 @@ func (ppi *ProviderPluginInstaller) buildAndInstallPlugin(ctx context.Context, p
 	// Make it executable
 	if err := os.Chmod(pluginBinary, 0755); err != nil {
 		return fmt.Errorf("failed to chmod plugin binary: %w", err)
+	}
+
+	// Validate plugin works (smoke test)
+	testCmd := exec.CommandContext(ctx, pluginBinary, "--version")
+	if err := testCmd.Run(); err != nil {
+		ppi.logger.Warn("Provider plugin smoke test failed, but continuing",
+			"provider", provider,
+			"error", err.Error())
+		// Warn but don't fail - plugin might work despite version command failing
 	}
 
 	ppi.logger.Info("Provider plugin built successfully",

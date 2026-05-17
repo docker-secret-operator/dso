@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.4] - 2026-05-15
+
+### Added
+
+- **Smart Bootstrap Provider Plugin Installation**: Bootstrap automatically builds and installs required provider plugins
+  - Detects configured cloud providers (AWS, Azure, Vault, Huawei)
+  - Automatically builds and installs corresponding provider plugins
+  - No manual plugin installation required post-bootstrap
+  - Supports all provider types
+
+### Fixed
+
+- **Socket Path Consistency**: Fixed socket path mismatch between agent and CLI
+  - Changed hardcoded paths from `/var/run/dso.sock` to `/run/dso/dso.sock`
+  - Matches systemd service configuration
+  - Resolves "connection refused" errors on `docker dso compose up`
+  - Affects all CLI commands: compose, up, sync, apply, fetch, export, watch
+
+- **Config Version Format**: Fixed configuration version format validation
+  - Changed ConfigBuilder default from "1.0" to "v1.0.0"
+  - Matches semantic versioning validator requirements
+  - Resolves "invalid version format" errors on `docker dso config validate`
+
+### Changed
+
+- Bootstrap process now handles provider plugin installation internally
+- Improved bootstrap reliability and UX consistency
+
+---
+
 ## [3.5.1] - 2026-05-15
 
 ### Added

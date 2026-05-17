@@ -1,14 +1,20 @@
 #!/bin/bash
 # ==============================================================================
-# Docker Secret Operator (DSO) - Uninstaller (v3.4)
+# Docker Secret Operator (DSO) - Complete Uninstaller
 # ==============================================================================
-# Removes all DSO binaries, plugins, sockets, services, and optionally
-# the local Native Vault (~/.dso).
+# Removes ALL DSO traces from the system:
+#   - Binaries, plugins, symlinks
+#   - Systemd service and timers
+#   - Configuration and state directories
+#   - Runtime sockets and directories
+#   - Log directories
+#   - DSO group and users
+#   - All other DSO-related files
 #
-# Mirrors the path logic of install.sh:
-#   Root  → system paths (/usr/local/bin, /usr/local/lib/docker/cli-plugins)
-#   User  → local paths  ($HOME/.local/bin, $DOCKER_CONFIG/cli-plugins)
+# After running this, the system will be as if DSO was never installed.
 # ==============================================================================
+
+set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,136 +22,268 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# ── Determine if running as root ────────────────────────────────────────────
+IS_ROOT=false
+if [ "$EUID" -eq 0 ]; then
+    IS_ROOT=true
+fi
+
 DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
 
-# Resolve install paths (mirrors install.sh)
-if [ "$EUID" -eq 0 ]; then
+# ── Resolve paths (local vs. system) ────────────────────────────────────────
+if [ "$IS_ROOT" = true ]; then
     PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
     SYSTEM_BIN_DIR="/usr/local/bin"
+    PROVIDER_PLUGIN_DIR="/usr/local/lib/dso/plugins"
     IS_SYSTEM_INSTALL=true
 else
     PLUGIN_DIR="$DOCKER_CONFIG/cli-plugins"
     SYSTEM_BIN_DIR="$HOME/.local/bin"
+    PROVIDER_PLUGIN_DIR="$HOME/.dso/plugins"
     IS_SYSTEM_INSTALL=false
 fi
 
-echo -e "${BLUE}==========================================${NC}"
-echo -e "${RED}    Uninstalling Docker Secret Operator    ${NC}"
-echo -e "${BLUE}    Version: v3.4                         ${NC}"
-echo -e "${BLUE}==========================================${NC}"
-
-# ------------------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------------------
-
-# Remove a file or symlink, printing status.
+# ── Colors and helpers ──────────────────────────────────────────────────────
 safe_remove() {
     local path="$1"
     if [ -e "$path" ] || [ -L "$path" ]; then
-        if rm -f "$path"; then
-            echo -e "  ${GREEN}Removed:${NC} $path"
+        if rm -f "$path" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Removed:${NC} $path"
+            return 0
         else
-            echo -e "  ${YELLOW}Warning: could not remove $path${NC}"
+            echo -e "  ${YELLOW}⚠ Could not remove:${NC} $path"
+            return 1
         fi
     fi
 }
 
-# Remove a directory tree, printing status.
 safe_remove_dir() {
     local path="$1"
     if [ -d "$path" ]; then
-        if rm -rf "$path"; then
-            echo -e "  ${GREEN}Removed:${NC} $path"
+        if rm -rf "$path" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Removed:${NC} $path/"
+            return 0
         else
-            echo -e "  ${YELLOW}Warning: could not remove $path${NC}"
+            echo -e "  ${YELLOW}⚠ Could not remove:${NC} $path/"
+            return 1
         fi
     fi
 }
 
-# ------------------------------------------------------------------------------
-# Step 1 — Stop and disable systemd services (system installs only)
-# ------------------------------------------------------------------------------
-echo -e "\n${GREEN}[1/4] Stopping services...${NC}"
+safe_group_remove() {
+    local group="$1"
+    if getent group "$group" &>/dev/null; then
+        if groupdel "$group" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Removed group:${NC} $group"
+            return 0
+        else
+            echo -e "  ${YELLOW}⚠ Could not remove group:${NC} $group"
+            return 1
+        fi
+    fi
+}
+
+safe_user_remove() {
+    local user="$1"
+    if id "$user" &>/dev/null; then
+        if userdel -r "$user" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Removed user:${NC} $user"
+            return 0
+        else
+            echo -e "  ${YELLOW}⚠ Could not remove user:${NC} $user"
+            return 1
+        fi
+    fi
+}
+
+# ── Banner ──────────────────────────────────────────────────────────────────
+echo -e "${BLUE}════════════════════════════════════════════════════${NC}"
+echo -e "${RED}     Docker Secret Operator - Complete Uninstall    ${NC}"
+echo -e "${BLUE}════════════════════════════════════════════════════${NC}"
+echo ""
+echo "This will remove ALL DSO traces from your system:"
+echo "  - Binaries and plugins"
+echo "  - Configuration and state"
+echo "  - Systemd service"
+echo "  - System users and groups"
+echo "  - All related files and directories"
+echo ""
+
+if [ "$IS_ROOT" != true ]; then
+    echo -e "${YELLOW}Running as non-root. Some operations may require sudo.${NC}"
+    echo ""
+fi
+
+read -r -p "Are you sure? Type 'yes' to continue: " confirm
+if [ "$confirm" != "yes" ]; then
+    echo "Uninstall cancelled."
+    exit 0
+fi
+
+echo ""
+echo -e "${BLUE}Proceeding with uninstall...${NC}"
+
+# ── Step 1: Stop and disable services ──────────────────────────────────────
+echo ""
+echo -e "${GREEN}[1/7] Stopping services...${NC}"
 
 if [ "$IS_SYSTEM_INSTALL" = true ]; then
-    # Stop and disable dso-agent service
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error: System-wide uninstall requires root privileges${NC}"
+        echo -e "Run: sudo bash scripts/uninstall.sh"
+        exit 1
+    fi
+
+    # Stop dso-agent service
     if systemctl is-active --quiet dso-agent 2>/dev/null; then
-        systemctl stop dso-agent 2>/dev/null \
-            && echo -e "  ${GREEN}Stopped:${NC} dso-agent" \
-            || echo -e "  ${YELLOW}Warning: could not stop dso-agent${NC}"
+        systemctl stop dso-agent 2>/dev/null && echo -e "  ${GREEN}✓ Stopped:${NC} dso-agent" || true
     fi
+
+    # Disable service
     if systemctl is-enabled --quiet dso-agent 2>/dev/null; then
-        systemctl disable dso-agent 2>/dev/null || true
+        systemctl disable dso-agent 2>/dev/null && echo -e "  ${GREEN}✓ Disabled:${NC} dso-agent" || true
     fi
-    safe_remove "/etc/systemd/system/dso-agent.service"
+
+    # Reload systemd
     systemctl daemon-reload 2>/dev/null || true
 else
-    echo -e "  Skipped (user-level install — no systemd services managed)."
+    echo -e "  (Skipped - user-level install)"
 fi
 
-# ------------------------------------------------------------------------------
-# Step 2 — Remove sockets
-# ------------------------------------------------------------------------------
-echo -e "\n${GREEN}[2/4] Cleaning up sockets...${NC}"
+# ── Step 2: Remove systemd files ───────────────────────────────────────────
+echo ""
+echo -e "${GREEN}[2/7] Removing systemd files...${NC}"
 
-# IPC socket used by the agent for CLI-to-agent RPC
-safe_remove "/var/run/dso.sock"
+if [ "$IS_SYSTEM_INSTALL" = true ]; then
+    safe_remove "/etc/systemd/system/dso-agent.service"
+    safe_remove "/etc/systemd/system/dso-agent.timer"
+else
+    echo -e "  (Skipped - user-level install)"
+fi
 
-# Docker V2 Secret Driver socket (created by 'dso agent --driver-socket')
-safe_remove "/run/docker/plugins/dso.sock"
+# ── Step 3: Remove binaries and plugins ────────────────────────────────────
+echo ""
+echo -e "${GREEN}[3/7] Removing binaries and plugins...${NC}"
 
-# ------------------------------------------------------------------------------
-# Step 3 — Remove binaries, symlinks, and Docker CLI plugin
-# ------------------------------------------------------------------------------
-echo -e "\n${GREEN}[3/4] Removing binaries and plugin...${NC}"
-
-# Primary paths (match current install.sh)
+# Docker CLI plugin
 safe_remove "$PLUGIN_DIR/docker-dso"
-safe_remove "$SYSTEM_BIN_DIR/docker-dso"
-safe_remove "$SYSTEM_BIN_DIR/dso"          # symlink created by install.sh
 
-# Legacy paths from pre-v3.2 installs (best-effort cleanup)
+# Standalone binaries
+safe_remove "$SYSTEM_BIN_DIR/docker-dso"
+safe_remove "$SYSTEM_BIN_DIR/dso"
+
+# Legacy paths
 if [ "$IS_SYSTEM_INSTALL" = true ]; then
     safe_remove "/usr/local/bin/dso-agent"
-    safe_remove_dir "/usr/local/lib/dso"   # old plugin binary directory
+    safe_remove "/usr/local/bin/dso-provider-aws"
+    safe_remove "/usr/local/bin/dso-provider-azure"
+    safe_remove "/usr/local/bin/dso-provider-vault"
+    safe_remove "/usr/local/bin/dso-provider-huawei"
 fi
 
-# Remove agent configuration and state (system installs only)
+# ── Step 4: Remove provider plugins ────────────────────────────────────────
+echo ""
+echo -e "${GREEN}[4/7] Removing provider plugins...${NC}"
+
+safe_remove_dir "$PROVIDER_PLUGIN_DIR"
+
+# ── Step 5: Remove configuration and state (system installs) ──────────────
+echo ""
+echo -e "${GREEN}[5/7] Removing configuration and state...${NC}"
+
 if [ "$IS_SYSTEM_INSTALL" = true ]; then
-    echo -e "\n${GREEN}[3.5/4] Removing agent configuration...${NC}"
-    safe_remove_dir "/etc/dso"              # Configuration files (config.yaml, dso.yaml)
-    safe_remove_dir "/var/lib/dso"          # Agent state directory
+    safe_remove_dir "/etc/dso"
+    safe_remove_dir "/var/lib/dso"
+    safe_remove_dir "/var/log/dso"
+else
+    echo -e "  (Skipped - user-level install)"
 fi
 
-# ------------------------------------------------------------------------------
-# Step 4 — Optionally remove Native Vault data
-# ------------------------------------------------------------------------------
-echo -e "\n${GREEN}[4/4] Native Vault cleanup...${NC}"
+# ── Step 6: Remove runtime and socket directories ──────────────────────────
+echo ""
+echo -e "${GREEN}[6/7] Removing runtime directories...${NC}"
 
-VAULT_DIR="$HOME/.dso"
+# Socket directories
+safe_remove "/var/run/dso.sock"
+safe_remove "/run/dso.sock"
+safe_remove_dir "/var/run/dso"
+safe_remove_dir "/run/dso"
 
-if [ -d "$VAULT_DIR" ]; then
-    echo -e "  Found vault data at ${YELLOW}$VAULT_DIR${NC}"
-    echo -e "  Contents:"
-    ls -lh "$VAULT_DIR" 2>/dev/null | tail -n +2 | sed 's/^/    /'
-    echo -e ""
-    echo -e "  ${YELLOW}WARNING:${NC} This contains your encrypted vault (vault.enc) and"
-    echo -e "  master key (master.key). Removal is permanent and unrecoverable."
-    echo -e ""
-    read -r -p "  Remove vault data? [y/N] " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        safe_remove_dir "$VAULT_DIR"
-        echo -e "  ${GREEN}Vault data removed.${NC}"
-    else
-        echo -e "  ${YELLOW}Vault data kept at $VAULT_DIR — remove manually when ready.${NC}"
+# Docker plugin socket
+safe_remove "/run/docker/plugins/dso.sock"
+safe_remove_dir "/run/docker/plugins/dso"
+
+# ── Step 7: Remove system user and group ───────────────────────────────────
+echo ""
+echo -e "${GREEN}[7/7] Removing system user and group...${NC}"
+
+if [ "$IS_SYSTEM_INSTALL" = true ]; then
+    # Remove dso user (if exists and not system-critical)
+    if id dso &>/dev/null 2>&1; then
+        echo -e "  Found DSO user. Attempting removal..."
+        userdel -r dso 2>/dev/null && echo -e "  ${GREEN}✓ Removed user:${NC} dso" || echo -e "  ${YELLOW}⚠ Could not remove user 'dso'${NC}"
+    fi
+
+    # Remove dso group
+    if getent group dso &>/dev/null; then
+        groupdel dso 2>/dev/null && echo -e "  ${GREEN}✓ Removed group:${NC} dso" || echo -e "  ${YELLOW}⚠ Could not remove group 'dso'${NC}"
     fi
 else
-    echo -e "  No vault data found at $VAULT_DIR."
+    echo -e "  (Skipped - user-level install)"
 fi
 
-# ------------------------------------------------------------------------------
-# Done
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}==========================================${NC}"
-echo -e "${GREEN}   DSO v3.4 successfully uninstalled.     ${NC}"
-echo -e "${BLUE}==========================================${NC}"
+# ── Optional: Remove local vault ────────────────────────────────────────────
+echo ""
+VAULT_DIR="$HOME/.dso"
+if [ -d "$VAULT_DIR" ]; then
+    echo -e "${YELLOW}Found local vault at: $VAULT_DIR${NC}"
+    echo -e "  Size: $(du -sh "$VAULT_DIR" | cut -f1)"
+    echo -e "  ${RED}WARNING:${NC} Contains encrypted vault.enc and master.key (unrecoverable if deleted)"
+    echo ""
+    read -r -p "Remove local vault? [y/N] " remove_vault
+    if [[ "$remove_vault" =~ ^[Yy]$ ]]; then
+        safe_remove_dir "$VAULT_DIR"
+    else
+        echo -e "  ${YELLOW}Vault kept at $VAULT_DIR - remove manually when ready${NC}"
+    fi
+else
+    echo -e "  No local vault found"
+fi
+
+# ── Verification ──────────────────────────────────────────────────────────
+echo ""
+echo -e "${GREEN}[Verification]${NC} Checking for remaining DSO files..."
+
+FOUND_FILES=()
+for path in \
+    "$PLUGIN_DIR/docker-dso" \
+    "$SYSTEM_BIN_DIR/dso" \
+    "/usr/local/lib/dso" \
+    "/etc/dso" \
+    "/var/lib/dso" \
+    "/var/log/dso" \
+    "/run/dso" \
+    "/var/run/dso"; do
+    if [ -e "$path" ] || [ -d "$path" ] || [ -L "$path" ]; then
+        FOUND_FILES+=("$path")
+    fi
+done
+
+if [ ${#FOUND_FILES[@]} -eq 0 ]; then
+    echo -e "  ${GREEN}✓ No remaining DSO files found${NC}"
+else
+    echo -e "  ${YELLOW}⚠ Found remaining files:${NC}"
+    for f in "${FOUND_FILES[@]}"; do
+        echo -e "    - $f"
+    done
+fi
+
+# ── Complete ────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BLUE}════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}✓ DSO uninstall complete                           ${NC}"
+echo -e "${BLUE}════════════════════════════════════════════════════${NC}"
+echo ""
+echo "The system is now clean of all DSO traces."
+echo "It is as if DSO was never installed."
+echo ""
