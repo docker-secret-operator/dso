@@ -124,7 +124,8 @@ if [ -t 0 ]; then
     fi
 else
     # Non-interactive mode (piped) - require explicit --force flag or env var
-    if [ "${DSO_UNINSTALL_FORCE:-false}" != "true" ] && [ "$1" != "--force" ]; then
+    FORCE_FLAG="${1:-}"
+    if [ "${DSO_UNINSTALL_FORCE:-false}" != "true" ] && [ "$FORCE_FLAG" != "--force" ]; then
         echo "Error: Uninstall must be run interactively or with --force flag"
         echo "Usage:"
         echo "  Interactive: bash scripts/uninstall.sh"

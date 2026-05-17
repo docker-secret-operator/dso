@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -112,6 +113,31 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		}
 	}
 
+	// Step 3.5: Elevate privileges if agent mode and not root
+	if deploymentMode == "agent" && os.Geteuid() != 0 {
+		fmt.Println("\n🛡️ Agent setup requires root privileges. Elevating via sudo...")
+		
+		args := []string{"docker", "dso", "setup", "--mode", "agent", "--provider", detectedProvider.Provider}
+		if autoDetect {
+			args = append(args, "--auto-detect")
+		}
+		if nonRoot {
+			args = append(args, "--enable-nonroot")
+		}
+		
+		cmd := exec.Command("sudo", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("sudo execution failed: %w", err)
+		}
+		
+		// Exit successfully, as the elevated child process completes the rest
+		return nil
+	}
+
 	// Step 4: Create configuration file
 	fmt.Println()
 	fmt.Println("📝 Creating configuration...")
@@ -145,13 +171,26 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		}
 	}
 
-	// Step 7: Show next steps
+	// Step 7: Auto-bootstrap agent mode
+	if deploymentMode == "agent" {
+		fmt.Println()
+		fmt.Println("🚀 Starting DSO agent...")
+		bootstrapCmd := exec.Command("sudo", "docker", "dso", "bootstrap", "agent")
+		bootstrapCmd.Stdout = os.Stdout
+		bootstrapCmd.Stderr = os.Stderr
+		if err := bootstrapCmd.Run(); err != nil {
+			fmt.Printf("⚠ Agent startup may have encountered issues: %v\n", err)
+			fmt.Println("  Check status with: sudo docker dso system status")
+		}
+	}
+
+	// Step 8: Show next steps
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════╗")
 	fmt.Println("║                    Setup Complete!                 ║")
 	fmt.Println("╚════════════════════════════════════════════════════╝")
 	fmt.Println()
-	fmt.Println("📚 Next steps:")
+	fmt.Println("📚 What's next:")
 	fmt.Println()
 
 	if deploymentMode == "local" {
@@ -164,21 +203,20 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		fmt.Println("  3. Configure secrets:")
 		fmt.Println("     docker dso secret set <name> <value>")
 	} else {
-		fmt.Println("  1. Start the DSO agent:")
-		fmt.Println("     sudo docker dso bootstrap agent")
+		fmt.Println("  1. Edit configuration for your secrets:")
+		fmt.Println("     sudo vi /etc/dso/dso.yaml")
 		fmt.Println()
 		fmt.Println("  2. Check agent status:")
 		fmt.Println("     sudo docker dso system status")
 		fmt.Println()
-		fmt.Println("  3. Edit configuration for your secrets:")
-		fmt.Println("     sudo vi /etc/dso/dso.yaml")
+		fmt.Println("  3. View agent logs:")
+		fmt.Println("     sudo docker dso system logs")
 	}
 
 	fmt.Println()
 	fmt.Println("  More commands:")
 	fmt.Println("    docker dso doctor              # Validate environment")
 	fmt.Println("    docker dso config show         # View configuration")
-	fmt.Println("    docker dso system logs         # View agent logs")
 	fmt.Println()
 
 	return nil
@@ -295,19 +333,16 @@ providers:
 secrets: {}
   # Example:
   # my_database_password:
-  #   name: my_database_password
-  #   value: your_secret_value_here
+  #   provider: local
+  #   secret_name: my_database_password
+  #   container_name: app
+  #   env_var: DB_PASSWORD
+  #
   # my_api_key:
-  #   name: my_api_key
-  #   value: your_api_key_here
-
-# Inject secrets into containers
-containers: {}
-  # Example:
-  # app:
-  #   secrets:
-  #     DB_PASSWORD: my_database_password
-  #     API_KEY: my_api_key
+  #   provider: local
+  #   secret_name: my_api_key
+  #   container_name: app
+  #   env_var: API_KEY
 `
 }
 
@@ -327,99 +362,87 @@ providers:
 	case "aws":
 		baseConfig += `  aws:
     type: aws
-    region: us-east-1  # Change to your AWS region
-    # IAM role should have permissions for Secrets Manager
-    # Example ARN: arn:aws:iam::ACCOUNT_ID:role/dso-agent-role
+    region: us-east-1
 
 secrets: {}
   # Configure your AWS Secrets Manager secrets:
-  # my_database_password:
-  #   name: prod/database/password  # Secret name in AWS Secrets Manager
+  # prod_database_password:
   #   provider: aws
-  # my_api_key:
-  #   name: prod/api/key
+  #   secret_name: prod/database/password
+  #   container_name: app
+  #   env_var: DB_PASSWORD
+  #
+  # prod_api_key:
   #   provider: aws
-
-containers: {}
-  # app:
-  #   secrets:
-  #     DB_PASSWORD: my_database_password
-  #     API_KEY: my_api_key
+  #   secret_name: prod/api/key
+  #   container_name: app
+  #   env_var: API_KEY
 `
 
 	case "azure":
 		baseConfig += `  azure:
     type: azure
-    vault_name: my-keyvault  # Your Azure Key Vault name
-    # Managed Identity or Service Principal should have Key Vault access
+    vault_name: my-keyvault
 
 secrets: {}
   # Configure your Azure Key Vault secrets:
-  # my_database_password:
-  #   name: database-password  # Secret name in Azure Key Vault
+  # database_password:
   #   provider: azure
-  # my_api_key:
-  #   name: api-key
+  #   secret_name: database-password
+  #   container_name: app
+  #   env_var: DB_PASSWORD
+  #
+  # api_key:
   #   provider: azure
-
-containers: {}
-  # app:
-  #   secrets:
-  #     DB_PASSWORD: my_database_password
-  #     API_KEY: my_api_key
+  #   secret_name: api-key
+  #   container_name: app
+  #   env_var: API_KEY
 `
 
 	case "vault":
 		baseConfig += `  vault:
     type: vault
     address: https://vault.example.com:8200
-    token_file: /etc/dso/vault-token  # Store your Vault token here
 
 secrets: {}
   # Configure your HashiCorp Vault secrets:
-  # my_database_password:
-  #   name: secret/data/database/password
+  # database_password:
   #   provider: vault
-  # my_api_key:
-  #   name: secret/data/api/key
+  #   secret_name: secret/data/database/password
+  #   container_name: app
+  #   env_var: DB_PASSWORD
+  #
+  # api_key:
   #   provider: vault
-
-containers: {}
-  # app:
-  #   secrets:
-  #     DB_PASSWORD: my_database_password
-  #     API_KEY: my_api_key
+  #   secret_name: secret/data/api/key
+  #   container_name: app
+  #   env_var: API_KEY
 `
 
 	case "huawei":
 		baseConfig += `  huawei:
     type: huawei
-    region: cn-north-4  # Your Huawei Cloud region
-    # Service role should have permissions for KMS
+    region: cn-north-4
 
 secrets: {}
   # Configure your Huawei Cloud KMS secrets:
-  # my_database_password:
-  #   name: my-database-password
+  # database_password:
   #   provider: huawei
-  # my_api_key:
-  #   name: my-api-key
+  #   secret_name: my-database-password
+  #   container_name: app
+  #   env_var: DB_PASSWORD
+  #
+  # api_key:
   #   provider: huawei
-
-containers: {}
-  # app:
-  #   secrets:
-  #     DB_PASSWORD: my_database_password
-  #     API_KEY: my_api_key
+  #   secret_name: my-api-key
+  #   container_name: app
+  #   env_var: API_KEY
 `
 
 	default:
 		baseConfig += `  # Add your provider configuration here
-    # Supported providers: aws, azure, vault, huawei
 
 secrets: {}
-
-containers: {}
 `
 	}
 
