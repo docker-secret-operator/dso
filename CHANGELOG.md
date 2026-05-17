@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.10] - 2026-05-17
+
+### Fixed
+
+- **Setup Wizard Config Generation**: Fixed YAML syntax errors in generated configuration
+  - Changed `secrets: []` to `secrets: {}` (proper empty object format)
+  - Updated config keys to match actual implementation (secret_name, container_name, env_var)
+  - Config now validates correctly without YAML parsing errors
+
+- **Uninstall Script**: Fixed unbound variable error in piped mode
+  - Fixed `"${1:-}"` expansion issue when script run via `curl | sudo bash`
+  - Properly handles --force flag in non-interactive mode
+  - Now works reliably with `curl -fsSL ... | sudo bash`
+
+- **Setup Wizard UX**: Eliminated redundant setup steps
+  - Setup now automatically runs `bootstrap agent` for cloud deployments
+  - Removed manual bootstrap instruction from next steps
+  - No need for separate `docker dso bootstrap agent` call after setup
+  - Clear guidance that setup is now single-command for agent mode
+
+---
+
 ## [3.5.8] - 2026-05-17
 
 ### Fixed
@@ -316,7 +338,7 @@ Each release is:
 
 ## Support
 
-- **Latest version**: v3.5.7 (fully supported)
+- **Latest version**: v3.5.10 (fully supported)
 - **Previous versions**: v3.5.x (all supported), v3.4.x (security patches only)
 - **End of life**: Versions older than v3.4 are no longer supported
 
