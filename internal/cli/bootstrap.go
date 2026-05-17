@@ -43,6 +43,18 @@ func (l *cliLogger) Debug(msg string, args ...interface{}) {
 	}
 }
 
+// Bootstrap command flags
+var (
+	enableNonRootAccess bool
+	bootstrapProvider   string
+	bootstrapNonInteractive bool
+	bootstrapAWSRegion  string
+	bootstrapAzureVaultURL string
+	bootstrapHuaweiRegion string
+	bootstrapHuaweiProjectID string
+	bootstrapVaultAddress string
+)
+
 // NewBootstrapCmd creates the bootstrap command with subcommands for local and agent modes
 func NewBootstrapCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -56,7 +68,8 @@ initializes encryption, and validates your environment.
 Examples:
   docker dso bootstrap local                           # For local development
   sudo docker dso bootstrap agent                      # For production deployment
-  sudo docker dso bootstrap agent --enable-nonroot     # Production + non-root CLI access`,
+  sudo docker dso bootstrap agent --enable-nonroot     # Production + non-root CLI access
+  sudo docker dso bootstrap agent --provider aws --non-interactive  # Automated setup`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode := args[0]
@@ -75,6 +88,15 @@ Examples:
 	// Add flag for non-root access configuration
 	cmd.Flags().BoolVar(&enableNonRootAccess, "enable-nonroot", false,
 		"Automatically configure current user for non-root DSO access (agent mode only)")
+
+	// Add flags for automated/non-interactive setup
+	cmd.Flags().StringVar(&bootstrapProvider, "provider", "", "Cloud provider: aws, azure, vault, huawei (skips provider selection)")
+	cmd.Flags().BoolVar(&bootstrapNonInteractive, "non-interactive", false, "Non-interactive mode (skip all prompts, use defaults)")
+	cmd.Flags().StringVar(&bootstrapAWSRegion, "aws-region", "", "AWS region for automated setup (default: us-east-1)")
+	cmd.Flags().StringVar(&bootstrapAzureVaultURL, "azure-vault-url", "", "Azure Key Vault URL for automated setup")
+	cmd.Flags().StringVar(&bootstrapHuaweiRegion, "huawei-region", "", "Huawei region for automated setup")
+	cmd.Flags().StringVar(&bootstrapHuaweiProjectID, "huawei-project-id", "", "Huawei Project ID for automated setup")
+	cmd.Flags().StringVar(&bootstrapVaultAddress, "vault-address", "", "HashiCorp Vault address for automated setup")
 
 	return cmd
 }
@@ -96,8 +118,8 @@ func bootstrapLocal() error {
 	ctx := context.Background()
 	opts := &bootstrap.BootstrapOptions{
 		Mode:           bootstrap.ModeLocal,
-		Provider:       "", // Will prompt user
-		NonInteractive: false,
+		Provider:       bootstrapProvider, // From --provider flag, or "" to prompt user
+		NonInteractive: bootstrapNonInteractive,
 		Force:          false,
 		DryRun:         false,
 		Timeout:        30 * 60,
@@ -128,8 +150,6 @@ func bootstrapLocal() error {
 // AGENT MODE BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════════
 
-var enableNonRootAccess bool
-
 func bootstrapAgent() error {
 	fmt.Println()
 	fmt.Println("Initializing DSO Agent Runtime...")
@@ -143,13 +163,19 @@ func bootstrapAgent() error {
 	ctx := context.Background()
 	opts := &bootstrap.BootstrapOptions{
 		Mode:                  bootstrap.ModeAgent,
-		Provider:              "", // Will prompt user or detect
-		NonInteractive:        false,
+		Provider:              bootstrapProvider, // From --provider flag, or "" to prompt/detect
+		NonInteractive:        bootstrapNonInteractive,
 		Force:                 false,
 		DryRun:                false,
 		EnableNonRootAccess:   enableNonRootAccess,
 		Timeout:               30 * 60,
 		Context:               ctx,
+		// Cloud-specific configuration options
+		AWSRegion:            bootstrapAWSRegion,
+		AzureVaultURL:        bootstrapAzureVaultURL,
+		HuaweiRegion:         bootstrapHuaweiRegion,
+		HuaweiProjectID:      bootstrapHuaweiProjectID,
+		VaultAddress:         bootstrapVaultAddress,
 	}
 
 	// Execute with progress reporting

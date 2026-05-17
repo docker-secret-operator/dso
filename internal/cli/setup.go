@@ -187,12 +187,45 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 	// Step 8: Auto-bootstrap agent mode
 	if deploymentMode == "agent" {
 		fmt.Println("🚀 Starting DSO agent...")
-		bootstrapCmd := exec.Command("sudo", "docker", "dso", "bootstrap", "agent")
+
+		// 1. Backup the custom config we just generated so bootstrap doesn't overwrite it with the default template
+		configData, _ := os.ReadFile(configPath)
+
+		// 2. Build bootstrap command with --non-interactive and provider to avoid interactive prompts (like AWS region) hitting EOF
+		bootstrapArgs := []string{"sudo", "docker", "dso", "bootstrap", "agent", "--provider", detectedProvider.Provider, "--non-interactive"}
+
+		// 2a. Add provider-specific parameters if available from cloud detection
+		if detectedProvider.Metadata != nil {
+			if region, ok := detectedProvider.Metadata["region"]; ok && region != "" {
+				switch detectedProvider.Provider {
+				case "aws":
+					bootstrapArgs = append(bootstrapArgs, "--aws-region", region)
+				case "huawei":
+					bootstrapArgs = append(bootstrapArgs, "--huawei-region", region)
+				}
+			}
+			if projectID, ok := detectedProvider.Metadata["project_id"]; ok && projectID != "" {
+				bootstrapArgs = append(bootstrapArgs, "--huawei-project-id", projectID)
+			}
+			if vaultURL, ok := detectedProvider.Metadata["vault_url"]; ok && vaultURL != "" {
+				bootstrapArgs = append(bootstrapArgs, "--azure-vault-url", vaultURL)
+			}
+			if vaultAddr, ok := detectedProvider.Metadata["vault_address"]; ok && vaultAddr != "" {
+				bootstrapArgs = append(bootstrapArgs, "--vault-address", vaultAddr)
+			}
+		}
+
+		bootstrapCmd := exec.Command(bootstrapArgs[0], bootstrapArgs[1:]...)
 		bootstrapCmd.Stdout = os.Stdout
 		bootstrapCmd.Stderr = os.Stderr
 		if err := bootstrapCmd.Run(); err != nil {
 			fmt.Printf("⚠ Agent startup may have encountered issues: %v\n", err)
 			fmt.Println("  Check status with: sudo docker dso system status")
+		}
+
+		// 3. Restore the user's custom config layout (with secrets: {})
+		if len(configData) > 0 {
+			os.WriteFile(configPath, configData, 0644)
 		}
 	}
 

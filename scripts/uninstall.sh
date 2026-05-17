@@ -131,6 +131,7 @@ else
         echo "  Interactive: bash scripts/uninstall.sh"
         echo "  Non-interactive: DSO_UNINSTALL_FORCE=true bash scripts/uninstall.sh"
         echo "  Or: bash scripts/uninstall.sh --force"
+        echo "  Via curl: curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/uninstall.sh | sudo DSO_UNINSTALL_FORCE=true bash"
         exit 1
     fi
 fi

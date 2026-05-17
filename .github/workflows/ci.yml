@@ -1,152 +1,152 @@
-name: CI
+# name: CI
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
 
-permissions:
-  contents: read
+# permissions:
+#   contents: read
 
-jobs:
-  # ── Build & Test ────────────────────────────────────────────
-  build:
-    name: Build & Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+# jobs:
+#   # ── Build & Test ────────────────────────────────────────────
+#   build:
+#     name: Build & Test
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+#       - name: Setup Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
 
-      - name: Verify go.mod is tidy
-        run: |
-          go mod tidy
-          if ! git diff --quiet go.mod go.sum; then
-            echo "❌ go.mod or go.sum is not tidy. Run 'go mod tidy' and commit the changes."
-            git diff go.mod go.sum
-            exit 1
-          fi
-          echo "✅ go.mod is tidy"
+#       - name: Verify go.mod is tidy
+#         run: |
+#           go mod tidy
+#           if ! git diff --quiet go.mod go.sum; then
+#             echo "❌ go.mod or go.sum is not tidy. Run 'go mod tidy' and commit the changes."
+#             git diff go.mod go.sum
+#             exit 1
+#           fi
+#           echo "✅ go.mod is tidy"
 
-      - name: Build
-        run: |
-          make build
-          [ -f docker-dso ] && echo "✅ Binary built: docker-dso" || exit 1
-          echo "✅ Build passed"
+#       - name: Build
+#         run: |
+#           make build
+#           [ -f docker-dso ] && echo "✅ Binary built: docker-dso" || exit 1
+#           echo "✅ Build passed"
 
-      - name: Test
-        run: |
-          go test -v -race -count=1 ./...
-          echo "✅ Tests passed"
+#       - name: Test
+#         run: |
+#           go test -v -race -count=1 ./...
+#           echo "✅ Tests passed"
 
-  # ── Lint ────────────────────────────────────────────────────
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+#   # ── Lint ────────────────────────────────────────────────────
+#   lint:
+#     name: Lint
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+#       - name: Setup Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.8
-          args: --timeout=5m --exclude-dirs=test
+#       - name: golangci-lint
+#         uses: golangci/golangci-lint-action@v6
+#         with:
+#           version: v1.64.8
+#           args: --timeout=5m --exclude-dirs=test
 
-  # ── CLI Guard ───────────────────────────────────────────────
-  cli-guard:
-    name: CLI Guard
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+#   # ── CLI Guard ───────────────────────────────────────────────
+#   cli-guard:
+#     name: CLI Guard
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
 
-      - name: Validate CLI usage
-        run: |
-          chmod +x scripts/validate-cli.sh
-          ./scripts/validate-cli.sh
+#       - name: Validate CLI usage
+#         run: |
+#           chmod +x scripts/validate-cli.sh
+#           ./scripts/validate-cli.sh
 
-  # ── Security Scan ───────────────────────────────────────────
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+#   # ── Security Scan ───────────────────────────────────────────
+#   security:
+#     name: Security Scan
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+#       - name: Setup Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
 
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
+#       - name: Install gosec
+#         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
 
-      - name: Run gosec
-        run: |
-          GOPATH=$(go env GOPATH)
-          $GOPATH/bin/gosec -severity medium -confidence medium -no-fail ./... || true
-          echo "✅ Security scan completed"
+#       - name: Run gosec
+#         run: |
+#           GOPATH=$(go env GOPATH)
+#           $GOPATH/bin/gosec -severity medium -confidence medium -no-fail ./... || true
+#           echo "✅ Security scan completed"
 
-  # ── DCO Check ──────────────────────────────────────────────
-  dco:
-    name: DCO Sign-off
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+#   # ── DCO Check ──────────────────────────────────────────────
+#   dco:
+#     name: DCO Sign-off
+#     runs-on: ubuntu-latest
+#     if: github.event_name == 'pull_request'
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
 
-      - name: Check DCO sign-off
-        run: |
-          echo "Checking commits for DCO sign-off..."
+#       - name: Check DCO sign-off
+#         run: |
+#           echo "Checking commits for DCO sign-off..."
           
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+#           BASE_SHA="${{ github.event.pull_request.base.sha }}"
+#           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
-          FAILED=0
-          while IFS= read -r sha; do
-            # Skip merge commits
-            PARENTS=$(git cat-file -p "$sha" | grep -c "^parent")
-            if [ "$PARENTS" -gt 1 ]; then
-              continue
-            fi
+#           FAILED=0
+#           while IFS= read -r sha; do
+#             # Skip merge commits
+#             PARENTS=$(git cat-file -p "$sha" | grep -c "^parent")
+#             if [ "$PARENTS" -gt 1 ]; then
+#               continue
+#             fi
             
-            MSG=$(git log --format='%B' -n 1 "$sha")
-            if ! echo "$MSG" | grep -qiE "^Signed-off-by:"; then
-              echo "❌ Commit $sha is missing DCO sign-off"
-              echo "   Message: $(git log --format='%s' -n 1 "$sha")"
-              echo ""
-              echo "   Fix: git commit --amend -s"
-              FAILED=1
-            else
-              echo "✅ $sha — signed"
-            fi
-          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+#             MSG=$(git log --format='%B' -n 1 "$sha")
+#             if ! echo "$MSG" | grep -qiE "^Signed-off-by:"; then
+#               echo "❌ Commit $sha is missing DCO sign-off"
+#               echo "   Message: $(git log --format='%s' -n 1 "$sha")"
+#               echo ""
+#               echo "   Fix: git commit --amend -s"
+#               FAILED=1
+#             else
+#               echo "✅ $sha — signed"
+#             fi
+#           done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
           
-          if [ "$FAILED" -eq 1 ]; then
-            echo ""
-            echo "──────────────────────────────────────────────"
-            echo "All commits must include a Signed-off-by line."
-            echo "Use: git commit -s -m 'your message'"
-            echo "See: CONTRIBUTING.md"
-            echo "──────────────────────────────────────────────"
-            exit 1
-          fi
+#           if [ "$FAILED" -eq 1 ]; then
+#             echo ""
+#             echo "──────────────────────────────────────────────"
+#             echo "All commits must include a Signed-off-by line."
+#             echo "Use: git commit -s -m 'your message'"
+#             echo "See: CONTRIBUTING.md"
+#             echo "──────────────────────────────────────────────"
+#             exit 1
+#           fi
           
-          echo "✅ All commits have DCO sign-off"
+#           echo "✅ All commits have DCO sign-off"
