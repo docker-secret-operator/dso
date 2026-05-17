@@ -22,6 +22,82 @@ builds:
     env:
       - CGO_ENABLED=0
 
+  - id: dso-provider-aws
+    main: ./cmd/plugins/dso-provider-aws
+    binary: dso-provider-aws
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: dso-provider-azure
+    main: ./cmd/plugins/dso-provider-azure
+    binary: dso-provider-azure
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: dso-provider-huawei
+    main: ./cmd/plugins/dso-provider-huawei
+    binary: dso-provider-huawei
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: dso-provider-vault
+    main: ./cmd/plugins/dso-provider-vault
+    binary: dso-provider-vault
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+
 archives:
   - id: default
     format: tar.gz
