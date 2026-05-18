@@ -219,31 +219,28 @@ fi
 echo ""
 echo -e "${GREEN}[6/7] Removing runtime directories...${NC}"
 
-# Socket directories
-safe_remove "/var/run/dso.sock"
-safe_remove "/run/dso.sock"
-safe_remove_dir "/var/run/dso"
-safe_remove_dir "/run/dso"
+# Socket and runtime directories are root-owned; skip for non-root installs
+if [ "$IS_SYSTEM_INSTALL" = true ]; then
+    safe_remove "/var/run/dso.sock"
+    safe_remove "/run/dso.sock"
+    safe_remove_dir "/var/run/dso"
+    safe_remove_dir "/run/dso"
 
-# Docker plugin socket
-safe_remove "/run/docker/plugins/dso.sock"
-safe_remove_dir "/run/docker/plugins/dso"
+    # Docker plugin socket
+    safe_remove "/run/docker/plugins/dso.sock"
+    safe_remove_dir "/run/docker/plugins/dso"
+else
+    echo -e "  (Skipped - user-level install)"
+fi
 
 # ── Step 7: Remove system user and group ───────────────────────────────────
 echo ""
 echo -e "${GREEN}[7/7] Removing system user and group...${NC}"
 
 if [ "$IS_SYSTEM_INSTALL" = true ]; then
-    # Remove dso user (if exists and not system-critical)
-    if id dso &>/dev/null 2>&1; then
-        echo -e "  Found DSO user. Attempting removal..."
-        userdel -r dso 2>/dev/null && echo -e "  ${GREEN}✓ Removed user:${NC} dso" || echo -e "  ${YELLOW}⚠ Could not remove user 'dso'${NC}"
-    fi
-
-    # Remove dso group
-    if getent group dso &>/dev/null; then
-        groupdel dso 2>/dev/null && echo -e "  ${GREEN}✓ Removed group:${NC} dso" || echo -e "  ${YELLOW}⚠ Could not remove group 'dso'${NC}"
-    fi
+    # Use the safe helpers defined above for consistent output and error handling
+    safe_user_remove "dso"
+    safe_group_remove "dso"
 else
     echo -e "  (Skipped - user-level install)"
 fi
@@ -256,11 +253,17 @@ if [ -d "$VAULT_DIR" ]; then
     echo -e "  Size: $(du -sh "$VAULT_DIR" | cut -f1)"
     echo -e "  ${RED}WARNING:${NC} Contains encrypted vault.enc and master.key (unrecoverable if deleted)"
     echo ""
-    read -r -p "Remove local vault? [y/N] " remove_vault
-    if [[ "$remove_vault" =~ ^[Yy]$ ]]; then
-        safe_remove_dir "$VAULT_DIR"
+    # Only prompt if running interactively — don't hang in piped/CI mode
+    if [ -t 0 ]; then
+        read -r -p "Remove local vault? [y/N] " remove_vault
+        if [[ "$remove_vault" =~ ^[Yy]$ ]]; then
+            safe_remove_dir "$VAULT_DIR"
+        else
+            echo -e "  ${YELLOW}Vault kept at $VAULT_DIR - remove manually when ready${NC}"
+        fi
     else
-        echo -e "  ${YELLOW}Vault kept at $VAULT_DIR - remove manually when ready${NC}"
+        echo -e "  ${YELLOW}Non-interactive mode: vault kept at $VAULT_DIR${NC}"
+        echo -e "  ${YELLOW}Remove manually with: rm -rf $VAULT_DIR${NC}"
     fi
 else
     echo -e "  No local vault found"
@@ -280,7 +283,8 @@ for path in \
     "/var/log/dso" \
     "/run/dso" \
     "/var/run/dso"; do
-    if [ -e "$path" ] || [ -d "$path" ] || [ -L "$path" ]; then
+    # -e covers files, dirs, and dangling symlinks (-L handles dangling links -e misses)
+    if [ -e "$path" ] || [ -L "$path" ]; then
         FOUND_FILES+=("$path")
     fi
 done

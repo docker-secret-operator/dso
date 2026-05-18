@@ -242,8 +242,16 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 
 	// 3. Unified Rotation System (restart | signal | none) with crash recovery and distributed locking
 	go func() {
-		// Per-secret timeout isolation (prevents cascading timeouts)
-		perSecretTimeout := 30 * time.Second
+		// Per-secret timeout isolation (prevents cascading timeouts).
+		// Default is 5m — a full restart (stop→create→start→health-check) must not be cut short.
+		// The 30s value that was here before was the primary reason containers were never restarted.
+		perSecretTimeout := 5 * time.Minute
+		if t.Config != nil && t.Config.Agent.Rotation.HealthCheckTimeout != "" {
+			if d, err := time.ParseDuration(t.Config.Agent.Rotation.HealthCheckTimeout); err == nil {
+				// Add a buffer on top of the health check window so the whole rotation fits
+				perSecretTimeout = d + 2*time.Minute
+			}
+		}
 		ctx, cleanup := t.TimeoutController.CreateSecretContext(t.ctx, secretName, perSecretTimeout)
 		defer cleanup()
 

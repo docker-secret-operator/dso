@@ -88,22 +88,49 @@ case "${ARCH}" in
 esac
 
 # ── Resolve version ────────────────────────────────────────────────────────────
-# Use the VERSION env var if provided, otherwise fetch the latest release tag.
+# Always pick the latest stable release unless the caller pins a version.
+# Strategy 1 (preferred): follow the /releases/latest redirect — zero API quota cost.
+# Strategy 2 (fallback):  parse the GitHub Releases JSON API.
 if [ -z "${DSO_VERSION:-}" ]; then
     echo -e "${BLUE}Fetching latest DSO version...${NC}"
-    DSO_VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name"' \
-        | head -1 \
-        | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
+
+    # Strategy 1: follow redirect (works without GitHub token, not rate-limited)
+    DSO_VERSION="$(
+        curl -fsSLI \
+            --max-time 10 \
+            --connect-timeout 5 \
+            --retry 2 \
+            "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+        | grep -i '^location:' \
+        | sed 's|.*/tag/||' \
+        | tr -d '[:space:]\r'
+    )" 2>/dev/null || true
+
+    # Strategy 2: GitHub API JSON (handles private repos or redirect issues)
+    if [ -z "${DSO_VERSION}" ]; then
+        DSO_VERSION="$(
+            curl -fsSL \
+                --max-time 15 \
+                --connect-timeout 5 \
+                --retry 2 \
+                "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | grep '"tag_name"' \
+            | head -1 \
+            | sed 's/.*"tag_name": *"\(.*\)".*/\1/'
+        )" 2>/dev/null || true
+    fi
 fi
 
 if [ -z "${DSO_VERSION}" ]; then
     echo -e "${RED}Error: Failed to fetch the latest DSO version.${NC}"
-    echo -e "${RED}       This may be caused by a GitHub API rate limit.${NC}"
+    echo -e "${RED}       Both version-resolution strategies failed.${NC}"
+    echo -e "${RED}       This may be caused by a GitHub API rate limit or network issue.${NC}"
     echo -e ""
-    echo -e "${YELLOW}Fix: Set the version manually and re-run:${NC}"
-    echo -e "       export DSO_VERSION=v3.4.0"
+    echo -e "${YELLOW}Fix: Pin the version manually and re-run:${NC}"
+    echo -e "       export DSO_VERSION=v3.5.0"
     echo -e "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash"
+    echo -e ""
+    echo -e "${YELLOW}Available releases: https://github.com/${REPO}/releases${NC}"
     exit 1
 fi
 
@@ -138,27 +165,40 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 TARBALL_PATH="${TMP_DIR}/${TARBALL_NAME}"
-curl -fsSL \
-    --retry 2 \
+HTTP_CODE=$(curl -fsSL \
+    --retry 3 \
     --max-time 90 \
     --connect-timeout 10 \
+    --write-out "%{http_code}" \
     --output "${TARBALL_PATH}" \
-    "${TARBALL_URL}" || {
-    echo -e "${RED}Error: Failed to download binary from ${TARBALL_URL}${NC}"
+    "${TARBALL_URL}" 2>/dev/null || echo "000")
+
+if [ "${HTTP_CODE}" = "404" ]; then
+    echo -e "${RED}Error: Release not found for version '${DSO_VERSION}'.${NC}"
+    echo -e "${RED}       URL tried: ${TARBALL_URL}${NC}"
+    echo -e "${YELLOW}Fix: Check available releases at https://github.com/${REPO}/releases${NC}"
     exit 1
-}
+elif [ "${HTTP_CODE}" != "200" ] || [ ! -s "${TARBALL_PATH}" ]; then
+    echo -e "${RED}Error: Failed to download binary (HTTP ${HTTP_CODE}) from:${NC}"
+    echo -e "       ${TARBALL_URL}"
+    exit 1
+fi
 
 echo -e "  Downloading checksum..."
 CHECKSUM_PATH="${TARBALL_PATH}.sha256"
-curl -fsSL \
-    --retry 2 \
+HTTP_CODE_CS=$(curl -fsSL \
+    --retry 3 \
     --max-time 30 \
     --connect-timeout 10 \
+    --write-out "%{http_code}" \
     --output "${CHECKSUM_PATH}" \
-    "${CHECKSUM_URL}" || {
-    echo -e "${RED}Error: Failed to download checksum from ${CHECKSUM_URL}${NC}"
+    "${CHECKSUM_URL}" 2>/dev/null || echo "000")
+
+if [ "${HTTP_CODE_CS}" != "200" ] || [ ! -s "${CHECKSUM_PATH}" ]; then
+    echo -e "${RED}Error: Failed to download checksum (HTTP ${HTTP_CODE_CS}) from:${NC}"
+    echo -e "       ${CHECKSUM_URL}"
     exit 1
-}
+fi
 
 # ── Validate checksum ──────────────────────────────────────────────────────────
 echo -e "  Validating integrity (SHA256)..."

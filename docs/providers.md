@@ -1,4 +1,4 @@
-# Secret Provider Setup Guide (v3.2)
+# Secret Provider Setup Guide
 
 > Provider configuration is only required for **Cloud Mode**. If you are using Local Mode (`docker dso init`), you do not need this file.
 
@@ -6,7 +6,7 @@
 
 ## Overview
 
-Cloud Mode fetches secrets from external backends via provider plugin binaries installed by `sudo docker dso system setup`.
+Cloud Mode fetches secrets from external backends via provider plugin binaries installed to `/usr/local/lib/dso/plugins/` by the [installer](../scripts/install.sh).
 
 | Provider | Type | Status |
 |---|---|---|

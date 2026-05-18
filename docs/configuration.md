@@ -1,4 +1,4 @@
-# DSO Configuration Reference (v3.2)
+# DSO Configuration Reference
 
 > **Important:** `dso.yaml` is only required for **Cloud Mode**. Local Mode users do not need this file — secrets are stored in `~/.dso/vault.enc` instead.
 
@@ -162,9 +162,9 @@ agent:
 Before deploying, always validate:
 
 ```bash
-docker dso validate
+docker dso config validate
 # or with explicit path:
-docker dso validate --config /etc/dso/dso.yaml
+docker dso config validate --config /etc/dso/dso.yaml
 ```
 
 Exits `0` on success. Exits `1` with a descriptive error on parse or schema failure.

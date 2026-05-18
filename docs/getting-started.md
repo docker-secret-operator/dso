@@ -1,465 +1,147 @@
-# Getting Started with DSO (Phase 1-6)
+# Getting Started with DSO
 
-This guide covers fresh installation and your first deployment using the Phase 1-6 operational workflow.
-
----
-
-## Quick Start (Recommended)
-
-**Get DSO up and running in 2-3 minutes:**
-
-### Step 1: Install DSO
-```bash
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
-docker ps  # Reload plugins
-```
-
-### Step 2: Run the Setup Wizard
-```bash
-docker dso setup
-```
-
-This interactive wizard will:
-- 🔍 Auto-detect your cloud provider (AWS, Azure, Vault, or local)
-- 📋 Suggest the appropriate deployment mode
-- 📦 Install required provider plugins
-- 📝 Generate a pre-configured `dso.yaml` file
-- ✓ Validate your setup
-
-That's it! The wizard will show you the next steps.
-
-**For advanced users or manual configuration**, see [Detailed Setup](#detailed-setup) below.
+This guide walks you through installing DSO and completing your first deployment in either Local or Cloud mode. All commands are verified against the actual codebase.
 
 ---
 
 ## Prerequisites
 
-- Docker (any recent version, 20.10+)
-- Linux or macOS (amd64 or arm64)
-- **No Go required** — DSO ships as a prebuilt binary
+| Requirement | Details |
+|---|---|
+| **Docker** | 20.10+ (`docker info` must succeed) |
+| **OS** | Linux or macOS (amd64 or arm64) |
+| **Go** | ❌ Not required — DSO ships as a prebuilt binary |
+| **systemd** | Only required for **Cloud Mode** (production) |
+| **root / sudo** | Only required for **Cloud Mode** |
 
 ---
 
-## CHOOSE YOUR MODE (Before Starting)
+## Step 1 — Install DSO
 
-**DSO runs in two modes. Choose one:**
+The installer always downloads the **latest stable release** automatically.
 
-### Local Mode (Development)
-Use if you are:
-- Developing locally
-- Testing DSO
-- Using docker-compose without a daemon
-- A single developer on one machine
-
-**Characteristics**:
-- No root required
-- No systemd service
-- Simple setup (~5 minutes)
-- Secrets in encrypted local vault
-- Manual deployment via `docker dso compose up`
-
-**Install**: `curl ... | bash` (user install)
-
-### Cloud Mode (Production)
-Use if you are:
-- Running production workloads
-- Need automatic secret rotation
-- Using cloud provider secrets (Vault, AWS, Azure)
-- Running on a server with systemd
-
-**Characteristics**:
-- Root required (systemd)
-- Long-running daemon service
-- Automatic rotation from providers
-- Complete setup (~15 minutes)
-- Observability and monitoring included
-- Automatic crash recovery (v3.5+)
-
-**Install**: `curl ... | sudo bash` (global install)
-
----
-
-**Not sure?** Start with Local Mode. You can always switch to Cloud Mode later.
-
----
-
-## Detailed Setup
-
-For users who want more control or need to troubleshoot, follow these steps manually.
-
-### Step 1 — Install DSO Plugin
-
-DSO is a Docker CLI plugin. Install it to make `docker dso` available.
-
-### Local User Install (Development)
+### User Install (no sudo — for Local Mode / development)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
-Installs to: `~/.docker/cli-plugins/docker-dso`
+Installs to `~/.docker/cli-plugins/docker-dso` and `~/.local/bin/dso`.
 
-### System-Wide Install (Production)
+### System-Wide Install (sudo — required for Cloud Mode)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 ```
 
-Installs to: `/usr/local/lib/docker/cli-plugins/docker-dso`
+Installs to `/usr/local/lib/docker/cli-plugins/docker-dso`, `/usr/local/bin/dso`, and `/usr/local/lib/dso/plugins/` (provider plugins).
 
-### Verify Installation
+### Verify
 
 ```bash
 docker dso version
 ```
 
-If not found:
+If `docker dso` is not found after install, run any docker command to reload the plugin cache:
 ```bash
-docker ps  # Reload plugins
-docker dso version
+docker ps && docker dso version
 ```
 
-See [CLI Reference](cli.md) or [Docker Plugin Integration](docker-plugin.md) for troubleshooting.
-
----
-
-### Step 2 — Bootstrap DSO Environment (Phase 1)
-
-**Alternative: Use the interactive setup wizard** (`docker dso setup`) for a guided experience.
-
-Choose your deployment mode and initialize DSO:
-
-### Local Development Mode
-
-**Initialize local environment (no root required):**
-
+For a user install, add `~/.local/bin` to your PATH if missing:
 ```bash
-docker dso bootstrap local
-```
-
-Output:
-```
-✓ DSO local environment initialized
-✓ Configuration: ~/.dso/config.yaml
-✓ Vault: ~/.dso/vault.enc (AES-256 encrypted)
-✓ Next steps:
-  - Review config: docker dso config show
-  - Check health: docker dso doctor
-  - View status: docker dso status
-```
-
-**What was created:**
-- `~/.dso/` — Local state directory
-- `~/.dso/config.yaml` — Development configuration
-- `~/.dso/vault.enc` — Encrypted local secret storage
-- `~/.dso/state/` — Rotation and container tracking
-- `~/.dso/cache/` — Secret cache
-
-### Production Agent Mode
-
-**Initialize production environment with systemd (requires root):**
-
-```bash
-sudo docker dso bootstrap agent
-```
-
-Output:
-```
-✓ DSO agent initialized
-✓ Configuration: /etc/dso/dso.yaml
-✓ Service: /etc/systemd/system/dso-agent.service
-✓ Vault: configured per provider
-✓ Next steps:
-  - Review config: docker dso config show
-  - Enable service: sudo docker dso system enable
-  - Monitor logs: docker dso system logs -f
-```
-
-**What was created:**
-- `/etc/dso/` — Production configuration directory
-- `/etc/dso/dso.yaml` — Production configuration
-- `/var/lib/dso/` — State and cache directory
-- `/var/log/dso/` — Log directory
-- `/run/dso/` — Runtime socket directory
-- `/etc/systemd/system/dso-agent.service` — Systemd service file
-
----
-
-### Step 3 — Check Environment Health (Phase 2)
-
-Validate DSO setup and environment.
-
-### Basic Health Check
-
-```bash
-docker dso doctor
-```
-
-Checks:
-- Docker connectivity ✓
-- Runtime environment ✓
-- Provider availability ✓
-- System permissions ✓
-
-**Example output:**
-```
-✓ Docker connectivity: OK
-✓ Runtime mode: local
-✓ Configuration: valid
-✓ System permissions: OK
-```
-
-### Full Diagnostics
-
-```bash
-docker dso doctor --level full
-```
-
-Additional checks:
-- Provider detailed status
-- Container health
-- Cache effectiveness
-- System resource usage
-
-### Troubleshooting
-
-If any checks fail, fix the issue before proceeding:
-
-```bash
-# Docker not running?
-docker ps
-
-# Configuration invalid?
-docker dso config validate
-
-# Permission issues?
-sudo usermod -aG docker $USER
-newgrp docker
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
 ---
 
-## Step 4 — Review Configuration (Phase 3)
+## Step 2 — Choose Your Mode
 
-View and configure DSO settings.
+| | **Local Mode** | **Cloud Mode** |
+|---|---|---|
+| **Best for** | Development, testing, single machine | Production, cloud secrets, auto-rotation |
+| **Root required** | ❌ No | ✅ Yes (systemd service) |
+| **Secret source** | Encrypted local vault (`~/.dso/vault.enc`) | Cloud provider (AWS, Azure, Vault, Huawei) |
+| **Auto-rotation** | ❌ Manual | ✅ Automatic (event-driven) |
+| **Config file** | `./dso.yaml` (generated by setup) | `/etc/dso/dso.yaml` (generated by setup) |
+| **Deploy command** | `docker dso up` | `docker dso up` (auto-detected) |
 
-### View Current Configuration
-
-```bash
-docker dso config show
-```
-
-Default local config:
-```yaml
-version: v1alpha1
-runtime:
-  mode: local
-  log_level: info
-
-providers:
-  local:
-    type: file
-    enabled: true
-
-agent:
-  cache:
-    ttl: 1h
-    max_size: 500Mi
-  rotation:
-    strategy: restart
-    timeout: 30s
-```
-
-### Edit Configuration
-
-```bash
-docker dso config edit
-```
-
-Opens in `$EDITOR`. After saving:
-- Validates syntax automatically
-- Shows any errors
-- Suggests next steps
-
-**Common changes:**
-
-Local mode:
-```yaml
-# Use external vault instead
-providers:
-  vault:
-    type: vault
-    address: https://vault.example.com:8200
-    token: ${VAULT_TOKEN}
-```
-
-Agent mode:
-```yaml
-# Increase cache for production
-agent:
-  cache:
-    ttl: 4h
-    max_size: 2Gi
-```
-
----
-
-## Step 5 — Monitor Status (Phase 3)
-
-View real-time system metrics.
-
-### Current Status
-
-```bash
-docker dso status
-```
-
-Shows:
-- Provider health
-- Container information
-- Cache metrics
-- Rotation statistics
-- System metrics
-
-### Live Monitoring
-
-```bash
-docker dso status --watch
-```
-
-Auto-refreshes every 2 seconds. Press Ctrl+C to exit.
-
----
-
-## Step 6 — Enable Systemd Service (Phase 4 — Agent Mode Only)
-
-Start the long-running agent service.
-
-### Enable and Start Service
-
-```bash
-sudo docker dso system enable
-```
-
-This:
-- Enables the dso-agent systemd service
-- Starts it immediately
-- Configures auto-restart on failure
-
-### Check Service Status
-
-```bash
-docker dso system status
-```
-
-Output:
-```
-Service Status: active (running)
-Enabled: yes
-Uptime: 2h 15m
-Recent logs:
-  [INFO] Agent started
-  [INFO] Configuration loaded
-  [INFO] Event watcher started
-```
-
-### View Live Logs
-
-```bash
-docker dso system logs -f
-```
-
-Follow logs in real-time. Press Ctrl+C to exit.
-
-### Common Operations
-
-```bash
-# Check status
-docker dso system status
-
-# Restart after config changes
-sudo docker dso system restart
-
-# View recent errors
-docker dso system logs -p err
-
-# View last hour of logs
-docker dso system logs --since 1h
-```
-
----
-
-## Complete Workflow Example
-
-Here's a full setup for local development:
-
-```bash
-# 1. Install
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
-
-# 2. Bootstrap local environment
-docker dso bootstrap local
-
-# 3. Check health
-docker dso doctor
-
-# 4. Review configuration
-docker dso config show
-
-# 5. View status
-docker dso status
-
-# 6. Edit config if needed
-docker dso config edit
-
-# 7. Validate changes
-docker dso config validate
-
-# 8. You're ready to use DSO!
-docker compose up
-```
-
-For production agent setup, replace step 2 with `sudo docker dso bootstrap agent`, then step 6 with `sudo docker dso system enable`.
-
----
-
-## Next Steps
-
-- **For Docker plugin details**, see [Docker Plugin Integration](docker-plugin.md)
-- **For command reference**, see [CLI Reference](cli.md)
-- **For architecture details**, see [System Architecture](architecture.md)
-- **For day-2 operations**, see [Operational Guide](operational-guide.md)
-- **For runtime details**, see [Runtime Operation](runtime.md)
-- **For security details**, see [Security Model](../SECURITY.md)
-- **For recovery procedures**, see [Recovery Guide](RECOVERY_PROCEDURES.md)
+> **Not sure?** Start with Local Mode. You can migrate to Cloud Mode at any time.
 
 ---
 
 ## Local Mode Setup
 
-### 1. Initialize the vault
+Local Mode stores secrets in an AES-256 encrypted vault on your machine (`~/.dso/vault.enc`). No cloud account needed.
+
+### Step 2a — Run the Setup Wizard
+
+```bash
+docker dso setup --mode local
+```
+
+Or just run `docker dso setup` and choose **Local** when prompted.
+
+**What the wizard does:**
+1. Generates `./dso.yaml` (local config skeleton)
+2. Tells you the next steps
+
+**Expected output (end of wizard):**
+```
+╔════════════════════════════════════════════════════╗
+║                    Setup Complete!                 ║
+╚════════════════════════════════════════════════════╝
+
+📚 What's next:
+  1. Start the local vault:
+     docker dso up
+
+  2. View vault status:
+     docker dso status
+
+  3. Configure secrets:
+     docker dso secret set <name> <value>
+```
+
+### Step 2b — Initialize the Vault
+
 ```bash
 docker dso init
 ```
 
-This creates `~/.dso/vault.enc` and generates your master key.
+> ⚠️ Run **without** `sudo`. The vault (`~/.dso/vault.enc`) must be owned by your user account. Root-owned vaults cannot be decrypted as a regular user.
 
-> ⚠️ Do not run `docker dso init` with `sudo`. The vault must be owned by your user account.
+**What was created:**
 
-### 2. Store a secret
+| Path | Purpose |
+|---|---|
+| `~/.dso/vault.enc` | AES-256 encrypted secret storage |
+| `~/.dso/master.key` | Vault master key (back this up!) |
+
+### Step 2c — Store Secrets
+
 ```bash
+# Interactive hidden prompt
 docker dso secret set myapp/db_password
-# Enter secret value: (invisible prompt)
-```
+# Enter secret for 'myapp/db_password': (invisible input)
 
-The path format is `<project>/<key>`. You can also pipe a value:
-```bash
+# From a pipe
+echo "secret-value" | docker dso secret set myapp/api_key
+
+# From a file
 cat ./private.key | docker dso secret set myapp/tls_key
+
+# Bulk import from a .env file
+docker dso env import ./my-app.env myapp
 ```
 
-### 3. Reference it in docker-compose.yaml
+List your secrets:
+```bash
+docker dso secret list myapp
+```
 
-**File injection** (recommended — invisible to `docker inspect`):
+### Step 2d — Reference Secrets in `docker-compose.yml`
+
+**File injection** (recommended — secret is mounted as a file, invisible to `docker inspect`):
 ```yaml
 services:
   db:
@@ -468,137 +150,469 @@ services:
       POSTGRES_PASSWORD_FILE: dsofile://myapp/db_password
 ```
 
-**Environment injection** (for legacy containers):
+**Environment injection** (for legacy containers that only read env vars):
 ```yaml
 services:
   api:
     image: my-api:latest
     environment:
       STRIPE_KEY: dso://myapp/stripe_key
+      DB_PASSWORD: dso://myapp/db_password
 ```
 
-### 4. Deploy
+### Step 2e — Deploy
+
 ```bash
 docker dso up -d
 ```
 
-DSO reads your compose file, resolves all `dso://` and `dsofile://` references in memory, starts an inline agent, and passes a sanitized compose file to Docker.
+DSO reads your `docker-compose.yml`, resolves all `dso://` and `dsofile://` references from the encrypted vault, starts an inline agent, and passes a clean compose file to Docker. Secrets are **never written to disk** in plaintext.
+
+### Complete Local Mode Workflow
+
+```bash
+# 1. Install
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+
+# 2. Run setup wizard
+docker dso setup --mode local
+
+# 3. Initialize vault (as your regular user, NOT sudo)
+docker dso init
+
+# 4. Store secrets
+docker dso secret set myapp/db_password
+docker dso secret set myapp/api_key
+
+# 5. Add dso:// references to your docker-compose.yml
+#    (see Step 2d above)
+
+# 6. Deploy
+docker dso up -d
+
+# 7. Check health
+docker dso doctor
+```
 
 ---
 
 ## Cloud Mode Setup
 
-Cloud mode requires root and runs the `dso-agent` as a systemd service.
+Cloud Mode runs `dso-agent` as a long-lived systemd service. The agent watches your cloud provider for secret changes and automatically rotates containers when secrets change.
 
-### 1. Bootstrap Agent (once, as root)
+### Step 2a — Run the Setup Wizard (Recommended)
 
 ```bash
-sudo docker dso bootstrap agent
+docker dso setup
 ```
 
-This command:
-- Creates `/etc/dso/dso.yaml` with provider pre-configured
-- Writes `/etc/systemd/system/dso-agent.service` (systemd unit)
-- Sets up system directories with proper permissions
-- (Optional) Adds your user to `dso` and `docker` groups with `--enable-nonroot` flag
+Or with flags to skip interactive prompts:
 
-Output includes:
-```
-✓ DSO Agent Runtime Initialized
-✓ Configuration: /etc/dso/dso.yaml
-✓ Service: /etc/systemd/system/dso-agent.service
+```bash
+# Auto-detect your cloud provider (AWS/Azure/Huawei from instance metadata)
+docker dso setup --auto-detect
 
-🔧 NEXT STEPS:
-1. Edit configuration: sudo nano /etc/dso/dso.yaml
-2. Add your secrets under the 'secrets:' section
-3. Validate: sudo docker dso config validate
-4. Enable service: sudo docker dso system enable
-5. Check status: docker dso status --watch
+# Specify provider directly
+docker dso setup --mode agent --provider aws
+docker dso setup --mode agent --provider azure
+docker dso setup --mode agent --provider vault
+docker dso setup --mode agent --provider huawei
+
+# Add non-root access so your user can run docker dso commands without sudo
+docker dso setup --mode agent --provider aws --enable-nonroot
 ```
 
-### 2. Configure Secrets in `/etc/dso/dso.yaml`
+> **Note:** If you run `docker dso setup` as a non-root user and it detects agent mode is needed, it automatically re-executes itself via `sudo`.
 
-The bootstrap process created your config file. Now you need to add your secrets:
+**What the wizard does (agent mode):**
+1. Detects or prompts for cloud provider
+2. Generates `/etc/dso/dso.yaml` (config skeleton with provider section)
+3. Installs provider plugin binary to `/usr/local/lib/dso/plugins/`
+4. Internally calls `docker dso bootstrap agent` which:
+   - Creates `/etc/dso/`, `/var/lib/dso/`, `/var/log/dso/`, `/run/dso/` directories
+   - Writes `/etc/systemd/system/dso-agent.service`
+   - Starts the agent service
+
+**Expected end of wizard:**
+```
+╔════════════════════════════════════════════════════╗
+║                    Setup Complete!                 ║
+╚════════════════════════════════════════════════════╝
+
+📚 What's next:
+  1. Edit configuration for your secrets:
+     sudo vi /etc/dso/dso.yaml
+
+  2. Check agent status:
+     sudo docker dso system status
+
+  3. View agent logs:
+     sudo docker dso system logs
+```
+
+### Step 2b — Edit `/etc/dso/dso.yaml` and Add Your Secrets
+
+The wizard generated a config skeleton. Open it and fill in your secrets:
 
 ```bash
 sudo nano /etc/dso/dso.yaml
 ```
 
-The file already contains:
-- ✅ **Provider configured** (AWS/Azure/Vault/Huawei)
-- ✅ **Agent settings** (cache, watch, rotation strategy)
-- ❌ **Secrets** (you need to add these manually)
+The file already has your **provider section** filled in. You need to populate the **`secrets:`** section:
 
-**Example for Vault:**
+#### AWS Secrets Manager
+
 ```yaml
+version: v1.0.0
+mode: agent
+
+providers:
+  aws:
+    type: aws
+    region: us-east-1         # Your AWS region
+    auth:
+      method: iam_role        # Use EC2 instance role (recommended)
+
 secrets:
-  - name: prod/db_password
-    provider: vault
+  - name: database_credentials
+    provider: aws
+    inject:
+      type: env
+    targets:
+      containers:
+        - app                 # Container name(s) that need this secret
     mappings:
-      value: POSTGRES_PASSWORD
-  
-  - name: prod/api-credentials
-    provider: vault
-    mappings:
-      username: API_USER
-      password: API_PASSWORD
+      DB_USER: prod/database/username    # container env var: aws secret path
+      DB_PASSWORD: prod/database/password
+      DB_HOST: prod/database/host
+
+agent:
+  watch:
+    polling_interval: 5m
+  rotation:
+    enabled: true
+    strategy: rolling         # restart | rolling | signal | none
 ```
 
-**Example for AWS:**
+#### HashiCorp Vault
+
 ```yaml
+version: v1.0.0
+mode: agent
+
+providers:
+  vault:
+    type: vault
+    auth:
+      method: token
+      params:
+        address: https://vault.example.com:8200
+        token: YOUR_VAULT_TOKEN    # or use VAULT_TOKEN env var
+
 secrets:
-  - name: prod/mysql-password
-    provider: aws
+  - name: database_credentials
+    provider: vault
+    inject:
+      type: env
+    targets:
+      containers:
+        - app
     mappings:
-      value: MYSQL_ROOT_PASSWORD
-  
-  - name: prod/app-secrets          # JSON secret with multiple values
-    provider: aws
-    mappings:
-      api_key: API_KEY
-      db_pass: DB_PASSWORD
+      DB_USER: secret/data/database/username
+      DB_PASSWORD: secret/data/database/password
+
+agent:
+  watch:
+    polling_interval: 5m
+  rotation:
+    enabled: true
+    strategy: rolling
 ```
 
-### 3. Validate and Enable Service
+#### Azure Key Vault
+
+```yaml
+version: v1.0.0
+mode: agent
+
+providers:
+  azure:
+    type: azure
+    region: eastus
+    auth:
+      method: managed_identity   # Use Azure Managed Identity (recommended)
+
+secrets:
+  - name: database_credentials
+    provider: azure
+    inject:
+      type: env
+    targets:
+      containers:
+        - app
+    mappings:
+      DB_USER: database-username
+      DB_PASSWORD: database-password
+
+agent:
+  watch:
+    polling_interval: 5m
+  rotation:
+    enabled: true
+    strategy: rolling
+```
+
+### Step 2c — Check Agent Status
 
 ```bash
-# Validate configuration syntax
-sudo docker dso config validate
+# Service status
+sudo docker dso system status
 
-# Enable and start the systemd service
-sudo docker dso system enable
+# Live logs
+sudo docker dso system logs -f
 
-# Watch logs in real-time
-docker dso status --watch
+# Last 50 lines of logs
+sudo docker dso system logs -n 50
+
+# Only errors
+sudo docker dso system logs -p err
 ```
 
-The `/etc/dso/dso.yaml` is the source of truth. It is auto-loaded and determines all runtime behavior.
+### Step 2d — Manage the Service
 
-### 4. Deploy with docker-compose.yaml
+```bash
+# Enable + start (also done by setup wizard)
+sudo docker dso system enable
+
+# Restart after config changes
+sudo docker dso system restart
+
+# Stop and disable
+sudo docker dso system disable
+```
+
+### Step 2e — Deploy
 
 ```bash
 docker compose up -d
 ```
 
-Containers automatically fetch secrets from the configured provider.
+`docker dso up` also works and auto-detects cloud mode from the presence of `/etc/dso/dso.yaml`:
+
+```bash
+docker dso up -d
+```
+
+In cloud mode, secrets are injected from the provider — **no `dso://` URIs needed in `docker-compose.yml`**. All routing is defined in `dso.yaml`.
+
+### Complete Cloud Mode Workflow
+
+```bash
+# 1. Install (system-wide, with sudo)
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+
+# 2. Run setup wizard (auto-detects if on cloud VM, else prompts)
+docker dso setup
+
+# 3. Edit /etc/dso/dso.yaml to add your secrets
+sudo nano /etc/dso/dso.yaml
+
+# 4. Check agent is running
+sudo docker dso system status
+sudo docker dso system logs -f
+
+# 5. Check health
+docker dso doctor
+
+# 6. Deploy
+docker compose up -d
+```
 
 ---
 
-## Diagnose Your Setup
+## Step 3 — Verify Everything is Working
 
-At any time, run:
 ```bash
-docker dso system doctor
+# Check DSO binary
+docker dso version
+
+# Environment health check (all checks should show ✓)
+docker dso doctor
+
+# Real-time metrics
+docker dso status --watch
+
+# Verify secrets were injected into containers
+docker exec <container_name> env | grep DB_PASSWORD
 ```
 
-This shows your detected mode, vault status, config file presence, systemd service state, and plugin availability. It is read-only and safe to run at any time.
+---
+
+## All CLI Commands Reference
+
+### Setup & Initialization
+
+| Command | Purpose | Requires root |
+|---|---|---|
+| `docker dso setup` | Interactive wizard (recommended first step) | Auto-escalates for agent mode |
+| `docker dso setup --mode local` | Local mode setup (no prompts) | No |
+| `docker dso setup --mode agent --provider aws` | Cloud mode setup (no prompts) | Yes |
+| `docker dso bootstrap local` | Lower-level: init local dirs + vault skeleton | No |
+| `docker dso bootstrap agent` | Lower-level: init systemd service + dirs | Yes |
+| `docker dso init` | Initialize local vault only (`~/.dso/vault.enc`) | No (must NOT be root) |
+
+### Secret Management (Local Mode)
+
+| Command | Purpose |
+|---|---|
+| `docker dso secret set myapp/key` | Store a secret (interactive prompt) |
+| `echo "val" \| docker dso secret set myapp/key` | Store a secret from pipe |
+| `docker dso secret get myapp/key` | Retrieve a secret |
+| `docker dso secret list [project]` | List all secrets in a project |
+| `docker dso env import file.env myapp` | Bulk import from `.env` file |
+
+### Deployment
+
+| Command | Purpose |
+|---|---|
+| `docker dso up -d` | Deploy (auto-detects local vs cloud mode) |
+| `docker dso up -f custom-compose.yml -d` | Deploy with specific compose file |
+| `docker dso down` | Stop containers |
+
+### Health & Monitoring
+
+| Command | Purpose |
+|---|---|
+| `docker dso doctor` | Health check (all checks) |
+| `docker dso doctor --level full` | Full diagnostics including provider |
+| `docker dso status` | Runtime status snapshot |
+| `docker dso status --watch` | Live status (refreshes every 2s) |
+| `docker dso status --json` | JSON output for scripts |
+
+### Configuration
+
+| Command | Purpose |
+|---|---|
+| `docker dso config show` | Display current config file |
+| `docker dso config edit` | Open config in `$EDITOR` |
+| `docker dso config validate` | Validate config syntax |
+| `docker dso validate` | Alias: validate config |
+
+### Service Management (Cloud Mode — requires sudo)
+
+| Command | Purpose |
+|---|---|
+| `sudo docker dso system enable` | Enable + start dso-agent service |
+| `sudo docker dso system disable` | Disable + stop dso-agent service |
+| `sudo docker dso system restart` | Restart dso-agent service |
+| `sudo docker dso system status` | Show service status |
+| `docker dso system logs` | View service logs |
+| `docker dso system logs -f` | Follow logs in real-time |
+| `docker dso system logs -n 50` | Show last 50 lines |
+| `docker dso system logs -p err` | Show only errors |
+| `docker dso system logs --since 1h` | Logs from last hour |
+
+---
+
+## File Locations Reference
+
+| Item | Local Mode | Cloud Mode |
+|---|---|---|
+| Config (setup-generated) | `./dso.yaml` | `/etc/dso/dso.yaml` |
+| Vault | `~/.dso/vault.enc` | Cloud provider |
+| Master key | `~/.dso/master.key` | N/A |
+| State | `~/.dso/state/` | `/var/lib/dso/state/` |
+| Cache | `~/.dso/cache/` | `/var/lib/dso/cache/` |
+| Logs | Console | `/var/log/dso/dso-agent.log` |
+| Socket | N/A | `/run/dso/dso.sock` |
+| Service | N/A | `/etc/systemd/system/dso-agent.service` |
+| Plugin (binary) | `~/.dso/plugins/` | `/usr/local/lib/dso/plugins/` |
+
+---
+
+## Common Troubleshooting
+
+### `docker dso` command not found
+
+```bash
+# Check plugin installed
+ls ~/.docker/cli-plugins/docker-dso          # user install
+ls /usr/local/lib/docker/cli-plugins/docker-dso  # system install
+
+# Reload plugins
+docker ps
+
+# Check PATH
+echo $PATH | grep -o "$HOME/.local/bin"
+```
+
+### `docker dso init` — vault already exists
+
+```bash
+# The vault is already initialized. Proceed directly to:
+docker dso secret set myapp/my_secret
+```
+
+### Cloud mode: agent socket missing
+
+```bash
+# Run setup again to start the agent
+docker dso setup
+
+# Or start the service manually
+sudo docker dso system enable
+
+# Check if socket exists
+ls -la /run/dso/dso.sock
+```
+
+### Cloud mode: provider plugin missing
+
+```bash
+# Check plugin directory
+ls -la /usr/local/lib/dso/plugins/
+
+# Re-run installer to get plugins
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+```
+
+### Service fails to start
+
+```bash
+# View full startup logs
+sudo journalctl -u dso-agent -n 100
+
+# Common causes:
+# 1. Invalid YAML in /etc/dso/dso.yaml
+docker dso config validate
+
+# 2. Provider plugin binary missing from /usr/local/lib/dso/plugins/
+ls -la /usr/local/lib/dso/plugins/
+
+# 3. Wrong credentials — check provider auth section in dso.yaml
+sudo cat /etc/dso/dso.yaml | grep -A10 providers
+```
+
+### Secret not injected into container
+
+```bash
+# Check container is listed in secrets[].targets.containers
+# (leave targets empty to target all running containers)
+sudo cat /etc/dso/dso.yaml | grep -A5 targets
+
+# Check agent is watching the secret
+sudo docker dso system logs -f | grep -i "rotation\|secret\|inject"
+
+# Check agent health
+docker dso doctor --level full
+```
 
 ---
 
 ## Next Steps
 
-- [CLI Reference](cli.md) — all commands explained
-- [Docker Compose Guide](docker-compose.md) — `dso://` vs `dsofile://` in depth
-- [Examples](examples/) — PostgreSQL, Redis, Django, Node.js
-- [Security Model](../SECURITY.md) — threat model and design decisions
-- [Recovery Procedures](RECOVERY_PROCEDURES.md) — handling failures
+- **[CLI Reference](cli.md)** — every command and flag documented
+- **[Configuration Reference](configuration.md)** — full `dso.yaml` schema
+- **[Providers Guide](providers.md)** — AWS, Azure, Vault, Huawei auth details
+- **[Operational Guide](operational-guide.md)** — Day-2 operations, monitoring, backup
+- **[Quick Reference](QUICKREF.md)** — one-page cheat sheet

@@ -15,6 +15,10 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 	deadline := time.Now().Add(timeout)
 	hasHealthCheck := false
 	healthCheckConfirmed := false
+	// Tracks consecutive "running" polls when there is no health check defined.
+	// We wait for two consecutive clean polls (~4s apart) before declaring healthy,
+	// so we don't declare success on a container that immediately crashes.
+	stablePolls := 0
 
 	for time.Now().Before(deadline) {
 		inspect, err := cli.ContainerInspect(ctx, containerID)
@@ -45,10 +49,13 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 				// still waiting...
 			}
 		} else {
-			// CRITICAL FIX: Don't return success on just running state
-			// If no health check is defined, we MUST give it reasonable time to start up
-			// but we don't confirm success until we've waited long enough
-			hasHealthCheck = false
+			// No HEALTHCHECK defined: rely on consecutive stable running polls.
+			// Two consecutive 2s-apart polls with the container still running is
+			// good enough signal that it has not crashed on startup.
+			stablePolls++
+			if stablePolls >= 2 {
+				return nil
+			}
 		}
 
 		select {
@@ -63,9 +70,8 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 		return fmt.Errorf("rotation timed out after %v - container has health check but never reached healthy state", timeout)
 	}
 
-	// If no health check defined, we've waited the full timeout and container is running
-	// This is acceptable but risky - container could still crash after rotation
-	return nil
+	// No health check defined and we never got two consecutive stable polls within timeout
+	return fmt.Errorf("rotation timed out after %v - container did not reach stable running state", timeout)
 }
 
 // ExecProbe runs a specific command inside the container to verify state (e.g. secret existence).

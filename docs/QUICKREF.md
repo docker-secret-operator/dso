@@ -1,4 +1,4 @@
-# DSO Quick Reference (v3.5.0)
+# DSO Quick Reference
 
 Essential commands for daily DSO operations. Full details in [CLI Reference](cli.md) and [Getting Started](getting-started.md).
 
@@ -22,14 +22,19 @@ docker dso version
 ## Initialization
 
 ```bash
-# Local development (no root required)
-docker dso bootstrap local
+# ── RECOMMENDED: Interactive setup wizard (handles everything) ────────────
+docker dso setup                        # Prompts for mode + provider
+docker dso setup --mode local           # Local mode, no prompts
+docker dso setup --mode agent --provider aws    # Cloud/AWS, no prompts
+docker dso setup --auto-detect          # Auto-detect cloud from instance metadata
+docker dso setup --mode agent --provider aws --enable-nonroot  # Also add user to dso group
 
-# Production agent (requires root + systemd)
-sudo docker dso bootstrap agent
+# ── Lower-level alternative (if you need more control) ───────────────────
+docker dso bootstrap local              # Init local dirs (no root required)
+sudo docker dso bootstrap agent         # Init systemd service (requires root)
 
-# Production agent + non-root CLI access (auto-configures user for dso/docker groups)
-sudo docker dso bootstrap agent --enable-nonroot
+# ── Local vault only (after local setup) ─────────────────────────────────
+docker dso init                         # Initialize ~/.dso/vault.enc (run as your user, NOT sudo)
 ```
 
 ---
@@ -99,20 +104,17 @@ docker dso secret delete app/db_password
 ## Deployment
 
 ```bash
-# Deploy with DSO (local mode)
-docker dso compose up
+# Deploy (auto-detects local vs cloud mode)
+docker dso up -d
 
-# Deploy specific compose file
-docker dso compose -f ./prod-compose.yaml up
+# Deploy with specific compose file
+docker dso up -f ./prod-compose.yaml -d
 
 # Stop containers
-docker dso compose down
+docker dso down
 
-# View logs
-docker dso compose logs -f <service>
-
-# Scale service
-docker dso compose up -d --scale web=3
+# Deploy with vanilla docker compose (cloud mode only)
+docker compose up -d
 ```
 
 ---
@@ -179,10 +181,8 @@ docker dso config validate
 ### Local Mode (Development)
 
 ```yaml
-version: "1.0"
-runtime:
-  mode: local
-  log_level: info
+version: v1.0.0
+mode: local
 
 providers:
   local:
@@ -204,10 +204,8 @@ agent:
 ### AWS Secrets Manager
 
 ```yaml
-version: "1.0"
-runtime:
-  mode: agent
-  log_level: info
+version: v1.0.0
+mode: agent
 
 providers:
   aws:
@@ -236,10 +234,8 @@ agent:
 ### Azure Key Vault
 
 ```yaml
-version: "1.0"
-runtime:
-  mode: agent
-  log_level: info
+version: v1.0.0
+mode: agent
 
 providers:
   azure:
@@ -268,10 +264,8 @@ agent:
 ### HashiCorp Vault
 
 ```yaml
-version: "1.0"
-runtime:
-  mode: agent
-  log_level: info
+version: v1.0.0
+mode: agent
 
 providers:
   vault:
@@ -461,6 +455,8 @@ docker dso system logs -p err
 
 ## Version
 
-This quick reference is for **DSO v3.5.0**
-
-Last updated: 2026-05-14
+This quick reference covers **DSO latest**. Always install with:
+```bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+```
+The installer picks the latest stable release automatically.

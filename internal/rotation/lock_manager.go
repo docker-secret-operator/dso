@@ -100,9 +100,11 @@ func (fl *FileLock) AcquireLock(containerID string, timeout time.Duration) error
 		// Try to create lock file exclusively
 		f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
-			// Successfully acquired lock
-			f.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
-			f.Close()
+			// Successfully acquired lock; write PID for staleness detection
+			_, _ = f.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
+			if closeErr := f.Close(); closeErr != nil {
+				fl.logger.Warn("Failed to close lock file after write", zap.String("container_id", containerID), zap.Error(closeErr))
+			}
 			fl.logger.Debug("Acquired distributed lock", zap.String("container_id", containerID))
 			return nil
 		}

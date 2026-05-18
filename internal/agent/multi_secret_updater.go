@@ -186,15 +186,18 @@ func (msu *MultiSecretUpdater) BatchUpdateSecrets(
 
 		batch := updates[i:end]
 
-		// Create timeout context for this batch
+		// Create timeout context for this batch.
+		// IMPORTANT: cancel() is called explicitly (not deferred) to release
+		// the context promptly after each batch rather than at function return.
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
-		defer cancel()
 
 		msu.logger.Debug("Processing batch",
 			zap.Int("batch", i/batchSize+1),
 			zap.Int("count", len(batch)))
 
-		if err := msu.UpdateMultipleSecrets(batchCtx, batch); err != nil {
+		err := msu.UpdateMultipleSecrets(batchCtx, batch)
+		cancel() // Always release the context, even on error
+		if err != nil {
 			return fmt.Errorf("batch %d failed: %w", i/batchSize+1, err)
 		}
 	}

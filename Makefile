@@ -10,7 +10,7 @@ BIN_DIR_SYSTEM    := /usr/local/bin
 PLUGIN_DIR_USER   := $(HOME)/.docker/cli-plugins
 BIN_DIR_USER      := $(HOME)/.local/bin
 
-.PHONY: all build test lint clean install install-user fmt vet
+.PHONY: all build test lint clean install install-user fmt vet docs
 
 all: build
 
@@ -45,6 +45,10 @@ install-user: build
 	ln -sf $(BIN_DIR_USER)/$(BINARY) $(BIN_DIR_USER)/dso
 	@echo "Installed: docker dso (plugin) and dso (symlink) — ensure $(BIN_DIR_USER) is in PATH"
 
+docs:
+	go run scripts/generate-docs.go
+
 clean:
 	rm -f $(BINARY)
 	rm -f docker-compose-dso-*.yaml
+

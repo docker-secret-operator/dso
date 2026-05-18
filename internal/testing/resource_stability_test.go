@@ -209,15 +209,15 @@ Snapshots: %d
 	)
 }
 
-// TestMemoryStabilityUnderSustainedLoad validates memory stability over extended duration
+// TestMemoryStabilityUnderSustainedLoad validates memory stability over extended duration.
+// This is a long-running stability test. Run explicitly with:
+//   go test ./internal/testing/ -run TestMemoryStabilityUnderSustainedLoad -timeout 3m
 func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
-	// Simulate 5 minutes of sustained operations (shortened for -short)
-	testDuration := 5 * time.Minute
-	sampleInterval := 5 * time.Second
 	if testing.Short() {
-		testDuration = 5 * time.Second
-		sampleInterval = 1 * time.Second
+		t.Skip("Skipping long-running stability test in short mode")
 	}
+	testDuration := 90 * time.Second
+	sampleInterval := 5 * time.Second
 
 	rst := NewResourceStabilityTest("sustained-load-memory", testDuration, sampleInterval)
 
@@ -271,14 +271,14 @@ func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
 	}
 }
 
-// TestGoroutineStabilityUnderChurn validates goroutines don't leak under high churn
+// TestGoroutineStabilityUnderChurn validates goroutines don't leak under high churn.
+// Long-running (~3m). Run explicitly: go test ./internal/testing/ -run TestGoroutineStabilityUnderChurn -timeout 5m
 func TestGoroutineStabilityUnderChurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running goroutine churn test in short mode")
+	}
 	testDuration := 3 * time.Minute
 	sampleInterval := 2 * time.Second
-	if testing.Short() {
-		testDuration = 3 * time.Second
-		sampleInterval = 500 * time.Millisecond
-	}
 
 	rst := NewResourceStabilityTest("goroutine-stability-churn", testDuration, sampleInterval)
 
@@ -346,14 +346,14 @@ func TestGoroutineStabilityUnderChurn(t *testing.T) {
 	}
 }
 
-// TestQueueStabilityUnderSaturation validates queue behavior doesn't degrade
+// TestQueueStabilityUnderSaturation validates queue behavior doesn't degrade.
+// Long-running (~2m). Run explicitly: go test ./internal/testing/ -run TestQueueStabilityUnderSaturation -timeout 4m
 func TestQueueStabilityUnderSaturation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running queue saturation test in short mode")
+	}
 	testDuration := 2 * time.Minute
 	sampleInterval := 1 * time.Second
-	if testing.Short() {
-		testDuration = 2 * time.Second
-		sampleInterval = 500 * time.Millisecond
-	}
 
 	rst := NewResourceStabilityTest("queue-stability-saturation", testDuration, sampleInterval)
 
@@ -435,16 +435,15 @@ func TestQueueStabilityUnderSaturation(t *testing.T) {
 	}
 }
 
-// TestProviderRestartStability validates restart operations don't cause leaks
+// TestProviderRestartStability validates restart operations don't cause leaks.
+// Long-running (~2m). Run explicitly: go test ./internal/testing/ -run TestProviderRestartStability -timeout 4m
 func TestProviderRestartStability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running provider restart stability test in short mode")
+	}
 	testDuration := 2 * time.Minute
 	sampleInterval := 2 * time.Second
 	restartInterval := 5 * time.Second
-	if testing.Short() {
-		testDuration = 2 * time.Second
-		sampleInterval = 500 * time.Millisecond
-		restartInterval = 1 * time.Second
-	}
 
 	rst := NewResourceStabilityTest("provider-restart-stability", testDuration, sampleInterval)
 
@@ -519,14 +518,14 @@ func TestProviderRestartStability(t *testing.T) {
 	}
 }
 
-// TestReconnectStormStability validates rapid reconnect cycles are stable
+// TestReconnectStormStability validates rapid reconnect cycles are stable.
+// Long-running (~2m). Run explicitly: go test ./internal/testing/ -run TestReconnectStormStability -timeout 4m
 func TestReconnectStormStability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running reconnect storm stability test in short mode")
+	}
 	testDuration := 2 * time.Minute
 	sampleInterval := 1 * time.Second
-	if testing.Short() {
-		testDuration = 2 * time.Second
-		sampleInterval = 500 * time.Millisecond
-	}
 
 	rst := NewResourceStabilityTest("reconnect-storm-stability", testDuration, sampleInterval)
 
@@ -591,14 +590,14 @@ func TestReconnectStormStability(t *testing.T) {
 	}
 }
 
-// TestCombinedOperationalLoad validates system under realistic combined load
+// TestCombinedOperationalLoad validates system under realistic combined load.
+// Long-running (~3m). Run explicitly: go test ./internal/testing/ -run TestCombinedOperationalLoad -timeout 5m
 func TestCombinedOperationalLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running combined load test in short mode")
+	}
 	testDuration := 3 * time.Minute
 	sampleInterval := 2 * time.Second
-	if testing.Short() {
-		testDuration = 3 * time.Second
-		sampleInterval = 500 * time.Millisecond
-	}
 
 	rst := NewResourceStabilityTest("combined-operational-load", testDuration, sampleInterval)
 

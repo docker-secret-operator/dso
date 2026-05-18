@@ -235,7 +235,9 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 
 	switch msg.Action {
 	case "start":
-		if _, hasLabel := msg.Actor.Attributes["dso.reloader"]; hasLabel {
+		_, hasLabel := msg.Actor.Attributes["dso.reloader"]
+		if hasLabel {
+			// --- Label-driven registration ---
 			strategy := msg.Actor.Attributes["dso.update.strategy"]
 			if strategy == "" {
 				strategy = "restart"
@@ -276,7 +278,50 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 				ComposePath: composePath,
 				Secrets:     secretList,
 			})
-			r.Logger.Info("Registered target container dynamically", zap.String("id", msg.Actor.ID), zap.Strings("secrets", secretList))
+			r.Logger.Info("Registered target container dynamically (label-driven)", zap.String("id", msg.Actor.ID), zap.Strings("secrets", secretList))
+		} else if r.Config != nil {
+			// --- Config-driven registration fallback ---
+			// Register containers that start without the DSO label if they are
+			// listed in secrets[].targets.containers, or if no target restriction is set.
+			cname := strings.TrimPrefix(msg.Actor.Attributes["name"], "/")
+			if cname == "" {
+				cname = msg.Actor.ID
+			}
+
+			var matchedSecrets []string
+			for _, sec := range r.Config.Secrets {
+				if len(sec.Targets.Containers) == 0 {
+					// No explicit target list → applies to all containers
+					matchedSecrets = append(matchedSecrets, sec.Name)
+				} else {
+					for _, target := range sec.Targets.Containers {
+						if target == cname || target == msg.Actor.ID {
+							matchedSecrets = append(matchedSecrets, sec.Name)
+							break
+						}
+					}
+				}
+			}
+
+			if len(matchedSecrets) > 0 {
+				strategy := r.Config.Agent.Rotation.Strategy
+				if strategy == "" {
+					strategy = r.Config.Defaults.Rotation.Strategy
+				}
+				if strategy == "" {
+					strategy = "restart"
+				}
+				r.Targets.Store(msg.Actor.ID, &TargetContainer{
+					ID:      msg.Actor.ID,
+					Strategy: strategy,
+					Secrets: matchedSecrets,
+				})
+				r.Logger.Info("Registered target container dynamically (config-driven)",
+					zap.String("name", cname),
+					zap.String("id", msg.Actor.ID),
+					zap.Strings("secrets", matchedSecrets),
+					zap.String("strategy", strategy))
+			}
 		}
 	case "die", "stop":
 		if _, loaded := r.Targets.LoadAndDelete(msg.Actor.ID); loaded {
@@ -287,16 +332,18 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 }
 
 func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
-	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "dso.reloader=true")
+	// Pass 1: discover containers with the explicit dso.reloader=true label
+	labelFilter := filters.NewArgs()
+	labelFilter.Add("label", "dso.reloader=true")
 
-	containers, err := r.cli.ContainerList(ctx, container.ListOptions{Filters: filterArgs})
+	labeledContainers, err := r.cli.ContainerList(ctx, container.ListOptions{Filters: labelFilter})
 	if err != nil {
-		r.Logger.Error("Failed to list initial containers", zap.Error(err))
+		r.Logger.Error("Failed to list labeled containers", zap.Error(err))
 		return
 	}
 
-	for _, c := range containers {
+	registered := 0
+	for _, c := range labeledContainers {
 		strategy := c.Labels["dso.update.strategy"]
 		if strategy == "" {
 			strategy = "restart"
@@ -310,9 +357,75 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 			ComposePath: composePath,
 			Secrets:     secretList,
 		})
-		r.Logger.Debug("Initial population: Managed container found", zap.String("id", c.ID), zap.Strings("secrets", secretList))
+		r.Logger.Debug("Initial population: Labeled container found", zap.String("id", c.ID), zap.Strings("secrets", secretList))
+		registered++
 	}
-	r.Logger.Info("Initial container population complete", zap.Int("count", len(containers)))
+
+	// Pass 2: config-driven fallback — discover containers without the dso.reloader label
+	// by matching running container names against secrets[].targets.containers in the config.
+	// When targets.containers is empty, ALL running containers are eligible for that secret.
+	if r.Config != nil {
+		allContainers, err := r.cli.ContainerList(ctx, container.ListOptions{})
+		if err != nil {
+			r.Logger.Warn("Config-driven discovery: failed to list all containers", zap.Error(err))
+		} else {
+			for _, c := range allContainers {
+				// Skip already-registered containers
+				if _, exists := r.Targets.Load(c.ID); exists {
+					continue
+				}
+
+				// Derive the canonical container name (first name without leading /)
+				cname := ""
+				if len(c.Names) > 0 {
+					cname = strings.TrimPrefix(c.Names[0], "/")
+				}
+
+				// Collect every secret this container is targeted for
+				var matchedSecrets []string
+				for _, sec := range r.Config.Secrets {
+					if len(sec.Targets.Containers) == 0 {
+						// No explicit targets → this secret applies to all containers
+						matchedSecrets = append(matchedSecrets, sec.Name)
+					} else {
+						for _, target := range sec.Targets.Containers {
+							if target == cname || target == c.ID {
+								matchedSecrets = append(matchedSecrets, sec.Name)
+								break
+							}
+						}
+					}
+				}
+
+				if len(matchedSecrets) == 0 {
+					continue
+				}
+
+				// Determine strategy from config defaults
+				strategy := r.Config.Agent.Rotation.Strategy
+				if strategy == "" {
+					strategy = r.Config.Defaults.Rotation.Strategy
+				}
+				if strategy == "" {
+					strategy = "restart"
+				}
+
+				r.Targets.Store(c.ID, &TargetContainer{
+					ID:      c.ID,
+					Strategy: strategy,
+					Secrets: matchedSecrets,
+				})
+				r.Logger.Info("Config-driven discovery: registered container without dso.reloader label",
+					zap.String("name", cname),
+					zap.String("id", c.ID),
+					zap.Strings("secrets", matchedSecrets),
+					zap.String("strategy", strategy))
+				registered++
+			}
+		}
+	}
+
+	r.Logger.Info("Initial container population complete", zap.Int("count", registered))
 }
 
 func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string) error {

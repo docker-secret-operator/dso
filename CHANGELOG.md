@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.11] - 2026-05-18
+
+### Added
+- **Automated CLI Reference Generation**: Added `scripts/generate-docs.go` leveraging Cobra's `doc` generation package to automatically keep all 38 command reference files updated inside `docs/cli-reference/`.
+- **Makefile Docs Target**: Added `make docs` command to allow single-command documentation updates.
+- **CI Documentation Guard**: Added automated check to `.github/workflows/ci.yml` verifying that all generated markdown CLI docs are fully up-to-date.
+- **CNCF/SRE Production Architecture Diagrams**: Overwrote `docs/architecture.md` with a security-focused production guide featuring 8 beautiful, SRE-grade Mermaid diagrams (such as blue-green replacements, tmpfs secret flows, internal components, and event watcher pipelines).
+
+### Changed
+- **Operational Documentation Sync**: Completely overhauled `getting-started.md`, `index.md`, `QUICKREF.md`, `configuration.md`, and `providers.md` to map to the `docker dso setup` command tree and `v1.0.0` configuration schemas.
+- **CI Test Split**: Refactored `ci.yml` to split integration tests (`go test -short` completing in 1m) and long-running resource stability tests (moved to a dedicated `stability` job with 15m timeout) to prevent GHA runner timeouts.
+
+### Fixed
+- **Installer Version Fetching**: Hardened `install.sh` with a fail-safe, two-strategy version lookup (primary GitHub redirect, secondary API fallback) that completely avoids API rate limits.
+- **Workspace Cleanup**: Deleted all temporary developmental summary logs (`CODE_CHANGES_DETAILED.md`, `DEBUGGING_ANALYSIS.md`, `REPO_ANALYSIS.md`, `PRODUCTION_ARCHITECTURE.md`, `ARCHITECTURE_MAP.md`, `DELIVERABLES_SUMMARY.md`, `FIX_SUMMARY.md`) to guarantee a production-ready publish bundle.
+
+---
+
 ## [3.5.10] - 2026-05-17
 
 ### Fixed

@@ -24,17 +24,13 @@ permalink: /
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 ```
 
-### 2. Bootstrap Your Environment
+### 2. Run the Setup Wizard
 
-**Local development:**
 ```bash
-docker dso bootstrap local
+docker dso setup
 ```
 
-**Production with systemd:**
-```bash
-sudo docker dso bootstrap agent
-```
+The wizard detects your environment, generates the right config, and starts the agent (for cloud mode) — all in one step.
 
 ### 3. Check Health
 
@@ -42,10 +38,10 @@ sudo docker dso bootstrap agent
 docker dso doctor
 ```
 
-### 4. View Status
+### 4. Deploy
 
 ```bash
-docker dso status
+docker dso up -d
 ```
 
 For detailed setup, see [Getting Started](getting-started.md).
@@ -168,22 +164,21 @@ docker dso system [status|enable|disable|restart|logs]
 
 ### Set Up Local Development
 
-1. Install: `curl -fsSL https://... | bash`
-2. Bootstrap: `docker dso bootstrap local`
-3. Check: `docker dso doctor`
-4. Configure: `docker dso config edit`
-5. Deploy: `docker compose up`
+1. Install: `curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash`
+2. Wizard: `docker dso setup --mode local`
+3. Init vault: `docker dso init` *(as your user, NOT sudo)*
+4. Store secrets: `docker dso secret set myapp/db_password`
+5. Deploy: `docker dso up -d`
 
 **Full guide**: [Getting Started](getting-started.md)
 
 ### Set Up Production with Systemd
 
-1. Install: `curl -fsSL https://... | sudo bash`
-2. Bootstrap: `sudo docker dso bootstrap agent`
-3. Check: `docker dso doctor`
-4. Configure: `docker dso config edit`
-5. Enable: `sudo docker dso system enable`
-6. Deploy: `docker compose up`
+1. Install: `curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash`
+2. Wizard: `docker dso setup` *(auto-detects cloud, escalates to sudo for agent mode)*
+3. Edit config: `sudo nano /etc/dso/dso.yaml` *(add your secrets section)*
+4. Check logs: `sudo docker dso system logs -f`
+5. Deploy: `docker dso up -d`
 
 **Full guide**: [Getting Started](getting-started.md)
 
