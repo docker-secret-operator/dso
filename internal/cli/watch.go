@@ -35,13 +35,22 @@ func NewWatchCmd() *cobra.Command {
 			msgCh, errCh := dw.Subscribe(ctx)
 
 			// Legacy Agent connection for DSO local events
-			client, _ := injector.NewAgentClient(socketPath)
+			client, agentErr := injector.NewAgentClient(socketPath)
 			if client != nil {
 				defer client.Close()
 			}
 
 			fmt.Println("\033[1;36mDSO Watcher Active\033[0m (Strategy: " + strategy + ") - Monitoring live container events...")
 			fmt.Println("-----------------------------------------------------------------------------------")
+			if agentErr != nil {
+				fmt.Printf("\033[1;33m[WARN]\033[0m Agent not connected (%v)\n", agentErr)
+				fmt.Println("       Start the agent with: sudo docker dso agent  (or: sudo systemctl start dso-agent)")
+				fmt.Println("       DSO rotation events will not appear until the agent is running.")
+				fmt.Println("-----------------------------------------------------------------------------------")
+			} else {
+				fmt.Println("\033[1;32m[OK]\033[0m   Agent connected — rotation events will appear below.")
+				fmt.Println("-----------------------------------------------------------------------------------")
+			}
 
 			seenAgentMsgs := make(map[string]bool)
 

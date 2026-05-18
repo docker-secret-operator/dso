@@ -313,10 +313,10 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 			}
 
 			// Validate strategy
-			validStrategies := map[string]bool{"restart": true, "signal": true, "auto": true}
+			validStrategies := map[string]bool{"restart": true, "signal": true, "rolling": true, "none": true, "auto": true}
 			if !validStrategies[strategy] {
-				r.Logger.Warn("Invalid rotation strategy", zap.String("id", msg.Actor.ID), zap.String("strategy", strategy))
-				strategy = "restart" // Default to safe strategy
+				r.Logger.Warn("Invalid rotation strategy, defaulting to restart", zap.String("id", msg.Actor.ID), zap.String("strategy", strategy))
+				strategy = "restart"
 			}
 
 			composePath := msg.Actor.Attributes["dso.compose.path"]

@@ -310,7 +310,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 }
 
 func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderConfig, sec config.SecretMapping, baseInterval time.Duration) error {
-	t.Logger.Info("Initializing secret polling", zap.String("secret", sec.Name), zap.String("provider", providerName))
+	t.Logger.Info("Initializing secret polling", zap.String("secret", sec.Name), zap.String("provider", providerName), zap.Duration("interval", baseInterval))
 
 	go func() {
 		cacheKey := fmt.Sprintf("%s:%s", providerName, sec.Name)
@@ -330,63 +330,64 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 		currentInterval := baseInterval
 		maxInterval := baseInterval * 4
 
+		// Fire immediately so the initial hash is established on startup without
+		// waiting a full polling interval. This also catches rotations that
+		// happened while the agent was down.
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+
 		for {
 			select {
 			case <-t.ctx.Done():
 				t.Logger.Debug("Polling stopped for secret", zap.String("secret", sec.Name))
 				return
-			default:
+			case <-timer.C:
 			}
 
 			prov, err := t.Store.GetProvider(providerName, pCfg)
 			if err != nil {
-				// Retry loop handled inside GetProvider usually,
-				// but here we wait between polling attempts if it fails.
-				time.Sleep(baseBackoff)
+				t.Logger.Error("Provider unavailable, retrying", zap.String("provider", providerName), zap.Error(err))
+				timer.Reset(baseBackoff)
 				continue
 			}
 
-			ch, err := prov.WatchSecret(sec.Name, currentInterval)
+			// Use context-aware GetSecret when the provider supports it so that
+			// agent shutdown cancels in-flight AWS calls immediately.
+			var data map[string]string
+			if provCtx, ok := prov.(api.SecretProviderWithContext); ok {
+				data, err = provCtx.GetSecretWithContext(t.ctx, sec.Name)
+			} else {
+				data, err = prov.GetSecret(sec.Name)
+			}
+
 			if err != nil {
-				// If watch fails, use the backoff
-				select {
-				case <-t.ctx.Done():
-					return
-				case <-time.After(baseBackoff):
-				}
+				t.Store.MarkProviderFailure(providerName)
+				observability.SecretRequestsTotal.WithLabelValues(providerName, "error").Inc()
+				t.Logger.Error("Secret fetch failed, will retry", zap.String("secret", sec.Name), zap.Error(err))
+				timer.Reset(baseBackoff)
 				continue
 			}
 
-			for update := range ch {
-				select {
-				case <-t.ctx.Done():
-					return
-				default:
-				}
+			t.Store.MarkProviderHealthy(providerName)
+			observability.SecretRequestsTotal.WithLabelValues(providerName, "success").Inc()
 
-				if update.Error != "" {
-					observability.SecretRequestsTotal.WithLabelValues(providerName, "error").Inc()
-					t.Logger.Error("Secret update error", zap.Error(fmt.Errorf("%s", update.Error)))
-					continue
-				}
-
-				oldData, exists := t.Cache.Get(cacheKey)
-				if !exists || ComputeHash(oldData) != ComputeHash(update.Data) {
-					currentInterval = baseInterval
-				} else {
-					if currentInterval < maxInterval {
-						currentInterval = time.Duration(float64(currentInterval) * 1.5)
-					}
-				}
-
-				t.ExecuteRotation(providerName, sec.Name, update.Data, sec)
+			// Adaptive back-off: if data unchanged, slowly increase poll interval
+			// (up to 4x base). Reset to base the moment a change is detected.
+			oldData, exists := t.Cache.Get(cacheKey)
+			if !exists || ComputeHash(oldData) != ComputeHash(data) {
+				currentInterval = baseInterval
+			} else if currentInterval < maxInterval {
+				currentInterval = time.Duration(float64(currentInterval) * 1.5)
 			}
 
-			select {
-			case <-t.ctx.Done():
-				return
-			case <-time.After(baseBackoff):
-			}
+			t.Logger.Info("Secret polled from provider",
+				zap.String("provider", providerName),
+				zap.String("secret", sec.Name),
+				zap.Duration("next_poll_in", currentInterval))
+
+			t.ExecuteRotation(providerName, sec.Name, data, sec)
+
+			timer.Reset(currentInterval)
 		}
 	}()
 
