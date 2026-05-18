@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -184,10 +186,27 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		return nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
 	}
 
-	// CRITICAL: Socket permissions MUST be restrictive (0600).
-	// If chmod fails, the socket may be world-readable, exposing secrets.
-	// Fail fast rather than silently operating with insecure permissions.
-	if err := os.Chmod(socketPath, 0600); err != nil {
+	// Set socket permissions: 0660 root:dso so dso group members can connect without sudo.
+	// Fall back to 0600 (root only) if the dso group doesn't exist yet.
+	socketMode := os.FileMode(0600)
+	socketGID := -1
+	if grp, err := user.LookupGroup("dso"); err == nil {
+		if gid, err := strconv.Atoi(grp.Gid); err == nil {
+			socketGID = gid
+			socketMode = 0660
+		}
+	} else {
+		logger.Warn("dso group not found; socket access restricted to root. Add users to 'dso' group for non-root access.")
+	}
+	if socketGID >= 0 {
+		if err := os.Chown(filepath.Dir(socketPath), 0, socketGID); err != nil {
+			logger.Warn("Failed to chown socket directory to dso group", zap.String("path", filepath.Dir(socketPath)), zap.Error(err))
+		}
+		if err := os.Chown(socketPath, 0, socketGID); err != nil {
+			logger.Warn("Failed to chown socket to dso group", zap.String("path", socketPath), zap.Error(err))
+		}
+	}
+	if err := os.Chmod(socketPath, socketMode); err != nil {
 		_ = listener.Close()
 		logger.Error("FATAL: Failed to set socket permissions. Agent cannot start securely.",
 			zap.String("path", socketPath),

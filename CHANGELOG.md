@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.15] - 2026-05-18
+
+### Fixed
+- **IPC Socket Permissions for Non-Root Users** (`internal/agent/server.go`): The agent socket `/run/dso/dso.sock` is now created as mode `0660` with group `dso` ownership instead of `0600` (root-only). Members of the `dso` group can now run `docker dso watch`, `docker dso compose up`, and other commands that connect to the agent without `sudo`. Falls back to `0600` with a log warning if the `dso` group does not exist on the host.
+- **Context Lifetime in `ExecuteRotation`** (`internal/agent/trigger.go`): Replaced `TimeoutController.CreateSecretContext` + `defer cleanup()` with direct use of the agent's long-lived `t.ctx`. The previous code created a short-lived derived context, then `defer cleanup()` fired the instant `TriggerReload` returned (which spawns goroutines and returns immediately), cancelling the context while all in-flight Docker API calls were still running — manifesting as `"Failed to inspect original container"` / truncated `context canceled` errors in logs.
+- **Timer-Based Secret Polling** (`internal/agent/trigger.go`): Replaced the `ProviderRPC.WatchSecret` channel loop with a direct timer-based polling loop. The WatchSecret channel never closed, so the `for range` loop ran forever, preventing provider reconnection and suppressing `MarkProviderHealthy` calls. The new loop fires immediately at T=0 on startup, calls `GetProvider` on every iteration for automatic reconnection, marks provider health on each outcome, and honours context cancellation cleanly.
+- **Rolling Strategy Not Recognised** (`internal/watcher/controller.go`): Added `"rolling"` and `"none"` to the valid strategies set in `handleContainerEvent`. Previously only `restart`, `signal`, and `auto` were accepted — containers labelled `dso.update.strategy=rolling` were silently treated as `restart`, preventing zero-downtime rotations from ever executing.
+
+### Changed
+- **`docker dso watch` Agent Status Banner** (`internal/cli/watch.go`): Now shows an explicit `[OK]` (green) or `[WARN]` (yellow) header when the command starts, indicating whether the agent socket is reachable and explaining how to start it if not. Previously connection failures were silent and rotation events never appeared.
+
+---
+
 ## [3.5.13] - 2026-05-18
 
 ### Added
@@ -384,7 +397,7 @@ Each release is:
 
 ## Support
 
-- **Latest version**: v3.5.10 (fully supported)
+- **Latest version**: v3.5.15 (fully supported)
 - **Previous versions**: v3.5.x (all supported), v3.4.x (security patches only)
 - **End of life**: Versions older than v3.4 are no longer supported
 
