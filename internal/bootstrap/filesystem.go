@@ -319,7 +319,7 @@ func (dv *DirectoryValidator) ValidateBootstrapDirectories(phase string) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso", 0750},
+		{"/etc/dso", 0775},
 		{"/var/lib/dso", 0750},
 		{"/var/run/dso", 0755},
 		{"/var/log/dso", 0750},

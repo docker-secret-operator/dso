@@ -107,6 +107,11 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		}
 		var tmpfsMounts []string
 
+		// Strip host port bindings and record them in a label so the DSO agent
+		// proxy can own those ports and achieve zero-downtime rotation.
+		// Containers with no host ports are unaffected.
+		svc = stripAndLabelHostPorts(svc)
+
 		// Step 1: Filter services by Targets (STRICT mode)
 		if cfg != nil {
 			for _, sec := range cfg.Secrets {
@@ -163,6 +168,12 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				}
 				labels["dso.reloader"] = "true"
 				labels["dso.compose.path"] = absPath
+				// Propagate the rotation strategy from dso.yaml to the container label so
+				// the rotation agent uses the configured strategy (rolling/restart/signal)
+				// instead of always defaulting to restart.
+				if sec.Rotation.Strategy != "" {
+					labels["dso.update.strategy"] = sec.Rotation.Strategy
+				}
 
 				// Track secrets for this service
 				existingSecrets := ""
@@ -282,6 +293,97 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 
 	fmt.Printf("DSO securely injecting secrets for %s (via in-memory pipe)...\n", filename)
 	return cmd.Run()
+}
+
+// stripAndLabelHostPorts removes host-side port bindings from a service map and
+// stores them in the "dso.host_ports" label (e.g. "3306:3306,8080:80") so the
+// DSO agent proxy can own those ports. Container-internal ports are preserved
+// via "expose:" so services remain reachable within the Docker network.
+//
+// Formats handled: "3306:3306", "0.0.0.0:3306:3306", "127.0.0.1:3306:3306"
+// Ports without a host binding (e.g. just "3306") are left as expose-only and
+// NOT added to dso.host_ports because there is nothing to proxy.
+func stripAndLabelHostPorts(svc map[string]interface{}) map[string]interface{} {
+	rawPorts, ok := svc["ports"]
+	if !ok {
+		return svc
+	}
+
+	var hostPortPairs []string  // "hostPort:containerPort" pairs for the label
+	var exposeOnly []string     // container ports with no host binding
+
+	addExpose := func(containerPort string) {
+		for _, e := range exposeOnly {
+			if e == containerPort {
+				return
+			}
+		}
+		exposeOnly = append(exposeOnly, containerPort)
+	}
+
+	switch v := rawPorts.(type) {
+	case []interface{}:
+		for _, entry := range v {
+			s := fmt.Sprintf("%v", entry)
+			hostPort, containerPort := parsePortEntry(s)
+			if hostPort != "" {
+				hostPortPairs = append(hostPortPairs, hostPort+":"+containerPort)
+				addExpose(containerPort)
+			} else if containerPort != "" {
+				addExpose(containerPort)
+			}
+		}
+	}
+
+	if len(hostPortPairs) == 0 {
+		return svc
+	}
+
+	// Remove the ports: key — DSO proxy owns the host binding now
+	delete(svc, "ports")
+
+	// Add expose: so intra-network connectivity is preserved
+	existing := svc["expose"]
+	var exposeList []interface{}
+	if el, ok := existing.([]interface{}); ok {
+		exposeList = el
+	}
+	for _, p := range exposeOnly {
+		exposeList = append(exposeList, p)
+	}
+	svc["expose"] = exposeList
+
+	// Record host port mappings in label for the agent to read
+	labels := make(map[string]interface{})
+	if existingLabels, ok := svc["labels"].(map[string]interface{}); ok {
+		for k, v := range existingLabels {
+			labels[k] = v
+		}
+	}
+	labels["dso.host_ports"] = strings.Join(hostPortPairs, ",")
+	svc["labels"] = labels
+
+	return svc
+}
+
+// parsePortEntry splits a docker-compose port string into (hostPort, containerPort).
+// Returns ("", containerPort) for publish-less entries like "3306" or "3306/tcp".
+func parsePortEntry(s string) (hostPort, containerPort string) {
+	// Strip protocol suffix
+	s = strings.SplitN(s, "/", 2)[0]
+	parts := strings.Split(s, ":")
+	switch len(parts) {
+	case 1:
+		// "3306" — no host binding
+		return "", parts[0]
+	case 2:
+		// "3306:3306" — host:container
+		return parts[0], parts[1]
+	case 3:
+		// "0.0.0.0:3306:3306" or "127.0.0.1:3306:3306" — ip:host:container
+		return parts[1], parts[2]
+	}
+	return "", ""
 }
 
 func PrintRedactedCompose(p *ComposeFile) {

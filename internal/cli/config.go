@@ -48,7 +48,7 @@ func newConfigShowCmd() *cobra.Command {
 
 The configuration file location is determined by:
 1. CLI flag (-c/--config)
-2. /etc/dso/dso.yaml (if running as root)
+2. /etc/dso/dso.yaml (system-wide, readable by dso group)
 3. ~/.dso/config.yaml (if in local mode)
 4. ./dso.yaml (current directory)
 

@@ -213,7 +213,7 @@ func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso", 0755},     // root:dso, readable by all (config must be accessible to CLI users)
+		{"/etc/dso", 0775},     // root:dso, rw for group so dso members can operate without sudo
 		{"/var/lib/dso", 0770}, // root:dso, readable/writable by group
 		{"/var/run/dso", 0775}, // root:dso, readable/writable by group, others can cd into
 		{"/var/log/dso", 0770}, // root:dso, readable/writable by group
@@ -250,7 +250,7 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso/dso.yaml", 0640}, // rw-r-----: readable by dso group, not world-readable
+		{"/etc/dso/dso.yaml", 0664}, // rw-rw-r--: dso group members can read and write config
 	}
 
 	for _, file := range files {
@@ -324,7 +324,7 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso", 0755},
+		{"/etc/dso", 0775},
 		{"/var/lib/dso", 0770},
 		{"/var/run/dso", 0775},
 		{"/var/log/dso", 0770},
@@ -380,10 +380,10 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 		}
 
 		perm := info.Mode().Perm()
-		if perm != 0640 {
+		if perm != 0664 {
 			pm.logger.Warn("Config file permissions incorrect",
 				"path", configPath,
-				"expected", "0640",
+				"expected", "0664",
 				"actual", fmt.Sprintf("%o", perm))
 		}
 	}
@@ -414,8 +414,8 @@ After bootstrap, the following permission structure is in place:
    - Provides least-privilege access to DSO components
 
 2. Configuration Access
-   - /etc/dso/dso.yaml: 0640 (root:dso) - Owner read/write, group read
-   - Users in 'dso' group can read configuration
+   - /etc/dso/dso.yaml: 0664 (root:dso) - Owner and group read/write, others read-only
+   - Users in 'dso' group can read and write configuration
 
 3. State Directory
    - /var/lib/dso: 0770 (root:dso) - Owner and group can read/write

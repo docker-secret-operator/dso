@@ -199,15 +199,15 @@ func (d *Diagnostics) checkSystem() {
 		d.addCheck("User context", "healthy", status, false)
 	}
 
-	// Check /etc/dso (if root)
-	if os.Geteuid() == 0 {
-		if _, err := os.Stat("/etc/dso"); err == nil {
-			d.addCheck("Agent config dir", "healthy", "/etc/dso", false)
-		} else {
-			d.addCheck("Agent config dir", "disabled", "not initialized", false)
-		}
+	// Check /etc/dso — accessible to root and dso group members
+	if _, err := os.Stat("/etc/dso"); err == nil {
+		d.addCheck("Agent config dir", "healthy", "/etc/dso", false)
+	} else if os.Geteuid() == 0 {
+		d.addCheck("Agent config dir", "disabled", "not initialized", false)
+	}
 
-		// Check systemd service
+	// Check systemd service (root or dso group member)
+	if os.Geteuid() == 0 {
 		d.checkSystemdService()
 	}
 }

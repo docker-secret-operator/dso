@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/docker-secret-operator/dso/internal/core"
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/spf13/cobra"
@@ -59,6 +60,46 @@ func validateDockerArgs(args []string) error {
 	return nil
 }
 
+// extractUpArgs detects whether dockerArgs contains an "up" subcommand and, if so,
+// returns the compose file (from -f/--file), the args that follow "up", and true.
+// The -f flag is stripped from the returned extraArgs since RunComposeUpWithEnv
+// receives the compose file as a separate parameter.
+func extractUpArgs(dockerArgs []string) (composeFile string, extraArgs []string, isUp bool) {
+	upIdx := -1
+	for i := 0; i < len(dockerArgs); i++ {
+		arg := dockerArgs[i]
+		if (arg == "-f" || arg == "--file") && i+1 < len(dockerArgs) {
+			composeFile = dockerArgs[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--file=") {
+			composeFile = strings.TrimPrefix(arg, "--file=")
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") && arg == "up" {
+			upIdx = i
+			break
+		}
+	}
+	if upIdx == -1 {
+		return "", nil, false
+	}
+	// Collect args after "up", stripping any -f flags that appear there too
+	for i := upIdx + 1; i < len(dockerArgs); i++ {
+		arg := dockerArgs[i]
+		if (arg == "-f" || arg == "--file") && i+1 < len(dockerArgs) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--file=") {
+			continue
+		}
+		extraArgs = append(extraArgs, arg)
+	}
+	return composeFile, extraArgs, true
+}
+
 func NewComposeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "compose [args...]",
@@ -91,6 +132,28 @@ func NewComposeCmd() *cobra.Command {
 					continue
 				}
 				dockerArgs = append(dockerArgs, arg)
+			}
+
+			// For 'up', delegate to RunComposeUpWithEnv which injects DSO labels
+			// (dso.reloader, dso.secrets, dso.compose.path) into every service so
+			// the rotation agent can track containers without manual config.
+			composeFile, upExtraArgs, isUp := extractUpArgs(dockerArgs)
+			if isUp {
+				if composeFile == "" {
+					if _, err := os.Stat("docker-compose.yml"); err == nil {
+						composeFile = "docker-compose.yml"
+					} else if _, err := os.Stat("docker-compose.yaml"); err == nil {
+						composeFile = "docker-compose.yaml"
+					} else {
+						fmt.Fprintln(os.Stderr, "Error: No docker-compose.yml or docker-compose.yaml found.")
+						os.Exit(1)
+					}
+				}
+				if err := core.RunComposeUpWithEnv(composeFile, upExtraArgs, configPath, false); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				return
 			}
 
 			cfg, err := config.LoadConfig(configPath)

@@ -291,6 +291,9 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		// Note: The Reloader internally handles the strategy logic (restart/signal)
 		if err := t.Reloader.TriggerReload(ctx, secretName); err != nil {
 			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
+			// Remove the cached hash so the next poll retries the rotation instead
+			// of treating this failed attempt as a successful "no change" baseline.
+			t.secretHashes.Delete(cacheKey)
 			if t.StateTracker != nil {
 				t.StateTracker.MarkRollback(providerName, secretName, "")
 			}

@@ -6,7 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [3.5.11] - 2026-05-18
+## [3.5.13] - 2026-05-18
+
+### Added
+- **DSO TCP Proxy for Zero-Downtime Port-Bound Containers**: Integrated a full TCP reverse-proxy layer (`internal/proxy/`) so DSO owns host port bindings (e.g. MySQL 3306) instead of Docker. During secret rotation the proxy atomically swaps the backend — new container starts, traffic drains from old, old stops — with no port unavailability at any point.
+  - New `internal/proxy/` package: `Manager`, `Registry`, `Router`, `Server`, `docker_helpers`
+  - Compose transformer (`internal/core/compose.go`) now strips `ports:` from service YAML and stores them in a `dso.host_ports` label; containers expose ports internally via `expose:` only
+  - Proxy re-registers on Docker daemon reconnect via `reconcileRuntimeState`
+- **Automatic DSO Label Injection**: `docker dso compose up` now routes through `RunComposeUpWithEnv`, ensuring `dso.reloader`, `dso.compose.path`, `dso.secrets`, and `dso.update.strategy` labels are always injected without any manual configuration
+- **Non-Root User Support**: Users in the `dso` group can now run all normal DSO commands without `sudo`
+  - `/etc/dso` directory permissions changed from `0755 → 0775` (dso group write access)
+  - `/etc/dso/dso.yaml` permissions changed from `0640 → 0664` (dso group read/write)
+  - Updated across `bootstrap/permissions.go`, `bootstrap/filesystem.go`, `bootstrap/rollback.go`, and `cli/setup.go`
+
+### Changed
+- **Rotation Strategy Label Propagation**: `dso.update.strategy` label is now written to containers at compose-up time from `dso.yaml`, so the rotation agent always uses the configured strategy (`rolling`/`restart`/`signal`) instead of falling back to `restart`
+- **Agent Startup Order**: `reloader.StartEventLoop` now runs before `trigger.StartAll` to guarantee `populateInitialTargets` completes before any polling goroutine fires its first trigger
+- **Doctor Check Accessibility**: `/etc/dso` directory check in `docker dso doctor` no longer requires root — any `dso` group member can see it
+- **CLI Help Text**: Removed "(if running as root)" qualifier from config resolution order; updated to reflect group-based access
+- **Setup Wizard Next Steps**: Removed `sudo` from `vi /etc/dso/dso.yaml` and status commands; `sudo docker dso system enable` correctly retains it
+
+### Fixed
+- **Auto-Rotation Retry on Failure**: Secret hash is now deleted from the in-memory store when a rotation reload fails, allowing the engine to retry on the next poll cycle instead of silently skipping
+- **Proxy `Bind` Idempotency**: `Server.Bind` now checks the listeners map before calling `net.Listen`, preventing "address already in use" errors on repeated `EnsurePort` calls that previously caused `RegisterContainer` to be silently skipped
+- **Rolling Strategy Empty Env Map**: Fixed rolling rotation passing an empty `newEnvs` map to `Execute`; now correctly builds `rollingEnvs` from the secret cache before calling the strategy
+- **Graceful Shutdown Sequence**: Agent now stops the trigger engine, waits for in-flight operations, drains the proxy (`proxyManager.Stop`), and closes the Docker client in the correct order before removing sockets
+
+---
+
+## [3.5.12] - 2026-05-18
 
 ### Added
 - **Automated CLI Reference Generation**: Added `scripts/generate-docs.go` leveraging Cobra's `doc` generation package to automatically keep all 38 command reference files updated inside `docs/cli-reference/`.

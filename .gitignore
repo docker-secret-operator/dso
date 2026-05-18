@@ -74,3 +74,6 @@ node_modules/
 ffmpeg-*
 reports/
 CLAUDE.md
+
+# Local release utility — not committed, run manually
+scripts/bump-version.sh

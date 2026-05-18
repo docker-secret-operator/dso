@@ -225,7 +225,7 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 
 		// 3. Restore the user's custom config layout (with secrets: {})
 		if len(configData) > 0 {
-			os.WriteFile(configPath, configData, 0644)
+			os.WriteFile(configPath, configData, 0664)
 		}
 	}
 
@@ -249,13 +249,16 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		fmt.Println("     docker dso secret set <name> <value>")
 	} else {
 		fmt.Println("  1. Edit configuration for your secrets:")
-		fmt.Println("     sudo vi /etc/dso/dso.yaml")
+		fmt.Println("     vi /etc/dso/dso.yaml")
 		fmt.Println()
 		fmt.Println("  2. Check agent status:")
-		fmt.Println("     sudo docker dso system status")
+		fmt.Println("     docker dso status")
 		fmt.Println()
-		fmt.Println("  3. View agent logs:")
-		fmt.Println("     sudo docker dso system logs")
+		fmt.Println("  3. Enable/restart the service (requires sudo):")
+		fmt.Println("     sudo docker dso system enable")
+		fmt.Println()
+		fmt.Println("  4. View agent logs:")
+		fmt.Println("     docker dso system logs")
 	}
 
 	fmt.Println()

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
+	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/internal/server"
 	"github.com/docker-secret-operator/dso/internal/watcher"
@@ -96,6 +97,14 @@ func NewAgentCmd() *cobra.Command {
 					zap.Error(err))
 			}
 
+			// Initialize DSO Proxy Manager — owns host port bindings for zero-downtime
+			// rotation on port-bound containers (MySQL, etc.). Scans existing containers
+			// with the dso.host_ports label and binds their ports immediately so traffic
+			// is never interrupted during secret rotation.
+			proxyManager := dsoProxy.NewManager(logger)
+			proxyManager.ScanAndRegister(context.Background(), dockerCli)
+			reloader.ProxyManager = proxyManager
+
 			// Initialize Trigger Engine
 			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 
@@ -122,7 +131,12 @@ func NewAgentCmd() *cobra.Command {
 			restShutdown := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
 			defer restShutdown()
 
-			// 4. Start Reconciliation Loop
+			// 4. Start Docker Event Loop for the Reloader — MUST run before StartAll so
+			// that populateInitialTargets completes before any polling goroutine fires
+			// its first TriggerReload. StartEventLoop now blocks on initial population.
+			reloader.StartEventLoop(ctx)
+
+			// 5. Start Reconciliation Loop (targets are now populated)
 			if err := trigger.StartAll(); err != nil {
 				logger.Fatal("Failed to start trigger engine", zap.Error(err))
 			}
@@ -134,13 +148,10 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent is now running",
-				zap.String("version", "v3.5.10"),
+				zap.String("version", "v3.5.13"),
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
-
-			// 5. Start Docker Event Loop for the Reloader (CRITICAL BUG FIX)
-			reloader.StartEventLoop(ctx)
 
 			<-ctx.Done()
 			logger.Info("Shutting down DSO Agent gracefully...")
@@ -169,6 +180,9 @@ func NewAgentCmd() *cobra.Command {
 			logger.Info("Closing resources...")
 			cache.Close()
 			storeManager.Shutdown()
+			if err := proxyManager.Stop(10 * time.Second); err != nil {
+				logger.Warn("Proxy drain timeout during shutdown", zap.Error(err))
+			}
 			if dockerCli != nil {
 				dockerCli.Close()
 			}

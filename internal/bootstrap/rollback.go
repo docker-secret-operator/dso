@@ -179,7 +179,7 @@ func NewBootstrapOperations(logger Logger, fsOps *FilesystemOps, svc *SystemdMan
 // CreateDirectoriesOp creates bootstrap directories with rollback
 func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFunc) {
 	op := NewSimpleOperation("create-directories", func(ctx context.Context) error {
-		return bo.fsOps.SafeCreateDirectory(ctx, "/etc/dso", 0750, -1, -1)
+		return bo.fsOps.SafeCreateDirectory(ctx, "/etc/dso", 0775, -1, -1)
 	})
 
 	rollback := func(ctx context.Context) error {
@@ -194,7 +194,7 @@ func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFu
 // WriteConfigOp writes configuration file with rollback
 func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) (Operation, RollbackFunc) {
 	op := NewSimpleOperation("write-config", func(ctx context.Context) error {
-		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0640)
+		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0664)
 	})
 
 	rollback := func(ctx context.Context) error {

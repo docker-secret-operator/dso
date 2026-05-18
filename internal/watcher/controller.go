@@ -11,6 +11,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/analyzer"
 	"github.com/docker-secret-operator/dso/internal/core"
 	eventqueue "github.com/docker-secret-operator/dso/internal/events"
+	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/strategy"
 	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
@@ -46,8 +47,9 @@ type ReloaderController struct {
 	Server        interface{}
 	Cache         SecretCache
 	Config        *dsoConfig.Config
-	rotationLocks sync.Map // map[string]*lockInfo (key: service name)
-	degraded      sync.Map // map[string]string (key: service name, val: error)
+	ProxyManager  *dsoProxy.Manager // nil when no port-bound containers exist
+	rotationLocks sync.Map          // map[string]*lockInfo (key: service name)
+	degraded      sync.Map          // map[string]string (key: service name, val: error)
 	eventQueue    *eventqueue.BoundedEventQueue
 }
 
@@ -80,10 +82,10 @@ func (r *ReloaderController) StartEventLoop(ctx context.Context) {
 	r.eventQueue = eventqueue.NewBoundedEventQueue(r.Logger, 2000, 32, r.handleContainerEventWithContext)
 	r.eventQueue.Start(ctx)
 
-	go func() {
-		r.populateInitialTargets(ctx)
-		r.daemonEventLoop(ctx)
-	}()
+	// Populate synchronously so all containers are registered before polling starts.
+	// This must complete before StartAll() fires any rotations.
+	r.populateInitialTargets(ctx)
+	go r.daemonEventLoop(ctx)
 }
 
 func (r *ReloaderController) daemonEventLoop(ctx context.Context) {
@@ -209,10 +211,77 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 	}
 
 	remainingCount := targetCount - len(orphaned)
+
+	// Pass 2: re-register labeled containers that started while the event stream
+	// was disconnected (their start events were missed).
+	added := 0
+	labelFilter := filters.NewArgs()
+	labelFilter.Add("label", "dso.reloader=true")
+	labeledContainers, err := r.cli.ContainerList(ctx, container.ListOptions{Filters: labelFilter})
+	if err != nil {
+		r.Logger.Warn("Reconciliation: failed to list labeled containers", zap.Error(err))
+	} else {
+		for _, c := range labeledContainers {
+			if _, exists := r.Targets.Load(c.ID); exists {
+				continue
+			}
+			secretsStr := c.Labels["dso.secrets"]
+			if secretsStr == "" {
+				continue
+			}
+			strat := c.Labels["dso.update.strategy"]
+			if strat == "" {
+				strat = "restart"
+			}
+			secretList := strings.Split(secretsStr, ",")
+			r.Targets.Store(c.ID, &TargetContainer{
+				ID:          c.ID,
+				Strategy:    strat,
+				ComposePath: c.Labels["dso.compose.path"],
+				Secrets:     secretList,
+			})
+			r.Logger.Info("Reconciliation: re-registered container missed during reconnect",
+				zap.String("id", c.ID[:12]),
+				zap.Strings("secrets", secretList))
+			added++
+
+			// Also re-register with the proxy if this container has host-port mappings.
+			// If the start event was missed the proxy has no backend for this container.
+			if r.ProxyManager != nil {
+				if portsLabel := c.Labels["dso.host_ports"]; portsLabel != "" {
+					inspect, ierr := r.cli.ContainerInspect(ctx, c.ID)
+					if ierr == nil {
+						containerIP := ""
+						for _, ep := range inspect.NetworkSettings.Networks {
+							if ep.IPAddress != "" {
+								containerIP = ep.IPAddress
+								break
+							}
+						}
+						if containerIP != "" {
+							for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
+								if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+									r.Logger.Warn("Reconciliation: failed to bind proxy port",
+										zap.Int("port", pm.HostPort), zap.Error(err))
+									continue
+								}
+								if err := r.ProxyManager.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
+									r.Logger.Debug("Reconciliation: container already in proxy registry",
+										zap.String("id", c.ID[:12]))
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	r.Logger.Info("Runtime reconciliation complete",
 		zap.Int("total_targets", targetCount),
 		zap.Int("orphaned", len(orphaned)),
-		zap.Int("active", remainingCount))
+		zap.Int("re_added", added),
+		zap.Int("active", remainingCount+added))
 }
 
 // handleContainerEventWithContext wraps handleContainerEvent for use with the bounded queue
@@ -323,9 +392,40 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 					zap.String("strategy", strategy))
 			}
 		}
+		// Register with proxy for any container that has DSO-managed host ports
+		if r.ProxyManager != nil {
+			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
+				inspect, ierr := r.cli.ContainerInspect(context.Background(), msg.Actor.ID)
+				if ierr == nil {
+					containerIP := ""
+					for _, ep := range inspect.NetworkSettings.Networks {
+						if ep.IPAddress != "" {
+							containerIP = ep.IPAddress
+							break
+						}
+					}
+					if containerIP != "" {
+						for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
+							if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+								r.Logger.Warn("proxy: failed to bind port on container start",
+									zap.Int("port", pm.HostPort), zap.Error(err))
+								continue
+							}
+							if err := r.ProxyManager.RegisterContainer(msg.Actor.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
+								r.Logger.Warn("proxy: failed to register container",
+									zap.String("id", msg.Actor.ID[:12]), zap.Error(err))
+							}
+						}
+					}
+				}
+			}
+		}
 	case "die", "stop":
 		if _, loaded := r.Targets.LoadAndDelete(msg.Actor.ID); loaded {
 			r.Logger.Info("De-registered target container", zap.String("id", msg.Actor.ID))
+		}
+		if r.ProxyManager != nil {
+			r.ProxyManager.DeregisterContainer(msg.Actor.ID)
 		}
 	}
 	return nil
@@ -544,31 +644,114 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
 
-			rs := rotation.NewRollingStrategy(r.cli)
+			// Build the new secret values from cache so the new container gets
+			// the rotated secrets. Without this, rolling creates an identical
+			// container with the old secrets and the rotation has no effect.
+			rollingEnvs := make(map[string]string)
+			if r.Cache != nil && r.Config != nil {
+				for _, sec := range r.Config.Secrets {
+					pName := sec.Provider
+					if pName == "" {
+						for name := range r.Config.Providers {
+							pName = name
+							break
+						}
+					}
+					containerUsesSecret := false
+					for _, ts := range target.Secrets {
+						if ts == sec.Name {
+							containerUsesSecret = true
+							break
+						}
+					}
+					if !containerUsesSecret {
+						continue
+					}
+					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
+					if data, found := r.Cache.Get(cacheKey); found {
+						for provKey, envName := range sec.Mappings {
+							if val, ok := data[envName]; ok {
+								rollingEnvs[envName] = val
+							} else if val, ok := data[provKey]; ok {
+								rollingEnvs[envName] = val
+							}
+						}
+					}
+				}
+			}
 
-			go func() {
+			healthTimeout := 60 * time.Second
+			if r.Config != nil && r.Config.Agent.Rotation.HealthCheckTimeout != "" {
+				if d, err := time.ParseDuration(r.Config.Agent.Rotation.HealthCheckTimeout); err == nil {
+					healthTimeout = d
+				}
+			}
+
+			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
+
+			go func(newEnvs map[string]string, hTimeout time.Duration) {
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
 						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", target.ID[:12]))
 					}
 				}
 
-				err := rs.Execute(ctx, target.ID, map[string]string{}, 30*time.Second)
+				err := rs.Execute(ctx, target.ID, newEnvs, hTimeout)
 				releaseLock()
 				if err != nil {
-					r.Logger.Error("Rolling rotation failed, triggering fallback", zap.Error(err))
+					r.Logger.Error("Rolling rotation failed, triggering fallback restart", zap.Error(err))
 					if r.Server != nil {
 						if as, ok := r.Server.(interface{ Emit(string) }); ok {
 							as.Emit(fmt.Sprintf("\033[1;31m[DSO FALLBACK]\033[0m\nRolling failed due to: %v → switching to restart", err))
-							as.Emit("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart\nStopping container → injecting new secrets → starting container")
 						}
 					}
-					// FALLBACK
-					timeout := 10
-					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &timeout})
-					_ = r.cli.ContainerStart(ctx, target.ID, container.StartOptions{})
+					// Fallback: full container recreation with secret injection
+					// (same logic as the restart path but inlined for the fallback case)
+					fallbackInspect, ferr := r.cli.ContainerInspect(ctx, target.ID)
+					if ferr != nil {
+						r.Logger.Error("Fallback: failed to inspect container", zap.Error(ferr))
+						return
+					}
+					originalName := strings.TrimPrefix(fallbackInspect.Name, "/")
+					tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
+					if ferr = r.cli.ContainerRename(ctx, target.ID, tempOldName); ferr != nil {
+						r.Logger.Error("Fallback: failed to rename container", zap.Error(ferr))
+						return
+					}
+					cfg := fallbackInspect.Config
+					cfg.Hostname = ""
+					for k, v := range newEnvs {
+						found := false
+						for i, e := range cfg.Env {
+							if strings.HasPrefix(e, k+"=") {
+								cfg.Env[i] = fmt.Sprintf("%s=%s", k, v)
+								found = true
+								break
+							}
+						}
+						if !found {
+							cfg.Env = append(cfg.Env, fmt.Sprintf("%s=%s", k, v))
+						}
+					}
+					networkingConfig := &network.NetworkingConfig{EndpointsConfig: fallbackInspect.NetworkSettings.Networks}
+					created, ferr := r.cli.ContainerCreate(ctx, cfg, fallbackInspect.HostConfig, networkingConfig, nil, originalName)
+					if ferr != nil {
+						r.Logger.Error("Fallback: failed to create replacement container", zap.Error(ferr))
+						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+						return
+					}
+					stopTO := 10
+					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTO})
+					if ferr = r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); ferr != nil {
+						r.Logger.Error("Fallback: failed to start replacement container", zap.Error(ferr))
+						_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+						_ = r.cli.ContainerStart(ctx, target.ID, container.StartOptions{})
+					} else {
+						_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
+					}
 				}
-			}()
+			}(rollingEnvs, healthTimeout)
 
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
@@ -707,8 +890,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 
 				// 6. Stop old and Start new
+				// When the DSO proxy owns the host port (dso.host_ports label present),
+				// start new BEFORE stopping old so traffic never drops — proxy swap is
+				// atomic. Without proxy ownership we must stop old first to free the port.
+				portsLabel := inspect.Config.Labels["dso.host_ports"]
+				useZeroDowntime := r.ProxyManager != nil && portsLabel != ""
 				stopTimeout := 10
-				_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
+
+				if !useZeroDowntime {
+					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
+				}
 
 				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
@@ -762,6 +953,33 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							goto ROLLBACK
 						}
 					}
+				}
+
+				if useZeroDowntime {
+					// Proxy swap: new container gets all traffic immediately;
+					// old connections drain on old backend within 5 s.
+					newInspect, ierr := r.cli.ContainerInspect(ctx, created.ID)
+					if ierr == nil {
+						newIP := ""
+						for _, ep := range newInspect.NetworkSettings.Networks {
+							if ep.IPAddress != "" {
+								newIP = ep.IPAddress
+								break
+							}
+						}
+						if newIP != "" {
+							for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
+								if serr := r.ProxyManager.SwapBackend(
+									target.ID, created.ID, newIP,
+									pm.ContainerPort, pm.HostPort,
+								); serr != nil {
+									r.Logger.Warn("proxy swap failed, continuing", zap.Error(serr))
+								}
+							}
+						}
+					}
+					// Traffic is on new container; safe to stop old now
+					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
 				}
 
 				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
@@ -847,7 +1065,6 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 		if r.Server != nil {
 			if as, ok := r.Server.(interface{ Emit(string) }); ok {
-				// Count existing targets for diagnosis
 				targetCount := 0
 				r.Targets.Range(func(_, _ interface{}) bool { targetCount++; return true })
 
@@ -855,9 +1072,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				as.Emit("\033[1;33m[DSO ROTATION]\033[0m " + msg)
 			}
 		}
-	} else {
-		msg := fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName)
-		r.Logger.Info(msg)
+		return fmt.Errorf("no managed containers for secret: %s", secretName)
 	}
+
+	r.Logger.Info(fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName))
 	return nil
 }
