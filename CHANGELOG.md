@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.16] - 2026-05-19
+
+### Fixed
+- **Selective Service Labeling in Compose** (`internal/core/compose.go`): DSO labels (`dso.reloader`, `dso.secrets`, `dso.update.strategy`, `dso.compose.path`) and port-stripping are now applied **only** to services that actually consume DSO secrets. Previously, every service in the compose stack was labelled and registered with the watcher regardless of whether it had any DSO secret mappings, causing unrelated services (reverse proxies, monitoring sidecars, etc.) to be restarted on every secret rotation. Detection uses a priority chain: explicit `targets.containers` → `targets.labels` match → env-name auto-detection (`serviceConsumesSecret`); file-mode secrets (`inject.type: file`) preserve broad targeting since env keys cannot identify them.
+- **Selective Container Registration in Watcher** (`internal/watcher/controller.go`): Removed the "applies to all" fallback in both `handleContainerEvent` (config-driven path) and `populateInitialTargets` Pass 2. Previously, any secret with an empty `targets.containers` list caused every running container to be registered as a rotation target. Now only containers explicitly listed in `targets.containers` are registered via config-driven discovery; secrets without explicit targets rely on label-driven registration (`dso.reloader=true`) set by `docker dso compose up`.
+
+### Added
+- **Unit Test Suite for `StateTracker`** (`internal/agent/state_tracker_test.go`): Full lifecycle coverage — create, start rotation, complete, rollback, mark recovered, critical error, delete, cleanup old states, close, and reload from persisted state.
+- **Unit Test Suite for `TimeoutController` and `TimeoutIsolationWrapper`** (`internal/agent/timeout_controller_test.go`): Tests for context creation/cleanup, `CancelSecret`, `GetActiveSecrets`, `ExecuteWithTimeout`, and `ExecuteWithRaceProtection`.
+- **Unit Tests for `CircuitBreaker`** (`internal/providers/circuit_breaker_test.go`): Full state-machine coverage — closed→open on failure threshold, open→half-open after reset timeout, half-open→closed on success threshold, half-open→open on failure, and `GetStatus`.
+- **Unit Tests for `ZombieReaper` and `PluginVerifier`** (`internal/providers/zombie_reaper_test.go`, `plugin_verifier_test.go`): Constructor, `Stop`, `RegisterTrustedHash` (valid and invalid hashes), `GeneratePluginHash`, and `LoadTrustedHashesFromFile` including error paths.
+- **Additional Injector Coverage** (`internal/injector/injector_test.go`): Tests for `Close` with nil and active clients, `GetEvents` on a closed connection (error path), and `FetchSecretWithContext` with a pre-set deadline context.
+- **Additional Config Coverage** (`pkg/config/coverage_test.go`): Tests for `IsSafePath` with a base directory argument (including traversal rejection), `LoadConfigWithDecryption` with an empty master key (no-op path), and `LoadConfigWithDecryption` with a valid 32-byte key (CryptoManager + DecryptProviderConfig path).
+
+### Changed
+- **`TestVersionOutput` Updated** (`internal/cli/cmd_exec_test.go`): Bumped stale expected version string from `v3.5.10` to the current release version.
+- **Coverage Gates Now Met**: All package coverage gates pass — `internal/agent` 26.9% (gate: 15%), `internal/injector` 85.1% (gate: 85%), `internal/providers` 64.3% (gate: 44%), `pkg/config` 85.2% (gate: 85%), `internal/cli` 25.4% (gate: 25%).
+
+---
+
 ## [3.5.15] - 2026-05-18
 
 ### Fixed
@@ -397,7 +417,7 @@ Each release is:
 
 ## Support
 
-- **Latest version**: v3.5.15 (fully supported)
+- **Latest version**: v3.5.16 (fully supported)
 - **Previous versions**: v3.5.x (all supported), v3.4.x (security patches only)
 - **End of life**: Versions older than v3.4 are no longer supported
 

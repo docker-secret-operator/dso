@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
-	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/providers"
+	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/server"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -148,7 +148,7 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent is now running",
-				zap.String("version", "v3.5.15"),
+				zap.String("version", "v3.5.16"),
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
@@ -207,7 +207,7 @@ func NewAgentCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&socketPath, "socket", "/run/dso/dso.sock", "Path to DSO internal IPC socket")
 	cmd.Flags().StringVar(&driverSocket, "driver-socket", "/run/docker/plugins/dso.sock", "Path to Docker Secret Driver socket")
-	cmd.Flags().StringVar(&apiAddr, "api-addr", "127.0.0.1:8080", "Address to bind the REST API server")
+	cmd.Flags().StringVar(&apiAddr, "api-addr", "127.0.0.1:8471", "Address to bind the REST API server")
 
 	return cmd
 }

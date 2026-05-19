@@ -26,6 +26,71 @@ type ComposeFile struct {
 	Other    map[string]interface{} `yaml:",inline"`
 }
 
+// serviceConsumesSecret returns true if the compose service declares at least one
+// environment variable that maps to a DSO secret (by env name or dso:// prefix).
+func serviceConsumesSecret(svc map[string]interface{}, sec config.SecretMapping) bool {
+	envNames := make(map[string]bool, len(sec.Mappings))
+	for _, envName := range sec.Mappings {
+		envNames[envName] = true
+	}
+	switch env := svc["environment"].(type) {
+	case map[string]interface{}:
+		for k, v := range env {
+			if envNames[k] {
+				return true
+			}
+			if s, ok := v.(string); ok && (strings.HasPrefix(s, "dso://") || strings.HasPrefix(s, "dsofile://")) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range env {
+			parts := strings.SplitN(fmt.Sprintf("%v", item), "=", 2)
+			if envNames[parts[0]] {
+				return true
+			}
+			if len(parts) == 2 && (strings.HasPrefix(parts[1], "dso://") || strings.HasPrefix(parts[1], "dsofile://")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// serviceIsTarget returns true if the compose service should be managed by DSO for the
+// given secret. Explicit container names beat label matching, which beats auto-detection.
+// File-mode secrets fall back to broad targeting (inject.type=file cannot be auto-detected
+// from env keys alone).
+func serviceIsTarget(name string, svc map[string]interface{}, sec config.SecretMapping) bool {
+	if len(sec.Targets.Containers) > 0 {
+		for _, t := range sec.Targets.Containers {
+			if t == name {
+				return true
+			}
+		}
+		return false
+	}
+	if len(sec.Targets.Labels) > 0 {
+		svcLabels := make(map[string]string)
+		if labelsRaw, ok := svc["labels"].(map[string]interface{}); ok {
+			for k, v := range labelsRaw {
+				svcLabels[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		for k, v := range sec.Targets.Labels {
+			if svcLabels[k] != v {
+				return false
+			}
+		}
+		return true
+	}
+	// File-mode: can't auto-detect from env keys — preserve broad behavior
+	if sec.Inject.Type == "file" {
+		return true
+	}
+	return serviceConsumesSecret(svc, sec)
+}
+
 // RunComposeUpWithEnv parses the compose file, fetches DSO custom secrets for env overrides, merges them with dso.yaml configurations, and dynamically runs docker compose up via stdin.
 // If preInjected is non-nil, those secrets are used directly instead of connecting back to the agent (used during rotation to avoid self-call deadlock).
 func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string, dryRun bool, preInjected ...map[string]string) error {
@@ -98,70 +163,51 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		return fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
-	// Step 1: Inject rotation management labels into each service
+	// Step 1: Pre-compute which services are managed by DSO so that non-DSO
+	// services receive no labels, port-stripping, or env injection.
 	absPath, _ := filepath.Abs(filename)
+	managedServices := make(map[string]bool)
+	if cfg != nil {
+		for name, svcRaw := range parsed.Services {
+			svc, ok := svcRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, sec := range cfg.Secrets {
+				if serviceIsTarget(name, svc, sec) {
+					managedServices[name] = true
+					break
+				}
+			}
+		}
+	}
+
+	// Step 2: Inject rotation management labels into managed services only
 	for name, svcRaw := range parsed.Services {
 		svc, ok := svcRaw.(map[string]interface{})
 		if !ok {
 			continue
 		}
+
+		if !managedServices[name] {
+			parsed.Services[name] = svc
+			continue
+		}
+
 		var tmpfsMounts []string
 
 		// Strip host port bindings and record them in a label so the DSO agent
 		// proxy can own those ports and achieve zero-downtime rotation.
-		// Containers with no host ports are unaffected.
+		// Only managed services participate in the TCP proxy.
 		svc = stripAndLabelHostPorts(svc)
 
-		// Step 1: Filter services by Targets (STRICT mode)
 		if cfg != nil {
 			for _, sec := range cfg.Secrets {
-				// Check if this service is a target for this secret
-				isTarget := false
-
-				// 1.1 Explicit container naming
-				if len(sec.Targets.Containers) > 0 {
-					for _, targetName := range sec.Targets.Containers {
-						if targetName == name {
-							isTarget = true
-							break
-						}
-					}
-				}
-
-				// 1.2 Label-based matching (Exact match V1)
-				if !isTarget && len(sec.Targets.Labels) > 0 {
-					svcLabels := make(map[string]string)
-					if labelsRaw, ok := svc["labels"].(map[string]interface{}); ok {
-						for k, v := range labelsRaw {
-							svcLabels[k] = fmt.Sprintf("%v", v)
-						}
-					}
-
-					matchesAll := true
-					for k, v := range sec.Targets.Labels {
-						if svcLabels[k] != v {
-							matchesAll = false
-							break
-						}
-					}
-					if matchesAll {
-						isTarget = true
-					}
-				}
-
-				// 1.3 Fallback to Legacy Discovery (if no targets defined)
-				if len(sec.Targets.Containers) == 0 && len(sec.Targets.Labels) == 0 {
-					// In legacy mode, we check if the service has 'dso.reloader=true'
-					// and manually check if it was intended.
-					// For 'docker dso up', we usually inject into ALL unless specified.
-					isTarget = true
-				}
-
-				if !isTarget {
+				if !serviceIsTarget(name, svc, sec) {
 					continue
 				}
 
-				// 2. Inject Labels for the Agent to discover
+				// Inject labels for the agent to discover
 				labels := make(map[string]interface{})
 				if existingLabels, ok := svc["labels"].(map[string]interface{}); ok {
 					labels = existingLabels
@@ -187,24 +233,20 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				}
 				svc["labels"] = labels
 
-				// 3. Inject Values based on Mode (env/file)
+				// Inject values based on mode (env/file)
 				injectConfig := sec.Inject
-				// Apply defaults
 				if injectConfig.Type == "" {
 					injectConfig = cfg.Defaults.Inject
 				}
 
 				if injectConfig.Type == "file" && injectConfig.Path != "" {
-					// Mount tmpfs for file mode
 					tmpfsMounts = append(tmpfsMounts, injectConfig.Path)
 				} else {
-					// Standard ENV mode
-					// Handle case where environment is a list vs map in the original docker-compose.yml
+					// Standard ENV mode — normalise list-style environment to map first
 					var envSection map[string]interface{}
 					if existingEnvMap, ok := svc["environment"].(map[string]interface{}); ok {
 						envSection = existingEnvMap
 					} else if existingEnvSlice, ok := svc["environment"].([]interface{}); ok {
-						// Convert slice to map
 						envSection = make(map[string]interface{})
 						for _, item := range existingEnvSlice {
 							strItem := fmt.Sprintf("%v", item)
@@ -212,7 +254,6 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 							if len(parts) == 2 {
 								envSection[parts[0]] = parts[1]
 							} else if len(parts) == 1 {
-								// e.g., - MYSQL_ROOT_PASSWORD
 								envSection[parts[0]] = nil
 							}
 						}
@@ -224,7 +265,6 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 						if val, ok := injectedSecrets[envName]; ok {
 							envSection[envName] = val
 						} else if val, ok := injectedSecrets[keyInProvider]; ok {
-							// Support mapping by provider key if env name is not found
 							envSection[envName] = val
 						}
 					}
@@ -309,8 +349,8 @@ func stripAndLabelHostPorts(svc map[string]interface{}) map[string]interface{} {
 		return svc
 	}
 
-	var hostPortPairs []string  // "hostPort:containerPort" pairs for the label
-	var exposeOnly []string     // container ports with no host binding
+	var hostPortPairs []string // "hostPort:containerPort" pairs for the label
+	var exposeOnly []string    // container ports with no host binding
 
 	addExpose := func(containerPort string) {
 		for _, e := range exposeOnly {

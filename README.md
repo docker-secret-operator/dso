@@ -6,6 +6,8 @@
 [![License](https://img.shields.io/github/license/docker-secret-operator/dso)](LICENSE)
 [![Go Report](https://goreportcard.com/badge/github.com/docker-secret-operator/dso)](https://goreportcard.com/report/github.com/docker-secret-operator/dso)
 
+> **Current version: v3.5.16**
+
 ---
 
 ## What is DSO?
@@ -13,8 +15,8 @@
 DSO is a runtime secret injection daemon for Docker and Docker Compose. It solves a concrete operational problem: **how to rotate secrets in containerized applications safely without exposing them to the host filesystem or Docker's metadata layers**.
 
 **In 30 seconds:**
-- Inject secrets from Vault, AWS Secrets Manager, Azure Key Vault, or local encrypted storage
-- Automatically rotate containers when secrets change
+- Inject secrets from AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, or local encrypted storage
+- Automatically rotate containers when secrets change — zero-downtime rolling swap by default
 - Keep secrets out of logs, `docker inspect`, and host disk
 - Single Docker host per agent (no Kubernetes required)
 
@@ -25,36 +27,47 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 | Feature | Description |
 |---------|-------------|
 | **Zero-Persistence** | Plaintext secrets never written to disk; held only in process memory and tmpfs |
-| **Automatic Rotation** | Detects secret changes and refreshes containers with blue-green deployment |
-| **Multi-Provider** | Works with Vault, AWS Secrets Manager, Azure Key Vault, or local encrypted storage |
+| **Rolling Rotation** | Zero-downtime blue-green container swap — new container starts, health-checked, old container stops |
+| **Multi-Provider** | Works with AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, or local encrypted storage |
+| **Non-Root Operation** | Members of the `dso` group can run all standard commands without `sudo` |
 | **Deterministic Rollback** | Failed rotations automatically restore the previous container state |
-| **Event-Driven** | Responds to secret changes within seconds via webhooks or polling |
-| **Production-Ready** | systemd integration, crash recovery, comprehensive monitoring |
+| **TCP Proxy** | DSO owns host port bindings (e.g. MySQL 3306) so traffic is never interrupted during rotation |
+| **Crash Recovery** | Agent restarts automatically recover orphaned containers and resume incomplete rotations |
+| **Production-Ready** | systemd integration, crash recovery, Prometheus metrics, comprehensive monitoring |
 | **No Swarm/Kubernetes** | Works with standard `docker compose` on any machine |
 
 ---
 
 ## Quick Start
 
-### Development & Production (2-3 minutes) — Recommended
+### Recommended: Interactive Setup Wizard (2-3 minutes)
 
 ```bash
-# 1. Install DSO
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+# 1. Install DSO system-wide
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# 2. Run interactive setup wizard
-docker dso setup
+# 2. Run the setup wizard (auto-detects cloud provider, bootstraps agent, starts service)
+sudo docker dso setup
 
 # The wizard will:
-# - Auto-detect your environment (local or cloud)
-# - Generate configuration
-# - Install provider plugins
-# - Validate setup
+#   - Auto-detect your cloud provider (AWS, Azure, Huawei, or Local)
+#   - Generate /etc/dso/dso.yaml with provider defaults
+#   - Install required provider plugins
+#   - Create and enable the systemd service
+#   - Start the agent immediately
 
-# 3. You're ready! Follow the wizard's next steps.
+# 3. Edit your config to add secrets
+vi /etc/dso/dso.yaml          # no sudo needed — you're in the dso group
+
+# 4. Restart the service to pick up your secrets
+sudo systemctl restart dso-agent
+
+# 5. Verify everything is healthy
+docker dso doctor
+docker dso status
 ```
 
-### Local Development Alternative (Manual Steps)
+### Local Development (no systemd)
 
 ```bash
 # 1. Install DSO
@@ -77,20 +90,20 @@ docker dso secret set app/db_password
 docker dso compose up
 ```
 
-### Production with Systemd Alternative (Manual Steps)
+### Manual Production Setup (advanced)
 
 ```bash
 # 1. Install globally
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# 2. Initialize agent
+# 2. Bootstrap agent (creates directories, systemd service, starts agent)
 sudo docker dso bootstrap agent
 
-# 3. Configure providers
-sudo nano /etc/dso/dso.yaml
+# 3. Configure secrets
+vi /etc/dso/dso.yaml
 
-# 4. Enable and start
-sudo docker dso system enable
+# 4. Restart service
+sudo systemctl restart dso-agent
 
 # 5. Verify
 docker dso doctor
@@ -101,22 +114,26 @@ docker dso doctor
 ## How It Works
 
 ```
-Secret Backend (Vault/AWS/Local)
+Secret Backend (AWS / Azure / Vault / Local)
+    ↓ polling every 30s–5m (adaptive)
+DSO Agent detects secret change
     ↓
-DSO Agent detects change
+Acquire distributed lock (prevent concurrent rotation)
     ↓
-Create new container with updated secret
+Create new container with updated secret env
     ↓
-Verify health
+Health check new container
     ↓
-Atomic container swap (rename)
+Atomic swap (rename old → backup, new → active)
+    ↓
+DSO TCP Proxy re-routes traffic to new container
     ↓
 Stop old container
     ↓
-Rollback on failure (auto-restore)
+Rollback on failure (auto-restore previous state)
 ```
 
-**Result**: Secrets never written to host disk. Rotation completes in ~30 seconds with minimal disruption. Failed rotations automatically restore previous state.
+**Result**: Secrets never written to host disk. Zero-downtime rolling rotation completes in ~30 seconds. Failed rotations automatically restore the previous state.
 
 ---
 
@@ -124,92 +141,196 @@ Rollback on failure (auto-restore)
 
 ### Prerequisites
 
-- **Docker** (20.10+) with `docker compose`
-- **Linux** (amd64, arm64) or **macOS** (amd64, arm64)
-- **Root**: Not required for Local Mode; required for Cloud Mode (systemd setup)
+- **Docker** 20.10+ with `docker compose`
+- **Linux** (amd64, arm64) — macOS supported for local mode only
+- **systemd** — required for Cloud/Agent mode
+- **Non-root access** — add your user to the `dso` group after setup:
+  ```bash
+  sudo usermod -aG dso $USER
+  # log out and back in to apply
+  ```
 
 ### Install
 
 ```bash
-# User install (Local Mode)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
-
-# System-wide install (Cloud Mode + systemd)
+# System-wide install (recommended for production)
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+
+# User install (local development only)
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
 # Verify
 docker dso version
 docker dso doctor
 ```
 
-See **[Getting Started Guide](docs/getting-started.md)** for detailed setup.
+See **[Getting Started Guide](docs/getting-started.md)** for detailed setup instructions.
 
 ---
 
 ## Configuration
 
-### Local Mode
+Configuration lives at `/etc/dso/dso.yaml` (Cloud/Agent mode) or `./dso.yaml` (Local mode).  
+Members of the `dso` group can read and edit `/etc/dso/dso.yaml` without `sudo`.
 
-```yaml
-# ~/.dso/dso.yaml
-providers:
-  local:
-    type: file
-    enabled: true
-
-agent:
-  cache:
-    ttl: 1h
-    max_size: 500Mi
-```
-
-### Cloud Mode (Vault Example)
+### Cloud Mode — AWS Example
 
 ```yaml
 # /etc/dso/dso.yaml
+version: v1.0.0
+mode: agent
+
+providers:
+  aws:
+    type: aws
+    region: us-east-1
+    auth:
+      method: iam_role        # Uses EC2 instance role — no credentials in config
+    retry:
+      attempts: 3
+      backoff: "1s"
+
+agent:
+  cache: true
+  watch:
+    mode: polling
+    polling_interval: "30s"   # How often to check for secret changes
+  rotation:
+    enabled: true
+    strategy: rolling         # Zero-downtime blue-green swap (default)
+    health_check_timeout: "30s"
+
+defaults:
+  inject:
+    type: env
+  rotation:
+    enabled: true
+    strategy: rolling
+
+secrets:
+  - name: database_credentials
+    provider: aws
+    rotation:
+      enabled: true
+      strategy: rolling       # rolling | restart | signal | none
+    targets:
+      containers:
+        - mysql               # Container name (matches dso.reloader label)
+    mappings:
+      MYSQL_ROOT_PASSWORD: prod/mysql/root_password
+      MYSQL_PASSWORD: prod/mysql/app_password
+```
+
+### Cloud Mode — HashiCorp Vault Example
+
+```yaml
+version: v1.0.0
+mode: agent
+
 providers:
   vault:
-    address: https://vault.example.com:8200
+    type: vault
     auth:
       method: token
-      token_env: VAULT_TOKEN
-    mount_path: secret/data
+      params:
+        address: https://vault.example.com:8200
+        token: "${VAULT_TOKEN}"
 
 agent:
   watch:
-    polling_interval: 5m
-  cache:
-    ttl: 1h
+    mode: polling
+    polling_interval: "30s"
+
+secrets:
+  - name: app_secrets
+    provider: vault
+    mappings:
+      DB_PASSWORD: secret/data/prod/database/password
+      API_KEY: secret/data/prod/api/key
+```
+
+### Local Mode
+
+```yaml
+# ./dso.yaml
+version: v1.0.0
+mode: local
+
+providers:
+  local:
+    type: local
+    vault_file: ~/.dso/vault.enc
+    master_key_file: ~/.dso/master.key
+
+secrets: {}
 ```
 
 See **[Configuration Reference](docs/configuration.md)** for all options.
 
 ---
 
-## Secret Injection
+## Docker Compose Integration
 
-### File Injection (Recommended)
+Label your containers so DSO knows which ones to manage:
 
 ```yaml
+# docker-compose.yaml
 services:
-  database:
-    image: postgres:15
+  mysql:
+    image: mysql:8
+    labels:
+      dso.reloader: "true"                  # DSO will manage this container
+      dso.secrets: "database_credentials"   # Which secret to inject
+      dso.update.strategy: "rolling"        # Zero-downtime swap (default)
+      dso.host_ports: "3306:3306"           # DSO TCP Proxy owns this port binding
     environment:
-      # Secret injected via tmpfs; invisible to docker inspect
-      POSTGRES_PASSWORD_FILE: dsofile://app/db_password
-    volumes:
-      - data:/var/lib/postgresql/data
+      MYSQL_ROOT_PASSWORD: ""               # Injected at runtime by DSO
+      MYSQL_PASSWORD: ""
+    expose:
+      - "3306"                              # Expose internally; DSO proxy handles host binding
+
+  app:
+    image: myapp:latest
+    labels:
+      dso.reloader: "true"
+      dso.secrets: "database_credentials"
+      dso.update.strategy: "rolling"
+    environment:
+      DB_PASSWORD: ""                       # Injected at runtime by DSO
 ```
 
-### Environment Injection (Legacy)
+Start with:
+```bash
+docker dso compose up    # Injects DSO labels and starts containers
+```
 
-```yaml
-services:
-  api:
-    image: myapp:latest
-    environment:
-      # Visible to docker inspect (not recommended for production)
-      DATABASE_URL: dso://vault:database/url
+---
+
+## Non-Root Access
+
+After running `docker dso setup` or `docker dso bootstrap agent`, all DSO directories and the agent socket are group-owned by `dso`:
+
+| Path | Permissions | Notes |
+|------|------------|-------|
+| `/etc/dso/` | `0775 root:dso` | Group members can list and read |
+| `/etc/dso/dso.yaml` | `0664 root:dso` | Group members can read and edit |
+| `/run/dso/dso.sock` | `0660 root:dso` | Group members can connect to agent |
+
+Add your user to the `dso` group once and all DSO commands work without `sudo`:
+
+```bash
+sudo usermod -aG dso $USER
+newgrp dso                   # Apply immediately without logout
+
+# These now work without sudo:
+docker dso watch
+docker dso status
+docker dso compose up
+vi /etc/dso/dso.yaml
+
+# These still require sudo (system-level operations):
+sudo docker dso system enable
+sudo systemctl restart dso-agent
 ```
 
 ---
@@ -217,28 +338,149 @@ services:
 ## Architecture Overview
 
 ```
-Secret Backends (Vault/AWS/Local)
-                ↓
-        DSO Agent Process
-    ┌────────────────────┐
-    │ • Event Watcher    │
-    │ • Rotation Engine  │
-    │ • Health Checks    │
-    │ • State Tracker    │
-    │ • Provider Plugins │
-    └────────────────────┘
-                ↓
-        Docker Host Containers
+Secret Backends (AWS / Azure / Vault / Local)
+                ↓  polling / webhooks
+        DSO Agent Process  (systemd: dso-agent.service)
+    ┌──────────────────────────────────┐
+    │  Trigger Engine  (polling loop)  │
+    │  Reloader Controller             │
+    │  TCP Proxy Manager               │
+    │  State Tracker + Lock Manager    │
+    │  Provider Plugin System          │
+    │  Crash Recovery                  │
+    └──────────────────────────────────┘
+         │              │              │
+    IPC Socket     REST API      Docker Plugin Socket
+  /run/dso/dso.sock  :8471      /run/docker/plugins/dso.sock
+         │
+    Docker Host Containers
 ```
 
-**Design**:
-- Single-agent per Docker host
-- Event-driven with debouncing
-- Blue-green rotation with atomic swap
-- Local state persistence (crash recovery)
-- Plugin-based provider system
+**Ports & Sockets**:
+
+| Endpoint | Default | Purpose |
+|----------|---------|---------|
+| `127.0.0.1:8471` | TCP | REST API — health, metrics, events, webhook |
+| `/run/dso/dso.sock` | Unix | IPC — CLI→agent communication |
+| `/run/docker/plugins/dso.sock` | Unix | Docker V2 secret driver plugin |
+| Dynamic (e.g. `3306`) | TCP | DSO TCP Proxy — owns container host port bindings |
+
+**Design principles**:
+- Single agent per Docker host
+- Timer-based adaptive polling (backs off up to 4× when no changes detected)
+- Blue-green rolling rotation with atomic container swap
+- Local state persistence for crash recovery
+- Plugin-based provider system (separate binaries per provider)
 
 See **[Architecture Guide](docs/architecture.md)** for details.
+
+---
+
+## Operations
+
+### Monitor Status
+
+```bash
+# Real-time status
+docker dso status
+
+# Watch metrics continuously
+docker dso status --watch
+
+# JSON output for scripting
+docker dso status --json
+```
+
+### Watch Rotations Live
+
+```bash
+# Live event stream (Docker events + DSO rotation events)
+docker dso watch
+
+# With raw event payloads
+docker dso watch --debug
+```
+
+### View Logs
+
+```bash
+# Follow agent logs (via journald)
+docker dso system logs -f
+
+# View errors only
+docker dso system logs -p err
+
+# Last hour
+docker dso system logs --since 1h
+
+# Via REST API (when journald unavailable)
+docker dso system logs --api --api-addr http://localhost:8471
+```
+
+### Health Check
+
+```bash
+# CLI health check
+docker dso doctor
+
+# Full diagnostics
+docker dso doctor --level full
+
+# REST health endpoint
+curl http://localhost:8471/health
+
+# Validate config
+docker dso config validate
+```
+
+### Service Management
+
+```bash
+# Start / stop / restart
+sudo systemctl start dso-agent
+sudo systemctl stop dso-agent
+sudo systemctl restart dso-agent
+
+# Enable / disable autostart
+sudo docker dso system enable
+sudo docker dso system disable
+
+# View service status
+sudo docker dso system status
+```
+
+See **[Operational Guide](docs/operational-guide.md)** for day-2 operations, monitoring, and recovery procedures.
+
+---
+
+## Rotation Strategies
+
+| Strategy | Behaviour | Use Case |
+|----------|-----------|---------|
+| `rolling` | Zero-downtime blue-green swap. New container starts, health-checked, old container stops. DSO TCP Proxy holds port bindings. | **Default — production databases, APIs** |
+| `restart` | Stop old container, start new container with updated env. Brief downtime. | Stateless services where downtime is acceptable |
+| `signal` | Send SIGHUP to running container (no restart). | Applications that reload config on SIGHUP |
+| `none` | Update secret cache only, no container action. | Manual rotation workflows |
+
+Configure per-secret or globally in `dso.yaml`:
+
+```yaml
+defaults:
+  rotation:
+    strategy: rolling           # applies to all secrets unless overridden
+
+secrets:
+  - name: api_keys
+    rotation:
+      strategy: signal          # override for this secret only
+```
+
+Or per-container via label:
+
+```yaml
+labels:
+  dso.update.strategy: "rolling"
+```
 
 ---
 
@@ -266,54 +508,11 @@ DSO is optimized for **single-host Docker Compose environments**:
 - AES-256-GCM encryption for local vault
 - Log redaction (secrets never appear in logs)
 - File injection invisible to `docker inspect`
+- Agent IPC socket restricted to `root:dso` group (`0660`)
+- Docker plugin socket restricted to root only (`0600`)
 - Automatic cleanup on container stop/restart
 
 See **[Security Model](SECURITY.md)** for detailed threat analysis and guarantees.
-
----
-
-## Operations
-
-### Monitor Status
-
-```bash
-# Real-time status
-docker dso status
-
-# Watch metrics
-docker dso status --watch
-
-# JSON output
-docker dso status --json
-```
-
-### View Logs
-
-```bash
-# Follow agent logs
-docker dso system logs -f
-
-# View errors only
-docker dso system logs -p err
-
-# Last hour of logs
-docker dso system logs --since 1h
-```
-
-### Troubleshoot
-
-```bash
-# Health check
-docker dso doctor
-
-# Full diagnostics
-docker dso doctor --level full
-
-# Validate config
-docker dso config validate
-```
-
-See **[Operational Guide](docs/operational-guide.md)** for day-2 operations, monitoring, and recovery procedures.
 
 ---
 
@@ -335,7 +534,7 @@ Working examples for common providers:
 |----------|---------|
 | **[Getting Started](docs/getting-started.md)** | Installation & first deployment |
 | **[CLI Reference](docs/cli.md)** | Complete command reference |
-| **[Configuration](docs/configuration.md)** | YAML schema & options |
+| **[Configuration](docs/configuration.md)** | YAML schema & all options |
 | **[Providers](docs/providers.md)** | Provider-specific setup guides |
 | **[Architecture](docs/architecture.md)** | System design & internals |
 | **[Operational Guide](docs/operational-guide.md)** | Day-2 operations & monitoring |
@@ -359,5 +558,3 @@ Working examples for common providers:
 DSO is licensed under the **[MIT License](LICENSE)**.
 
 ---
-
-<p align="center">Built by the open-source community for Docker Compose teams who need secret rotation without Swarm or Kubernetes.</p>

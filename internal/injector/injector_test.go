@@ -1,10 +1,12 @@
 package injector
 
 import (
+	"context"
 	"net"
 	"net/rpc"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -159,5 +161,71 @@ func TestNewAgentClient_ConnectionError(t *testing.T) {
 	_, err := NewAgentClient("/invalid/path")
 	if err == nil {
 		t.Fatal("expected connection error")
+	}
+}
+
+func TestAgentClient_Close(t *testing.T) {
+	socketPath := startMockServer(t)
+	client, err := NewAgentClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestNewAgentClientWithTimeout_ZeroTimeout(t *testing.T) {
+	socketPath := startMockServer(t)
+	// zero timeout should be normalised to 30s internally
+	client, err := NewAgentClientWithTimeout(socketPath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if client.requestTimeout == 0 {
+		t.Fatal("expected non-zero timeout after normalisation")
+	}
+}
+
+func TestAgentClient_Close_NilClient(t *testing.T) {
+	ac := &AgentClient{client: nil}
+	if err := ac.Close(); err != nil {
+		t.Fatalf("Close on nil client: %v", err)
+	}
+}
+
+func TestAgentClient_GetEvents_ClosedConn(t *testing.T) {
+	socketPath := startMockServer(t)
+	client, err := NewAgentClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the underlying RPC connection so the next call returns an error
+	client.client.Close()
+	_, err = client.GetEvents()
+	if err == nil {
+		t.Fatal("expected error after connection close")
+	}
+}
+
+func TestAgentClient_FetchSecretWithContext_WithDeadline(t *testing.T) {
+	socketPath := startMockServer(t)
+	client, err := NewAgentClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Provide a context that already has a deadline — skips the internal WithTimeout branch
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	data, err := client.FetchSecretWithContext(ctx, "prov", nil, "valid_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["key"] != "value" {
+		t.Fatal("unexpected data")
 	}
 }

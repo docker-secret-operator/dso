@@ -360,14 +360,13 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 			var matchedSecrets []string
 			for _, sec := range r.Config.Secrets {
 				if len(sec.Targets.Containers) == 0 {
-					// No explicit target list → applies to all containers
-					matchedSecrets = append(matchedSecrets, sec.Name)
-				} else {
-					for _, target := range sec.Targets.Containers {
-						if target == cname || target == msg.Actor.ID {
-							matchedSecrets = append(matchedSecrets, sec.Name)
-							break
-						}
+					// No explicit targets — label-driven registration covers these containers
+					continue
+				}
+				for _, target := range sec.Targets.Containers {
+					if target == cname || target == msg.Actor.ID {
+						matchedSecrets = append(matchedSecrets, sec.Name)
+						break
 					}
 				}
 			}
@@ -381,9 +380,9 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 					strategy = "restart"
 				}
 				r.Targets.Store(msg.Actor.ID, &TargetContainer{
-					ID:      msg.Actor.ID,
+					ID:       msg.Actor.ID,
 					Strategy: strategy,
-					Secrets: matchedSecrets,
+					Secrets:  matchedSecrets,
 				})
 				r.Logger.Info("Registered target container dynamically (config-driven)",
 					zap.String("name", cname),
@@ -463,7 +462,8 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 
 	// Pass 2: config-driven fallback — discover containers without the dso.reloader label
 	// by matching running container names against secrets[].targets.containers in the config.
-	// When targets.containers is empty, ALL running containers are eligible for that secret.
+	// Only containers listed in targets.containers are registered; secrets with no explicit
+	// targets are covered by label-driven registration (Pass 1) via docker dso compose up.
 	if r.Config != nil {
 		allContainers, err := r.cli.ContainerList(ctx, container.ListOptions{})
 		if err != nil {
@@ -481,18 +481,17 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 					cname = strings.TrimPrefix(c.Names[0], "/")
 				}
 
-				// Collect every secret this container is targeted for
+				// Collect every secret this container is explicitly targeted for
 				var matchedSecrets []string
 				for _, sec := range r.Config.Secrets {
 					if len(sec.Targets.Containers) == 0 {
-						// No explicit targets → this secret applies to all containers
-						matchedSecrets = append(matchedSecrets, sec.Name)
-					} else {
-						for _, target := range sec.Targets.Containers {
-							if target == cname || target == c.ID {
-								matchedSecrets = append(matchedSecrets, sec.Name)
-								break
-							}
+						// No explicit targets — label-driven registration covers these containers
+						continue
+					}
+					for _, target := range sec.Targets.Containers {
+						if target == cname || target == c.ID {
+							matchedSecrets = append(matchedSecrets, sec.Name)
+							break
 						}
 					}
 				}
@@ -511,9 +510,9 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 				}
 
 				r.Targets.Store(c.ID, &TargetContainer{
-					ID:      c.ID,
+					ID:       c.ID,
 					Strategy: strategy,
-					Secrets: matchedSecrets,
+					Secrets:  matchedSecrets,
 				})
 				r.Logger.Info("Config-driven discovery: registered container without dso.reloader label",
 					zap.String("name", cname),
