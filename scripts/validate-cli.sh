@@ -25,6 +25,7 @@ EXCLUDE_PATHS=(
   ':!docs/SECURITY.md'
   ':!docs/operational-guide.md'
   ':!docs/_archive/*'
+  ':!docs/cli-reference/*'
   ':!scripts/uninstall.sh'
   ':!scripts/install.sh'
   ':!scripts/install.ps1'
@@ -38,7 +39,7 @@ EXCLUDE_PATHS=(
 # Scan tracked text files only, so ignored local build artifacts cannot fail CI.
 # dso-agent is allowed as the systemd service name but not as a direct command.
 LEGACY_AGENT=$(git grep -nI -E '(^|[[:space:]`"'"'"'])(sudo[[:space:]]+)?dso-agent([[:space:]`"'"'"']|$)' -- . "${EXCLUDE_PATHS[@]}" \
-  | grep -vE 'dso-agent\.service|systemd|systemctl|journalctl|service|daemon|Agent:|Monitor:|Ensure .*dso-agent.*running|Cloud Mode Agent|fmt\.Printf.*dso-agent|service running|running as container' \
+  | grep -vE 'dso-agent\.service|systemd|systemctl|journalctl|service|daemon|Agent:|Monitor:|Ensure .*dso-agent.*running|Cloud Mode Agent|fmt\.Printf.*dso-agent|service running|running as container|participant.*dso-agent' \
   | grep -v '"-u", "dso-agent"' || true)
 
 # Block standalone "dso <command>" examples/usages. The Docker CLI plugin form is

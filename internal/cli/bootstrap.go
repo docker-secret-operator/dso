@@ -45,14 +45,14 @@ func (l *cliLogger) Debug(msg string, args ...interface{}) {
 
 // Bootstrap command flags
 var (
-	enableNonRootAccess bool
-	bootstrapProvider   string
-	bootstrapNonInteractive bool
-	bootstrapAWSRegion  string
-	bootstrapAzureVaultURL string
-	bootstrapHuaweiRegion string
+	enableNonRootAccess      bool
+	bootstrapProvider        string
+	bootstrapNonInteractive  bool
+	bootstrapAWSRegion       string
+	bootstrapAzureVaultURL   string
+	bootstrapHuaweiRegion    string
 	bootstrapHuaweiProjectID string
-	bootstrapVaultAddress string
+	bootstrapVaultAddress    string
 )
 
 // NewBootstrapCmd creates the bootstrap command with subcommands for local and agent modes
@@ -162,20 +162,20 @@ func bootstrapAgent() error {
 	// Create bootstrap options for agent mode
 	ctx := context.Background()
 	opts := &bootstrap.BootstrapOptions{
-		Mode:                  bootstrap.ModeAgent,
-		Provider:              bootstrapProvider, // From --provider flag, or "" to prompt/detect
-		NonInteractive:        bootstrapNonInteractive,
-		Force:                 false,
-		DryRun:                false,
-		EnableNonRootAccess:   enableNonRootAccess,
-		Timeout:               30 * 60,
-		Context:               ctx,
+		Mode:                bootstrap.ModeAgent,
+		Provider:            bootstrapProvider, // From --provider flag, or "" to prompt/detect
+		NonInteractive:      bootstrapNonInteractive,
+		Force:               false,
+		DryRun:              false,
+		EnableNonRootAccess: enableNonRootAccess,
+		Timeout:             30 * 60,
+		Context:             ctx,
 		// Cloud-specific configuration options
-		AWSRegion:            bootstrapAWSRegion,
-		AzureVaultURL:        bootstrapAzureVaultURL,
-		HuaweiRegion:         bootstrapHuaweiRegion,
-		HuaweiProjectID:      bootstrapHuaweiProjectID,
-		VaultAddress:         bootstrapVaultAddress,
+		AWSRegion:       bootstrapAWSRegion,
+		AzureVaultURL:   bootstrapAzureVaultURL,
+		HuaweiRegion:    bootstrapHuaweiRegion,
+		HuaweiProjectID: bootstrapHuaweiProjectID,
+		VaultAddress:    bootstrapVaultAddress,
 	}
 
 	// Execute with progress reporting

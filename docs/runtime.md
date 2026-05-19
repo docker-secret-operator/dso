@@ -316,7 +316,7 @@ docker dso system logs --since 5m | grep recovery
 DSO uses Docker's health check:
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  test: ["CMD", "curl", "-f", "http://localhost:8471/health"]
   interval: 30s
   timeout: 10s
   retries: 3

@@ -12,26 +12,26 @@ import (
 type CircuitBreakerState string
 
 const (
-	StateClosed CircuitBreakerState = "closed"   // Normal operation
-	StateOpen   CircuitBreakerState = "open"     // Too many failures, rejecting requests
+	StateClosed CircuitBreakerState = "closed"    // Normal operation
+	StateOpen   CircuitBreakerState = "open"      // Too many failures, rejecting requests
 	StateHalf   CircuitBreakerState = "half_open" // Testing if the provider recovered
 )
 
 // CircuitBreaker implements the circuit breaker pattern for provider reliability
 // This prevents cascading failures when a provider is having issues
 type CircuitBreaker struct {
-	logger              *zap.Logger
-	provider            string
-	state               atomic.Value // CircuitBreakerState
-	failureCount        int32
-	successCount        int32
-	lastFailureTime     time.Time
-	lastFailureTimeMu   sync.Mutex
-	failureThreshold    int32
-	successThreshold    int32
-	resetTimeout        time.Duration
-	lastStateChange     time.Time
-	lastStateChangeMu   sync.Mutex
+	logger            *zap.Logger
+	provider          string
+	state             atomic.Value // CircuitBreakerState
+	failureCount      int32
+	successCount      int32
+	lastFailureTime   time.Time
+	lastFailureTimeMu sync.Mutex
+	failureThreshold  int32
+	successThreshold  int32
+	resetTimeout      time.Duration
+	lastStateChange   time.Time
+	lastStateChangeMu sync.Mutex
 }
 
 // NewCircuitBreaker creates a new circuit breaker for a provider

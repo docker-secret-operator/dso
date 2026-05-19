@@ -282,6 +282,11 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 
 // validateDockerGroupAccess checks if user can access Docker
 func (pm *PermissionManager) validateDockerGroupAccess(uid int) error {
+	// Root has direct access to the Docker socket and does not need the docker group.
+	if uid == 0 {
+		return nil
+	}
+
 	// Check if user is in docker group
 	u, err := user.LookupId(fmt.Sprintf("%d", uid))
 	if err != nil {

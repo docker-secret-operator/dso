@@ -183,7 +183,7 @@ sudo systemctl status dso-agent
 journalctl -u dso-agent -f
 
 # Trigger a manual health check
-curl http://localhost:8080/health
+curl http://localhost:8471/health
 ```
 
 ### Prometheus Metrics
@@ -264,10 +264,10 @@ journalctl -u dso-agent -n 50
 
 ```bash
 # Check agent health
-curl http://localhost:8080/health
+curl http://localhost:8471/health
 
 # Check cached secrets
-curl http://localhost:8080/secrets
+curl http://localhost:8471/secrets
 
 # View agent logs for this container
 journalctl -u dso-agent | grep <container_id>

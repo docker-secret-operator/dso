@@ -163,15 +163,15 @@ func TestAgentBootstrapWithInvalidTypeInContext(t *testing.T) {
 func TestGetProviderConfigWithMetadata_AWS(t *testing.T) {
 	logger := &MockLogger{}
 	bootstrapper := &AgentBootstrapper{
-		logger:    logger,
-		detector:  nil,
-		validator: nil,
-		prompter:  nil,
-		provCfg:   nil,
+		logger:     logger,
+		detector:   nil,
+		validator:  nil,
+		prompter:   nil,
+		provCfg:    nil,
 		cfgBuilder: nil,
-		fsOps:     nil,
-		svc:       nil,
-		perm:      nil,
+		fsOps:      nil,
+		svc:        nil,
+		perm:       nil,
 	}
 
 	opts := &BootstrapOptions{
@@ -205,15 +205,15 @@ func TestGetProviderConfigWithMetadata_AWS(t *testing.T) {
 func TestGetProviderConfigWithMetadata_Azure(t *testing.T) {
 	logger := &MockLogger{}
 	bootstrapper := &AgentBootstrapper{
-		logger:    logger,
-		detector:  nil,
-		validator: nil,
-		prompter:  nil,
-		provCfg:   nil,
+		logger:     logger,
+		detector:   nil,
+		validator:  nil,
+		prompter:   nil,
+		provCfg:    nil,
 		cfgBuilder: nil,
-		fsOps:     nil,
-		svc:       nil,
-		perm:      nil,
+		fsOps:      nil,
+		svc:        nil,
+		perm:       nil,
 	}
 
 	opts := &BootstrapOptions{
@@ -247,22 +247,22 @@ func TestGetProviderConfigWithMetadata_Azure(t *testing.T) {
 func TestGetProviderConfigWithMetadata_Huawei(t *testing.T) {
 	logger := &MockLogger{}
 	bootstrapper := &AgentBootstrapper{
-		logger:    logger,
-		detector:  nil,
-		validator: nil,
-		prompter:  nil,
-		provCfg:   nil,
+		logger:     logger,
+		detector:   nil,
+		validator:  nil,
+		prompter:   nil,
+		provCfg:    nil,
 		cfgBuilder: nil,
-		fsOps:     nil,
-		svc:       nil,
-		perm:      nil,
+		fsOps:      nil,
+		svc:        nil,
+		perm:       nil,
 	}
 
 	opts := &BootstrapOptions{
-		Mode:              ModeAgent,
-		NonInteractive:    true,
-		HuaweiRegion:      "cn-south-1",
-		HuaweiProjectID:   "12345abcde",
+		Mode:            ModeAgent,
+		NonInteractive:  true,
+		HuaweiRegion:    "cn-south-1",
+		HuaweiProjectID: "12345abcde",
 	}
 
 	cloudInfo := &CloudProviderInfo{
@@ -294,21 +294,21 @@ func TestGetProviderConfigWithMetadata_Huawei(t *testing.T) {
 func TestGetProviderConfigWithMetadata_Vault(t *testing.T) {
 	logger := &MockLogger{}
 	bootstrapper := &AgentBootstrapper{
-		logger:    logger,
-		detector:  nil,
-		validator: nil,
-		prompter:  nil,
-		provCfg:   nil,
+		logger:     logger,
+		detector:   nil,
+		validator:  nil,
+		prompter:   nil,
+		provCfg:    nil,
 		cfgBuilder: nil,
-		fsOps:     nil,
-		svc:       nil,
-		perm:      nil,
+		fsOps:      nil,
+		svc:        nil,
+		perm:       nil,
 	}
 
 	opts := &BootstrapOptions{
-		Mode:            ModeAgent,
-		NonInteractive:  true,
-		VaultAddress:    "https://vault.example.com:8200",
+		Mode:           ModeAgent,
+		NonInteractive: true,
+		VaultAddress:   "https://vault.example.com:8200",
 	}
 
 	cloudInfo := &CloudProviderInfo{
@@ -336,15 +336,15 @@ func TestGetProviderConfigWithMetadata_Vault(t *testing.T) {
 func TestGetProviderConfigWithMetadata_MissingVaultAddress(t *testing.T) {
 	logger := &MockLogger{}
 	bootstrapper := &AgentBootstrapper{
-		logger:    logger,
-		detector:  nil,
-		validator: nil,
-		prompter:  nil,
-		provCfg:   nil,
+		logger:     logger,
+		detector:   nil,
+		validator:  nil,
+		prompter:   nil,
+		provCfg:    nil,
 		cfgBuilder: nil,
-		fsOps:     nil,
-		svc:       nil,
-		perm:      nil,
+		fsOps:      nil,
+		svc:        nil,
+		perm:       nil,
 	}
 
 	opts := &BootstrapOptions{

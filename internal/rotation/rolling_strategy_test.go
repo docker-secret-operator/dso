@@ -52,8 +52,8 @@ func TestRollingStrategy_Execute_Success(t *testing.T) {
 
 	// Track container names for verification after rename
 	containerNames := map[string]string{
-		"cid":                "my-container",
-		"new-container-id":   "my-container",
+		"cid":              "my-container",
+		"new-container-id": "my-container",
 	}
 
 	httpClient := &http.Client{

@@ -245,6 +245,26 @@ func (bo *BootstrapOperations) EnableServiceOp() (Operation, RollbackFunc) {
 	return op, rollback
 }
 
+// StartServiceOp starts the systemd service immediately after enable.
+// Non-fatal: a start failure is logged as a warning so the transaction is not
+// rolled back (config may have no secrets yet; operator can start manually).
+func (bo *BootstrapOperations) StartServiceOp() (Operation, RollbackFunc) {
+	op := NewSimpleOperation("start-service", func(ctx context.Context) error {
+		if err := bo.svc.StartService(ctx); err != nil {
+			bo.logger.Warn("Service start failed — start it manually once config is ready",
+				"error", err.Error(),
+				"cmd", "sudo systemctl start dso-agent")
+		}
+		return nil // always succeed so the transaction is not rolled back
+	})
+
+	rollback := func(ctx context.Context) error {
+		return bo.svc.StopService(ctx)
+	}
+
+	return op, rollback
+}
+
 // SetupPermissionsOp sets up permissions with rollback
 func (bo *BootstrapOperations) SetupPermissionsOp(invokerUID, invokerGID, dsoGID int) (Operation, RollbackFunc) {
 	op := NewSimpleOperation("setup-permissions", func(ctx context.Context) error {
@@ -311,9 +331,13 @@ func BuildBootstrapTransaction(logger Logger, fsOps *FilesystemOps, svc *Systemd
 	reloadOp, reloadRollback := ops.ReloadSystemdOp()
 	tx.AddOperation(reloadOp, reloadRollback)
 
-	// 5. Enable service
+	// 5. Enable service (autostart on boot)
 	enableOp, enableRollback := ops.EnableServiceOp()
 	tx.AddOperation(enableOp, enableRollback)
+
+	// 5b. Start service immediately so the agent is running after bootstrap
+	startOp, startRollback := ops.StartServiceOp()
+	tx.AddOperation(startOp, startRollback)
 
 	// 6. Setup permissions
 	permOp, permRollback := ops.SetupPermissionsOp(invokerUID, invokerGID, dsoGID)

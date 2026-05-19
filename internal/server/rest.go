@@ -23,7 +23,7 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: checkWebSocketOrigin,
+	CheckOrigin:     checkWebSocketOrigin,
 }
 
 // checkWebSocketOrigin validates WebSocket origin headers to prevent CSWSH attacks

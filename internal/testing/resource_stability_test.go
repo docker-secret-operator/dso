@@ -151,11 +151,14 @@ func (rst *ResourceStabilityTest) IsMemoryStable(maxGrowthPercentPerHour float64
 	q4Start := rst.snapshots[quarter*3].MemoryAllocBytes
 	q4End := rst.snapshots[len(rst.snapshots)-1].MemoryAllocBytes
 
-	q1Growth := float64(q1End - q1Start)
-	q4Growth := float64(q4End - q4Start)
+	// Use signed arithmetic to avoid uint64 wrap-around when GC frees memory
+	// between samples (q4End < q4Start produces a huge positive value otherwise).
+	q1Growth := int64(q1End) - int64(q1Start)
+	q4Growth := int64(q4End) - int64(q4Start)
 
-	// If later growth is significantly higher, memory is not stable
-	if q4Growth > q1Growth*2 {
+	// Growth is only "accelerating" if the later quarter is genuinely larger,
+	// not if it merely reflects a GC-induced negative delta.
+	if q4Growth > 0 && q1Growth >= 0 && q4Growth > q1Growth*2 {
 		return false // Growth accelerating
 	}
 
@@ -211,7 +214,8 @@ Snapshots: %d
 
 // TestMemoryStabilityUnderSustainedLoad validates memory stability over extended duration.
 // This is a long-running stability test. Run explicitly with:
-//   go test ./internal/testing/ -run TestMemoryStabilityUnderSustainedLoad -timeout 3m
+//
+//	go test ./internal/testing/ -run TestMemoryStabilityUnderSustainedLoad -timeout 3m
 func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running stability test in short mode")

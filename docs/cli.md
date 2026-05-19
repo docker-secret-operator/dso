@@ -884,7 +884,7 @@ docker dso logs [flags]
 | `--since` | — | — | Show logs since timestamp/duration (e.g. `"10 minutes ago"`, `"2026-04-07 10:00:00"`) |
 | `--level` | — | — | Filter by level: `debug`, `info`, `warn`, `error`, `fatal` |
 | `--api` | — | `false` | Use the agent REST API instead of journald |
-| `--api-addr` | — | `http://localhost:8080` | Agent REST API address (when `--api` is used) |
+| `--api-addr` | — | `http://localhost:8471` | Agent REST API address (when `--api` is used) |
 
 #### Examples
 
@@ -1216,7 +1216,7 @@ This is the process that the `dso-agent` systemd service executes. Not intended 
 |---|---|---|
 | `--socket` | `/var/run/dso.sock` | IPC socket path |
 | `--driver-socket` | `/run/docker/plugins/dso.sock` | Docker V2 plugin socket |
-| `--api-addr` | `:8080` | REST API address for health/monitoring |
+| `--api-addr` | `:8471` | REST API address for health/monitoring |
 
 ---
 

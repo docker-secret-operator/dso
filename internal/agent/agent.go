@@ -26,7 +26,7 @@ type Agent struct {
 	mu         sync.Mutex
 	Ready      chan struct{} // Signaled when the agent is listening
 	eventQueue *eventqueue.BoundedEventQueue
-	readyOnce  sync.Once     // Ensures Ready channel closes exactly once
+	readyOnce  sync.Once // Ensures Ready channel closes exactly once
 }
 
 // NewAgent creates a new Agent daemon.
@@ -37,11 +37,11 @@ func NewAgent(docker *client.Client) *Agent {
 		logger = zap.Must(zap.NewDevelopment())
 	}
 	return &Agent{
-		cache:    NewCache(),
-		docker:   docker,
-		logger:   logger,
-		injected: make(map[string]bool),
-		Ready:    make(chan struct{}),
+		cache:     NewCache(),
+		docker:    docker,
+		logger:    logger,
+		injected:  make(map[string]bool),
+		Ready:     make(chan struct{}),
 		readyOnce: sync.Once{},
 	}
 }
@@ -75,8 +75,8 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	const (
 		initialReconnectDelay  = 1 * time.Second
-		maxReconnectDelay      = 5 * time.Minute  // Increased from 30s to prevent spam
-		maxConsecutiveAttempts = 20                // Exit after 20 failed attempts
+		maxReconnectDelay      = 5 * time.Minute // Increased from 30s to prevent spam
+		maxConsecutiveAttempts = 20              // Exit after 20 failed attempts
 	)
 
 	reconnectDelay := initialReconnectDelay

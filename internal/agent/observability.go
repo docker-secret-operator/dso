@@ -106,9 +106,9 @@ func (rt *RotationTracer) Summary() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"trace_id":      rt.traceID,
-		"secret":        rt.secret,
-		"provider":      rt.provider,
+		"trace_id":       rt.traceID,
+		"secret":         rt.secret,
+		"provider":       rt.provider,
 		"total_duration": totalDuration,
 		"event_count":    len(rt.events),
 		"stages":         stages,
@@ -119,14 +119,14 @@ func (rt *RotationTracer) Summary() map[string]interface{} {
 
 // HealthCheckDiagnostics provides diagnostic information about health check failures
 type HealthCheckDiagnostics struct {
-	ContainerID    string
-	HealthStatus   string // starting, healthy, unhealthy
-	ExitCode       int
-	Output         string
-	Timestamp      time.Time
-	Duration       time.Duration
-	Attempts       int
-	LastError      string
+	ContainerID  string
+	HealthStatus string // starting, healthy, unhealthy
+	ExitCode     int
+	Output       string
+	Timestamp    time.Time
+	Duration     time.Duration
+	Attempts     int
+	LastError    string
 }
 
 // HealthCheckMonitor tracks health check attempts and provides diagnostics
@@ -230,12 +230,12 @@ func (plm *ProviderLatencyMonitor) GetStats(provider string) map[string]interfac
 	latencies, exists := plm.latencies[provider]
 	if !exists || len(latencies) == 0 {
 		return map[string]interface{}{
-			"provider":    provider,
-			"count":       0,
-			"average":     0,
-			"min":         0,
-			"max":         0,
-			"p99":         0,
+			"provider": provider,
+			"count":    0,
+			"average":  0,
+			"min":      0,
+			"max":      0,
+			"p99":      0,
 		}
 	}
 
@@ -256,12 +256,12 @@ func (plm *ProviderLatencyMonitor) GetStats(provider string) map[string]interfac
 	avg := total / time.Duration(len(latencies))
 
 	return map[string]interface{}{
-		"provider":    provider,
-		"count":       len(latencies),
-		"average":     avg,
-		"min":         min,
-		"max":         max,
-		"last":        latencies[len(latencies)-1],
+		"provider": provider,
+		"count":    len(latencies),
+		"average":  avg,
+		"min":      min,
+		"max":      max,
+		"last":     latencies[len(latencies)-1],
 	}
 }
 

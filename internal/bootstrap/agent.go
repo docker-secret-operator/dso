@@ -153,14 +153,13 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 
 	// Step 10: Add next steps for configuration
-	warnings = append(warnings, "")
 	warnings = append(warnings, "🔧 NEXT STEPS:")
 	warnings = append(warnings, "1. Edit configuration: nano /etc/dso/dso.yaml")
 	warnings = append(warnings, "2. Add your secrets under the 'secrets:' section (see examples)")
 	warnings = append(warnings, "3. Configure environment variable mappings for each secret")
 	warnings = append(warnings, "4. Validate configuration: docker dso config validate")
-	warnings = append(warnings, "5. Enable service: sudo docker dso system enable")
-	warnings = append(warnings, "6. Start monitoring: docker dso status --watch")
+	warnings = append(warnings, "5. Restart service after editing config: sudo systemctl restart dso-agent")
+	warnings = append(warnings, "6. Monitor status: docker dso status")
 
 	// Step 10: Display completion message
 	if opts.NonInteractive {

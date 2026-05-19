@@ -116,7 +116,7 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 	// Step 3.5: Elevate privileges if agent mode and not root
 	if deploymentMode == "agent" && os.Geteuid() != 0 {
 		fmt.Println("\n🛡️ Agent setup requires root privileges. Elevating via sudo...")
-		
+
 		args := []string{"docker", "dso", "setup", "--mode", "agent", "--provider", detectedProvider.Provider}
 		if autoDetect {
 			args = append(args, "--auto-detect")
@@ -124,16 +124,16 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		if nonRoot {
 			args = append(args, "--enable-nonroot")
 		}
-		
+
 		cmd := exec.Command("sudo", args...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		
+
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("sudo execution failed: %w", err)
 		}
-		
+
 		// Exit successfully, as the elevated child process completes the rest
 		return nil
 	}
@@ -254,8 +254,8 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		fmt.Println("  2. Check agent status:")
 		fmt.Println("     docker dso status")
 		fmt.Println()
-		fmt.Println("  3. Enable/restart the service (requires sudo):")
-		fmt.Println("     sudo docker dso system enable")
+		fmt.Println("  3. Restart the service after editing config (requires sudo):")
+		fmt.Println("     sudo systemctl restart dso-agent")
 		fmt.Println()
 		fmt.Println("  4. View agent logs:")
 		fmt.Println("     docker dso system logs")

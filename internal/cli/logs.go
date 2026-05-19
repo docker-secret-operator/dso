@@ -68,7 +68,7 @@ Examples:
 	cmd.Flags().StringVar(&since, "since", "", "Show logs since timestamp or duration (e.g. '10 minutes ago', '2026-04-07 10:00:00')")
 	cmd.Flags().IntVarP(&tail, "tail", "n", 100, "Number of lines to show from the end of the logs")
 	cmd.Flags().StringVar(&level, "level", "", "Filter by log level: debug, info, warn, error, fatal")
-	cmd.Flags().StringVar(&apiAddr, "api-addr", "http://localhost:8080", "Agent REST API address (used when journald unavailable)")
+	cmd.Flags().StringVar(&apiAddr, "api-addr", "http://localhost:8471", "Agent REST API address (used when journald unavailable)")
 	cmd.Flags().BoolVar(&useJournald, "api", false, "Use the agent REST API instead of journald")
 
 	return cmd
