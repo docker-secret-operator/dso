@@ -1,1 +1,0 @@
-go: cannot find GOROOT directory: 'go' binary is trimmed and GOROOT is not set
