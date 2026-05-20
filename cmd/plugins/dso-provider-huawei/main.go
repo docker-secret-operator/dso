@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -123,23 +124,40 @@ func (h *HuaweiProvider) GetSecret(name string) (map[string]string, error) {
 	return data, nil
 }
 
-func (h *HuaweiProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (h *HuaweiProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		send := func() {
 			val, err := h.GetSecret(name)
 			errMsg := ""
 			if err != nil {
 				errMsg = err.Error()
 			}
-			ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}
+			select {
+			case ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Check context before initial send
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 		send() // deliver immediately on first call
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			send()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send()
+			}
 		}
 	}()
 	return ch, nil

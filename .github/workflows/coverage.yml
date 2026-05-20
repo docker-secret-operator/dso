@@ -1,0 +1,193 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  coverage:
+    name: Code Coverage Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests with coverage
+        run: |
+          go test -race -covermode=atomic -coverprofile=coverage.out ./...
+          echo "✅ Tests with coverage completed"
+
+      - name: Generate coverage report
+        run: |
+          go tool cover -html=coverage.out -o coverage.html
+          go tool cover -func=coverage.out > coverage.txt
+
+          # Display coverage summary
+          echo "## Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          tail -n 1 coverage.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Get total coverage percentage
+          COVERAGE=$(tail -n 1 coverage.txt | awk '{print $NF}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          echo "COVERAGE_PCT=${COVERAGE}" >> $GITHUB_ENV
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Check coverage thresholds
+        run: |
+          COVERAGE=$(tail -n 1 coverage.txt | awk '{print $NF}' | sed 's/%//')
+          THRESHOLD=70
+
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Code coverage ${COVERAGE}% is below minimum threshold of ${THRESHOLD}%"
+            echo "Please add tests to improve coverage."
+            exit 1
+          fi
+
+          echo "✅ Code coverage ${COVERAGE}% meets minimum threshold of ${THRESHOLD}%"
+
+      - name: Comment on PR with coverage
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const coverage = fs.readFileSync('coverage.txt', 'utf8').split('\n').pop().trim();
+
+            const comment = `## Code Coverage Report
+
+            ${coverage}
+
+            [View detailed coverage report](https://codecov.io/gh/${{ github.repository }}/commit/${{ github.event.pull_request.head.sha }})`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.out
+            coverage.html
+            coverage.txt
+
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    needs: coverage
+
+    steps:
+      - name: Check if coverage meets requirements
+        run: |
+          # This is a gate job that ensures coverage thresholds are met
+          # Actual check is in the coverage job; this just reports status
+          echo "✅ Coverage requirements verified"
+
+  # ── Package Coverage Analysis ──────────────────────────────────────────────
+  package-coverage:
+    name: Per-Package Coverage Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Analyze package-level coverage
+        run: |
+          # Generate coverage for each package
+          echo "## Per-Package Coverage Analysis" > package-coverage.txt
+          echo "" >> package-coverage.txt
+
+          for package in internal/agent internal/injector internal/providers pkg/config internal/cli; do
+            if [ -d "$package" ]; then
+              coverage=$(go test -cover "$package/..." 2>/dev/null | tail -n 1 | awk '{print $NF}' | sed 's/ok//' | sed 's/(.*)//')
+              if [ ! -z "$coverage" ]; then
+                echo "- **$package**: $coverage" >> package-coverage.txt
+              fi
+            fi
+          done
+
+          cat package-coverage.txt
+
+          # Check critical packages
+          CRITICAL_PACKAGES=(
+            "internal/agent"
+            "internal/injector"
+            "pkg/config"
+          )
+
+          THRESHOLD=85
+          FAILED=0
+
+          for package in "${CRITICAL_PACKAGES[@]}"; do
+            coverage=$(go test -cover "$package/..." 2>/dev/null | tail -n 1 | awk '{print $NF}' | sed 's/ok//' | sed 's/(.*)//' | sed 's/%//')
+
+            if [ ! -z "$coverage" ]; then
+              if (( $(echo "$coverage < $THRESHOLD" | bc -l 2>/dev/null || echo "0") )); then
+                echo "⚠️ Critical package $package has ${coverage}% coverage (target: ${THRESHOLD}%)"
+                FAILED=1
+              else
+                echo "✅ $package: ${coverage}% ≥ ${THRESHOLD}%"
+              fi
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "⚠️ Some critical packages below coverage threshold"
+            echo "Please prioritize tests for: ${CRITICAL_PACKAGES[*]}"
+          fi
+
+      - name: Upload package coverage analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-coverage-analysis
+          path: package-coverage.txt
+
+# ────────────────────────────────────────────────────────────────────────────
+# Coverage Badges (for README)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# To use coverage badge in README:
+#
+# [![Coverage Status](https://codecov.io/gh/docker-secret-operator/dso/branch/main/graph/badge.svg)](https://codecov.io/gh/docker-secret-operator/dso)
+#
+# The badge automatically updates when Codecov processes new reports.

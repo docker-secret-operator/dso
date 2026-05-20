@@ -266,8 +266,9 @@ func NewUpCmd() *cobra.Command {
 				}
 
 				projectName := getProjectName(dockerArgs)
-				ctx := context.Background()
-				mutatedRoot, seed, err := resolver.ResolveCompose(ctx, cli, &root, v, projectName)
+				resolveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				mutatedRoot, seed, err := resolver.ResolveCompose(resolveCtx, cli, &root, v, projectName)
+				cancel()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error resolving compose secrets: %v\n", err)
 					os.Exit(1)
@@ -299,6 +300,7 @@ func NewUpCmd() *cobra.Command {
 					os.Exit(1)
 				}
 				defer func() {
+					tmpFile.Close() // Close file before removing
 					_ = os.Remove(tmpFile.Name())
 				}()
 

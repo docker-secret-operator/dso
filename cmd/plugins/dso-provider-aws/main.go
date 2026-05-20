@@ -90,9 +90,10 @@ func (p *AWSProvider) GetSecret(name string) (map[string]string, error) {
 	return data, nil
 }
 
-func (p *AWSProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (p *AWSProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		// Deliver immediately on first call so callers don't block on first tick.
 		send := func() {
 			val, err := p.GetSecret(name)
@@ -100,14 +101,30 @@ func (p *AWSProvider) WatchSecret(name string, interval time.Duration) (<-chan a
 			if err != nil {
 				errMsg = err.Error()
 			}
-			ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}
+			select {
+			case ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Check context before initial send
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 		send()
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			send()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send()
+			}
 		}
 	}()
 	return ch, nil

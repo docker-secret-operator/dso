@@ -91,23 +91,40 @@ func (p *AzureProvider) GetSecret(name string) (map[string]string, error) {
 	return data, nil
 }
 
-func (p *AzureProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (p *AzureProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		send := func() {
 			val, err := p.GetSecret(name)
 			errMsg := ""
 			if err != nil {
 				errMsg = err.Error()
 			}
-			ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}
+			select {
+			case ch <- api.SecretUpdate{Name: name, Data: val, Error: errMsg}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Check context before initial send
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 		send() // deliver immediately on first call
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			send()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send()
+			}
 		}
 	}()
 	return ch, nil

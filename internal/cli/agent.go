@@ -102,7 +102,9 @@ func NewAgentCmd() *cobra.Command {
 			// with the dso.host_ports label and binds their ports immediately so traffic
 			// is never interrupted during secret rotation.
 			proxyManager := dsoProxy.NewManager(logger)
-			proxyManager.ScanAndRegister(context.Background(), dockerCli)
+			scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			proxyManager.ScanAndRegister(scanCtx, dockerCli)
+			scanCancel()
 			reloader.ProxyManager = proxyManager
 
 			// Initialize Trigger Engine

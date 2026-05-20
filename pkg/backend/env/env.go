@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"os"
 	"time"
 
@@ -22,13 +23,28 @@ func (p *EnvProvider) GetSecret(name string) (map[string]string, error) {
 	return map[string]string{"value": val}, nil
 }
 
-func (p *EnvProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (p *EnvProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		ticker := time.NewTicker(interval)
-		for range ticker.C {
-			data, _ := p.GetSecret(name)
-			ch <- api.SecretUpdate{Name: name, Data: data}
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				// Context cancelled, clean up goroutine
+				return
+			case <-ticker.C:
+				data, _ := p.GetSecret(name)
+				select {
+				case ch <- api.SecretUpdate{Name: name, Data: data}:
+					// Message sent
+				case <-ctx.Done():
+					// Context cancelled while sending
+					return
+				}
+			}
 		}
 	}()
 	return ch, nil

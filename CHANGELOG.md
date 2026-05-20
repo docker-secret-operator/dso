@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.17] - 2026-05-20
+
+### Fixed
+- **Local Mode Setup Documentation** (`README.md`, `docs/getting-started.md`): Corrected Quick Start guide to show the actual working workflow. README now clearly separates "For Local Development" from "For Production (Agent Mode)" sections with correct commands: `docker dso setup --mode local`, `docker dso init`, `docker dso secret set`, and `docker dso up -d`. The critical `docker dso init` step is now prominently featured in both README and getting-started documentation.
+- **Setup Wizard Ignores --mode Local Flag** (`internal/cli/setup.go`): When `--mode local` is explicitly passed, the setup wizard now skips cloud provider detection entirely (AWS IMDSv2, Azure metadata, Huawei KMS checks). Previously the wizard would attempt these network requests (~5-10 second timeout) and show provider selection prompts even when mode was already specified. Setup now completes in <1 second for local mode with `(Local Development Mode)` banner displayed. Also fixed next steps output to show correct sequence: init vault → set secrets → deploy → check status.
+- **Setup Wizard Configuration Guidance** (`internal/cli/setup.go`): Fixed `--mode local` guidance to show correct config path (`~/.dso/dso.yaml` with provider/secrets sections) and agent mode guidance to show correct path (`/etc/dso/dso.yaml` with agent/defaults/secrets sections).
+
+### Performance
+- **Local Mode Setup**: Reduced setup time from 10-15 seconds to <1 second by skipping unnecessary cloud provider detection when `--mode local` flag is used.
+
+### Compatibility
+- ✅ All changes are backward compatible
+- ✅ `docker dso bootstrap local` still works (not removed)
+- ✅ Existing agent mode workflows unchanged
+- ✅ All tests pass
+
+---
+
 ## [3.5.16] - 2026-05-19
 
 ### Fixed

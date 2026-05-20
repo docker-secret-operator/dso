@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -49,17 +50,32 @@ func (p *FileProvider) GetSecret(name string) (map[string]string, error) {
 	return data, nil
 }
 
-func (p *FileProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (p *FileProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		ticker := time.NewTicker(interval)
-		for range ticker.C {
-			data, err := p.GetSecret(name)
-			var errMsg string
-			if err != nil {
-				errMsg = err.Error()
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				// Context cancelled, clean up goroutine
+				return
+			case <-ticker.C:
+				data, err := p.GetSecret(name)
+				var errMsg string
+				if err != nil {
+					errMsg = err.Error()
+				}
+				select {
+				case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
+					// Message sent
+				case <-ctx.Done():
+					// Context cancelled while sending
+					return
+				}
 			}
-			ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}
 		}
 	}()
 	return ch, nil

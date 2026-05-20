@@ -43,6 +43,7 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize state tracker and lock manager for crash recovery and synchronization
+	// Note: StateTracker is best-effort (optional), but LockManager is CRITICAL for rotation safety
 	stateTracker, err := NewStateTracker("/var/lib/dso/state", logger)
 	if err != nil {
 		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
@@ -51,12 +52,17 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 		stateTracker = nil
 	}
 
+	// CRITICAL: Lock manager must be initialized. Rotation safety depends on it.
+	// Fail fast if lock manager initialization fails to prevent data corruption.
 	lockManager, err := rotation.NewLockManager("/var/lib/dso/locks", logger)
 	if err != nil {
-		logger.Warn("Failed to initialize lock manager - concurrent rotation protection disabled",
+		logger.Error("CRITICAL: Failed to initialize rotation lock manager - refusing to start",
 			zap.Error(err))
-		// Continue without lock manager - unsafe but functional
-		lockManager = nil
+		logger.Error("Lock manager is REQUIRED for rotation safety. Cannot proceed without it.",
+			zap.String("path", "/var/lib/dso/locks"))
+		// FAIL FAST: Return nil to cause fatal error upstream
+		// This prevents silent data corruption from concurrent rotations
+		panic(fmt.Sprintf("rotation lock manager initialization failed: %v", err))
 	}
 
 	timeoutController := NewTimeoutController(logger)

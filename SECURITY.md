@@ -87,6 +87,34 @@ When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` 
 
 When you use `dso://`, secrets are injected as environment variables. **These are visible to `docker inspect`.** Only use for non-sensitive configuration data or when your application requires environment variable injection.
 
+### Socket Security (Cloud/Agent Mode)
+
+DSO agent communicates via Unix domain socket (`/run/dso/dso.sock`). Socket permissions are **critical** to prevent unauthorized secret access.
+
+**Socket Permissions**:
+- **Mode**: `0660` (read-write for owner and group, no world access)
+- **Owner**: `root:dso` (root user, dso group)
+- **Access Control**: Only `root` and members of `dso` group can connect
+
+**Permission Enforcement**:
+1. **At Socket Creation**: Socket created with requested mode (`0660` if dso group exists, fallback to `0600`)
+2. **Group Lookup**: DSO verifies `dso` group exists at startup; warns if group not found
+3. **Chown Operation**: Socket and directory `chown`d to `root:dso` for non-root access
+4. **Chmod Operation**: Explicit `chmod 0660` ensures no world-readable access
+5. **Fallback**: If `chmod` fails, agent exits with fatal error (refusing to run with unsafe socket)
+
+**Threat Model**:
+- ✅ **Protects Against**: Non-root users accessing secrets without authorization
+- ✅ **Protects Against**: World-readable socket exposing secrets
+- ⚠️ **Does Not Protect**: Root user (root can always read secrets from agent RAM)
+- ⚠️ **Does Not Protect**: Host compromise (compromise = full secret access)
+
+**Best Practices**:
+- Always create `dso` group: `sudo groupadd dso`
+- Add users to group: `sudo usermod -aG dso $USER`
+- Verify permissions: `ls -la /run/dso/dso.sock` (should show `root dso 0660`)
+- Monitor socket: `docker dso doctor` reports socket status
+
 ### Log Redaction
 
 All DSO output passes through a redaction engine, masking:

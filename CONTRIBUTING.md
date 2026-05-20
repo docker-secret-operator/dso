@@ -8,6 +8,41 @@ This guide explains how to get started.
 
 By participating in this project, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md). We want this to be a welcoming space for everyone.
 
+## Reporting Issues
+
+We provide issue templates to help you report issues effectively. All templates are in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/).
+
+### Found a Bug?
+
+Use the **[Bug Report template](https://github.com/docker-secret-operator/dso/issues/new?template=bug.md)** (`.github/ISSUE_TEMPLATE/bug.md`):
+- ✅ Include reproduction steps
+- ✅ Provide error logs (`docker dso doctor --level full`)
+- ✅ Share your environment (DSO version, OS, Docker version)
+- ✅ Remove any sensitive information (passwords, tokens, keys)
+
+### Have a Feature Idea?
+
+Use the **[Feature Request template](https://github.com/docker-secret-operator/dso/issues/new?template=feature.md)**:
+- ✅ Describe the use case or problem
+- ✅ Explain the proposed solution
+- ✅ Show an example or mock interface
+- ✅ Note any backward compatibility concerns
+
+### Found a Security Issue?
+
+**DO NOT CREATE A PUBLIC ISSUE**. Instead:
+- 📧 Email: **security@docker-secret-operator.org**
+- Include vulnerability type, affected versions, and reproduction steps
+- We'll respond within 48 hours and coordinate a fix
+- See [Security Policy](SECURITY.md) for details
+
+### Have a Question?
+
+Use [GitHub Discussions](https://github.com/docker-secret-operator/dso/discussions) instead of issues:
+- 💬 Questions about setup or usage
+- 📚 Requests for examples or documentation
+- 🤔 General inquiries before opening an issue
+
 ## How to contribute
 
 ### 1. Fork the repository

@@ -1,0 +1,240 @@
+# Docker Compose - MySQL + phpMyAdmin with DSO Local Mode
+#
+# This example demonstrates a complete local development setup with:
+# - MySQL database with secrets for root and application users
+# - phpMyAdmin web interface for database management
+# - DSO secret injection for all credentials
+#
+# Setup:
+#   1. docker dso setup --mode local
+#   2. docker dso init
+#   3. docker dso secret set prod-ms/mysql-root-password
+#   4. docker dso secret set prod-ms/mysql-user
+#   5. docker dso secret set prod-ms/mysql-user-password
+#   6. docker dso up -d
+#   7. docker dso doctor
+
+version: '3.8'
+
+services:
+  # MySQL Database Service
+  mysql_db:
+    container_name: prod-hms-mysql-container
+    image: mysql:latest
+
+    # DSO Labels - Critical for secret injection
+    labels:
+      dso.reloader: "true"                    # Enable DSO management
+      dso.secrets: "prod-ms"                  # Which secret group to watch
+      dso.update.strategy: "rolling"          # Zero-downtime rotation on secret change
+
+    # Environment Variables - All using dso:// for secret injection
+    environment:
+      # ✅ CORRECT: Using dso:// prefix for all secrets
+      MYSQL_ROOT_PASSWORD: dso://prod-ms/mysql-root-password
+      MYSQL_USER: dso://prod-ms/mysql-user
+      MYSQL_PASSWORD: dso://prod-ms/mysql-user-password
+
+      # Regular configuration (no secrets)
+      MYSQL_DATABASE: "myapp_db"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "false"
+
+    # Port mapping
+    ports:
+      - "3506:3306"  # MySQL port (changed from default 3306 to 3506 to avoid conflicts)
+
+    # Restart policy
+    restart: always
+
+    # Data persistence
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Optional: custom MySQL configuration
+      # - ./my.cnf:/etc/my.cnf:ro
+      # - ./init-scripts:/docker-entrypoint-initdb.d:ro
+
+    # Health check - ensures MySQL is ready before other services connect
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    # Network
+    networks:
+      - prod-hms-network
+
+  # phpMyAdmin - Web-based MySQL Management
+  phpmyadmin:
+    container_name: prod-hms-phpmyadmin-container
+    image: phpmyadmin/phpmyadmin:latest
+
+    # DSO Labels
+    labels:
+      dso.reloader: "true"
+      dso.secrets: "prod-ms"
+      dso.update.strategy: "rolling"
+
+    # Port mapping
+    ports:
+      - "28080:80"  # phpMyAdmin UI on localhost:28080
+
+    # Restart policy
+    restart: always
+
+    # Environment Variables
+    environment:
+      # MySQL connection settings
+      PMA_HOST: mysql_db                      # Service name (Docker DNS)
+      PMA_PORT: 3306
+
+      # ✅ CORRECT: Using dso:// prefix for secrets
+      PMA_USER: dso://prod-ms/mysql-user
+      PMA_PASSWORD: dso://prod-ms/mysql-user-password
+
+      # Optional: Set specific database on startup
+      # PMA_DB: "myapp_db"
+
+    # Dependency - wait for MySQL to be healthy
+    depends_on:
+      mysql_db:
+        condition: service_healthy
+
+    # Session persistence
+    volumes:
+      - phpmyadmin_data:/sessions
+
+    # Network
+    networks:
+      - prod-hms-network
+
+# Named volumes for data persistence
+volumes:
+  mysql_data:
+    driver: local
+  phpmyadmin_data:
+    driver: local
+
+# Named network for service communication
+networks:
+  prod-hms-network:
+    driver: bridge
+    name: prod-hms-network
+
+---
+# QUICK START COMMANDS
+#
+# 1. Setup DSO
+#    docker dso setup --mode local
+#    docker dso init
+#
+# 2. Set Required Secrets
+#    docker dso secret set prod-ms/mysql-root-password
+#    docker dso secret set prod-ms/mysql-user
+#    docker dso secret set prod-ms/mysql-user-password
+#
+# 3. Verify Secrets Are Set
+#    docker dso secret list prod-ms
+#
+# 4. Deploy
+#    docker dso up -d
+#
+# 5. Verify Deployment
+#    docker dso doctor
+#    docker dso status
+#    docker ps
+#
+# 6. Access Services
+#    MySQL: localhost:3506
+#    phpMyAdmin: http://localhost:28080
+#      Username: (value from dso://prod-ms/mysql-user)
+#      Password: (value from dso://prod-ms/mysql-user-password)
+#
+# 7. Troubleshooting
+#    docker dso doctor --level full
+#    docker logs prod-hms-mysql-container
+#    docker logs prod-hms-phpmyadmin-container
+#
+# 8. Stop Services
+#    docker dso down
+#
+# 9. Update a Secret (triggers automatic rotation)
+#    docker dso secret set prod-ms/mysql-root-password
+#    # Watch rotation:
+#    docker dso status --watch
+
+---
+# IMPORTANT NOTES
+#
+# ❌ COMMON MISTAKE:
+#    MYSQL_PASSWORD: prod-ms/mysql-user-password  # WRONG - missing dso://
+#
+# ✅ CORRECT:
+#    MYSQL_PASSWORD: dso://prod-ms/mysql-user-password  # RIGHT - has dso://
+#
+# ALL secrets MUST start with either:
+#   - dso://           (environment variable injection)
+#   - dsofile://       (file-based injection)
+#
+# Without the prefix, the literal string will be used instead of the secret value!
+
+---
+# SECRET INJECTION METHOD
+#
+# This compose file uses ENVIRONMENT VARIABLE INJECTION (dso://)
+#
+# Pros:
+#   ✅ Simple and straightforward
+#   ✅ Works with any application
+#   ✅ Secrets immediately available
+#
+# Cons:
+#   ⚠️  Visible via 'docker inspect'
+#   ⚠️  Visible in container process list
+#   ⚠️  Not ideal for very sensitive data
+#
+# For file-based injection (invisible to docker inspect), use:
+#   dsofile://prod-ms/mysql-root-password
+# And modify your application to read from /run/secrets/prod-ms/mysql-root-password
+
+---
+# ROTATION BEHAVIOR
+#
+# When you update a secret:
+#   docker dso secret set prod-ms/mysql-root-password
+#
+# DSO automatically:
+# 1. Detects the change
+# 2. Starts a new MySQL container with the new secret
+# 3. Health checks the new container
+# 4. Atomically swaps old → backup, new → active
+# 5. Stops the old container
+#
+# Result: ZERO DOWNTIME (rolling rotation, ~30 seconds)
+#
+# Watch it happen:
+#   docker dso status --watch
+
+---
+# BACKUP RECOMMENDATIONS
+#
+# After first deployment, backup:
+#   cp ~/.dso/master.key ~/.dso/master.key.backup
+#
+# Store backup in secure location:
+#   - Encrypted cloud storage
+#   - Team password manager
+#   - Secure physical medium
+#
+# The master key is CRITICAL - without it, your vault is unrecoverable!
+
+---
+# PRODUCTION MIGRATION
+#
+# When ready to move to production:
+# 1. Use agent mode instead: docker dso setup --mode agent --provider aws
+# 2. Store secrets in AWS Secrets Manager / Azure Key Vault / HashiCorp Vault
+# 3. Deploy via docker dso bootstrap agent
+# 4. Benefits: Automatic rotation, audit logging, cloud provider security
+#
+# See: docs/getting-started.md - Cloud Mode Setup section

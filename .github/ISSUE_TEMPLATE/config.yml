@@ -1,0 +1,45 @@
+# GitHub Issue Template Configuration
+# This file configures the issue creation experience on GitHub
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: 📚 Documentation
+    url: https://github.com/docker-secret-operator/dso/blob/main/docs/getting-started.md
+    about: Read the getting started guide and documentation
+
+  - name: 💬 Discussions
+    url: https://github.com/docker-secret-operator/dso/discussions
+    about: Have a question? Start a discussion instead of an issue
+
+  - name: 🏗️ Architecture Guide
+    url: https://github.com/docker-secret-operator/dso/blob/main/docs/architecture.md
+    about: Understand DSO internals and system design
+
+  - name: 🔐 Security Policy
+    url: https://github.com/docker-secret-operator/dso/blob/main/SECURITY.md
+    about: Report security vulnerabilities responsibly
+
+  - name: 🎯 Roadmap
+    url: https://github.com/docker-secret-operator/dso/blob/main/ROADMAP.md
+    about: See what's planned for DSO
+
+# Template descriptions (shown when creating a new issue)
+issue_templates:
+  - name: "Bug Report"
+    description: "Report a bug or issue in DSO"
+    title: "[BUG] "
+    labels:
+      - bug
+
+  - name: "Feature Request"
+    description: "Suggest a new feature or enhancement"
+    title: "[FEATURE] "
+    labels:
+      - enhancement
+
+  - name: "Security Issue"
+    description: "Report a security vulnerability (use this for security-related issues)"
+    title: "[SECURITY] "
+    labels:
+      - security

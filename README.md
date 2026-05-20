@@ -5,8 +5,11 @@
 [![Latest Release](https://img.shields.io/github/v/release/docker-secret-operator/dso?label=latest)](https://github.com/docker-secret-operator/dso/releases/latest)
 [![License](https://img.shields.io/github/license/docker-secret-operator/dso)](LICENSE)
 [![Go Report](https://goreportcard.com/badge/github.com/docker-secret-operator/dso)](https://goreportcard.com/report/github.com/docker-secret-operator/dso)
+[![Code Coverage](https://codecov.io/gh/docker-secret-operator/dso/branch/main/graph/badge.svg)](https://codecov.io/gh/docker-secret-operator/dso)
 
-> **Current version: v3.5.16**
+> **Current version: v3.5.17**  
+> **Status**: CNCF Sandbox Ready ✅  
+> **Governance**: [View GOVERNANCE.md](GOVERNANCE.md) | **Roadmap**: [View ROADMAP.md](ROADMAP.md)
 
 ---
 
@@ -40,27 +43,51 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 ## Quick Start
 
-### Recommended: Interactive Setup Wizard (2-3 minutes)
+### For Local Development (2-3 minutes)
+
+```bash
+# 1. Install DSO
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+
+# 2. Run setup wizard for local mode
+docker dso setup --mode local
+
+# 3. Initialize the local vault
+docker dso init
+
+# 4. Store a secret
+docker dso secret set myapp/db_password
+
+# 5. Add secret references to docker-compose.yaml
+# services:
+#   app:
+#     image: myapp:latest
+#     environment:
+#       DB_PASSWORD: dso://myapp/db_password
+
+# 6. Deploy
+docker dso up -d
+
+# 7. Verify
+docker dso doctor
+docker dso status
+```
+
+### For Production (Agent Mode with Cloud Provider)
 
 ```bash
 # 1. Install DSO system-wide
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# 2. Run the setup wizard (auto-detects cloud provider, bootstraps agent, starts service)
-sudo docker dso setup
+# 2. Bootstrap agent mode (auto-detects cloud provider, configures systemd service)
+sudo docker dso bootstrap agent
 
-# The wizard will:
-#   - Auto-detect your cloud provider (AWS, Azure, Huawei, or Local)
-#   - Generate /etc/dso/dso.yaml with provider defaults
-#   - Install required provider plugins
-#   - Create and enable the systemd service
-#   - Start the agent immediately
+# 3. Configure your secrets
+sudo vi /etc/dso/dso.yaml
 
-# 3. Edit your config to add secrets
-vi /etc/dso/dso.yaml          # no sudo needed — you're in the dso group
-
-# 4. Restart the service to pick up your secrets
-sudo systemctl restart dso-agent
+# 4. Start the agent
+sudo systemctl start dso-agent
+sudo systemctl enable dso-agent
 
 # 5. Verify everything is healthy
 docker dso doctor
@@ -73,40 +100,40 @@ docker dso status
 # 1. Install DSO
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
-# 2. Initialize local environment
-docker dso bootstrap local
+# 2. Run setup wizard for local mode
+docker dso setup --mode local
 
-# 3. Set a secret
+# 3. Initialize the local vault
+docker dso init
+
+# 4. Set a secret
 docker dso secret set app/db_password
 
-# 4. Use in docker-compose.yaml
+# 5. Use in docker-compose.yaml
 # services:
 #   postgres:
 #     image: postgres:15
 #     environment:
 #       POSTGRES_PASSWORD_FILE: dsofile://app/db_password
 
-# 5. Deploy
-docker dso compose up
+# 6. Deploy
+docker dso up -d
+
+# 7. Verify
+docker dso doctor
 ```
 
-### Manual Production Setup (advanced)
+### Advanced: Non-interactive Setup
 
 ```bash
-# 1. Install globally
+# Local mode (non-interactive)
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+docker dso setup --mode local --non-interactive
+docker dso init
+
+# Agent mode (non-interactive)
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
-
-# 2. Bootstrap agent (creates directories, systemd service, starts agent)
-sudo docker dso bootstrap agent
-
-# 3. Configure secrets
-vi /etc/dso/dso.yaml
-
-# 4. Restart service
-sudo systemctl restart dso-agent
-
-# 5. Verify
-docker dso doctor
+sudo docker dso bootstrap agent --non-interactive --provider aws
 ```
 
 ---
@@ -548,13 +575,13 @@ Working examples for common providers:
 
 - **Issues**: [Report bugs](https://github.com/docker-secret-operator/dso/issues)
 - **Discussions**: [Community Q&A](https://github.com/docker-secret-operator/dso/discussions)
-- **Security**: security@docker-secret-operator.org
+- **Security**: umairmd385@gmail.com
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
 ## License
 
-DSO is licensed under the **[MIT License](LICENSE)**.
+DSO is licensed under the **[Apache 2.0](LICENSE)**.
 
 ---

@@ -1,0 +1,160 @@
+version: '3.8'
+
+# Docker Compose file for DSO Local Mode
+#
+# Usage:
+#   1. Setup: docker dso setup --mode local
+#   2. Init:  docker dso init
+#   3. Set secrets:
+#      docker dso secret set myapp/db_password
+#      docker dso secret set myapp/db_user "appuser"
+#      docker dso secret set myapp/api_key
+#   4. Deploy: docker dso up -d
+#   5. Verify: docker dso doctor
+#
+# Secret reference methods:
+#   - dso://path/to/secret       → Injected as environment variable
+#   - dsofile://path/to/secret   → Injected as file mounted at /run/secrets/path/to/secret
+
+services:
+  # PostgreSQL Database
+  # Secrets injected as environment variables
+  postgres:
+    image: postgres:15-alpine
+    container_name: dso-postgres
+    labels:
+      dso.reloader: "true"                    # DSO manages this container
+      dso.secrets: "database_credentials"     # Which secret group to watch
+      dso.update.strategy: "rolling"          # Zero-downtime rotation
+    environment:
+      # Environment variable injection (dso://)
+      POSTGRES_USER: dso://myapp/db_user
+      POSTGRES_PASSWORD: dso://myapp/db_password
+      POSTGRES_DB: "myapp_db"
+      POSTGRES_INITDB_ARGS: "-c log_statement=all"
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Server
+  # Secrets injected as environment variables
+  api:
+    image: myapp/api:latest
+    # Replace with your actual image, or use a placeholder:
+    # image: python:3.11
+    container_name: dso-api
+    labels:
+      dso.reloader: "true"
+      dso.secrets: "api_credentials"
+      dso.update.strategy: "rolling"
+    environment:
+      # Environment variable injection
+      DATABASE_URL: "postgresql://dso://myapp/db_user:dso://myapp/db_password@postgres:5432/myapp_db"
+      API_KEY: dso://myapp/api_key
+      LOG_LEVEL: "info"
+      ENVIRONMENT: "development"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8000"
+    ports:
+      - "8000:8000"
+
+  # Redis Cache
+  # Secrets injected as file (dsofile://)
+  # Application reads from /run/secrets/myapp/redis_password
+  redis:
+    image: redis:7-alpine
+    container_name: dso-redis
+    labels:
+      dso.reloader: "true"
+      dso.secrets: "redis_credentials"
+      dso.update.strategy: "rolling"
+    command:
+      - "sh"
+      - "-c"
+      - |
+        if [ -f /run/secrets/myapp/redis_password ]; then
+          redis-server --requirepass "$(cat /run/secrets/myapp/redis_password)"
+        else
+          redis-server
+        fi
+    environment:
+      # File-based injection - reads from /run/secrets/myapp/redis_password
+      REDIS_PASSWORD_FILE: "dsofile://myapp/redis_password"
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: pgAdmin for database management
+  # Shows how to inject credentials for client tools
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: dso-pgadmin
+    labels:
+      dso.reloader: "true"
+      dso.secrets: "pgadmin_credentials"
+      dso.update.strategy: "rolling"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: dso://myapp/pgadmin_email
+      PGADMIN_DEFAULT_PASSWORD: dso://myapp/pgadmin_password
+      SCRIPT_NAME: "/pgadmin"
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  postgres_data:
+  redis_data:
+  pgadmin_data:
+
+networks:
+  default:
+    name: dso-local-network
+
+---
+# Required secrets to set up before deploying:
+#
+# Required for PostgreSQL:
+#   docker dso secret set myapp/db_user "myapp"
+#   docker dso secret set myapp/db_password "secure-password-here"
+#
+# Required for API:
+#   docker dso secret set myapp/api_key "api-key-value-here"
+#
+# Required for Redis:
+#   docker dso secret set myapp/redis_password "redis-password-here"
+#
+# Required for pgAdmin (optional):
+#   docker dso secret set myapp/pgadmin_email "admin@example.com"
+#   docker dso secret set myapp/pgadmin_password "pgadmin-password-here"
+#
+# After setting all secrets, deploy with:
+#   docker dso up -d
+#
+# Verify deployment:
+#   docker dso doctor
+#   docker dso status
+#   docker ps
+#
+# View secrets in containers (they're injected, not written to disk):
+#   docker exec dso-api env | grep -i password
+#
+# Stop deployment:
+#   docker dso down

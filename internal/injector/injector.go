@@ -78,6 +78,10 @@ func (ac *AgentClient) FetchSecretWithContext(ctx context.Context, providerName 
 		if resp.Error != "" {
 			return nil, fmt.Errorf("agent error: %s", resp.Error)
 		}
+		// CRITICAL: Validate response data is populated
+		if resp.Data == nil {
+			return nil, fmt.Errorf("agent returned empty response for secret %s from provider %s", secretName, providerName)
+		}
 		return resp.Data, nil
 	}
 }

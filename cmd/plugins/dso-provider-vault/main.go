@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -88,17 +89,28 @@ func (p *VaultProvider) GetSecret(name string) (map[string]string, error) {
 	return result, nil
 }
 
-func (p *VaultProvider) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (p *VaultProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 	go func() {
+		defer close(ch)
 		ticker := time.NewTicker(interval)
-		for range ticker.C {
-			data, err := p.GetSecret(name)
-			var errMsg string
-			if err != nil {
-				errMsg = err.Error()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				data, err := p.GetSecret(name)
+				var errMsg string
+				if err != nil {
+					errMsg = err.Error()
+				}
+				select {
+				case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
+				case <-ctx.Done():
+					return
+				}
 			}
-			ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}
 		}
 	}()
 	return ch, nil

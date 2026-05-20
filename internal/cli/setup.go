@@ -54,14 +54,28 @@ Examples:
 
 func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider string, autoDetect, nonRoot bool) error {
 	fmt.Println()
-	fmt.Println("╔════════════════════════════════════════════════════╗")
-	fmt.Println("║     Docker Secret Operator (DSO) Setup Wizard      ║")
-	fmt.Println("╚════════════════════════════════════════════════════╝")
+	if mode == "local" {
+		fmt.Println("╔════════════════════════════════════════════════════╗")
+		fmt.Println("║   Docker Secret Operator (DSO) Setup Wizard        ║")
+		fmt.Println("║              (Local Development Mode)              ║")
+		fmt.Println("╚════════════════════════════════════════════════════╝")
+	} else {
+		fmt.Println("╔════════════════════════════════════════════════════╗")
+		fmt.Println("║     Docker Secret Operator (DSO) Setup Wizard      ║")
+		fmt.Println("╚════════════════════════════════════════════════════╝")
+	}
 	fmt.Println()
 
-	// Step 1: Detect or prompt for cloud provider
+	// Step 1: Detect or prompt for cloud provider (skip if mode is local)
 	var detectedProvider *bootstrap.CloudProviderInfo
-	if autoDetect {
+
+	// If mode is explicitly local, skip cloud detection entirely
+	if mode == "local" {
+		detectedProvider = &bootstrap.CloudProviderInfo{
+			Provider: "local",
+			Detected: false,
+		}
+	} else if autoDetect {
 		fmt.Println("🔍 Auto-detecting cloud provider...")
 		detector := bootstrap.NewCloudDetector(0, logger)
 		detected, err := detector.DetectCloudProvider(ctx)
@@ -102,8 +116,8 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 	fmt.Printf("  Mode:          %s\n", deploymentMode)
 	fmt.Println()
 
-	// Step 3: Confirm setup
-	if !autoDetect && mode == "" && provider == "" {
+	// Step 3: Confirm setup (skip for local mode with --mode flag, as it's explicit)
+	if !autoDetect && mode != "local" && provider == "" {
 		fmt.Print("Ready to proceed with setup? (yes/no): ")
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
@@ -178,10 +192,23 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 	fmt.Println("  Complete documentation: https://github.com/docker-secret-operator/dso/blob/main/docs/CONFIG_REFERENCE.md")
 	fmt.Println("  Configuration template: https://github.com/docker-secret-operator/dso/blob/main/docs/dso.yaml.template")
 	fmt.Println()
-	fmt.Println("  Key sections to configure in /etc/dso/dso.yaml:")
-	fmt.Println("    - agent: Cache, refresh interval, watch settings, rotation behavior")
-	fmt.Println("    - defaults: Default injection method and rotation strategy")
-	fmt.Println("    - secrets: Which secrets to sync and which containers to update")
+	var configLocation string
+	if deploymentMode == "local" {
+		configLocation = "~/.dso/dso.yaml"
+	} else {
+		configLocation = "/etc/dso/dso.yaml"
+	}
+	fmt.Printf("  Configuration file location: %s\n", configLocation)
+	fmt.Println()
+	fmt.Println("  Key sections to configure:")
+	if deploymentMode == "local" {
+		fmt.Println("    - providers: Local vault configuration")
+		fmt.Println("    - secrets: Secrets to manage and where to inject them")
+	} else {
+		fmt.Println("    - agent: Cache, refresh interval, watch settings, rotation behavior")
+		fmt.Println("    - defaults: Default injection method and rotation strategy")
+		fmt.Println("    - secrets: Which secrets to sync and which containers to update")
+	}
 	fmt.Println()
 
 	// Step 8: Auto-bootstrap agent mode
@@ -239,14 +266,17 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 	fmt.Println()
 
 	if deploymentMode == "local" {
-		fmt.Println("  1. Start the local vault:")
-		fmt.Println("     docker dso up")
+		fmt.Println("  1. Initialize the local vault:")
+		fmt.Println("     docker dso init")
 		fmt.Println()
-		fmt.Println("  2. View vault status:")
+		fmt.Println("  2. Store secrets:")
+		fmt.Println("     docker dso secret set <name>")
+		fmt.Println()
+		fmt.Println("  3. Deploy your services:")
+		fmt.Println("     docker dso up -d")
+		fmt.Println()
+		fmt.Println("  4. Check status:")
 		fmt.Println("     docker dso status")
-		fmt.Println()
-		fmt.Println("  3. Configure secrets:")
-		fmt.Println("     docker dso secret set <name> <value>")
 	} else {
 		fmt.Println("  1. Edit configuration for your secrets:")
 		fmt.Println("     vi /etc/dso/dso.yaml")

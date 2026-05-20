@@ -1,14 +1,79 @@
 package agent
 
 import (
+	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/providers"
+	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"go.uber.org/zap"
 )
+
+// createTestTempDirs creates temporary directories for lock and state files used in tests
+func createTestTempDirs(t *testing.T) (lockDir, stateDir string) {
+	var err error
+	lockDir, err = os.MkdirTemp("", "dso-test-locks-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp lock dir: %v", err)
+	}
+
+	stateDir, err = os.MkdirTemp("", "dso-test-state-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp state dir: %v", err)
+	}
+
+	t.Cleanup(func() {
+		os.RemoveAll(lockDir)
+		os.RemoveAll(stateDir)
+	})
+
+	return lockDir, stateDir
+}
+
+// NewTriggerEngineForTest creates a TriggerEngine with test-appropriate paths
+func NewTriggerEngineForTest(t *testing.T, cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli interface{}) *TriggerEngine {
+	lockDir, stateDir := createTestTempDirs(t)
+
+	if rw != nil {
+		rw.Cache = cache
+		rw.Config = cfg
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Initialize state tracker and lock manager with test directories
+	stateTracker, err := NewStateTracker(stateDir, logger)
+	if err != nil {
+		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
+			zap.Error(err))
+		stateTracker = nil
+	}
+
+	// CRITICAL: Lock manager must be initialized for rotation safety
+	lockManager, err := rotation.NewLockManager(lockDir, logger)
+	if err != nil {
+		t.Fatalf("Failed to initialize rotation lock manager for test: %v", err)
+	}
+
+	timeoutController := NewTimeoutController(logger)
+
+	return &TriggerEngine{
+		Cache:             cache,
+		Store:             storeManager,
+		Reloader:          rw,
+		Logger:            logger,
+		Config:            cfg,
+		ctx:               ctx,
+		cancel:            cancel,
+		StateTracker:      stateTracker,
+		LockManager:       lockManager,
+		TimeoutController: timeoutController,
+		DockerClient:      nil,
+	}
+}
 
 // TestNewTriggerEngine creates trigger engine with valid config
 func TestNewTriggerEngine(t *testing.T) {
@@ -20,7 +85,7 @@ func TestNewTriggerEngine(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, cache, store, nil, logger, cfg, nil)
 
 	if engine == nil {
 		t.Fatal("NewTriggerEngine returned nil")
@@ -51,7 +116,7 @@ func TestTriggerEngine_Stop(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	// Context should be alive initially
 	select {
@@ -82,7 +147,7 @@ func TestTriggerEngine_StartAll_EmptyProviders(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	// Should not panic with empty providers
 	err := engine.StartAll()
@@ -123,7 +188,7 @@ func TestTriggerEngine_StartAll_WithProviders(t *testing.T) {
 	}
 
 	cache := NewSecretCache(1 * time.Hour)
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, cache, store, nil, logger, cfg, nil)
 
 	// StartAll should complete without error
 	err := engine.StartAll()
@@ -141,7 +206,7 @@ func TestTriggerEngine_ContextPropagation(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	// Should be able to use context
 	select {
@@ -161,7 +226,7 @@ func TestTriggerEngine_ConcurrentStop(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	done := make(chan bool)
 
@@ -200,7 +265,7 @@ func TestTriggerEngine_WithReloaderController(t *testing.T) {
 	// Create mock reloader
 	reloader := &watcher.ReloaderController{}
 
-	engine := NewTriggerEngine(cache, store, reloader, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, cache, store, reloader, logger, cfg, nil)
 
 	if engine.Reloader != reloader {
 		t.Error("Reloader should be set in engine")
@@ -222,7 +287,7 @@ func TestTriggerEngine_Logger(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	if engine.Logger != logger {
 		t.Error("Logger should be set in engine")
@@ -238,7 +303,7 @@ func TestTriggerEngine_Config(t *testing.T) {
 		Secrets:   make([]config.SecretMapping, 0),
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	if engine.Config != cfg {
 		t.Error("Config should be set in engine")
@@ -279,7 +344,7 @@ func TestTriggerEngine_MultipleProviders(t *testing.T) {
 	}
 
 	cache := NewSecretCache(1 * time.Hour)
-	engine := NewTriggerEngine(cache, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, cache, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -312,7 +377,7 @@ func TestTriggerEngine_StartAll_WithCustomPollingInterval(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -350,7 +415,7 @@ func TestTriggerEngine_NonRotatingSecrets(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -383,7 +448,7 @@ func TestTriggerEngine_DefaultPollingInterval(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	err := engine.StartAll()
 	if err != nil {
@@ -416,7 +481,7 @@ func TestTriggerEngine_ConcurrentStartAndStop(t *testing.T) {
 		},
 	}
 
-	engine := NewTriggerEngine(nil, store, nil, logger, cfg, nil)
+	engine := NewTriggerEngineForTest(t, nil, store, nil, logger, cfg, nil)
 
 	done := make(chan bool)
 
