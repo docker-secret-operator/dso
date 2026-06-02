@@ -1,7 +1,7 @@
 # Public Roadmap
 
 **Last Updated**: May 2026  
-**Current Version**: v3.5.17 (May 20, 2026)  
+**Current Version**: v3.5.18 (Jun 2, 2026)  
 **Status**: Actively Developed
 
 This roadmap outlines Docker Secret Operator's direction over the next 6-12 months. It reflects community feedback, security requirements, and operational priorities.
@@ -20,7 +20,7 @@ This roadmap outlines Docker Secret Operator's direction over the next 6-12 mont
 
 ---
 
-## Current Status (v3.5.17 - May 2026)
+## Current Status (v3.5.18 - Jun 2026)
 
 ### ✅ Completed Features
 
@@ -296,8 +296,9 @@ To stay focused, DSO explicitly does **not** aim to:
 |---------|-------------|--------|
 | v3.5.15 | May 18, 2026 | ✅ Released |
 | v3.5.16 | May 19, 2026 | ✅ Released |
-| v3.5.17 | May 20, 2026 | ✅ Released (current) |
-| v3.6.0 | Jun 30, 2026 | 🔵 Planned (CNCF + features) |
+| v3.5.17 | May 20, 2026 | ✅ Released |
+| v3.5.18 | Jun 2, 2026  | ✅ Released (current) — Huawei provider panic fix |
+| v3.6.0  | Jun 30, 2026 | 🔵 Planned (CNCF + features) |
 | v3.6.1 | Jul 15, 2026 | 🔵 Planned (bug fixes) |
 | v3.7.0 | Sep 30, 2026 | 🔵 Planned (RBAC + multi-tenancy) |
 | v4.0.0 | Jan 2027 | 🟡 Tentative (major features) |
