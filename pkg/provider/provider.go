@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"net/rpc"
 	"time"
 
@@ -26,34 +27,49 @@ func (g *ProviderRPC) GetSecret(name string) (map[string]string, error) {
 	return resp, nil
 }
 
-func (g *ProviderRPC) WatchSecret(name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
+func (g *ProviderRPC) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
 	ch := make(chan api.SecretUpdate)
 
 	go func() {
+		defer close(ch)
 		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 		backoff := 2 * time.Second
 
-		for range ticker.C {
-			val, err := g.GetSecret(name)
-			var errMsg string
-			if err != nil {
-				// Normalize network and credential timeouts reliably
-				errMsg = "Provider timeout or failure: " + err.Error()
-				ch <- api.SecretUpdate{Name: name, Data: nil, Error: errMsg}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				val, err := g.GetSecret(name)
+				var errMsg string
+				if err != nil {
+					// Normalize network and credential timeouts reliably
+					errMsg = "Provider timeout or failure: " + err.Error()
+					select {
+					case ch <- api.SecretUpdate{Name: name, Data: nil, Error: errMsg}:
+					case <-ctx.Done():
+						return
+					}
 
-				// Apply exponential jitter gracefully locally tracking failures
-				ticker.Reset(interval + backoff)
-				if backoff < 60*time.Second {
-					backoff *= 2
+					// Apply exponential jitter gracefully locally tracking failures
+					ticker.Reset(interval + backoff)
+					if backoff < 60*time.Second {
+						backoff *= 2
+					}
+					continue
 				}
-				continue
+
+				// Reset ticker natively bounds correctly mapping the interval precisely back to standard limits
+				ticker.Reset(interval)
+				backoff = 2 * time.Second
+
+				select {
+				case ch <- api.SecretUpdate{Name: name, Data: val, Error: ""}:
+				case <-ctx.Done():
+					return
+				}
 			}
-
-			// Reset ticker natively bounds correctly mapping the interval precisely back to standard limits
-			ticker.Reset(interval)
-			backoff = 2 * time.Second
-
-			ch <- api.SecretUpdate{Name: name, Data: val, Error: ""}
 		}
 	}()
 

@@ -3,11 +3,13 @@ package integration
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 )
@@ -26,6 +28,13 @@ func TestRace_ContainerClone_ConcurrentMutations(t *testing.T) {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
 	defer cli.Close()
+
+	// Pull image
+	reader, err := cli.ImagePull(ctx, "docker.io/library/alpine:latest", image.PullOptions{})
+	if err == nil {
+		io.Copy(io.Discard, reader)
+		reader.Close()
+	}
 
 	// Create a base container for testing
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
@@ -146,6 +155,13 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
 	defer cli.Close()
+
+	// Pull image
+	reader, err := cli.ImagePull(ctx, "docker.io/library/alpine:latest", image.PullOptions{})
+	if err == nil {
+		io.Copy(io.Discard, reader)
+		reader.Close()
+	}
 
 	// Clean up any leftover containers from prior runs with these fixed names.
 	for _, name := range []string{"atomic-test", "atomic-test_new", "atomic-test_backup"} {

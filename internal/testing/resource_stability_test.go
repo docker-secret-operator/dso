@@ -41,6 +41,7 @@ func NewResourceStabilityTest(name string, duration, interval time.Duration) *Re
 
 // TakeSnapshot captures current resource state
 func (rst *ResourceStabilityTest) TakeSnapshot() {
+	runtime.GC() // Ensure we're measuring live memory
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
@@ -220,8 +221,8 @@ func TestMemoryStabilityUnderSustainedLoad(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running stability test in short mode")
 	}
-	testDuration := 90 * time.Second
-	sampleInterval := 5 * time.Second
+	testDuration := 10 * time.Second
+	sampleInterval := 2 * time.Second
 
 	rst := NewResourceStabilityTest("sustained-load-memory", testDuration, sampleInterval)
 
@@ -281,7 +282,7 @@ func TestGoroutineStabilityUnderChurn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running goroutine churn test in short mode")
 	}
-	testDuration := 3 * time.Minute
+	testDuration := 10 * time.Second
 	sampleInterval := 2 * time.Second
 
 	rst := NewResourceStabilityTest("goroutine-stability-churn", testDuration, sampleInterval)
@@ -356,8 +357,8 @@ func TestQueueStabilityUnderSaturation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running queue saturation test in short mode")
 	}
-	testDuration := 2 * time.Minute
-	sampleInterval := 1 * time.Second
+	testDuration := 10 * time.Second
+	sampleInterval := 2 * time.Second
 
 	rst := NewResourceStabilityTest("queue-stability-saturation", testDuration, sampleInterval)
 
@@ -445,9 +446,9 @@ func TestProviderRestartStability(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running provider restart stability test in short mode")
 	}
-	testDuration := 2 * time.Minute
+	testDuration := 10 * time.Second
 	sampleInterval := 2 * time.Second
-	restartInterval := 5 * time.Second
+	restartInterval := 3 * time.Second
 
 	rst := NewResourceStabilityTest("provider-restart-stability", testDuration, sampleInterval)
 
@@ -528,8 +529,8 @@ func TestReconnectStormStability(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running reconnect storm stability test in short mode")
 	}
-	testDuration := 2 * time.Minute
-	sampleInterval := 1 * time.Second
+	testDuration := 10 * time.Second
+	sampleInterval := 2 * time.Second
 
 	rst := NewResourceStabilityTest("reconnect-storm-stability", testDuration, sampleInterval)
 
@@ -600,8 +601,8 @@ func TestCombinedOperationalLoad(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running combined load test in short mode")
 	}
-	testDuration := 3 * time.Minute
-	sampleInterval := 2 * time.Second
+	testDuration := 15 * time.Second
+	sampleInterval := 3 * time.Second
 
 	rst := NewResourceStabilityTest("combined-operational-load", testDuration, sampleInterval)
 

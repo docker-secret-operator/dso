@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.18] - 2026-06-02
+
+### Fixed
+- **Huawei Provider Panic on Agent Startup** (`pkg/provider/provider.go`): Fixed a runtime panic — `interface conversion: *provider.ProviderRPC is not api.SecretProvider: missing method WatchSecret` — that caused `dso-agent.service` to fail immediately on start when using the `huawei` provider. `ProviderRPC.WatchSecret` had a mismatched signature (missing the `ctx context.Context` first argument) and therefore did not satisfy the `api.SecretProvider` interface, triggering a panic at the type assertion in `pkg/provider/load.go:148`. Updated the signature to `WatchSecret(ctx context.Context, name string, interval time.Duration)` to match the interface.
+- **Goroutine Leak in `ProviderRPC.WatchSecret`** (`pkg/provider/provider.go`): The watch goroutine previously ran forever with no way to stop it. It now respects context cancellation — exits and closes the channel when `ctx` is cancelled — consistent with how `FileProvider` and `EnvProvider` implement the same method. Added `defer close(ch)` and `defer ticker.Stop()` for proper cleanup.
+
+### Compatibility
+- ✅ All changes are backward compatible
+- ✅ `file` and `env` local backends unaffected
+- ✅ All other provider plugins unaffected
+
+---
+
 ## [3.5.17] - 2026-05-20
 
 ### Fixed
