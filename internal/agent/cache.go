@@ -44,21 +44,18 @@ func ComputeHash(data map[string]string) string {
 // Secrets are stored as []byte and explicitly zeroized on deletion to prevent
 // memory retention of sensitive data.
 type SecretCache struct {
-	mu         sync.RWMutex
-	items      map[string]CacheItem
-	ttl        time.Duration
-	maxSize    int64
-	currentLen int64
-	stopCh     chan struct{}
-	closeOnce  sync.Once
+	mu        sync.RWMutex
+	items     map[string]CacheItem
+	ttl       time.Duration
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 func NewSecretCache(ttl time.Duration) *SecretCache {
 	sc := &SecretCache{
-		items:   make(map[string]CacheItem),
-		ttl:     ttl,
-		maxSize: 100 * 1024 * 1024, // 100MB limit
-		stopCh:  make(chan struct{}),
+		items:  make(map[string]CacheItem),
+		ttl:    ttl,
+		stopCh: make(chan struct{}),
 	}
 	// Start background cleanup
 	go sc.cleanupExpiredEntries()

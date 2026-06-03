@@ -1,13 +1,23 @@
 package watcher
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	dockertypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/client"
 	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 // TestNewReloaderController creates controller with proper initialization
@@ -689,5 +699,254 @@ func TestReloaderController_ContainerStopEventFlow(t *testing.T) {
 	_, exists = controller.Targets.Load(containerID)
 	if exists {
 		t.Error("Target should be unregistered after stop")
+	}
+}
+
+// ---- helpers for Docker-mock-based tests ------------------------------------
+
+// newMockController creates a ReloaderController pointed at a mock Docker HTTP
+// server. The server and Docker client are cleaned up via t.Cleanup.
+func newMockController(t *testing.T, handler http.Handler) *ReloaderController {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	cli, err := client.NewClientWithOpts(
+		client.WithHost("tcp://"+strings.TrimPrefix(srv.URL, "http://")),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create mock Docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	return &ReloaderController{
+		Logger: zaptest.NewLogger(t),
+		cli:    cli,
+	}
+}
+
+// minimalInspect returns a ContainerJSON with just enough fields populated for
+// executeSimpleRestart to succeed (name, config, hostconfig, network settings).
+func minimalInspect(name, id string) dockertypes.ContainerJSON {
+	return dockertypes.ContainerJSON{
+		ContainerJSONBase: &dockertypes.ContainerJSONBase{
+			ID:         id,
+			Name:       "/" + name,
+			HostConfig: &container.HostConfig{},
+		},
+		Config: &container.Config{
+			Env: []string{"EXISTING=old"},
+		},
+		NetworkSettings: &dockertypes.NetworkSettings{
+			Networks: map[string]*network.EndpointSettings{},
+		},
+	}
+}
+
+// ---- executeRollback tests (H2 regression) ----------------------------------
+
+// TestExecuteRollback_SuccessOnFirstAttempt verifies that a single successful
+// ContainerStart on the original is sufficient — service must NOT be degraded.
+func TestExecuteRollback_SuccessOnFirstAttempt(t *testing.T) {
+	var startCalls int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/start"):
+			atomic.AddInt32(&startCalls, 1)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	rc.executeRollback(context.Background(), "new-id", "old-id", "myapp", "myapp-svc")
+
+	if _, deg := rc.degraded.Load("myapp-svc"); deg {
+		t.Error("H2 regression: service marked degraded despite successful rollback")
+	}
+	if atomic.LoadInt32(&startCalls) == 0 {
+		t.Error("executeRollback made no ContainerStart calls")
+	}
+}
+
+// TestExecuteRollback_AllAttemptsFail verifies that after all 3 retries the
+// service is stored in the degraded map (H2 regression test).
+func TestExecuteRollback_AllAttemptsFail(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/start"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message":"start failed"}`))
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	rc.executeRollback(context.Background(), "new-id", "old-id", "myapp", "myapp-svc")
+
+	if _, deg := rc.degraded.Load("myapp-svc"); !deg {
+		t.Error("H2 regression: service not marked degraded after all rollback attempts failed")
+	}
+}
+
+// TestExecuteRollback_SucceedsOnThirdAttempt verifies retry behaviour: first two
+// start calls fail, third succeeds → service must NOT be degraded.
+func TestExecuteRollback_SucceedsOnThirdAttempt(t *testing.T) {
+	var startCalls int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/start"):
+			n := atomic.AddInt32(&startCalls, 1)
+			if n < 3 {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"message":"not yet"}`))
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	rc.executeRollback(context.Background(), "new-id", "old-id", "myapp", "myapp-svc")
+
+	if _, deg := rc.degraded.Load("myapp-svc"); deg {
+		t.Error("service incorrectly degraded when rollback succeeded on attempt 3")
+	}
+	if atomic.LoadInt32(&startCalls) != 3 {
+		t.Errorf("expected 3 start attempts, got %d", atomic.LoadInt32(&startCalls))
+	}
+}
+
+// ---- executeSimpleRestart tests (L5 regression) ----------------------------
+
+// TestExecuteSimpleRestart_HappyPath verifies: inspect → rename → create →
+// stop old → start new → remove old — all in order, no error returned.
+func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
+	const (
+		origID   = "orig-container-id"
+		newID    = "new-container-id"
+		origName = "myapp"
+	)
+	inspectJSON, _ := json.Marshal(minimalInspect(origName, origID))
+	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
+
+	var newStarted, origRemoved int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case strings.Contains(p, "/containers/"+origID+"/json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(inspectJSON)
+		case strings.Contains(p, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/create"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write(createJSON)
+		case strings.Contains(p, "/containers/"+origID+"/stop"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+newID+"/start"):
+			atomic.AddInt32(&newStarted, 1)
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+origID) && r.Method == http.MethodDelete:
+			atomic.AddInt32(&origRemoved, 1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"})
+	if err != nil {
+		t.Fatalf("L5 regression: unexpected error: %v", err)
+	}
+	if atomic.LoadInt32(&newStarted) == 0 {
+		t.Error("new container was not started")
+	}
+	if atomic.LoadInt32(&origRemoved) == 0 {
+		t.Error("original container was not removed on success")
+	}
+}
+
+// TestExecuteSimpleRestart_InspectFailure verifies the error is propagated and
+// nothing further happens when inspect fails.
+func TestExecuteSimpleRestart_InspectFailure(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message":"daemon error"}`))
+	})
+
+	rc := newMockController(t, handler)
+	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil)
+	if err == nil {
+		t.Error("expected error when inspect fails, got nil")
+	}
+}
+
+// TestExecuteSimpleRestart_StartFailureRollsBack verifies that when the new
+// container's start fails, the original name is restored and its restart is
+// attempted.
+func TestExecuteSimpleRestart_StartFailureRollsBack(t *testing.T) {
+	const (
+		origID   = "orig-id"
+		newID    = "new-id"
+		origName = "myapp"
+	)
+	inspectJSON, _ := json.Marshal(minimalInspect(origName, origID))
+	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
+
+	var origRestarted int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case strings.Contains(p, "/containers/"+origID+"/json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(inspectJSON)
+		case strings.Contains(p, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/create"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write(createJSON)
+		case strings.Contains(p, "/containers/"+origID+"/stop"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+newID+"/start"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message":"oom"}`))
+		case strings.Contains(p, "/containers/"+newID) && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+origID+"/start"):
+			atomic.AddInt32(&origRestarted, 1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	err := rc.executeSimpleRestart(context.Background(), origID, nil)
+	if err == nil {
+		t.Error("expected error when new container start fails")
+	}
+	if atomic.LoadInt32(&origRestarted) == 0 {
+		t.Error("original container was not restarted after new container start failure")
 	}
 }

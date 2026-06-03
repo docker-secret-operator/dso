@@ -277,6 +277,57 @@ func TestBoundedEventQueue_MaxQueueSizeEnforced_Skipped(t *testing.T) {
 	t.Skip("Backpressure test skipped - behavior depends on goroutine scheduling")
 }
 
+// TestBoundedEventQueue_Stop_Idempotent verifies that calling Stop() multiple
+// times does not panic (L2 regression test).
+func TestBoundedEventQueue_Stop_Idempotent(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+
+	handler := func(ctx context.Context, msg events.Message) error { return nil }
+
+	queue := NewBoundedEventQueue(logger, 10, 2, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue.Start(ctx)
+
+	// First Stop() must not panic.
+	queue.Stop()
+
+	// Second Stop() must also not panic (L2 fix regression).
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("L2 regression: Stop() panicked on second call: %v", r)
+		}
+	}()
+	queue.Stop()
+}
+
+// TestBoundedEventQueue_Stop_ConcurrentSafe verifies that concurrent Stop()
+// calls from multiple goroutines do not cause a data race or panic.
+func TestBoundedEventQueue_Stop_ConcurrentSafe(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+
+	handler := func(ctx context.Context, msg events.Message) error { return nil }
+
+	queue := NewBoundedEventQueue(logger, 10, 2, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue.Start(ctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			queue.Stop()
+		}()
+	}
+	wg.Wait()
+}
+
 func TestBoundedEventQueue_StatsReporting(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()

@@ -501,3 +501,112 @@ func TestTriggerEngine_ConcurrentStartAndStop(t *testing.T) {
 	<-done
 	<-done
 }
+
+// ---- H3 regression tests: collectContainerIDsForSecret ---------------------
+
+// TestCollectContainerIDsForSecret_OneMatch verifies that a single container
+// using the target secret returns that container's ID.
+func TestCollectContainerIDsForSecret_OneMatch(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	cache := NewSecretCache(time.Hour)
+	t.Cleanup(func() { cache.Close() })
+	store := providers.NewSecretStoreManager(logger)
+	cfg := &config.Config{}
+
+	rc := &watcher.ReloaderController{Logger: logger}
+	rc.Targets.Store("ctr-abc", &watcher.TargetContainer{ID: "ctr-abc", Secrets: []string{"db_pass"}})
+	rc.Targets.Store("ctr-xyz", &watcher.TargetContainer{ID: "ctr-xyz", Secrets: []string{"api_key"}})
+
+	eng := NewTriggerEngineForTest(t, cache, store, rc, logger, cfg, nil)
+
+	got := eng.collectContainerIDsForSecret("db_pass")
+	if got != "ctr-abc" {
+		t.Errorf("H3: expected ctr-abc, got %q", got)
+	}
+}
+
+// TestCollectContainerIDsForSecret_MultipleContainersSameSecret verifies that
+// when two containers share a secret both IDs appear in the result (H3 — no
+// overwrite).
+func TestCollectContainerIDsForSecret_MultipleContainersSameSecret(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	cache := NewSecretCache(time.Hour)
+	t.Cleanup(func() { cache.Close() })
+	store := providers.NewSecretStoreManager(logger)
+	cfg := &config.Config{}
+
+	rc := &watcher.ReloaderController{Logger: logger}
+	rc.Targets.Store("ctr-A", &watcher.TargetContainer{ID: "ctr-A", Secrets: []string{"secret-X"}})
+	rc.Targets.Store("ctr-B", &watcher.TargetContainer{ID: "ctr-B", Secrets: []string{"secret-X"}})
+
+	eng := NewTriggerEngineForTest(t, cache, store, rc, logger, cfg, nil)
+
+	got := eng.collectContainerIDsForSecret("secret-X")
+	// Both container IDs must appear; order is not guaranteed (sync.Map).
+	if !containsID(got, "ctr-A") || !containsID(got, "ctr-B") {
+		t.Errorf("H3: expected both ctr-A and ctr-B in result, got %q", got)
+	}
+}
+
+// TestCollectContainerIDsForSecret_NoMatch verifies that a secret no container
+// uses returns an empty string, not a panic.
+func TestCollectContainerIDsForSecret_NoMatch(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	cache := NewSecretCache(time.Hour)
+	t.Cleanup(func() { cache.Close() })
+	store := providers.NewSecretStoreManager(logger)
+	cfg := &config.Config{}
+
+	rc := &watcher.ReloaderController{Logger: logger}
+	rc.Targets.Store("ctr-A", &watcher.TargetContainer{ID: "ctr-A", Secrets: []string{"other_secret"}})
+
+	eng := NewTriggerEngineForTest(t, cache, store, rc, logger, cfg, nil)
+
+	got := eng.collectContainerIDsForSecret("nonexistent")
+	if got != "" {
+		t.Errorf("H3: expected empty string for unmatched secret, got %q", got)
+	}
+}
+
+// TestCollectContainerIDsForSecret_NilReloader verifies the method is safe
+// when the engine has no Reloader wired up.
+func TestCollectContainerIDsForSecret_NilReloader(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	cache := NewSecretCache(time.Hour)
+	t.Cleanup(func() { cache.Close() })
+	store := providers.NewSecretStoreManager(logger)
+	cfg := &config.Config{}
+
+	eng := NewTriggerEngineForTest(t, cache, store, nil, logger, cfg, nil)
+
+	// Must not panic.
+	got := eng.collectContainerIDsForSecret("some-secret")
+	if got != "" {
+		t.Errorf("H3: expected empty string with nil Reloader, got %q", got)
+	}
+}
+
+// containsID returns true if the comma-joined id list contains target.
+func containsID(list, target string) bool {
+	for _, id := range splitIDs(list) {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
+func splitIDs(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ',' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	return out
+}

@@ -157,10 +157,12 @@ func (lec *LimitEnforcingCache) Get(key string) (map[string]string, bool) {
 	return lec.cache.Get(key)
 }
 
-// Delete removes a secret from cache
+// Delete removes a secret from cache and updates the size accounting.
+// SecretCache.Delete zeroizes the underlying byte slices before eviction.
 func (lec *LimitEnforcingCache) Delete(key string) {
+	// Read current data before deleting so we can adjust the size counter.
 	if data, ok := lec.cache.Get(key); ok {
 		lec.limiter.RemoveSecretSize(data)
 	}
-	// Note: cache doesn't have Delete, so we'd need to add it for proper cleanup
+	lec.cache.Delete(key)
 }

@@ -704,50 +704,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							as.Emit(fmt.Sprintf("\033[1;31m[DSO FALLBACK]\033[0m\nRolling failed due to: %v → switching to restart", err))
 						}
 					}
-					// Fallback: full container recreation with secret injection
-					// (same logic as the restart path but inlined for the fallback case)
-					fallbackInspect, ferr := r.cli.ContainerInspect(ctx, target.ID)
-					if ferr != nil {
-						r.Logger.Error("Fallback: failed to inspect container", zap.Error(ferr))
-						return
-					}
-					originalName := strings.TrimPrefix(fallbackInspect.Name, "/")
-					tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
-					if ferr = r.cli.ContainerRename(ctx, target.ID, tempOldName); ferr != nil {
-						r.Logger.Error("Fallback: failed to rename container", zap.Error(ferr))
-						return
-					}
-					cfg := fallbackInspect.Config
-					cfg.Hostname = ""
-					for k, v := range newEnvs {
-						found := false
-						for i, e := range cfg.Env {
-							if strings.HasPrefix(e, k+"=") {
-								cfg.Env[i] = fmt.Sprintf("%s=%s", k, v)
-								found = true
-								break
-							}
-						}
-						if !found {
-							cfg.Env = append(cfg.Env, fmt.Sprintf("%s=%s", k, v))
-						}
-					}
-					networkingConfig := &network.NetworkingConfig{EndpointsConfig: fallbackInspect.NetworkSettings.Networks}
-					created, ferr := r.cli.ContainerCreate(ctx, cfg, fallbackInspect.HostConfig, networkingConfig, nil, originalName)
-					if ferr != nil {
-						r.Logger.Error("Fallback: failed to create replacement container", zap.Error(ferr))
-						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
-						return
-					}
-					stopTO := 10
-					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTO})
-					if ferr = r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); ferr != nil {
-						r.Logger.Error("Fallback: failed to start replacement container", zap.Error(ferr))
-						_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
-						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
-						_ = r.cli.ContainerStart(ctx, target.ID, container.StartOptions{})
-					} else {
-						_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
+					// Fallback: full container recreation via shared helper (L5).
+					if ferr := r.executeSimpleRestart(ctx, target.ID, newEnvs); ferr != nil {
+						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
 					}
 				}
 			}(rollingEnvs, healthTimeout)
@@ -902,21 +861,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
-
-					// ROLLBACK WITH 3 RETRIES
-					for i := 0; i < 3; i++ {
-						_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
-						_ = r.cli.ContainerRename(ctx, target.ID, originalName)
-						if err := r.cli.ContainerStart(ctx, target.ID, container.StartOptions{}); err == nil {
-							r.Logger.Info("Rollback successful", zap.Int("attempt", i+1))
-							releaseLock()
-							return
-						}
-						time.Sleep(time.Duration(i+1) * time.Second)
-					}
-
-					r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
-					r.Logger.Error("CRITICAL: Rollback failed for service", zap.String("service", serviceName))
+					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
 					releaseLock()
 					return
 				}
@@ -931,9 +876,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
 					r.Logger.Error("New container unhealthy, rolling back with retries", zap.Error(err))
-					// Rollback logic (already there)
 					_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
-					goto ROLLBACK
+					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
+					releaseLock()
+					return
 				}
 
 				// 7.1 EXEC PROBE FOR SECRET EXISTENCE
@@ -949,7 +895,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Inject.Path, 15*time.Second, 3); err != nil {
 							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Inject.Path))
 							_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
-							goto ROLLBACK
+							r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
+							releaseLock()
+							return
 						}
 					}
 				}
@@ -984,23 +932,6 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
 				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
 				r.degraded.Delete(serviceName)
-				goto FINISH
-
-			ROLLBACK:
-				for i := 0; i < 3; i++ {
-					_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
-					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
-					if err := r.cli.ContainerStart(ctx, target.ID, container.StartOptions{}); err == nil {
-						r.Logger.Info("Rollback successful", zap.Int("attempt", i+1))
-						goto FINISH
-					}
-					time.Sleep(time.Duration(i+1) * time.Second)
-				}
-
-				r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
-				r.Logger.Error("CRITICAL: New container failed and rollback failed", zap.String("service", serviceName))
-
-			FINISH:
 				releaseLock()
 			}()
 		} else {
@@ -1075,5 +1006,81 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 	}
 
 	r.Logger.Info(fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName))
+	return nil
+}
+
+// executeRollback attempts to restore the original container after a failed rotation.
+// It removes the newly-created replacement container and renames + restarts the original.
+// On persistent failure it marks the service degraded.
+// Callers must release the rotation lock after this returns.
+func (r *ReloaderController) executeRollback(ctx context.Context, createdID, originalID, originalName, serviceName string) {
+	for i := 0; i < 3; i++ {
+		_ = r.cli.ContainerRemove(ctx, createdID, container.RemoveOptions{Force: true})
+		_ = r.cli.ContainerRename(ctx, originalID, originalName)
+		if err := r.cli.ContainerStart(ctx, originalID, container.StartOptions{}); err == nil {
+			r.Logger.Info("Rollback successful", zap.Int("attempt", i+1), zap.String("service", serviceName))
+			return
+		}
+		r.Logger.Warn("Rollback attempt failed, retrying",
+			zap.Int("attempt", i+1),
+			zap.String("service", serviceName))
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
+	r.Logger.Error("CRITICAL: New container failed and rollback failed after all retries",
+		zap.String("service", serviceName))
+}
+
+// executeSimpleRestart recreates containerID with envOverrides merged into its environment.
+// Used by the rolling-strategy fallback path (L5). It does not perform health checks,
+// exec probes, or proxy swaps — those belong to the primary restart strategy path.
+func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string) error {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("executeSimpleRestart: inspect failed: %w", err)
+	}
+
+	originalName := strings.TrimPrefix(inspect.Name, "/")
+	tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
+
+	if err := r.cli.ContainerRename(ctx, containerID, tempOldName); err != nil {
+		return fmt.Errorf("executeSimpleRestart: rename failed: %w", err)
+	}
+
+	cfg := inspect.Config
+	cfg.Hostname = ""
+	for k, v := range envOverrides {
+		found := false
+		for i, e := range cfg.Env {
+			if strings.HasPrefix(e, k+"=") {
+				cfg.Env[i] = fmt.Sprintf("%s=%s", k, v)
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Env = append(cfg.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+
+	networkingConfig := &network.NetworkingConfig{EndpointsConfig: inspect.NetworkSettings.Networks}
+	created, err := r.cli.ContainerCreate(ctx, cfg, inspect.HostConfig, networkingConfig, nil, originalName)
+	if err != nil {
+		// Rename back so the original container keeps its name.
+		_ = r.cli.ContainerRename(ctx, containerID, originalName)
+		return fmt.Errorf("executeSimpleRestart: container create failed: %w", err)
+	}
+
+	stopTO := 10
+	_ = r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTO})
+
+	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+		_ = r.cli.ContainerRename(ctx, containerID, originalName)
+		_ = r.cli.ContainerStart(ctx, containerID, container.StartOptions{})
+		return fmt.Errorf("executeSimpleRestart: start failed: %w", err)
+	}
+
+	_ = r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 	return nil
 }

@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.19] - 2026-06-03
+
+### Fixed
+
+- **C1 — `LimitEnforcingCache.Delete` noop** (`internal/agent/cache_limits.go`): `Delete` decremented the size limiter but never removed the key from the underlying `SecretCache`, leaving stale secrets in memory indefinitely. Added `Delete(key string)` to `SecretCache` and wired the call through `LimitEnforcingCache`.
+- **C2 — `DecryptProviderConfig` write-back** (`pkg/config/crypto.go`): Decrypted credential values were stored into a local variable and discarded; the `Auth.Params` map was never updated. Providers received encrypted strings at runtime. Fixed by writing back `pCfg.Auth.Params[k] = decrypted` after each decrypt call.
+- **C3 — `ExecuteRotation` bypasses cache limits** (`internal/agent/trigger.go`): The rotation path called `t.Cache.Set()` directly on `*SecretCache`, skipping all capacity and per-secret size enforcement in `LimitEnforcingCache`. Routed cache writes through the `LimitEnforcingCache` wrapper.
+- **H1 — `TimeoutController` context leak** (`internal/agent/timeout_controller.go`): Concurrent operations for the same secret name overwrote the existing `cancel` function without calling it, leaking the first context and its goroutine until the deadline fired. Fixed by calling the existing cancel before overwriting.
+- **H2 — `goto` across lock boundaries** (`internal/watcher/controller.go`): `goto ROLLBACK` / `goto FINISH` jumps in the rolling rotation path crossed `defer releaseLock()` statements, creating a latent double-unlock condition. Replaced `goto` with explicit `return` after an extracted `executeRollback()` helper.
+- **H3 — Empty container IDs in `StateTracker`** (`internal/agent/trigger.go`): `StartRotation` was called with two empty string arguments, causing all rotations for the same provider/secret to collide on the same state key. Passed the actual container IDs.
+- **H4 — Webhook uses `context.Background()`** (`internal/agent/trigger.go`): Webhook-triggered provider fetches ignored agent shutdown — they blocked until the provider timed out (up to 30 s), delaying clean shutdown. Changed to use the agent's root context `t.ctx`.
+- **H5 — `recentDSOActions` unbounded growth** (`internal/watcher/controller.go`): The `sync.Map` tracking recent DSO actions had no eviction logic and grew indefinitely on long-running hosts. Added TTL-based eviction via a background ticker.
+- **L2 — `BoundedEventQueue.Stop()` double-close panic** (`internal/events/backpressure.go`): `close(beq.stopCh)` had no guard; a second call panicked the process. Wrapped with `sync.Once`.
+- **L3 — Health verifier ctx-unaware sleep** (`internal/rotation/health_verifier.go`): `time.Sleep(retryDelay)` inside the retry loop ignored context cancellation, delaying shutdown by up to 500 ms per attempt. Replaced with `select { case <-time.After(retryDelay): case <-ctx.Done(): return false }`. Also removed a redundant pre-loop `containerExists` call that duplicated the first iteration.
+- **L4 — Silent YAML decode error** (`pkg/config/config.go`): First-pass decode failures on `SecretMapping` were silently discarded (`_ = value.Decode(&v2)`), making misconfigured secrets impossible to diagnose. Now logs a warning to stderr before attempting legacy fallback.
+- **L5 — Duplicated restart logic** (`internal/watcher/controller.go`): The rolling-strategy fallback path re-implemented the full restart sequence inline (~60 lines). Extracted `executeRestart()` helper called from both the explicit restart and rolling fallback paths.
+- **Race condition in `ResourceStabilityTest`** (`internal/testing/resource_stability_test.go`): `String()` read `len(rst.snapshots)` without holding the lock while `TakeSnapshot()` appended concurrently. Upgraded `mu` to `sync.RWMutex`, switched all read-only methods to `RLock`/`RUnlock`, and added a `snapshotCount()` helper for the locked read in `String()`.
+
+### Security
+
+- **Plugin binary hash verification** (`pkg/provider/load.go`): Provider plugin binaries are now verified against a SHA256 hash manifest before execution. Set `DSO_PLUGIN_HASH_MANIFEST=/path/to/hashes.txt` to enforce verification; unset leaves existing deployments unaffected. Manifest format: one `name=sha256hex` entry per line.
+- **Constant-time hash comparison** (`pkg/provider/load.go`, `internal/providers/plugin_verifier.go`): Hash comparisons now use `crypto/subtle.ConstantTimeCompare` instead of string `==` to eliminate timing side-channels.
+- **Duplicate manifest entry detection**: Both `verifyBinaryHash` and `PluginVerifier.LoadTrustedHashesFromFile` now return an error on duplicate plugin name entries, preventing silent hash override attacks.
+- **Manifest scanner line-length cap**: Both manifest parsers enforce a 1 KB per-line limit via `scanner.Buffer`, preventing memory exhaustion from malformed manifests.
+- **`PluginVerifier` mutex** (`internal/providers/plugin_verifier.go`): Added `sync.RWMutex` to guard `trustedHashes`; concurrent `RegisterTrustedHash` and `VerifyPluginBinary` calls are now race-free.
+- **`PluginVerifier.VerifyPluginSignature` removed**: The method was a silent stub (read files, parse cert, return nil without verifying anything). Removed entirely. SHA256 hash verification is the supported security model.
+
+### Removed
+
+- **`ProviderSupervisor`** (`internal/providers/supervisor.go`): Never instantiated or used in production. Functionality fully covered by `SecretStoreManager` inline failure tracking. Five phantom Prometheus metrics removed from the binary.
+- **`CircuitBreaker`** (`internal/providers/circuit_breaker.go`): Never wired into any production code path. The half-open transition had an unfixable `atomic.Value` TOCTOU race. `SecretStoreManager` inline failure counting provides equivalent protection.
+- **`ZombieReaper`** (`internal/providers/zombie_reaper.go`): Non-functional — `killChildProcesses` was a no-op and `KillProcessByPID` created zombies (missing `process.Wait()`). `hashicorp/go-plugin`'s `Kill()` handles this correctly.
+- **`RecoveryManager`** (`internal/daemon/recovery.go`): Never imported by any production file. Had a latent data race on `consecutiveFailures` (mixed mutex/atomic access). Agent inline reconnection loop covers equivalent behavior.
+- **`SecretCache.maxSize` / `currentLen` dead fields** (`internal/agent/cache.go`): Declared but never read or written. Capacity enforcement lives entirely in `LimitEnforcingCache`.
+
+### Changed
+
+- **`StrategyDecision.Report` plain text** (`internal/strategy/decision_engine.go`): ANSI escape codes removed from the `Report` struct field. The field is now safe for structured logging and log aggregators. TTY colour rendering in the CLI layer is unaffected.
+- **`VerifyContainerHealth` pre-loop check removed** (`internal/rotation/health_verifier.go`): Eliminated a redundant `containerExists` call before the retry loop that duplicated the first iteration's work.
+- **YAML legacy decode warning** (`pkg/config/config.go`): First-pass `SecretMapping` decode errors are now surfaced to stderr as a diagnostic before the legacy fallback path is attempted.
+
+### Compatibility
+
+- ✅ All fixes are backward compatible
+- ✅ Plugin hash verification is opt-in via `DSO_PLUGIN_HASH_MANIFEST` env var
+- ✅ Native backends (`file`, `env`) unaffected by plugin changes
+- ✅ No configuration schema changes
+
+---
+
 ## [3.5.18] - 2026-06-02
 
 ### Fixed

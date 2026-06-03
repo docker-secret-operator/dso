@@ -11,10 +11,44 @@ import (
 
 var debouncer = NewEventDebouncer(3 * time.Second)
 
-var recentDSOActions sync.Map
+var (
+	recentDSOActions sync.Map
+	// purgeOnce ensures the background purge goroutine is started exactly once.
+	purgeOnce sync.Once
+)
+
+// actionEntryTTL is how long an action entry is retained before being purged.
+// Must be larger than the 15-second ignore window used in ProcessEvent.
+const actionEntryTTL = 5 * time.Minute
+
+// startActionPurge launches a background goroutine that periodically removes
+// recentDSOActions entries older than actionEntryTTL (H5 fix).
+func startActionPurge() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			purgeStaleActions()
+		}
+	}()
+}
+
+// purgeStaleActions removes entries from recentDSOActions that are older than
+// actionEntryTTL. Safe to call from multiple goroutines concurrently.
+func purgeStaleActions() {
+	cutoff := time.Now().Add(-actionEntryTTL)
+	recentDSOActions.Range(func(k, v interface{}) bool {
+		if v.(time.Time).Before(cutoff) {
+			recentDSOActions.Delete(k)
+		}
+		return true
+	})
+}
 
 // RecordDSOAction marks a container ID or compose project as being restarted by DSO to avoid loop events
 func RecordDSOAction(identifier string) {
+	// Start the purge goroutine lazily on the first write (H5).
+	purgeOnce.Do(startActionPurge)
 	recentDSOActions.Store(identifier, time.Now())
 }
 

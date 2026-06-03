@@ -7,7 +7,7 @@
 [![Go Report](https://goreportcard.com/badge/github.com/docker-secret-operator/dso)](https://goreportcard.com/report/github.com/docker-secret-operator/dso)
 [![Code Coverage](https://codecov.io/gh/docker-secret-operator/dso/branch/main/graph/badge.svg)](https://codecov.io/gh/docker-secret-operator/dso)
 
-> **Current version: v3.5.18**  
+> **Current version: v3.5.19**  
 > **Status**: CNCF Sandbox Ready ✅  
 > **Governance**: [View GOVERNANCE.md](GOVERNANCE.md) | **Roadmap**: [View ROADMAP.md](ROADMAP.md)
 

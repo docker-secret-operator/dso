@@ -54,6 +54,7 @@ type BoundedEventQueue struct {
 	logger        *zap.Logger
 	queue         chan events.Message
 	stopCh        chan struct{}
+	stopOnce      sync.Once // guards close(stopCh) so Stop() is safe to call multiple times
 	maxQueueSize  int
 	numWorkers    int
 	activeWorkers int32
@@ -217,10 +218,10 @@ func (beq *BoundedEventQueue) Enqueue(msg events.Message) bool {
 }
 
 // Stop gracefully shuts down the queue and workers.
-// Signals via stopCh to avoid a send-on-closed-channel panic if Enqueue
-// races with Stop.
+// Safe to call multiple times; only the first call closes stopCh.
+// Subsequent calls block until the first call's workers have fully drained.
 func (beq *BoundedEventQueue) Stop() {
-	close(beq.stopCh)
+	beq.stopOnce.Do(func() { close(beq.stopCh) })
 	beq.wg.Wait()
 }
 

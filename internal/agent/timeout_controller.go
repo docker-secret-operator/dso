@@ -4,45 +4,74 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+// timerEntry pairs a cancel function with a monotonic generation ID so that
+// the cleanup closure can detect whether it is still the current owner of a
+// given secret slot before deleting the entry.
+type timerEntry struct {
+	cancel context.CancelFunc
+	gen    uint64
+}
+
 // TimeoutController manages per-secret timeout contexts to prevent cascading timeouts
 // where one slow provider blocks all other rotations
 type TimeoutController struct {
-	logger *zap.Logger
-	mu     sync.RWMutex
-	timers map[string]context.CancelFunc
+	logger  *zap.Logger
+	mu      sync.RWMutex
+	timers  map[string]timerEntry
+	nextGen uint64 // monotonically increasing generation counter
 }
 
 // NewTimeoutController creates a new timeout controller
 func NewTimeoutController(logger *zap.Logger) *TimeoutController {
 	return &TimeoutController{
 		logger: logger,
-		timers: make(map[string]context.CancelFunc),
+		timers: make(map[string]timerEntry),
 	}
 }
 
-// CreateSecretContext creates a context with timeout for a specific secret
-// The timeout is isolated per secret - one slow secret won't affect others
+// CreateSecretContext creates a context with timeout for a specific secret.
+// The timeout is isolated per secret — one slow secret won't affect others.
+//
+// If a context for secretName already exists (e.g. concurrent webhook + poll),
+// the previous cancel is called before the new context is created, preventing
+// goroutine leaks from abandoned contexts.
 func (tc *TimeoutController) CreateSecretContext(parentCtx context.Context, secretName string, timeout time.Duration) (context.Context, func()) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// Create timeout context for this specific secret
+	// Cancel any existing context for this secret to prevent leaks when two
+	// concurrent operations use the same key (e.g. poll + webhook racing).
+	if existing, ok := tc.timers[secretName]; ok {
+		existing.cancel()
+	}
+
+	// Assign a unique generation ID so the cleanup closure can verify it is
+	// still the current owner before removing the map entry.
+	gen := atomic.AddUint64(&tc.nextGen, 1)
+
+	// Create timeout context for this specific secret.
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	tc.timers[secretName] = timerEntry{cancel: cancel, gen: gen}
 
-	// Store cancel function for cleanup
-	tc.timers[secretName] = cancel
-
-	// Return context and cleanup function
+	// Return context and a cleanup function. The cleanup cancels the context
+	// (safe to call multiple times via context.WithTimeout) and removes the
+	// map entry only if this closure is still the current owner.
 	return ctx, func() {
 		tc.mu.Lock()
 		defer tc.mu.Unlock()
 		cancel()
-		delete(tc.timers, secretName)
+		// Only remove from the map if we are still the current owner.
+		// A concurrent CreateSecretContext may have replaced our entry; deleting
+		// blindly would evict the newer cancel and break CancelSecret().
+		if stored, ok := tc.timers[secretName]; ok && stored.gen == gen {
+			delete(tc.timers, secretName)
+		}
 	}
 }
 
@@ -51,8 +80,8 @@ func (tc *TimeoutController) CancelSecret(secretName string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	if cancel, exists := tc.timers[secretName]; exists {
-		cancel()
+	if entry, exists := tc.timers[secretName]; exists {
+		entry.cancel()
 		delete(tc.timers, secretName)
 	}
 }

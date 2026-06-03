@@ -143,8 +143,12 @@ func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 	// 1. Try to decode as the standard V2 structure first
 	type v2Type SecretMapping
 	var v2 v2Type
-	// Ignore errors on the first pass as it might fail due to legacy field types
-	_ = value.Decode(&v2)
+	if err := value.Decode(&v2); err != nil {
+		// First-pass failure is expected for legacy (v1) format entries; fall through
+		// to the raw-map path below which handles them. Log so operators can diagnose
+		// accidental misconfiguration vs. intentional legacy format.
+		fmt.Fprintf(os.Stderr, "[DSO] config: v2 decode of secret mapping failed (will attempt legacy fallback): %v\n", err)
+	}
 	*s = SecretMapping(v2)
 
 	// 2. Handle legacy field disambiguation using a raw map representation

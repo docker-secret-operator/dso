@@ -1,7 +1,12 @@
 package provider
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +83,68 @@ func sanitizeEnv() []string {
 	}
 }
 
+// verifyBinaryHash checks pluginPath's SHA256 against the manifest at manifestPath.
+// Manifest format: one "name=sha256hex" entry per line; lines starting with '#' are comments.
+// Returns an error if the plugin is not listed or its hash does not match.
+func verifyBinaryHash(manifestPath, pluginPath string) error {
+	f, err := os.Open(manifestPath)
+	if err != nil {
+		return fmt.Errorf("cannot open hash manifest %s: %w", manifestPath, err)
+	}
+	defer f.Close()
+
+	pluginName := filepath.Base(pluginPath)
+	expectedHash := ""
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024), 1024)
+	seen := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:idx])
+		hash := strings.TrimSpace(line[idx+1:])
+		if name != pluginName {
+			continue
+		}
+		if seen {
+			return fmt.Errorf("duplicate manifest entry for plugin %q", pluginName)
+		}
+		expectedHash = hash
+		seen = true
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading hash manifest: %w", err)
+	}
+
+	if !seen {
+		return fmt.Errorf("plugin %s not found in hash manifest %s", pluginName, manifestPath)
+	}
+
+	bin, err := os.Open(pluginPath)
+	if err != nil {
+		return fmt.Errorf("cannot open plugin binary for hashing: %w", err)
+	}
+	defer bin.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, bin); err != nil {
+		return fmt.Errorf("failed to hash plugin binary: %w", err)
+	}
+	actualHash := hex.EncodeToString(h.Sum(nil))
+
+	if subtle.ConstantTimeCompare([]byte(actualHash), []byte(expectedHash)) != 1 {
+		return fmt.Errorf("plugin %s hash mismatch: manifest=%s actual=%s", pluginName, expectedHash, actualHash)
+	}
+	return nil
+}
+
 // LoadProvider dynamically executes the provider binary and dispenses the RPC client
 func LoadProvider(providerName string, providerConfig map[string]string) (api.SecretProvider, *plugin.Client, error) {
 	// 1. Check for native local backends first
@@ -119,6 +186,15 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 			)
 		}
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
+	}
+
+	// Hash verification: if DSO_PLUGIN_HASH_MANIFEST is set, the binary must be listed
+	// in the manifest and its SHA256 must match exactly. Unset = verification skipped
+	// (backward-compatible default for deployments that don't yet maintain a manifest).
+	if manifestPath := os.Getenv("DSO_PLUGIN_HASH_MANIFEST"); manifestPath != "" {
+		if err := verifyBinaryHash(manifestPath, pluginPath); err != nil {
+			return nil, nil, fmt.Errorf("plugin %s failed hash verification: %w", pluginName, err)
+		}
 	}
 
 	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.

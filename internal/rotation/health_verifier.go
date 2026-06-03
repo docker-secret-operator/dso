@@ -28,21 +28,21 @@ func NewHealthVerifier(cli *client.Client, logger *zap.Logger) *HealthVerifier {
 // VerifyContainerHealth performs multiple health checks to ensure container is truly healthy
 // Returns true if container is healthy and reachable
 func (hv *HealthVerifier) VerifyContainerHealth(ctx context.Context, containerID string) bool {
-	// Check 1: Container still exists and is running
-	if !hv.containerExists(ctx, containerID) {
-		hv.logger.Warn("Container no longer exists or cannot be accessed",
-			zap.String("container_id", containerID))
-		return false
-	}
-
-	// Check 2: Retry multiple times to detect network partitions
-	// Network partitions may have transient failures
+	// Retry multiple times to detect network partitions.
+	// Network partitions may cause transient failures — the first attempt is the
+	// first iteration of the loop (no separate pre-loop check).
 	const healthCheckRetries = 3
 	const retryDelay = 500 * time.Millisecond
 
 	for attempt := 0; attempt < healthCheckRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(retryDelay)
+			select {
+			case <-time.After(retryDelay):
+			case <-ctx.Done():
+				hv.logger.Warn("Container health check cancelled",
+					zap.String("container_id", containerID))
+				return false
+			}
 		}
 
 		if hv.containerExists(ctx, containerID) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 type TriggerEngine struct {
 	Cache             *SecretCache
+	LimitCache        *LimitEnforcingCache // optional; when set, ExecuteRotation writes through it
 	Store             *providers.SecretStoreManager
 	Reloader          *watcher.ReloaderController
 	Logger            *zap.Logger
@@ -160,6 +162,13 @@ func (t *TriggerEngine) recoverPendingRotations() {
 	}
 }
 
+// SetLimitCache wires a LimitEnforcingCache into the engine. When set, all
+// cache writes in ExecuteRotation go through limit enforcement instead of
+// calling SecretCache.Set directly. Call this before StartAll.
+func (t *TriggerEngine) SetLimitCache(lc *LimitEnforcingCache) {
+	t.LimitCache = lc
+}
+
 func (t *TriggerEngine) Stop() {
 	t.cancel()
 	if t.StateTracker != nil {
@@ -237,7 +246,22 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 
 	t.secretHashes.Store(cacheKey, newHash)
 	t.lastRotations.Store(cacheKey, time.Now())
-	t.Cache.Set(cacheKey, secretData)
+
+	// Route cache writes through LimitEnforcingCache when available so that
+	// per-secret size checks and total capacity limits are enforced. Fall back
+	// to direct SecretCache.Set only when no limiter is configured.
+	if t.LimitCache != nil {
+		if err := t.LimitCache.SetWithLimits(cacheKey, secretData); err != nil {
+			t.Logger.Error("Secret exceeds cache limits, rotation aborted",
+				zap.String("secret", secretName),
+				zap.Error(err))
+			// Roll back the hash so the next poll retries instead of skipping.
+			t.secretHashes.Delete(cacheKey)
+			return
+		}
+	} else {
+		t.Cache.Set(cacheKey, secretData)
+	}
 
 	t.Logger.Debug("Diagnostic: Rotation triggered for secret label", zap.String("sec_name", secretName))
 	msg := fmt.Sprintf("Secret rotated: %s", secretName)
@@ -282,9 +306,15 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			defer t.LockManager.ReleaseLock(secretName)
 		}
 
+		// Collect the IDs of containers that will be rotated for this secret (H3).
+		// The Reloader's Targets map contains one entry per managed container.
+		// We join multiple IDs with a comma so a single StateTracker entry covers all
+		// containers rotating the same secret simultaneously.
+		originalContainerIDs := t.collectContainerIDsForSecret(secretName)
+
 		// Record rotation start for crash recovery
 		if t.StateTracker != nil {
-			if err := t.StateTracker.StartRotation(providerName, secretName, "", ""); err != nil {
+			if err := t.StateTracker.StartRotation(providerName, secretName, originalContainerIDs, ""); err != nil {
 				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
 			}
 		}
@@ -296,14 +326,14 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			// of treating this failed attempt as a successful "no change" baseline.
 			t.secretHashes.Delete(cacheKey)
 			if t.StateTracker != nil {
-				t.StateTracker.MarkRollback(providerName, secretName, "")
+				t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 			}
 			return
 		}
 
 		// Mark rotation as complete
 		if t.StateTracker != nil {
-			if err := t.StateTracker.CompleteRotation(providerName, secretName, ""); err != nil {
+			if err := t.StateTracker.CompleteRotation(providerName, secretName, originalContainerIDs); err != nil {
 				t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
 			}
 		}
@@ -413,10 +443,13 @@ func (t *TriggerEngine) HandleWebhook(providerName string, pCfg config.ProviderC
 		return err
 	}
 
-	// Use context-aware GetSecret if provider supports it; otherwise fall back to non-context version
+	// Use context-aware GetSecret if provider supports it; otherwise fall back
+	// to the non-context version. Use the agent's root context (t.ctx) so that
+	// in-flight webhook fetches are cancelled when the agent shuts down, instead
+	// of blocking clean shutdown for up to the provider's own timeout.
 	var val map[string]string
 	if provCtx, ok := prov.(api.SecretProviderWithContext); ok {
-		val, err = provCtx.GetSecretWithContext(context.Background(), sec.Name)
+		val, err = provCtx.GetSecretWithContext(t.ctx, sec.Name)
 	} else {
 		val, err = prov.GetSecret(sec.Name)
 	}
@@ -426,4 +459,26 @@ func (t *TriggerEngine) HandleWebhook(providerName string, pCfg config.ProviderC
 
 	t.ExecuteRotation(providerName, sec.Name, val, sec)
 	return nil
+}
+
+// collectContainerIDsForSecret returns the IDs of all containers currently
+// managed by the Reloader that use secretName. Multiple IDs are joined with a
+// comma so a single StateTracker entry can represent a multi-container rotation
+// (H3 fix: previously always passed "" to StartRotation/MarkRollback/CompleteRotation).
+func (t *TriggerEngine) collectContainerIDsForSecret(secretName string) string {
+	if t.Reloader == nil {
+		return ""
+	}
+	var ids []string
+	t.Reloader.Targets.Range(func(_, v interface{}) bool {
+		tc := v.(*watcher.TargetContainer)
+		for _, s := range tc.Secrets {
+			if strings.TrimSpace(s) == secretName {
+				ids = append(ids, tc.ID)
+				break
+			}
+		}
+		return true
+	})
+	return strings.Join(ids, ",")
 }

@@ -63,15 +63,10 @@ func TestSecretCache_ConcurrentAccessSafety(t *testing.T) {
 	}
 }
 
-// TestSecretCache_MemoryBounds verifies cache respects max size
+// TestSecretCache_MemoryBounds verifies cache key-space is bounded by uniqueness
 func TestSecretCache_MemoryBounds(t *testing.T) {
 	sc := NewSecretCache(1 * time.Hour)
 	defer sc.Close()
-
-	// Verify maxSize is set
-	if sc.maxSize == 0 {
-		t.Error("Cache should have a max size limit")
-	}
 
 	// Add multiple entries
 	for i := 0; i < 100; i++ {
@@ -217,10 +212,6 @@ func TestSecretCache_CapacityAllocation(t *testing.T) {
 
 	if sc.ttl == 0 {
 		t.Error("Cache TTL should be set")
-	}
-
-	if sc.maxSize == 0 {
-		t.Error("Cache max size should be set")
 	}
 
 	if sc.stopCh == nil {

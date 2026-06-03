@@ -25,7 +25,7 @@ type ResourceStabilityTest struct {
 	duration       time.Duration
 	interval       time.Duration // How often to sample
 	snapshots      []ResourceSnapshot
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	operationCount int64
 }
 
@@ -63,8 +63,8 @@ func (rst *ResourceStabilityTest) RecordOperation() {
 
 // GetMemoryGrowth returns memory growth over the test period
 func (rst *ResourceStabilityTest) GetMemoryGrowth() uint64 {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	if len(rst.snapshots) < 2 {
 		return 0
@@ -81,8 +81,8 @@ func (rst *ResourceStabilityTest) GetMemoryGrowth() uint64 {
 
 // GetMaxMemory returns the peak memory allocation during the test
 func (rst *ResourceStabilityTest) GetMaxMemory() uint64 {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	var max uint64
 	for _, snap := range rst.snapshots {
@@ -95,8 +95,8 @@ func (rst *ResourceStabilityTest) GetMaxMemory() uint64 {
 
 // GetGoroutineGrowth returns goroutine growth over the test period
 func (rst *ResourceStabilityTest) GetGoroutineGrowth() int {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	if len(rst.snapshots) < 2 {
 		return 0
@@ -113,8 +113,8 @@ func (rst *ResourceStabilityTest) GetGoroutineGrowth() int {
 
 // GetAverageMemory returns the average memory allocation across all snapshots
 func (rst *ResourceStabilityTest) GetAverageMemory() uint64 {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	if len(rst.snapshots) == 0 {
 		return 0
@@ -136,8 +136,8 @@ func (rst *ResourceStabilityTest) GetOperationCount() int64 {
 // IsMemoryStable checks if memory growth is within acceptable bounds
 // Returns true if memory growth rate is stable (not accelerating)
 func (rst *ResourceStabilityTest) IsMemoryStable(maxGrowthPercentPerHour float64) bool {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	if len(rst.snapshots) < 4 {
 		return true // Insufficient data
@@ -169,8 +169,8 @@ func (rst *ResourceStabilityTest) IsMemoryStable(maxGrowthPercentPerHour float64
 // IsGoroutineStable checks if goroutine count is bounded
 // Returns true if peak goroutine count is within acceptable bounds
 func (rst *ResourceStabilityTest) IsGoroutineStable(maxGoroutines int) bool {
-	rst.mu.Lock()
-	defer rst.mu.Unlock()
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
 
 	var peak int
 	for _, snap := range rst.snapshots {
@@ -182,6 +182,13 @@ func (rst *ResourceStabilityTest) IsGoroutineStable(maxGoroutines int) bool {
 	return peak <= maxGoroutines
 }
 
+// snapshotCount returns the number of snapshots taken so far, safe for concurrent use.
+func (rst *ResourceStabilityTest) snapshotCount() int {
+	rst.mu.RLock()
+	defer rst.mu.RUnlock()
+	return len(rst.snapshots)
+}
+
 // String returns formatted stability results
 func (rst *ResourceStabilityTest) String() string {
 	growth := rst.GetMemoryGrowth()
@@ -189,6 +196,7 @@ func (rst *ResourceStabilityTest) String() string {
 	avgMem := rst.GetAverageMemory()
 	goroutineGrowth := rst.GetGoroutineGrowth()
 	ops := rst.GetOperationCount()
+	snapshots := rst.snapshotCount()
 
 	return fmt.Sprintf(`
 === %s ===
@@ -209,7 +217,7 @@ Snapshots: %d
 		avgMem/1024/1024,
 		goroutineGrowth,
 		float64(ops)/rst.duration.Seconds(),
-		len(rst.snapshots),
+		snapshots,
 	)
 }
 
