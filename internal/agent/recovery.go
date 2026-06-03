@@ -10,6 +10,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// shortID returns up to the first 12 characters of id, safe for empty or short strings.
+func shortID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
+}
+
 // AutomaticRecovery implements automatic cleanup of orphaned containers
 // and state recovery after agent crashes.
 type AutomaticRecovery struct {
@@ -91,7 +99,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	logger := ar.logger.With(
 		zap.String("secret", rotation.SecretName),
 		zap.String("provider", rotation.ProviderName),
-		zap.String("original_id", rotation.OriginalContainerID[:12]),
+		zap.String("original_id", shortID(rotation.OriginalContainerID)),
 	)
 
 	// Detect orphaned containers by searching for DSO naming patterns
@@ -113,13 +121,13 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	// Clean up backup containers (old containers that failed to get removed)
 	for _, containerID := range backupContainers {
 		logger.Info("Removing orphaned backup container",
-			zap.String("backup_id", containerID[:12]))
+			zap.String("backup_id", shortID(containerID)))
 
 		// Best-effort stop and remove
 		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
 		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 			logger.Warn("Failed to remove backup container",
-				zap.String("backup_id", containerID[:12]),
+				zap.String("backup_id", shortID(containerID)),
 				zap.Error(err))
 		}
 	}
@@ -127,13 +135,13 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	// Clean up new/temp containers (new containers that failed to get activated)
 	for _, containerID := range newContainers {
 		logger.Info("Removing orphaned new container",
-			zap.String("new_id", containerID[:12]))
+			zap.String("new_id", shortID(containerID)))
 
 		// Best-effort stop and remove
 		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
 		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 			logger.Warn("Failed to remove new container",
-				zap.String("new_id", containerID[:12]),
+				zap.String("new_id", shortID(containerID)),
 				zap.Error(err))
 		}
 	}
@@ -143,7 +151,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	originalInspect, err := ar.cli.ContainerInspect(ctx, rotation.OriginalContainerID)
 	if err != nil {
 		logger.Error("CRITICAL: Original container is missing after crash",
-			zap.String("original_id", rotation.OriginalContainerID[:12]),
+			zap.String("original_id", shortID(rotation.OriginalContainerID)),
 			zap.Error(err))
 
 		// Mark rotation state for manual operator intervention
@@ -159,7 +167,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	// Check if original container is in a healthy state
 	if originalInspect.State == nil {
 		logger.Warn("Original container state is nil, cannot validate recovery",
-			zap.String("original_id", rotation.OriginalContainerID[:12]))
+			zap.String("original_id", shortID(rotation.OriginalContainerID)))
 		// Mark rotation as recovered anyway since cleanup is done
 		_ = ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName,
 			rotation.OriginalContainerID)
@@ -242,13 +250,13 @@ func (ar *AutomaticRecovery) CleanupOrphanedContainers(ctx context.Context) erro
 			// Check for DSO naming patterns
 			if strings.Contains(cleanName, "_dso_backup_") || strings.Contains(cleanName, "_dso_new_") {
 				ar.logger.Info("Cleaning up orphaned DSO container",
-					zap.String("container_id", c.ID[:12]),
+					zap.String("container_id", shortID(c.ID)),
 					zap.String("container_name", cleanName))
 
 				_ = ar.cli.ContainerStop(ctx, c.ID, container.StopOptions{})
 				if err := ar.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 					ar.logger.Warn("Failed to remove orphaned container",
-						zap.String("container_id", c.ID[:12]),
+						zap.String("container_id", shortID(c.ID)),
 						zap.Error(err))
 				} else {
 					cleanedUp++

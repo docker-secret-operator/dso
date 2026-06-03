@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.5.20] - 2026-06-03
+
+### Fixed
+
+- **Agent startup panic on stale recovery state** (`internal/agent/recovery.go`): On first boot after upgrading from a pre-H3 build, persisted `RotationState` records could contain empty `OriginalContainerID` strings (written when `StartRotation` was called with `""` before that bug was fixed). `recoverSingleRotation` unconditionally sliced the ID to 12 characters (`id[:12]`), which panics on an empty string. Added a `shortID(id string) string` helper that is safe for empty and short strings, and replaced every bare `[:12]` slice in the file with it. The agent now survives startup with stale state on disk and logs the empty ID gracefully instead of crashing.
+
+### Compatibility
+
+- ✅ Backward compatible — no config or protocol changes
+- ✅ Clears automatically once the stale state file is cycled (first clean rotation after upgrade)
+
+---
+
 ## [3.5.19] - 2026-06-03
 
 ### Fixed
