@@ -81,6 +81,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewLogsCmd())
 	cmd.AddCommand(NewSecretCmd())
 	cmd.AddCommand(NewEnvImportCmd())
+	cmd.AddCommand(NewUICmd())
 
 	return cmd
 }

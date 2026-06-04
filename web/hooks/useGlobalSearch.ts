@@ -1,0 +1,134 @@
+import { useMemo, useCallback, useState } from 'react'
+
+export interface SearchResult {
+  id: string
+  title: string
+  subtitle?: string
+  category: 'container' | 'secret' | 'event'
+  icon?: string
+  route: string
+  metadata?: Record<string, string>
+}
+
+export interface UseGlobalSearchProps {
+  containers?: any[]
+  secrets?: any[]
+  events?: any[]
+}
+
+export function useGlobalSearch({ containers = [], secrets = [], events = [] }: UseGlobalSearchProps) {
+  const [query, setQuery] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+
+  // Memoize search index to avoid recalculating on every render
+  const searchIndex = useMemo(() => {
+    const results: SearchResult[] = []
+
+    // Index containers
+    containers.forEach((container: any) => {
+      results.push({
+        id: `container-${container.id}`,
+        title: container.name,
+        subtitle: container.image?.substring(0, 50),
+        category: 'container',
+        route: `/discovery?container=${container.id}`,
+        metadata: {
+          status: container.status,
+          image: container.image,
+        },
+      })
+    })
+
+    // Index secrets
+    secrets.forEach((secret: any) => {
+      results.push({
+        id: `secret-${secret.name}`,
+        title: secret.name,
+        subtitle: `Provider: ${secret.provider}`,
+        category: 'secret',
+        route: `/secrets?secret=${secret.name}`,
+        metadata: {
+          provider: secret.provider,
+          status: secret.status,
+        },
+      })
+    })
+
+    // Index events (last 50)
+    events.slice(0, 50).forEach((event: any, idx: number) => {
+      results.push({
+        id: `event-${idx}`,
+        title: event.message || event.action || 'Event',
+        subtitle: event.secret_name ? `Secret: ${event.secret_name}` : undefined,
+        category: 'event',
+        route: `/timeline?event=${idx}`,
+        metadata: {
+          severity: event.severity,
+          timestamp: event.timestamp,
+        },
+      })
+    })
+
+    return results
+  }, [containers, secrets, events])
+
+  // Memoize search filtering to avoid expensive operations
+  const results = useMemo(() => {
+    if (!query.trim()) {
+      return []
+    }
+
+    const q = query.toLowerCase()
+    return searchIndex
+      .filter(
+        (result) =>
+          result.title.toLowerCase().includes(q) ||
+          result.subtitle?.toLowerCase().includes(q) ||
+          Object.values(result.metadata || {}).some((v) => String(v).toLowerCase().includes(q))
+      )
+      .slice(0, 20) // Limit to 20 results
+  }, [query, searchIndex])
+
+  // Group results by category
+  const groupedResults = useMemo(() => {
+    const grouped = {
+      container: [] as SearchResult[],
+      secret: [] as SearchResult[],
+      event: [] as SearchResult[],
+    }
+
+    results.forEach((result) => {
+      grouped[result.category].push(result)
+    })
+
+    return grouped
+  }, [results])
+
+  const handleQueryChange = useCallback((value: string) => {
+    setQuery(value)
+  }, [])
+
+  const handleOpenChange = useCallback((open: boolean) => {
+    setIsOpen(open)
+  }, [])
+
+  const handleNavigate = useCallback((route: string) => {
+    setQuery('')
+    setIsOpen(false)
+    // Navigation will be handled by the component using this hook
+    return route
+  }, [])
+
+  return {
+    query,
+    isOpen,
+    results,
+    groupedResults,
+    totalResults: results.length,
+    handleQueryChange,
+    handleOpenChange,
+    handleNavigate,
+    hasResults: results.length > 0,
+    isEmpty: query.trim().length > 0 && results.length === 0,
+  }
+}

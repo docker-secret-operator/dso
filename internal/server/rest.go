@@ -13,9 +13,11 @@ import (
 	"strconv"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
+	"github.com/docker-secret-operator/dso/internal/api"
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
+	"github.com/docker/docker/client"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 )
@@ -91,15 +93,28 @@ type RESTServer struct {
 	Hub           *Hub
 	EventStore    *EventStore
 	Auth          *auth.Authenticator
+	ConfigAPI     *api.ConfigAPI
+	DiscoveryAPI  *api.DiscoveryAPI
 }
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Public endpoints that don't require authorization
 	publicPaths := map[string]bool{
-		"/health": true,
+		"/health":                        true,
+		"/api/config":                    true,
+		"/api/config/raw":                true,
+		"/api/config/providers":          true,
+		"/api/discovery/docker":          true,
+		"/api/discovery/docker/mappings": true,
+		"/api/discovery/refresh":         true,
+		"/api/discovery/metrics":         true,
 	}
 
-	isPublic := publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, "/api/events/secret-update")
+	// Check if path matches public paths or public prefixes
+	isPublic := publicPaths[r.URL.Path] ||
+		strings.HasPrefix(r.URL.Path, "/api/events/secret-update") ||
+		strings.HasPrefix(r.URL.Path, "/api/config/providers/")
+
 	if !isPublic && !s.authorized(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -108,6 +123,63 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
+	// Configuration endpoints
+	case r.URL.Path == "/api/config" && r.Method == "GET":
+		if s.ConfigAPI != nil {
+			s.ConfigAPI.HandleGetConfig(w, r)
+		} else {
+			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/raw" && r.Method == "GET":
+		if s.ConfigAPI != nil {
+			s.ConfigAPI.HandleGetRawConfig(w, r)
+		} else {
+			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/providers" && r.Method == "GET":
+		if s.ConfigAPI != nil {
+			s.ConfigAPI.HandleGetProviders(w, r)
+		} else {
+			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/config/providers/") && strings.HasSuffix(r.URL.Path, "/test") && r.Method == "POST":
+		if s.ConfigAPI != nil {
+			// Extract provider name from path: /api/config/providers/{provider}/test
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 5 {
+				providerName := parts[4]
+				s.ConfigAPI.HandleTestProvider(w, r, providerName)
+			} else {
+				http.Error(w, "Invalid provider path", http.StatusBadRequest)
+			}
+		} else {
+			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
+		}
+	// Discovery endpoints
+	case r.URL.Path == "/api/discovery/docker" && r.Method == "GET":
+		if s.DiscoveryAPI != nil {
+			s.DiscoveryAPI.HandleGetContainers(w, r)
+		} else {
+			http.Error(w, "Discovery API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/discovery/docker/mappings" && r.Method == "GET":
+		if s.DiscoveryAPI != nil {
+			s.DiscoveryAPI.HandleGetMappings(w, r)
+		} else {
+			http.Error(w, "Discovery API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/discovery/refresh" && r.Method == "POST":
+		if s.DiscoveryAPI != nil {
+			s.DiscoveryAPI.HandleRefresh(w, r)
+		} else {
+			http.Error(w, "Discovery API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/discovery/metrics" && r.Method == "GET":
+		if s.DiscoveryAPI != nil {
+			s.DiscoveryAPI.HandleGetMetrics(w, r)
+		} else {
+			http.Error(w, "Discovery API not initialized", http.StatusInternalServerError)
+		}
 	case strings.HasPrefix(r.URL.Path, "/api/secrets"):
 		s.handleListSecrets(w, r)
 	case r.URL.Path == "/api/events/ws":
@@ -346,6 +418,13 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		}
 	}()
 
+	// Create Docker client for discovery API
+	dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		logger.Warn("Docker client not available for discovery API", zap.Error(err))
+		// Continue without Docker - discovery API will be unavailable
+	}
+
 	restServer := &RESTServer{
 		Cache:         cache,
 		TriggerEngine: triggerEngine,
@@ -354,6 +433,8 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Hub:           hub,
 		EventStore:    eventStore,
 		Auth:          auth.NewAuthenticator(),
+		ConfigAPI:     api.NewConfigAPI(logger),
+		DiscoveryAPI:  api.NewDiscoveryAPI(logger, dockerCli, cfg),
 	}
 
 	mux := http.NewServeMux()
