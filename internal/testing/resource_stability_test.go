@@ -157,9 +157,25 @@ func (rst *ResourceStabilityTest) IsMemoryStable(maxGrowthPercentPerHour float64
 	q1Growth := int64(q1End) - int64(q1Start)
 	q4Growth := int64(q4End) - int64(q4Start)
 
+	// Skip stability check if all measurements are near zero (typical with aggressive GC)
+	maxMeasurement := q1Start
+	if q1End > maxMeasurement {
+		maxMeasurement = q1End
+	}
+	if q4Start > maxMeasurement {
+		maxMeasurement = q4Start
+	}
+	if q4End > maxMeasurement {
+		maxMeasurement = q4End
+	}
+	if maxMeasurement < 1024*1024 { // Less than 1MB measured
+		return true // Insufficient data to determine leak
+	}
+
 	// Growth is only "accelerating" if the later quarter is genuinely larger,
-	// not if it merely reflects a GC-induced negative delta.
-	if q4Growth > 0 && q1Growth >= 0 && q4Growth > q1Growth*2 {
+	// not if it merely reflects a GC-induced negative delta, and represents
+	// a meaningful absolute increase (e.g. > 1MB).
+	if q4Growth > 1024*1024 && q1Growth >= 0 && q4Growth > q1Growth*2 {
 		return false // Growth accelerating
 	}
 

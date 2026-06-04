@@ -31,6 +31,7 @@ func main() {
 
 	// Obtain the actual Cobra root command
 	rootCmd := cli.NewRootCmd()
+	rootCmd.DisableAutoGenTag = true
 
 	// Generate markdown tree
 	err = doc.GenMarkdownTree(rootCmd, docsDir)
