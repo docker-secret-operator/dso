@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
+	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"go.uber.org/zap"
 )
@@ -21,11 +22,13 @@ func createTestRESTServer() *RESTServer {
 	hub := NewHub(logger)
 	go hub.Run()
 	return &RESTServer{
-		Cache:      agent.NewSecretCache(1 * time.Hour),
-		Config:     &config.Config{},
-		Logger:     logger,
-		Hub:        hub,
-		EventStore: NewEventStore(100, hub),
+		Cache:              agent.NewSecretCache(1 * time.Hour),
+		Config:             &config.Config{},
+		Logger:             logger,
+		Hub:                hub,
+		EventStore:         NewEventStore(100, hub),
+		PermissionMatrix:   auth.NewPermissionMatrix(),
+		AuthorizationMiddleware: auth.NewAuthorizationMiddleware(),
 	}
 }
 
@@ -93,17 +96,17 @@ func TestRESTServer_Authorized_NoAuthConfigured(t *testing.T) {
 // Protected Endpoints Tests
 // ============================================================================
 
-// TestRESTServer_ProtectedEndpointAccessible protected endpoints are accessible
-func TestRESTServer_ProtectedEndpointAccessible(t *testing.T) {
+// TestRESTServer_ProtectedEndpointRequiresAuth verifies protected endpoints require authentication
+func TestRESTServer_ProtectedEndpointRequiresAuth(t *testing.T) {
 	server := createTestRESTServer()
 
 	req := httptest.NewRequest("GET", "/api/secrets", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
 
-	// Should return 200 when no auth is configured
-	if w.Code != http.StatusOK {
-		t.Errorf("Endpoint should be accessible, got %d", w.Code)
+	// Protected endpoint should return 401 when not authenticated
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Protected endpoint should return 401 when not authenticated, got %d", w.Code)
 	}
 }
 

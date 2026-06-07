@@ -12,6 +12,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/providers"
 	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/server"
+	"github.com/docker-secret-operator/dso/internal/storage/sqlite"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
@@ -107,6 +108,17 @@ func NewAgentCmd() *cobra.Command {
 			scanCancel()
 			reloader.ProxyManager = proxyManager
 
+			// Initialize Storage Provider for Phase 4 APIs
+			storageProvider, err := sqlite.NewSQLiteProvider("data/dso.db")
+			if err != nil {
+				logger.Fatal("Failed to initialize storage provider", zap.Error(err))
+			}
+			defer func() {
+				if storageProvider != nil {
+					storageProvider.Close(context.Background())
+				}
+			}()
+
 			// Initialize Trigger Engine
 			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 
@@ -130,7 +142,7 @@ func NewAgentCmd() *cobra.Command {
 			}()
 
 			// 3. Start REST API Server (Health Checks & Monitoring)
-			restShutdown := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
+			restShutdown := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger, storageProvider)
 			defer restShutdown()
 
 			// 4. Start Docker Event Loop for the Reloader — MUST run before StartAll so

@@ -169,11 +169,96 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_correlation_id ON audit_events(corre
 CREATE INDEX IF NOT EXISTS idx_audit_events_retention ON audit_events(retention_until) WHERE retention_until IS NOT NULL;
 `,
 	},
+	{
+		version: "0010",
+		name:    "execution_persistence",
+		sql: `
+-- Execution requests table
+CREATE TABLE IF NOT EXISTS execution_requests (
+    id TEXT PRIMARY KEY,
+    correlation_id TEXT NOT NULL UNIQUE,
+    draft_id TEXT NOT NULL,
+    review_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    plan_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'validated', 'planned', 'rejected', 'expired')),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    validated_at TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    requested_by TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY(draft_id) REFERENCES drafts(id) ON DELETE CASCADE,
+    FOREIGN KEY(review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+    FOREIGN KEY(approval_id) REFERENCES approvals(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_requests_status ON execution_requests(status);
+CREATE INDEX IF NOT EXISTS idx_execution_requests_expires_at ON execution_requests(expires_at);
+CREATE INDEX IF NOT EXISTS idx_execution_requests_approval_id ON execution_requests(approval_id);
+CREATE INDEX IF NOT EXISTS idx_execution_requests_correlation_id ON execution_requests(correlation_id);
+
+-- Execution plans table
+CREATE TABLE IF NOT EXISTS execution_plans (
+    id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL UNIQUE,
+    correlation_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('draft', 'validated', 'ready')),
+    total_steps INTEGER NOT NULL,
+    estimated_duration_seconds INTEGER NOT NULL,
+    risk_score INTEGER NOT NULL CHECK(risk_score >= 0 AND risk_score <= 100),
+    affected_resources TEXT NOT NULL,
+    rollback_available INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    validated_at TIMESTAMP,
+    version INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY(execution_id) REFERENCES execution_requests(id) ON DELETE CASCADE,
+    FOREIGN KEY(approval_id) REFERENCES approvals(id) ON DELETE CASCADE,
+    FOREIGN KEY(draft_id) REFERENCES drafts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_plans_status ON execution_plans(status);
+CREATE INDEX IF NOT EXISTS idx_execution_plans_execution_id ON execution_plans(execution_id);
+CREATE INDEX IF NOT EXISTS idx_execution_plans_correlation_id ON execution_plans(correlation_id);
+
+-- Execution steps table
+CREATE TABLE IF NOT EXISTS execution_steps (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    action TEXT NOT NULL,
+    estimated_time_seconds INTEGER NOT NULL,
+    risk_level TEXT NOT NULL CHECK(risk_level IN ('low', 'medium', 'high')),
+    rollback_available INTEGER NOT NULL DEFAULT 0,
+    payload TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY(plan_id) REFERENCES execution_plans(id) ON DELETE CASCADE,
+    UNIQUE(plan_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_steps_plan_id ON execution_steps(plan_id);
+CREATE INDEX IF NOT EXISTS idx_execution_steps_plan_sequence ON execution_steps(plan_id, sequence);
+`,
+	},
+	{
+		version: "0011",
+		name:    "audit_event_persistence",
+		sql:     migration0011,
+	},
+	{
+		version: "0012",
+		name:    "authentication_rbac",
+		sql:     "", // Handled by migration0012statements
+	},
 }
 
 // runMigrations applies pending migrations to the database
 func runMigrations(db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Create migrations table if it doesn't exist
@@ -206,8 +291,38 @@ func runMigrations(db *sql.DB) error {
 
 		// Apply migration
 		log.Printf("Applying migration %s: %s", m.version, m.name)
-		if _, err := db.ExecContext(ctx, m.sql); err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", m.version, err)
+
+		// For migrations with individual statements, execute them within a transaction
+		var statements []string
+		if m.version == "0011" {
+			statements = migration0011statements
+		} else if m.version == "0012" {
+			statements = migration0012statements
+		}
+
+		if len(statements) > 0 {
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("failed to start transaction for migration %s: %w", m.version, err)
+			}
+			defer tx.Rollback()
+
+			for i, stmt := range statements {
+				if stmt == "" {
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return fmt.Errorf("failed to apply migration %s (statement %d): %w", m.version, i+1, err)
+				}
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit migration %s: %w", m.version, err)
+			}
+		} else {
+			if _, err := db.ExecContext(ctx, m.sql); err != nil {
+				return fmt.Errorf("failed to apply migration %s: %w", m.version, err)
+			}
 		}
 
 		// Record migration

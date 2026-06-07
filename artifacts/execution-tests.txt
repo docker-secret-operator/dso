@@ -1,0 +1,6 @@
+# github.com/docker-secret-operator/dso/internal/execution
+package github.com/docker-secret-operator/dso/internal/execution
+	imports github.com/docker-secret-operator/dso/internal/storage/sqlite from planner_determinism_test.go
+	imports github.com/docker-secret-operator/dso/internal/execution from audit_event_store.go: import cycle not allowed in test
+FAIL	github.com/docker-secret-operator/dso/internal/execution [setup failed]
+FAIL

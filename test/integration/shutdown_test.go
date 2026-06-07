@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/server"
+	"github.com/docker-secret-operator/dso/internal/storage/sqlite"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"go.uber.org/zap"
 )
@@ -57,9 +58,15 @@ func TestGracefulShutdown_RESTServerShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Create storage provider
+	provider, err := sqlite.NewSQLiteProvider(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create storage provider: %v", err)
+	}
+
 	// Start REST server
 	apiAddr := "127.0.0.1:0" // Use random port
-	restShutdown := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger)
+	restShutdown := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger, provider)
 
 	// Server should start successfully
 	time.Sleep(100 * time.Millisecond)
@@ -89,12 +96,18 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 
 	cfg := &config.Config{}
 
+	// Create storage provider
+	provider, err := sqlite.NewSQLiteProvider(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create storage provider: %v", err)
+	}
+
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	// Start REST server with timeout context
-	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger)
+	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger, provider)
 
 	// Wait for context to timeout
 	<-ctx.Done()
@@ -129,8 +142,14 @@ func TestGracefulShutdown_SignalHandling(t *testing.T) {
 		"data": "test",
 	})
 
+	// Create storage provider
+	provider, err := sqlite.NewSQLiteProvider(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create storage provider: %v", err)
+	}
+
 	// Create REST server with cancellable context
-	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger)
+	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger, provider)
 
 	// Simulate what signal handler would do - cancel the context
 	go func() {

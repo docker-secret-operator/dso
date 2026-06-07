@@ -120,6 +120,56 @@ type Migration struct {
 	AppliedAt time.Time `db:"applied_at"`
 }
 
+// ExecutionRequest represents a request to execute an approved workflow
+type ExecutionRequest struct {
+	ID            string     `db:"id"`
+	CorrelationID string     `db:"correlation_id"`
+	DraftID       string     `db:"draft_id"`
+	ReviewID      string     `db:"review_id"`
+	ApprovalID    string     `db:"approval_id"`
+	PlanID        *string    `db:"plan_id"`
+	Status        string     `db:"status"` // pending, validated, planned, rejected, expired
+	CreatedAt     time.Time  `db:"created_at"`
+	ValidatedAt   *time.Time `db:"validated_at"`
+	ExpiresAt     time.Time  `db:"expires_at"`
+	RequestedBy   string     `db:"requested_by"`
+	Version       int        `db:"version"`
+}
+
+// ExecutionPlan represents a detailed execution plan
+type ExecutionPlan struct {
+	ID                  string        `db:"id"`
+	ExecutionID         string        `db:"execution_id"`
+	CorrelationID       string        `db:"correlation_id"`
+	ApprovalID          string        `db:"approval_id"`
+	DraftID             string        `db:"draft_id"`
+	Status              string        `db:"status"` // draft, validated, ready
+	TotalSteps          int           `db:"total_steps"`
+	EstimatedDuration   int           `db:"estimated_duration_seconds"`
+	RiskScore           int           `db:"risk_score"`
+	AffectedResources   string        `db:"affected_resources"` // JSON
+	RollbackAvailable   bool          `db:"rollback_available"`
+	CreatedAt           time.Time     `db:"created_at"`
+	ValidatedAt         *time.Time    `db:"validated_at"`
+	Version             int           `db:"version"`
+}
+
+// ExecutionStep represents an individual step in an execution plan
+type ExecutionStep struct {
+	ID                string        `db:"id"`
+	PlanID            string        `db:"plan_id"`
+	Sequence          int           `db:"sequence"`
+	Name              string        `db:"name"`
+	Description       *string       `db:"description"`
+	Action            string        `db:"action"`
+	EstimatedTime     int           `db:"estimated_time_seconds"`
+	RiskLevel         string        `db:"risk_level"` // low, medium, high
+	RollbackAvailable bool          `db:"rollback_available"`
+	Payload           *string       `db:"payload"` // JSON
+	CreatedAt         time.Time     `db:"created_at"`
+	Version           int           `db:"version"`
+}
+
 // Store interfaces define the contract for persistence operations
 
 // DraftStore handles draft persistence
@@ -175,6 +225,148 @@ type AuditStore interface {
 	// No Update or Delete methods - audit logs are immutable
 }
 
+// ExecutionRequestStore handles execution request persistence
+type ExecutionRequestStore interface {
+	Create(ctx context.Context, req *ExecutionRequest) error
+	Update(ctx context.Context, req *ExecutionRequest) error
+	GetByID(ctx context.Context, id string) (*ExecutionRequest, error)
+	GetByCorrelationID(ctx context.Context, correlationID string) (*ExecutionRequest, error)
+	ListByStatus(ctx context.Context, status string) ([]*ExecutionRequest, error)
+	ListByApproval(ctx context.Context, approvalID string) ([]*ExecutionRequest, error)
+	List(ctx context.Context, limit int, offset int) ([]*ExecutionRequest, error)
+}
+
+// ExecutionPlanStore handles execution plan persistence
+type ExecutionPlanStore interface {
+	Create(ctx context.Context, plan *ExecutionPlan) error
+	Update(ctx context.Context, plan *ExecutionPlan) error
+	GetByID(ctx context.Context, id string) (*ExecutionPlan, error)
+	GetByExecutionID(ctx context.Context, executionID string) (*ExecutionPlan, error)
+	ListByStatus(ctx context.Context, status string) ([]*ExecutionPlan, error)
+	List(ctx context.Context, limit int, offset int) ([]*ExecutionPlan, error)
+}
+
+// ExecutionStepStore handles execution step persistence
+type ExecutionStepStore interface {
+	Create(ctx context.Context, step *ExecutionStep) error
+	GetByID(ctx context.Context, id string) (*ExecutionStep, error)
+	ListByPlan(ctx context.Context, planID string) ([]*ExecutionStep, error)
+	CreateBatch(ctx context.Context, steps []*ExecutionStep) error
+}
+
+// ExecutionResult represents the result of a completed execution
+type ExecutionResult struct {
+	ID             string        `db:"id"`
+	ExecutionID    string        `db:"execution_id"`
+	CorrelationID  string        `db:"correlation_id"`
+	WorkerID       *string       `db:"worker_id"`
+	Status         string        `db:"status"` // completed, failed, cancelled
+	Error          *string       `db:"error"`
+	Duration       int           `db:"duration_seconds"`
+	CompletedAt    time.Time     `db:"completed_at"`
+	Version        int           `db:"version"`
+}
+
+// StepResult represents the result of a step
+type StepResult struct {
+	ID             string        `db:"id"`
+	StepID         string        `db:"step_id"`
+	ExecutionID    string        `db:"execution_id"`
+	CorrelationID  string        `db:"correlation_id"`
+	Status         string        `db:"status"` // completed, failed, cancelled
+	Duration       int           `db:"duration_seconds"`
+	Output         *string       `db:"output"` // JSON
+	Error          *string       `db:"error"`
+	StartedAt      time.Time     `db:"started_at"`
+	CompletedAt    *time.Time    `db:"completed_at"`
+	Version        int           `db:"version"`
+}
+
+// WorkerHeartbeat represents a worker health check
+type WorkerHeartbeat struct {
+	ID             string        `db:"id"`
+	WorkerID       string        `db:"worker_id"`
+	Timestamp      time.Time     `db:"timestamp"`
+	State          string        `db:"state"` // healthy, unhealthy, etc
+	RunningSteps   int           `db:"running_steps"`
+	CompletedCount int           `db:"completed_count"`
+	FailedCount    int           `db:"failed_count"`
+	LastError      *string       `db:"last_error"`
+	SystemLoad     float64       `db:"system_load"`
+	MemoryUsage    int64         `db:"memory_usage"`
+	Version        int           `db:"version"`
+}
+
+// ExecutionResultStore handles execution result persistence
+type ExecutionResultStore interface {
+	Create(ctx context.Context, result *ExecutionResult) error
+	GetByID(ctx context.Context, id string) (*ExecutionResult, error)
+	GetByExecutionID(ctx context.Context, executionID string) (*ExecutionResult, error)
+	ListByStatus(ctx context.Context, status string, limit int, offset int) ([]*ExecutionResult, error)
+	List(ctx context.Context, limit int, offset int) ([]*ExecutionResult, error)
+}
+
+// StepResultStore handles step result persistence
+type StepResultStore interface {
+	Create(ctx context.Context, result *StepResult) error
+	GetByID(ctx context.Context, id string) (*StepResult, error)
+	ListByExecution(ctx context.Context, executionID string) ([]*StepResult, error)
+	ListByStep(ctx context.Context, stepID string) ([]*StepResult, error)
+	CreateBatch(ctx context.Context, results []*StepResult) error
+}
+
+// WorkerHeartbeatStore handles worker heartbeat persistence
+type WorkerHeartbeatStore interface {
+	Create(ctx context.Context, heartbeat *WorkerHeartbeat) error
+	GetByID(ctx context.Context, id string) (*WorkerHeartbeat, error)
+	ListByWorker(ctx context.Context, workerID string, limit int) ([]*WorkerHeartbeat, error)
+	GetLatestByWorker(ctx context.Context, workerID string) (*WorkerHeartbeat, error)
+}
+
+// User represents a system user for authentication and RBAC
+type User struct {
+	ID           string    `db:"id"`
+	Username     string    `db:"username"`
+	PasswordHash string    `db:"password_hash"`
+	DisplayName  string    `db:"display_name"`
+	Role         string    `db:"role"` // viewer, operator, reviewer, approver, admin
+	Disabled     bool      `db:"disabled"`
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
+}
+
+// Session represents an authenticated user session
+type Session struct {
+	ID           string    `db:"id"`
+	UserID       string    `db:"user_id"`
+	TokenHash    string    `db:"token_hash"`
+	IPAddress    string    `db:"ip_address"`
+	UserAgent    string    `db:"user_agent"`
+	CreatedAt    time.Time `db:"created_at"`
+	ExpiresAt    time.Time `db:"expires_at"`
+	LastActivity time.Time `db:"last_activity"`
+}
+
+// UserStore handles user persistence
+type UserStore interface {
+	Create(ctx context.Context, user *User) error
+	Update(ctx context.Context, user *User) error
+	GetByID(ctx context.Context, id string) (*User, error)
+	GetByUsername(ctx context.Context, username string) (*User, error)
+	List(ctx context.Context) ([]*User, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// SessionStore handles session persistence
+type SessionStore interface {
+	Create(ctx context.Context, session *Session) error
+	GetByID(ctx context.Context, id string) (*Session, error)
+	GetByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
+	UpdateLastActivity(ctx context.Context, sessionID string) error
+	DeleteExpired(ctx context.Context) error
+	Delete(ctx context.Context, sessionID string) error
+}
+
 // StorageProvider is the root abstraction for all storage operations
 type StorageProvider interface {
 	// Store accessors
@@ -184,6 +376,14 @@ type StorageProvider interface {
 	ReviewActivities() ReviewActivityStore
 	Snapshots() SnapshotStore
 	Audit() AuditStore
+	ExecutionRequests() ExecutionRequestStore
+	ExecutionPlans() ExecutionPlanStore
+	ExecutionSteps() ExecutionStepStore
+	ExecutionResults() ExecutionResultStore
+	StepResults() StepResultStore
+	WorkerHeartbeats() WorkerHeartbeatStore
+	Users() UserStore
+	Sessions() SessionStore
 
 	// Lifecycle
 	Health(ctx context.Context) error
@@ -205,4 +405,12 @@ type Transaction interface {
 	ReviewActivities() ReviewActivityStore
 	Snapshots() SnapshotStore
 	Audit() AuditStore
+	ExecutionRequests() ExecutionRequestStore
+	ExecutionPlans() ExecutionPlanStore
+	ExecutionSteps() ExecutionStepStore
+	ExecutionResults() ExecutionResultStore
+	StepResults() StepResultStore
+	WorkerHeartbeats() WorkerHeartbeatStore
+	Users() UserStore
+	Sessions() SessionStore
 }
