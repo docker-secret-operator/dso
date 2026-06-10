@@ -1,0 +1,12 @@
+provider: local
+
+config:
+  path: ./local-secrets
+
+agent:
+  cache: true
+  watch:
+    mode: polling
+    polling_interval: 30s
+
+secrets: []
