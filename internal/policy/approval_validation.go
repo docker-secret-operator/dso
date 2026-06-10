@@ -135,10 +135,10 @@ func GetTimeUntilExpiration(approval *storage.Approval, ttl time.Duration) time.
 
 // ReviewGovernanceConfig defines review governance rules
 type ReviewGovernanceConfig struct {
-	MinReviewers      int     // Minimum reviewers required
-	MaxReviewers      int     // Maximum reviewers allowed
-	RequiredApprovals int     // Minimum approvals needed
-	ApprovalQuorum    float64 // Percentage of reviewers who must approve (0-100)
+	MinReviewers      int           // Minimum reviewers required
+	MaxReviewers      int           // Maximum reviewers allowed
+	RequiredApprovals int           // Minimum approvals needed
+	ApprovalQuorum    float64       // Percentage of reviewers who must approve (0-100)
 	ApprovalTTL       time.Duration // Time before approval expires
 }
 
@@ -233,11 +233,11 @@ func (v *ApprovalAssignmentValidator) ValidateReviewGovernance(
 	// Warn about expired approvals
 	if expiredCount > 0 {
 		result.Violations = append(result.Violations, PolicyViolation{
-			PolicyName: "expired_approvals",
-			Severity:   "warning",
-			Message:    fmt.Sprintf("Found %d expired approvals", expiredCount),
-			ResourceID: review.ID,
-			Timestamp:  time.Now(),
+			PolicyName:  "expired_approvals",
+			Severity:    "warning",
+			Message:     fmt.Sprintf("Found %d expired approvals", expiredCount),
+			ResourceID:  review.ID,
+			Timestamp:   time.Now(),
 			Remediation: "Expired approvals should be reassigned",
 		})
 	}

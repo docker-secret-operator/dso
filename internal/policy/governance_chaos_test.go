@@ -20,8 +20,8 @@ func TestChaosNoApprovals(t *testing.T) {
 	})
 
 	review := &storage.Review{
-		ID:      "review-no-approvals",
-		Status:  "under_review",
+		ID:     "review-no-approvals",
+		Status: "under_review",
 	}
 
 	draft := &storage.Draft{
@@ -231,8 +231,8 @@ func TestChaosTooManyReviewers(t *testing.T) {
 	}
 
 	config := ReviewGovernanceConfig{
-		MinReviewers:  1,
-		MaxReviewers:  3, // Limit to 3
+		MinReviewers:      1,
+		MaxReviewers:      3, // Limit to 3
 		RequiredApprovals: 1,
 	}
 

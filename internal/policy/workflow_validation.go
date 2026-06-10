@@ -10,7 +10,7 @@ import (
 
 // WorkflowValidator validates complete workflows against policies
 type WorkflowValidator struct {
-	policies []Policy
+	policies  []Policy
 	validator *ApprovalAssignmentValidator
 }
 
@@ -46,11 +46,11 @@ func (w *WorkflowValidator) ValidateDraft(
 		result.Passed = false
 		result.Score = 50
 		result.Violations = append(result.Violations, PolicyViolation{
-			PolicyName: "draft_review_requirement",
-			Severity:   "error",
-			Message:    "Draft under review must have at least one review",
-			ResourceID: draft.ID,
-			Timestamp:  time.Now(),
+			PolicyName:  "draft_review_requirement",
+			Severity:    "error",
+			Message:     "Draft under review must have at least one review",
+			ResourceID:  draft.ID,
+			Timestamp:   time.Now(),
 			Remediation: "Create a review for this draft",
 		})
 	}
@@ -245,10 +245,10 @@ func (aev *ApprovalExpirationValidator) GetExpirationStatus(
 	timeRemaining := time.Until(expiresAt)
 
 	status := ExpirationStatus{
-		ExpiresAt:       expiresAt,
-		TimeRemaining:   timeRemaining,
-		IsExpired:       timeRemaining <= 0,
-		PercentageUsed:  calculatePercentageUsed(approval.CreatedAt, expiresAt),
+		ExpiresAt:      expiresAt,
+		TimeRemaining:  timeRemaining,
+		IsExpired:      timeRemaining <= 0,
+		PercentageUsed: calculatePercentageUsed(approval.CreatedAt, expiresAt),
 	}
 
 	return status

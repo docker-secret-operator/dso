@@ -146,7 +146,7 @@ func TestPolicyConflictGovernanceConfig(t *testing.T) {
 	config := ReviewGovernanceConfig{
 		MinReviewers:      3,
 		MaxReviewers:      5,
-		RequiredApprovals: 3, // Need all 3
+		RequiredApprovals: 3,     // Need all 3
 		ApprovalQuorum:    100.0, // 100% required
 	}
 

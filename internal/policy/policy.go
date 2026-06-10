@@ -27,9 +27,9 @@ type PolicyResult struct {
 
 // PolicyContext contains data needed for policy evaluation
 type PolicyContext struct {
-	Draft      *storage.Draft
-	Review     *storage.Review
-	Approvals  []*storage.Approval
+	Draft       *storage.Draft
+	Review      *storage.Review
+	Approvals   []*storage.Approval
 	AuditEvents []*storage.AuditEvent
 }
 
@@ -151,11 +151,11 @@ func (p *MajorityApprovalPolicy) Evaluate(ctx context.Context, context PolicyCon
 		result.Score = 100
 	} else {
 		result.Violations = append(result.Violations, PolicyViolation{
-			PolicyName: p.Name(),
-			Severity:   "error",
-			Message:    "Majority approval not achieved",
-			ResourceID: context.Review.ID,
-			Timestamp:  time.Now(),
+			PolicyName:  p.Name(),
+			Severity:    "error",
+			Message:     "Majority approval not achieved",
+			ResourceID:  context.Review.ID,
+			Timestamp:   time.Now(),
 			Remediation: "Need more approvals to reach majority",
 		})
 		result.Score = (approvedCount * 100) / requiredCount
