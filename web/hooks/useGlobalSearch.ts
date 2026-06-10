@@ -4,7 +4,7 @@ export interface SearchResult {
   id: string
   title: string
   subtitle?: string
-  category: 'container' | 'secret' | 'event'
+  category: 'container' | 'secret' | 'event' | 'correlation' | 'execution' | 'actor'
   icon?: string
   route: string
   metadata?: Record<string, string>
@@ -14,15 +14,56 @@ export interface UseGlobalSearchProps {
   containers?: any[]
   secrets?: any[]
   events?: any[]
+  auditEvents?: any[]
 }
 
-export function useGlobalSearch({ containers = [], secrets = [], events = [] }: UseGlobalSearchProps) {
+export function useGlobalSearch({ containers = [], secrets = [], events = [], auditEvents = [] }: UseGlobalSearchProps) {
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
 
   // Memoize search index to avoid recalculating on every render
   const searchIndex = useMemo(() => {
     const results: SearchResult[] = []
+    const seenCorrelations = new Set<string>()
+    const seenExecutions = new Set<string>()
+    const seenActors = new Set<string>()
+
+    // Index audit events — deduplicate by correlation_id, execution_id, actor
+    auditEvents.forEach((e: any) => {
+      if (e.correlation_id && !seenCorrelations.has(e.correlation_id)) {
+        seenCorrelations.add(e.correlation_id)
+        results.push({
+          id: `corr-${e.correlation_id}`,
+          title: e.correlation_id,
+          subtitle: `Correlation chain — ${e.action}`,
+          category: 'correlation',
+          route: `/audit?correlation_id=${encodeURIComponent(e.correlation_id)}`,
+          metadata: { action: e.action, actor: e.actor },
+        })
+      }
+      if (e.resource_id && e.resource_type === 'execution' && !seenExecutions.has(e.resource_id)) {
+        seenExecutions.add(e.resource_id)
+        results.push({
+          id: `exec-${e.resource_id}`,
+          title: e.resource_id,
+          subtitle: `Execution journey — ${e.actor}`,
+          category: 'execution',
+          route: `/executions?id=${encodeURIComponent(e.resource_id)}`,
+          metadata: { actor: e.actor, status: e.status },
+        })
+      }
+      if (e.actor_id && e.actor && !seenActors.has(e.actor_id)) {
+        seenActors.add(e.actor_id)
+        results.push({
+          id: `actor-${e.actor_id}`,
+          title: e.actor,
+          subtitle: `Actor timeline — ${e.actor_id}`,
+          category: 'actor',
+          route: `/users/activity?id=${encodeURIComponent(e.actor_id)}`,
+          metadata: { actor_id: e.actor_id },
+        })
+      }
+    })
 
     // Index containers
     containers.forEach((container: any) => {
@@ -95,6 +136,9 @@ export function useGlobalSearch({ containers = [], secrets = [], events = [] }: 
       container: [] as SearchResult[],
       secret: [] as SearchResult[],
       event: [] as SearchResult[],
+      correlation: [] as SearchResult[],
+      execution: [] as SearchResult[],
+      actor: [] as SearchResult[],
     }
 
     results.forEach((result) => {

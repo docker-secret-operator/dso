@@ -4,8 +4,7 @@ import React from 'react'
 import { useRouter } from 'next/navigation'
 import { Command } from 'cmdk'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { Badge } from '@/components/ui/badge'
-import { Container, Lock, AlertCircle } from 'lucide-react'
+import { Container, Lock, AlertCircle, Link2, Play, User } from 'lucide-react'
 import type { SearchResult } from '@/hooks/useGlobalSearch'
 
 export interface SearchResultsModalProps {
@@ -17,9 +16,54 @@ export interface SearchResultsModalProps {
     container: SearchResult[]
     secret: SearchResult[]
     event: SearchResult[]
+    correlation: SearchResult[]
+    execution: SearchResult[]
+    actor: SearchResult[]
   }
   isEmpty: boolean
   hasResults: boolean
+}
+
+const CATEGORY_META: Record<string, { icon: React.ReactNode; label: string }> = {
+  container:   { icon: <Container className="w-4 h-4 text-blue-600" />,   label: 'Containers' },
+  secret:      { icon: <Lock className="w-4 h-4 text-green-600" />,        label: 'Secrets' },
+  event:       { icon: <AlertCircle className="w-4 h-4 text-yellow-600" />,label: 'Events' },
+  correlation: { icon: <Link2 className="w-4 h-4 text-indigo-600" />,      label: 'Correlation Chains' },
+  execution:   { icon: <Play className="w-4 h-4 text-teal-600" />,         label: 'Execution Journeys' },
+  actor:       { icon: <User className="w-4 h-4 text-purple-600" />,       label: 'Actors' },
+}
+
+function ResultGroup({ category, results, onSelect }: {
+  category: string
+  results: SearchResult[]
+  onSelect: (route: string) => void
+}) {
+  if (results.length === 0) return null
+  const meta = CATEGORY_META[category] ?? { icon: null, label: category }
+  return (
+    <div>
+      <div className="px-2 py-1.5 mt-2 first:mt-0">
+        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{meta.label}</p>
+      </div>
+      {results.map(result => (
+        <div
+          key={result.id}
+          onClick={() => onSelect(result.route)}
+          className="cursor-pointer rounded px-2 py-2 hover:bg-gray-100"
+        >
+          <div className="flex items-center gap-2">
+            {meta.icon}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-gray-900 truncate font-mono">{result.title}</p>
+              {result.subtitle && (
+                <p className="text-xs text-gray-500 truncate">{result.subtitle}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export function SearchResultsModal({
@@ -38,31 +82,7 @@ export function SearchResultsModal({
     router.push(route)
   }
 
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'container':
-        return <Container className="w-4 h-4 text-blue-600" />
-      case 'secret':
-        return <Lock className="w-4 h-4 text-green-600" />
-      case 'event':
-        return <AlertCircle className="w-4 h-4 text-yellow-600" />
-      default:
-        return null
-    }
-  }
-
-  const getCategoryLabel = (category: string) => {
-    switch (category) {
-      case 'container':
-        return 'Containers'
-      case 'secret':
-        return 'Secrets'
-      case 'event':
-        return 'Events'
-      default:
-        return ''
-    }
-  }
+  const ORDER: (keyof typeof groupedResults)[] = ['correlation', 'execution', 'actor', 'secret', 'container', 'event']
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -70,121 +90,41 @@ export function SearchResultsModal({
         <Command className="[&_[cmdk-input]]:h-12">
           <div className="flex items-center border-b px-3">
             <input
-              placeholder="Search containers, secrets, events..."
+              placeholder="Search correlation IDs, executions, actors, secrets…"
               value={query}
               onChange={(e) => onQueryChange(e.target.value)}
-              className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-gray-500"
+              className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-gray-400"
               autoFocus
             />
           </div>
 
-          <div className="max-h-[300px] overflow-y-auto">
+          <div className="max-h-[380px] overflow-y-auto">
             {hasResults ? (
               <div className="overflow-hidden p-1">
-                {groupedResults.container.length > 0 && (
-                  <div>
-                    <div className="px-2 py-1.5">
-                      <p className="text-xs font-medium text-gray-600">
-                        {getCategoryLabel('container')}
-                      </p>
-                    </div>
-                    {groupedResults.container.map((result) => (
-                      <div
-                        key={result.id}
-                        onClick={() => handleSelect(result.route)}
-                        className="cursor-pointer rounded px-2 py-2 hover:bg-gray-100"
-                      >
-                        <div className="flex items-center gap-2">
-                          {getCategoryIcon('container')}
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">
-                              {result.title}
-                            </p>
-                            {result.subtitle && (
-                              <p className="text-xs text-gray-600 truncate">{result.subtitle}</p>
-                            )}
-                          </div>
-                          <Badge className="bg-blue-100 text-blue-800 text-xs">
-                            {result.metadata?.status}
-                          </Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {groupedResults.secret.length > 0 && (
-                  <div>
-                    <div className="px-2 py-1.5 mt-2">
-                      <p className="text-xs font-medium text-gray-600">{getCategoryLabel('secret')}</p>
-                    </div>
-                    {groupedResults.secret.map((result) => (
-                      <div
-                        key={result.id}
-                        onClick={() => handleSelect(result.route)}
-                        className="cursor-pointer rounded px-2 py-2 hover:bg-gray-100"
-                      >
-                        <div className="flex items-center gap-2">
-                          {getCategoryIcon('secret')}
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">
-                              {result.title}
-                            </p>
-                            {result.subtitle && (
-                              <p className="text-xs text-gray-600 truncate">{result.subtitle}</p>
-                            )}
-                          </div>
-                          <Badge className="bg-green-100 text-green-800 text-xs">
-                            {result.metadata?.status}
-                          </Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {groupedResults.event.length > 0 && (
-                  <div>
-                    <div className="px-2 py-1.5 mt-2">
-                      <p className="text-xs font-medium text-gray-600">{getCategoryLabel('event')}</p>
-                    </div>
-                    {groupedResults.event.map((result) => (
-                      <div
-                        key={result.id}
-                        onClick={() => handleSelect(result.route)}
-                        className="cursor-pointer rounded px-2 py-2 hover:bg-gray-100"
-                      >
-                        <div className="flex items-center gap-2">
-                          {getCategoryIcon('event')}
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">
-                              {result.title}
-                            </p>
-                            {result.subtitle && (
-                              <p className="text-xs text-gray-600 truncate">{result.subtitle}</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {ORDER.map(cat => (
+                  <ResultGroup
+                    key={cat}
+                    category={cat}
+                    results={groupedResults[cat]}
+                    onSelect={handleSelect}
+                  />
+                ))}
               </div>
             ) : isEmpty ? (
               <div className="py-6 text-center">
-                <p className="text-sm text-gray-600">No results found for "{query}"</p>
+                <p className="text-sm text-gray-500">No results found for "{query}"</p>
               </div>
             ) : (
               <div className="py-6 text-center">
-                <p className="text-sm text-gray-600">Type to search containers, secrets, and events</p>
+                <p className="text-sm text-gray-500">Search correlation IDs, executions, actors, secrets…</p>
               </div>
             )}
           </div>
 
           <div className="border-t px-2 py-2">
-            <p className="text-xs text-gray-500">
-              Press <kbd className="rounded bg-gray-100 px-2 py-1">Enter</kbd> to navigate,{' '}
-              <kbd className="rounded bg-gray-100 px-2 py-1">Esc</kbd> to close
+            <p className="text-xs text-gray-400">
+              <kbd className="rounded bg-gray-100 px-1.5 py-0.5">⌘K</kbd> to open ·{' '}
+              <kbd className="rounded bg-gray-100 px-1.5 py-0.5">Esc</kbd> to close
             </p>
           </div>
         </Command>

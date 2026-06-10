@@ -22,8 +22,10 @@ import { RecommendedActionsWidget } from '@/components/widgets/recommended-actio
 import { PendingChangeSetsWidget } from '@/components/widgets/pending-changesets-widget'
 import { DraftWorkspaceWidget } from '@/components/widgets/draft-workspace-widget'
 import { DraftReviewsWidget } from '@/components/widgets/draft-reviews-widget'
-import { Zap } from 'lucide-react'
+import { Zap, TrendingUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { LineChart } from '@/components/charts/line-chart'
+import { useVisibleInterval } from '@/hooks/useVisibilityRefetch'
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -78,6 +80,15 @@ export default function DashboardPage() {
     queryFn: () => apiClient.getEvents(20),
     refetchInterval: 5000,
   })
+
+  // FG4: compact metrics history for dashboard sparklines
+  const metricsInterval = useVisibleInterval(60000)
+  const { data: metricsHistory } = useQuery({
+    queryKey: ['metrics', 'history', '1h', '1m'],
+    queryFn: () => apiClient.getMetricsHistory({ period: '1h', granularity: '1m' }),
+    refetchInterval: metricsInterval,
+  })
+  const mPts = metricsHistory?.data ?? []
 
   // Build system health statuses
   const healthStatuses: HealthStatus[] = [
@@ -232,6 +243,32 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-1">
         <DraftReviewsWidget />
       </div>
+
+      {/* Row 3.8: Metrics Sparklines */}
+      {mPts.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Last Hour — Key Metrics</h2>
+            </div>
+            <button
+              onClick={() => router.push('/analytics')}
+              className="text-xs text-primary hover:underline"
+            >
+              Full analytics →
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.sr }))} label="Success Rate" color="#22c55e" height={56} formatY={v => `${(v*100).toFixed(0)}%`} />
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.fr }))} label="Failure Rate" color="#ef4444" height={56} formatY={v => `${(v*100).toFixed(0)}%`} />
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.qd }))} label="Queue Depth" color="#f59e0b" height={56} formatY={v => v.toFixed(0)} />
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.wu }))} label="Worker Util." color="#8b5cf6" height={56} formatY={v => `${(v*100).toFixed(0)}%`} />
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.mm }))} label="Memory (MB)" color="#06b6d4" height={56} formatY={v => v.toFixed(0)} />
+            <LineChart data={mPts.map(p => ({ x: p.ts, y: p.ae }))} label="Active Exec." color="#f97316" height={56} formatY={v => v.toFixed(0)} />
+          </div>
+        </div>
+      )}
 
       {/* Row 4: Quick Actions */}
       <div className="border-t pt-8">

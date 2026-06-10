@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
-import { Sidebar } from '@/components/sidebar'
-import { Header } from '@/components/header'
 import { Providers } from '@/components/providers'
+import { AuthGuard } from '@/components/auth-guard'
 import '@/styles/globals.css'
 
 export const metadata: Metadata = {
@@ -25,23 +24,9 @@ export default function RootLayout({
       </head>
       <body className="bg-background text-foreground antialiased">
         <Providers>
-          <div className="flex h-screen overflow-hidden">
-            {/* Sidebar */}
-            <Sidebar />
-
-            {/* Main Content */}
-            <div className="flex flex-1 flex-col overflow-hidden">
-              {/* Header */}
-              <Header />
-
-              {/* Page Content */}
-              <main className="flex-1 overflow-y-auto">
-                <div className="h-full bg-background">
-                  {children}
-                </div>
-              </main>
-            </div>
-          </div>
+          <AuthGuard>
+            {children}
+          </AuthGuard>
         </Providers>
       </body>
     </html>

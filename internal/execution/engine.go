@@ -50,16 +50,16 @@ func (see *SimulatedExecutionEngine) ExecuteStep(ctx context.Context, step *stor
 	completedAt := time.Now()
 
 	result := &storage.StepResult{
-		ID:             fmt.Sprintf("result-%d", time.Now().Unix()),
-		StepID:         step.ID,
-		CorrelationID:  "", // Will be set by caller
-		Status:         outcome.Status,
-		Duration:       int(estimatedDuration.Seconds()),
-		Output:         outcome.Output,
-		Error:          outcome.Error,
-		StartedAt:      startedAt,
-		CompletedAt:    &completedAt,
-		Version:        1,
+		ID:            fmt.Sprintf("result-%d", time.Now().Unix()),
+		StepID:        step.ID,
+		CorrelationID: "", // Will be set by caller
+		Status:        outcome.Status,
+		Duration:      int(estimatedDuration.Seconds()),
+		Output:        outcome.Output,
+		Error:         outcome.Error,
+		StartedAt:     startedAt,
+		CompletedAt:   &completedAt,
+		Version:       1,
 	}
 
 	return result, nil
@@ -116,9 +116,9 @@ type ExecutionContext struct {
 
 // ExecutionRunner manages execution of a plan
 type ExecutionRunner struct {
-	engine        *SimulatedExecutionEngine
-	stateMachine  *ExecutionStateMachine
-	stepMachine   *StepStateMachine
+	engine       *SimulatedExecutionEngine
+	stateMachine *ExecutionStateMachine
+	stepMachine  *StepStateMachine
 }
 
 // NewExecutionRunner creates a new execution runner

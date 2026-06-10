@@ -35,12 +35,8 @@ func (a *eventPersisterAdapter) LogExecutionEvent(event execution.OrchestrationA
 }
 
 func main() {
+	// NewSQLiteProvider runs migrations automatically — no ApplyMigrations call needed.
 	provider, err := sqlite.NewSQLiteProvider(":memory:")
-	if err != nil {
-		panic(err)
-	}
-	
-	err = provider.ApplyMigrations(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -53,54 +49,80 @@ func main() {
 
 	persister := &eventPersisterAdapter{auditService: auditService}
 	auditEvents := execution.NewExecutionAuditEvents(persister)
-	
+
 	ctx := context.Background()
 	user := &storage.User{
 		ID:       "u-123",
 		Username: "admin",
 		Role:     "admin",
 	}
-	
+
 	provider.Users().Create(ctx, user)
-	
+
 	fmt.Println("Simulating workflow...")
-	
+
 	correlationID := "corr-chain-1"
-	
-	// 1. Draft Create
-	draft, err := draftService.CreateDraft(ctx, "secret-1", "user-123", "AWS", "eu-west-1", "{}", "Initial draft")
-	if err != nil { panic(err) }
-	
+
+	// 1. Draft Create — (ctx, workspaceID, ownerID, title, description, config)
+	draft, err := draftService.CreateDraft(ctx, "secret-1", "user-123", "Initial draft", "Initial draft", "{}")
+	if err != nil {
+		panic(err)
+	}
+
 	auditService.LogEvent(ctx, user.ID, user.Username, "draft.created", "draft", draft.ID, "draft")
-	
+
 	// 2. Review Request
-	review, err := reviewService.RequestReview(ctx, draft.ID, user.ID, "Please review")
-	if err != nil { panic(err) }
+	review, err := reviewService.CreateReview(ctx, &storage.Review{
+		DraftID:           draft.ID,
+		CreatedBy:         user.ID,
+		Title:             "Please review",
+		Status:            "under_review",
+		Checklist:         "{}",
+		RiskAssessment:    "{}",
+		RequiredApprovals: 1,
+	})
+	if err != nil {
+		panic(err)
+	}
 	auditService.LogEvent(ctx, user.ID, user.Username, "review.requested", "review", review.ID, "review")
-	
-	// 3. Approval Grant
-	approval, err := approvalService.GrantApproval(ctx, draft.ID, review.ID, user.ID, "Looks good", time.Hour)
-	if err != nil { panic(err) }
+
+	// 3. Approval — create then approve
+	approval, err := approvalService.CreateApproval(ctx, &storage.Approval{
+		ReviewID:     review.ID,
+		ReviewerID:   user.ID,
+		ReviewerName: user.Username,
+	})
+	if err != nil {
+		panic(err)
+	}
+	approval, err = approvalService.ApproveApproval(ctx, approval.ID, "Looks good")
+	if err != nil {
+		panic(err)
+	}
 	auditService.LogEvent(ctx, user.ID, user.Username, "approval.granted", "approval", approval.ID, "approval")
-	
+
 	// 4. Execution Request
 	execReq, err := executionService.CreateExecutionRequest(ctx, draft.ID, approval.ID, correlationID, user.ID)
-	if err != nil { panic(err) }
-	
+	if err != nil {
+		panic(err)
+	}
+
 	// 5. Execution Queued
 	auditEvents.LogExecutionQueued(execReq.ID, correlationID, user.ID, user.Username)
-	
-	// 6. Execution Completed
-	auditEvents.LogExecutionCompleted(execReq.ID, correlationID, user.ID, user.Username, "success")
-	
+
+	// 6. Execution Completed — (executionID, correlationID, workerID, duration, actorID, actorName)
+	auditEvents.LogExecutionCompleted(execReq.ID, correlationID, "worker-1", 0, user.ID, user.Username)
+
 	// Query Audits
 	fmt.Println("\nQuerying Audit Events:")
 	events, err := provider.Audit().Query(ctx, nil)
-	if err != nil { panic(err) }
-	
+	if err != nil {
+		panic(err)
+	}
+
 	for _, e := range events {
 		fmt.Printf("Action: %s | Actor: %s (%s) | CorrelationID: %s\n", e.Action, e.ActorName, e.ActorID, e.CorrelationID)
 	}
-	
+
 	fmt.Println("\nSuccess!")
 }

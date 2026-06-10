@@ -66,9 +66,9 @@ func TestArchitectureStorageInterfaces(t *testing.T) {
 // TestArchitectureDependencyGraph generates and validates the dependency graph
 func TestArchitectureDependencyGraph(t *testing.T) {
 	graph := map[string][]string{
-		"DraftService":   {"storage.DraftStore"},
-		"ReviewService":  {"storage.ReviewStore", "storage.ApprovalStore", "storage.ReviewActivityStore", "storage.AuditStore"},
-		"AuditService":   {"storage.AuditStore"},
+		"DraftService":    {"storage.DraftStore"},
+		"ReviewService":   {"storage.ReviewStore", "storage.ApprovalStore", "storage.ReviewActivityStore", "storage.AuditStore"},
+		"AuditService":    {"storage.AuditStore"},
 		"SnapshotService": {"storage.SnapshotStore"},
 	}
 

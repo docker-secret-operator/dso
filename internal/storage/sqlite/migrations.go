@@ -18,7 +18,7 @@ type migration struct {
 var migrations = []migration{
 	{
 		version: "001",
-		name: "initial_schema",
+		name:    "initial_schema",
 		sql: `
 -- Schema migrations table
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -254,6 +254,86 @@ CREATE INDEX IF NOT EXISTS idx_execution_steps_plan_sequence ON execution_steps(
 		name:    "authentication_rbac",
 		sql:     "", // Handled by migration0012statements
 	},
+	{
+		version: "0013",
+		name:    "security_hardening",
+		sql:     "", // Handled by migration0013statements
+	},
+	{
+		version: "0014",
+		name:    "metrics_history",
+		sql:     "", // Handled by migration0014statements
+	},
+	{
+		version: "0015",
+		name:    "security_operations",
+		sql:     "", // Handled by migration0015statements
+	},
+	{
+		version: "0016",
+		name:    "alert_rules_and_alerts",
+		sql:     "", // Handled by migration0016statements
+	},
+	{
+		version: "0017",
+		name:    "backups",
+		sql:     "", // Handled by migration0017statements
+	},
+	{
+		version: "0018",
+		name:    "plugins",
+		sql:     "", // Handled by migration0018statements
+	},
+	{
+		version: "0019",
+		name:    "plugins_extended",
+		sql:     "", // Handled by migration0019statements
+	},
+	{
+		version: "0020",
+		name:    "integrations",
+		sql:     "", // Handled by migration0020statements
+	},
+	{
+		version: "0021",
+		name:    "scheduler",
+		sql:     "", // Handled by migration0021statements
+	},
+	{
+		version: "0022",
+		name:    "policy_engine",
+		sql:     "", // Handled by migration0022statements
+	},
+	{
+		version: "0023",
+		name:    "drift_detection",
+		sql:     "", // Handled by migration0023statements
+	},
+	{
+		version: "0024",
+		name:    "dependency_graph",
+		sql:     "", // Handled by migration0024statements
+	},
+	{
+		version: "0025",
+		name:    "correlation_engine",
+		sql:     "", // Handled by migration0025statements
+	},
+	{
+		version: "0026",
+		name:    "recommendations",
+		sql:     "", // Handled by migration0026statements
+	},
+	{
+		version: "0027",
+		name:    "forecasts",
+		sql:     "", // Handled by migration0027statements
+	},
+	{
+		version: "0028",
+		name:    "autonomous_operations",
+		sql:     "", // Handled by migration0028statements
+	},
 }
 
 // runMigrations applies pending migrations to the database
@@ -298,6 +378,38 @@ func runMigrations(db *sql.DB) error {
 			statements = migration0011statements
 		} else if m.version == "0012" {
 			statements = migration0012statements
+		} else if m.version == "0013" {
+			statements = migration0013statements
+		} else if m.version == "0014" {
+			statements = migration0014statements
+		} else if m.version == "0015" {
+			statements = migration0015statements
+		} else if m.version == "0016" {
+			statements = migration0016statements
+		} else if m.version == "0017" {
+			statements = migration0017statements
+		} else if m.version == "0018" {
+			statements = migration0018statements
+		} else if m.version == "0019" {
+			statements = migration0019statements
+		} else if m.version == "0020" {
+			statements = migration0020statements
+		} else if m.version == "0021" {
+			statements = migration0021statements
+		} else if m.version == "0022" {
+			statements = migration0022statements
+		} else if m.version == "0023" {
+			statements = migration0023statements
+		} else if m.version == "0024" {
+			statements = migration0024statements
+		} else if m.version == "0025" {
+			statements = migration0025statements
+		} else if m.version == "0026" {
+			statements = migration0026statements
+		} else if m.version == "0027" {
+			statements = migration0027statements
+		} else if m.version == "0028" {
+			statements = migration0028statements
 		}
 
 		if len(statements) > 0 {

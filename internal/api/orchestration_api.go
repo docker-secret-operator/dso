@@ -12,11 +12,11 @@ import (
 
 // OrchestrationHandler handles orchestration observability endpoints
 type OrchestrationHandler struct {
-	dispatcher       *execution.Dispatcher
-	workerManager    *execution.WorkerManager
-	executionQueue   *execution.ExecutionQueue
-	auditEvents      *execution.ExecutionAuditEvents
-	resilience       *execution.ResilienceManager
+	dispatcher     *execution.Dispatcher
+	workerManager  *execution.WorkerManager
+	executionQueue *execution.ExecutionQueue
+	auditEvents    *execution.ExecutionAuditEvents
+	resilience     *execution.ResilienceManager
 }
 
 // NewOrchestrationHandler creates a new orchestration handler
@@ -96,17 +96,17 @@ func (h *OrchestrationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 // OverviewResponse represents orchestration overview
 type OverviewResponse struct {
-	QueuedCount      int                `json:"queued_count"`
-	RunningCount     int                `json:"running_count"`
-	CompletedCount   int                `json:"completed_count"`
-	FailedCount      int                `json:"failed_count"`
-	ActiveWorkers    int                `json:"active_workers"`
-	HealthyWorkers   int                `json:"healthy_workers"`
-	AvgDuration      string             `json:"avg_duration"`
-	SuccessRate      float64            `json:"success_rate"`
-	Throughput       float64            `json:"throughput_per_sec"`
-	QueueStats       map[string]interface{} `json:"queue_stats"`
-	Timestamp        time.Time          `json:"timestamp"`
+	QueuedCount    int                    `json:"queued_count"`
+	RunningCount   int                    `json:"running_count"`
+	CompletedCount int                    `json:"completed_count"`
+	FailedCount    int                    `json:"failed_count"`
+	ActiveWorkers  int                    `json:"active_workers"`
+	HealthyWorkers int                    `json:"healthy_workers"`
+	AvgDuration    string                 `json:"avg_duration"`
+	SuccessRate    float64                `json:"success_rate"`
+	Throughput     float64                `json:"throughput_per_sec"`
+	QueueStats     map[string]interface{} `json:"queue_stats"`
+	Timestamp      time.Time              `json:"timestamp"`
 }
 
 // getOverview returns orchestration overview
@@ -143,16 +143,16 @@ func (h *OrchestrationHandler) getOverview(w http.ResponseWriter, r *http.Reques
 
 // WorkerResponse represents a worker
 type WorkerResponse struct {
-	ID               string   `json:"id"`
-	State            string   `json:"state"`
-	Capabilities     []string `json:"capabilities"`
-	MaxConcurrent    int      `json:"max_concurrent"`
-	CurrentlyRunning int      `json:"currently_running"`
-	CompletedCount   int      `json:"completed_count"`
-	FailedCount      int      `json:"failed_count"`
+	ID               string    `json:"id"`
+	State            string    `json:"state"`
+	Capabilities     []string  `json:"capabilities"`
+	MaxConcurrent    int       `json:"max_concurrent"`
+	CurrentlyRunning int       `json:"currently_running"`
+	CompletedCount   int       `json:"completed_count"`
+	FailedCount      int       `json:"failed_count"`
 	LastHeartbeat    time.Time `json:"last_heartbeat"`
 	RegisteredAt     time.Time `json:"registered_at"`
-	HealthStatus     string   `json:"health_status"`
+	HealthStatus     string    `json:"health_status"`
 }
 
 // listWorkers returns all workers
@@ -279,19 +279,19 @@ func (h *OrchestrationHandler) listExecutions(w http.ResponseWriter, r *http.Req
 
 // MetricsResponse represents orchestration metrics
 type MetricsResponse struct {
-	SuccessRate        float64 `json:"success_rate"`
-	FailureRate        float64 `json:"failure_rate"`
-	AvgDuration        string  `json:"avg_duration"`
-	WorkerUtilization  float64 `json:"worker_utilization"`
-	QueueDepth         int     `json:"queue_depth"`
-	OldestQueuedItem   string  `json:"oldest_queued_item,omitempty"`
-	ThroughputPerSec   float64 `json:"throughput_per_sec"`
-	ActiveWorkers      int     `json:"active_workers"`
-	HealthyWorkers     int     `json:"healthy_workers"`
-	TotalCompleted     int     `json:"total_completed"`
-	TotalFailed        int     `json:"total_failed"`
-	TotalQueued        int     `json:"total_queued"`
-	Timestamp          time.Time `json:"timestamp"`
+	SuccessRate       float64   `json:"success_rate"`
+	FailureRate       float64   `json:"failure_rate"`
+	AvgDuration       string    `json:"avg_duration"`
+	WorkerUtilization float64   `json:"worker_utilization"`
+	QueueDepth        int       `json:"queue_depth"`
+	OldestQueuedItem  string    `json:"oldest_queued_item,omitempty"`
+	ThroughputPerSec  float64   `json:"throughput_per_sec"`
+	ActiveWorkers     int       `json:"active_workers"`
+	HealthyWorkers    int       `json:"healthy_workers"`
+	TotalCompleted    int       `json:"total_completed"`
+	TotalFailed       int       `json:"total_failed"`
+	TotalQueued       int       `json:"total_queued"`
+	Timestamp         time.Time `json:"timestamp"`
 }
 
 // getMetrics returns orchestration metrics
@@ -352,13 +352,13 @@ func (h *OrchestrationHandler) getMetrics(w http.ResponseWriter, r *http.Request
 
 // TraceResponse represents execution trace
 type TraceResponse struct {
-	ExecutionID    string                              `json:"execution_id"`
-	CorrelationID  string                              `json:"correlation_id"`
-	Status         string                              `json:"status"`
-	CreatedAt      time.Time                           `json:"created_at"`
-	AuditEvents    []execution.OrchestrationAuditEvent `json:"audit_events"`
-	EventCount     int                                 `json:"event_count"`
-	Duration       string                              `json:"duration,omitempty"`
+	ExecutionID   string                              `json:"execution_id"`
+	CorrelationID string                              `json:"correlation_id"`
+	Status        string                              `json:"status"`
+	CreatedAt     time.Time                           `json:"created_at"`
+	AuditEvents   []execution.OrchestrationAuditEvent `json:"audit_events"`
+	EventCount    int                                 `json:"event_count"`
+	Duration      string                              `json:"duration,omitempty"`
 }
 
 // getTrace returns execution trace by correlation ID
@@ -420,13 +420,13 @@ func (h *OrchestrationHandler) getTrace(w http.ResponseWriter, r *http.Request) 
 
 // ResilienceResponse represents resilience metrics
 type ResilienceResponse struct {
-	CancelledCount     int `json:"cancelled_count"`
-	PausedCount        int `json:"paused_count"`
-	TimeoutCount       int `json:"timeout_count"`
-	DeadLetterCount    int `json:"dead_letter_count"`
-	RecoveredCount     int `json:"recovered_count"`
-	WorkerFailures     int `json:"worker_failures"`
-	Timestamp          time.Time `json:"timestamp"`
+	CancelledCount  int       `json:"cancelled_count"`
+	PausedCount     int       `json:"paused_count"`
+	TimeoutCount    int       `json:"timeout_count"`
+	DeadLetterCount int       `json:"dead_letter_count"`
+	RecoveredCount  int       `json:"recovered_count"`
+	WorkerFailures  int       `json:"worker_failures"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 // getResilience returns resilience metrics

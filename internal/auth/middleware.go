@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -36,24 +35,24 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		// Authorization header present — must be a valid "Bearer <token>".
+		// Any malformed or unrecognised scheme is rejected immediately.
 		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
-			next.ServeHTTP(w, r)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		token := strings.TrimPrefix(authHeader, bearerPrefix)
 		if token == "" {
-			next.ServeHTTP(w, r)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Validate session
+		// Validate session — an explicitly supplied token that fails validation is rejected.
 		result, err := m.authService.ValidateSession(r.Context(), token)
 		if err != nil {
-			// Log but don't reject - let endpoint decide if auth is required
-			fmt.Printf("session validation error: %v\n", err)
-			next.ServeHTTP(w, r)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 

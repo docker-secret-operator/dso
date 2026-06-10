@@ -7,31 +7,44 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/docker-secret-operator/dso/internal/storage"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // SQLiteProvider implements storage.StorageProvider
 type SQLiteProvider struct {
-	db    *sql.DB
-	path  string
-	mu    sync.RWMutex
+	db   *sql.DB
+	path string
+	mu   sync.RWMutex
 
 	// Store implementations
-	drafts             *DraftStore
-	reviews            *ReviewStore
-	approvals          *ApprovalStore
-	activities         *ReviewActivityStore
-	snapshots          *SnapshotStore
-	audit              *AuditStore
-	executionRequests  *ExecutionRequestStore
-	executionPlans     *ExecutionPlanStore
-	executionSteps     *ExecutionStepStore
-	executionResults   *ExecutionResultStore
-	stepResults        *StepResultStore
-	workerHeartbeats   *WorkerHeartbeatStore
-	users              *UserStore
-	sessions           *SessionStore
+	drafts               *DraftStore
+	reviews              *ReviewStore
+	approvals            *ApprovalStore
+	activities           *ReviewActivityStore
+	snapshots            *SnapshotStore
+	audit                *AuditStore
+	executionRequests    *ExecutionRequestStore
+	executionPlans       *ExecutionPlanStore
+	executionSteps       *ExecutionStepStore
+	executionResults     *ExecutionResultStore
+	stepResults          *StepResultStore
+	workerHeartbeats     *WorkerHeartbeatStore
+	users                *UserStore
+	sessions             *SessionStore
+	securityEvents       *SecurityEventStore
+	suspiciousActivities *SuspiciousActivityStore
+	securityAlerts       *SecurityAlertStore
+	alertRules           *AlertRuleStore
+	alerts               *AlertStore
+	backups              *BackupStore
+	plugins              *PluginStore
+	integrationConfigs   *IntegrationConfigStore
+	integrationDeliveries *IntegrationDeliveryStore
+	schedulerJobs        storage.SchedulerStore
+	schedulerExecutions  storage.ExecutionStore
+	rules                storage.RuleStore
+	drift                storage.DriftStore
 }
 
 // NewSQLiteProvider creates a new SQLite storage provider
@@ -40,8 +53,9 @@ func NewSQLiteProvider(path string) (*SQLiteProvider, error) {
 		path = "data/dso.db"
 	}
 
-	// Open with WAL mode enabled
-	connStr := fmt.Sprintf("file:%s?cache=shared&mode=rwc&_journal_mode=WAL&_busy_timeout=5000", path)
+	// Open with WAL mode enabled. Private cache (no cache=shared) avoids SQLITE_LOCKED
+	// under concurrent writers; WAL + busy_timeout serialises contention gracefully.
+	connStr := fmt.Sprintf("file:%s?mode=rwc&_journal_mode=WAL&_busy_timeout=5000", path)
 	db, err := sql.Open("sqlite3", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
@@ -78,6 +92,19 @@ func NewSQLiteProvider(path string) (*SQLiteProvider, error) {
 	provider.workerHeartbeats = &WorkerHeartbeatStore{db: &SQLiteDB{DB: db}}
 	provider.users = &UserStore{db: db}
 	provider.sessions = &SessionStore{db: db}
+	provider.securityEvents = &SecurityEventStore{db: db}
+	provider.suspiciousActivities = &SuspiciousActivityStore{db: db}
+	provider.securityAlerts = &SecurityAlertStore{db: db}
+	provider.alertRules = &AlertRuleStore{db: db}
+	provider.alerts = &AlertStore{db: db}
+	provider.backups = &BackupStore{db: db}
+	provider.plugins = &PluginStore{db: db}
+	provider.integrationConfigs = &IntegrationConfigStore{db: db}
+	provider.integrationDeliveries = &IntegrationDeliveryStore{db: db}
+	provider.schedulerJobs = &SchedulerJobStore{db: db}
+	provider.schedulerExecutions = &ExecutionHistoryStore{db: db}
+	provider.rules = &RuleStore{db: db}
+	provider.drift = &DriftStore{db: db}
 
 	// Run migrations
 	if err := runMigrations(db); err != nil {
@@ -186,6 +213,90 @@ func (sp *SQLiteProvider) Sessions() storage.SessionStore {
 	return sp.sessions
 }
 
+// SecurityEvents returns the security event store
+func (sp *SQLiteProvider) SecurityEvents() storage.SecurityEventStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.securityEvents
+}
+
+// SuspiciousActivities returns the suspicious activity store
+func (sp *SQLiteProvider) SuspiciousActivities() storage.SuspiciousActivityStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.suspiciousActivities
+}
+
+// SecurityAlerts returns the security alert store
+func (sp *SQLiteProvider) SecurityAlerts() storage.SecurityAlertStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.securityAlerts
+}
+
+// AlertRules returns the alert rule store
+func (sp *SQLiteProvider) AlertRules() storage.AlertRuleStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.alertRules
+}
+
+// Alerts returns the alert store
+func (sp *SQLiteProvider) Alerts() storage.AlertStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.alerts
+}
+
+// Backups returns the backup store
+func (sp *SQLiteProvider) Backups() storage.BackupStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.backups
+}
+
+func (sp *SQLiteProvider) Plugins() storage.PluginStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.plugins
+}
+
+func (sp *SQLiteProvider) IntegrationConfigs() storage.IntegrationConfigStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.integrationConfigs
+}
+
+func (sp *SQLiteProvider) IntegrationDeliveries() storage.IntegrationDeliveryStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.integrationDeliveries
+}
+
+func (sp *SQLiteProvider) SchedulerJobs() storage.SchedulerStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.schedulerJobs
+}
+
+func (sp *SQLiteProvider) SchedulerExecutions() storage.ExecutionStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.schedulerExecutions
+}
+
+func (sp *SQLiteProvider) Rules() storage.RuleStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.rules
+}
+
+func (sp *SQLiteProvider) Drift() storage.DriftStore {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.drift
+}
+
 // Health checks the database connection
 func (sp *SQLiteProvider) Health(ctx context.Context) error {
 	sp.mu.RLock()
@@ -242,21 +353,34 @@ func (sp *SQLiteProvider) BeginTx(ctx context.Context) (storage.Transaction, err
 	}
 
 	return &SQLiteTransaction{
-		tx: tx,
-		drafts: &DraftStore{db: tx},
-		reviews: &ReviewStore{db: tx},
-		approvals: &ApprovalStore{db: tx},
-		activities: &ReviewActivityStore{db: tx},
-		snapshots: &SnapshotStore{db: tx},
-		audit: &AuditStore{db: tx},
+		tx:                tx,
+		drafts:            &DraftStore{db: tx},
+		reviews:           &ReviewStore{db: tx},
+		approvals:         &ApprovalStore{db: tx},
+		activities:        &ReviewActivityStore{db: tx},
+		snapshots:         &SnapshotStore{db: tx},
+		audit:             &AuditStore{db: tx},
 		executionRequests: &ExecutionRequestStore{db: &SQLiteDB{DB: tx}},
-		executionPlans: &ExecutionPlanStore{db: &SQLiteDB{DB: tx}},
-		executionSteps: &ExecutionStepStore{db: &SQLiteDB{DB: tx}},
-		executionResults: &ExecutionResultStore{db: &SQLiteDB{DB: tx}},
-		stepResults: &StepResultStore{db: &SQLiteDB{DB: tx}},
-		workerHeartbeats: &WorkerHeartbeatStore{db: &SQLiteDB{DB: tx}},
-		users: &UserStore{db: tx},
-		sessions: &SessionStore{db: tx},
+		executionPlans:    &ExecutionPlanStore{db: &SQLiteDB{DB: tx}},
+		executionSteps:    &ExecutionStepStore{db: &SQLiteDB{DB: tx}},
+		executionResults:  &ExecutionResultStore{db: &SQLiteDB{DB: tx}},
+		stepResults:       &StepResultStore{db: &SQLiteDB{DB: tx}},
+		workerHeartbeats:  &WorkerHeartbeatStore{db: &SQLiteDB{DB: tx}},
+		users:             &UserStore{db: tx},
+		sessions:          &SessionStore{db: tx},
+		securityEvents:    &SecurityEventStore{db: tx},
+		suspiciousActivities: &SuspiciousActivityStore{db: tx},
+		securityAlerts:    &SecurityAlertStore{db: tx},
+		alertRules:        &AlertRuleStore{db: tx},
+		alerts:            &AlertStore{db: tx},
+		backups:               &BackupStore{db: tx},
+		plugins:               &PluginStore{db: tx},
+		integrationConfigs:    &IntegrationConfigStore{db: tx},
+		integrationDeliveries: &IntegrationDeliveryStore{db: tx},
+		schedulerJobs:         &SchedulerJobStore{db: tx},
+		schedulerExecutions:   &ExecutionHistoryStore{db: tx},
+		rules:                 &RuleStore{db: tx},
+		drift:                 &DriftStore{db: tx},
 	}, nil
 }
 
@@ -277,6 +401,19 @@ type SQLiteTransaction struct {
 	workerHeartbeats  *WorkerHeartbeatStore
 	users             *UserStore
 	sessions          *SessionStore
+	securityEvents    *SecurityEventStore
+	suspiciousActivities *SuspiciousActivityStore
+	securityAlerts    *SecurityAlertStore
+	alertRules            *AlertRuleStore
+	alerts                *AlertStore
+	backups               *BackupStore
+	plugins               *PluginStore
+	integrationConfigs    *IntegrationConfigStore
+	integrationDeliveries *IntegrationDeliveryStore
+	schedulerJobs         storage.SchedulerStore
+	schedulerExecutions   storage.ExecutionStore
+	rules                 storage.RuleStore
+	drift                 storage.DriftStore
 }
 
 // Commit commits the transaction
@@ -349,6 +486,58 @@ func (st *SQLiteTransaction) Users() storage.UserStore {
 
 func (st *SQLiteTransaction) Sessions() storage.SessionStore {
 	return st.sessions
+}
+
+func (st *SQLiteTransaction) SecurityEvents() storage.SecurityEventStore {
+	return st.securityEvents
+}
+
+func (st *SQLiteTransaction) SuspiciousActivities() storage.SuspiciousActivityStore {
+	return st.suspiciousActivities
+}
+
+func (st *SQLiteTransaction) SecurityAlerts() storage.SecurityAlertStore {
+	return st.securityAlerts
+}
+
+func (st *SQLiteTransaction) AlertRules() storage.AlertRuleStore {
+	return st.alertRules
+}
+
+func (st *SQLiteTransaction) Alerts() storage.AlertStore {
+	return st.alerts
+}
+
+func (st *SQLiteTransaction) Backups() storage.BackupStore {
+	return st.backups
+}
+
+func (st *SQLiteTransaction) Plugins() storage.PluginStore {
+	return st.plugins
+}
+
+func (st *SQLiteTransaction) IntegrationConfigs() storage.IntegrationConfigStore {
+	return st.integrationConfigs
+}
+
+func (st *SQLiteTransaction) IntegrationDeliveries() storage.IntegrationDeliveryStore {
+	return st.integrationDeliveries
+}
+
+func (st *SQLiteTransaction) SchedulerJobs() storage.SchedulerStore {
+	return st.schedulerJobs
+}
+
+func (st *SQLiteTransaction) SchedulerExecutions() storage.ExecutionStore {
+	return st.schedulerExecutions
+}
+
+func (st *SQLiteTransaction) Rules() storage.RuleStore {
+	return st.rules
+}
+
+func (st *SQLiteTransaction) Drift() storage.DriftStore {
+	return st.drift
 }
 
 // DBProvider is an interface for the underlying database (sql.DB or sql.Tx)

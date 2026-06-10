@@ -22,11 +22,11 @@ var AllowedReviewTransitions = []ValidStatusTransition{
 // GetReviewStatusDescription returns a human-readable description of a review status
 func GetReviewStatusDescription(status string) string {
 	descriptions := map[string]string{
-		"draft_review":   "In preparation, not yet active",
-		"active_review":  "Under review, awaiting decisions",
-		"approved":       "Review approved, awaiting execution",
-		"rejected":       "Review rejected, no changes",
-		"closed":         "Review complete and archived",
+		"draft_review":  "In preparation, not yet active",
+		"active_review": "Under review, awaiting decisions",
+		"approved":      "Review approved, awaiting execution",
+		"rejected":      "Review rejected, no changes",
+		"closed":        "Review complete and archived",
 	}
 	if desc, ok := descriptions[status]; ok {
 		return desc

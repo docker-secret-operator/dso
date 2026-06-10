@@ -26,11 +26,11 @@ var AllowedApprovalTransitions = []ValidStatusTransition{
 // GetApprovalStatusDescription returns a human-readable description of an approval status
 func GetApprovalStatusDescription(status string) string {
 	descriptions := map[string]string{
-		"pending":   "Awaiting reviewer decision",
-		"approved":  "Approved by reviewer",
-		"rejected":  "Rejected by reviewer",
-		"expired":   "No decision within timeout period",
-		"closed":    "Approval process complete",
+		"pending":  "Awaiting reviewer decision",
+		"approved": "Approved by reviewer",
+		"rejected": "Rejected by reviewer",
+		"expired":  "No decision within timeout period",
+		"closed":   "Approval process complete",
 	}
 	if desc, ok := descriptions[status]; ok {
 		return desc

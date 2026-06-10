@@ -12,8 +12,9 @@ import (
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
-	authService  *auth.AuthenticationService
-	auditService *services.AuditService
+	authService      *auth.AuthenticationService
+	auditService     *services.AuditService
+	securityService  *services.SecurityService
 }
 
 // NewAuthHandler creates a new auth handler
@@ -22,6 +23,11 @@ func NewAuthHandler(authService *auth.AuthenticationService, auditService *servi
 		authService:  authService,
 		auditService: auditService,
 	}
+}
+
+// SetSecurityService sets the security service for logging security events
+func (h *AuthHandler) SetSecurityService(ss *services.SecurityService) {
+	h.securityService = ss
 }
 
 // LoginRequest is the login request payload
@@ -40,10 +46,12 @@ type LoginResponse struct {
 
 // UserInfoResponse represents a user
 type UserInfoResponse struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	Role        string `json:"role"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	DisplayName        string     `json:"display_name"`
+	Role               string     `json:"role"`
+	MustChangePassword bool       `json:"must_change_password"`
+	PasswordExpiresAt  *time.Time `json:"password_expires_at,omitempty"`
 }
 
 // SessionResponse represents a session
@@ -77,6 +85,12 @@ func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMe(w, r)
 	} else if strings.HasSuffix(r.URL.Path, "/auth/session") && r.Method == "GET" {
 		h.handleSessionInfo(w, r)
+	} else if strings.HasSuffix(r.URL.Path, "/auth/change-password") && r.Method == "POST" {
+		h.handleChangePassword(w, r)
+	} else if strings.HasSuffix(r.URL.Path, "/auth/reset-password") && r.Method == "POST" {
+		h.handleResetPassword(w, r)
+	} else if strings.HasSuffix(r.URL.Path, "/auth/refresh") && r.Method == "POST" {
+		h.handleRefresh(w, r)
 	} else {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "endpoint not found"})
@@ -110,16 +124,31 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Authenticate
 	result, err := h.authService.Authenticate(r.Context(), req.Username, req.Password, ipAddress, userAgent)
 	if err != nil {
-		if h.auditService != nil {
-			h.auditService.LogEvent(r.Context(), "system", "system", "auth.login_failure", "user", req.Username, "authentication")
+		// Log failed login as security event
+		if h.securityService != nil {
+			eventType := "LOGIN_FAILURE"
+			if err == auth.ErrRateLimited {
+				eventType = "RATE_LIMITED"
+			} else if err == auth.ErrAccountLocked {
+				eventType = "ACCOUNT_LOCKED"
+			}
+			_ = h.securityService.LogSecurityEvent(r.Context(), eventType, "medium", req.Username, nil,
+				ipAddress, &userAgent, err.Error(), map[string]interface{}{"error": err.Error()})
 		}
-		w.WriteHeader(http.StatusUnauthorized)
+
+		status := http.StatusUnauthorized
+		if err == auth.ErrRateLimited {
+			status = http.StatusTooManyRequests
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	if h.auditService != nil {
-		h.auditService.LogEvent(r.Context(), result.User.ID, result.User.Username, "auth.login_success", "session", result.Session.ID, "authentication")
+	// Log successful login as security event
+	if h.securityService != nil {
+		_ = h.securityService.LogSecurityEvent(r.Context(), "LOGIN_SUCCESS", "info", result.User.Username,
+			&result.User.ID, ipAddress, &userAgent, "Successful login", nil)
 	}
 
 	// Build response
@@ -127,10 +156,12 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Token:     result.Token,
 		ExpiresAt: result.ExpiresAt,
 		User: &UserInfoResponse{
-			ID:          result.User.ID,
-			Username:    result.User.Username,
-			DisplayName: result.User.DisplayName,
-			Role:        result.User.Role,
+			ID:                 result.User.ID,
+			Username:           result.User.Username,
+			DisplayName:        result.User.DisplayName,
+			Role:               result.User.Role,
+			MustChangePassword: result.User.MustChangePassword,
+			PasswordExpiresAt:  result.User.PasswordExpiresAt,
 		},
 		Session: &SessionResponse{
 			ID:        result.Session.ID,
@@ -192,14 +223,37 @@ func (h *AuthHandler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := &UserInfoResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
+		ID:                 user.ID,
+		Username:           user.Username,
+		DisplayName:        user.DisplayName,
+		Role:               user.Role,
+		MustChangePassword: user.MustChangePassword,
+		PasswordExpiresAt:  user.PasswordExpiresAt,
 	}
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleRefresh handles POST /api/auth/refresh — extends the current session TTL
+func (h *AuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	session := auth.CurrentSession(r.Context())
+	if session == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	newExpiry, err := h.authService.RefreshSession(r.Context(), session.ID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to refresh session"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"expires_at": newExpiry,
+	})
 }
 
 // handleSessionInfo handles GET /api/auth/session
@@ -224,22 +278,96 @@ func (h *AuthHandler) handleSessionInfo(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleChangePassword handles POST /api/auth/change-password
+func (h *AuthHandler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	user := auth.CurrentUser(r.Context())
+	if user == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "current_password and new_password are required"})
+		return
+	}
+
+	if err := h.authService.ChangePassword(r.Context(), user.ID, req.CurrentPassword, req.NewPassword); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if h.auditService != nil {
+		h.auditService.LogEvent(r.Context(), user.ID, user.Username, "auth.password_changed", "user", user.ID, "authentication")
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "password changed"})
+}
+
+// handleResetPassword handles POST /api/auth/reset-password (admin only)
+func (h *AuthHandler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	actor := auth.CurrentUser(r.Context())
+	if actor == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	var req struct {
+		UserID      string `json:"user_id"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.UserID == "" || req.NewPassword == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "user_id and new_password are required"})
+		return
+	}
+
+	if err := h.authService.AdminResetPassword(r.Context(), req.UserID, req.NewPassword); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if h.auditService != nil {
+		h.auditService.LogEvent(r.Context(), actor.ID, actor.Username, "auth.password_reset", "user", req.UserID, "authentication")
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "password reset"})
+}
+
 // logSessionError extracts the token and validates it to log specific session errors
 func (h *AuthHandler) logSessionError(r *http.Request) {
 	if h.auditService == nil {
 		return
 	}
-	
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 		return
 	}
-	
+
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	if token == "" {
 		return
 	}
-	
+
 	_, err := h.authService.ValidateSession(r.Context(), token)
 	if err != nil {
 		action := "auth.session_invalid"

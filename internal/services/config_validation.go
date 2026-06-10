@@ -36,13 +36,13 @@ var ForbiddenSecretPatterns = []string{
 
 // ConfigValidationResult contains validation results
 type ConfigValidationResult struct {
-	Valid       bool
-	Errors      []string
-	Warnings    []string
-	Info        []string
-	HasMappings bool
+	Valid        bool
+	Errors       []string
+	Warnings     []string
+	Info         []string
+	HasMappings  bool
 	MappingCount int
-	SecretCount int
+	SecretCount  int
 }
 
 // ValidateDraftConfig validates draft configuration content

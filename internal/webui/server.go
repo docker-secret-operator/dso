@@ -27,8 +27,8 @@ type Server struct {
 	httpServer *http.Server
 	// assets is the embedded filesystem
 	assets fs.FS
-	// apiProxy is the reverse proxy for API requests
-	apiProxy *http.Client
+	// reverseProxy is the pre-built reverse proxy for API requests
+	reverseProxy http.Handler
 }
 
 // NewServer creates a new dashboard server
@@ -42,11 +42,20 @@ func NewServer(addr, apiTarget string, logger *zap.Logger) (*Server, error) {
 		return nil, fmt.Errorf("failed to get embedded assets: %w", err)
 	}
 
-	srv := &Server{
-		Addr:      addr,
+	reverseProxy, err := NewReverseProxy(ProxyConfig{
 		APITarget: apiTarget,
 		Logger:    logger,
-		assets:    assets,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reverse proxy: %w", err)
+	}
+
+	srv := &Server{
+		Addr:         addr,
+		APITarget:    apiTarget,
+		Logger:       logger,
+		assets:       assets,
+		reverseProxy: reverseProxy,
 	}
 
 	// Create the router
@@ -121,13 +130,7 @@ func (s *Server) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create reverse proxy and proxy the request
-	proxy := NewReverseProxy(ProxyConfig{
-		APITarget: s.APITarget,
-		Logger:    s.Logger,
-	})
-
-	proxy.ServeHTTP(w, r)
+	s.reverseProxy.ServeHTTP(w, r)
 }
 
 // handleWebSocketProxy upgrades and proxies WebSocket connections

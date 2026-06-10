@@ -85,6 +85,66 @@ func (ss *SessionStore) DeleteExpired(ctx context.Context) error {
 	return nil
 }
 
+// ListByUserID retrieves all sessions for a user
+func (ss *SessionStore) ListByUserID(ctx context.Context, userID string) ([]*storage.Session, error) {
+	query := `SELECT id, user_id, token_hash, ip_address, user_agent, created_at, expires_at, last_activity FROM sessions WHERE user_id = ? ORDER BY created_at DESC`
+	rows, err := ss.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*storage.Session
+	for rows.Next() {
+		var s storage.Session
+		if err := rows.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.IPAddress, &s.UserAgent, &s.CreatedAt, &s.ExpiresAt, &s.LastActivity); err != nil {
+			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		sessions = append(sessions, &s)
+	}
+	return sessions, nil
+}
+
+// DeleteAllByUserID removes all sessions for a user
+func (ss *SessionStore) DeleteAllByUserID(ctx context.Context, userID string) error {
+	query := `DELETE FROM sessions WHERE user_id = ?`
+	_, err := ss.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user sessions: %w", err)
+	}
+	return nil
+}
+
+// ExtendSession updates the expiry of an existing session
+func (ss *SessionStore) ExtendSession(ctx context.Context, sessionID string, newExpiry time.Time) error {
+	query := `UPDATE sessions SET expires_at = ? WHERE id = ?`
+	_, err := ss.db.ExecContext(ctx, query, newExpiry, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to extend session: %w", err)
+	}
+	return nil
+}
+
+// ListAll retrieves all active sessions across all users
+func (ss *SessionStore) ListAll(ctx context.Context) ([]*storage.Session, error) {
+	query := `SELECT id, user_id, token_hash, ip_address, user_agent, created_at, expires_at, last_activity FROM sessions ORDER BY created_at DESC`
+	rows, err := ss.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*storage.Session
+	for rows.Next() {
+		var s storage.Session
+		if err := rows.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.IPAddress, &s.UserAgent, &s.CreatedAt, &s.ExpiresAt, &s.LastActivity); err != nil {
+			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		sessions = append(sessions, &s)
+	}
+	return sessions, nil
+}
+
 // Delete removes a specific session
 func (ss *SessionStore) Delete(ctx context.Context, sessionID string) error {
 	query := `DELETE FROM sessions WHERE id = ?`

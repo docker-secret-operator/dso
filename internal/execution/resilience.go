@@ -51,16 +51,16 @@ type DeadLetterQueueItem struct {
 
 // ResilienceManager handles execution resilience and recovery
 type ResilienceManager struct {
-	cancellations      map[string]*ExecutionCancellation
-	pauses             map[string]*ExecutionPause
-	timeouts           map[string]*ExecutionTimeout
-	deadLetterQueue    map[string]*DeadLetterQueueItem
-	recoveryState      map[string]interface{}
-	dlqCounter         int64
-	mutex              sync.RWMutex
-	auditEvents        *ExecutionAuditEvents
-	workerManager      *WorkerManager
-	executionQueue     *ExecutionQueue
+	cancellations   map[string]*ExecutionCancellation
+	pauses          map[string]*ExecutionPause
+	timeouts        map[string]*ExecutionTimeout
+	deadLetterQueue map[string]*DeadLetterQueueItem
+	recoveryState   map[string]interface{}
+	dlqCounter      int64
+	mutex           sync.RWMutex
+	auditEvents     *ExecutionAuditEvents
+	workerManager   *WorkerManager
+	executionQueue  *ExecutionQueue
 }
 
 // NewResilienceManager creates a new resilience manager
@@ -297,7 +297,7 @@ func (rm *ResilienceManager) RetryDLQItem(ctx context.Context, itemID string) er
 	}
 
 	item.RetryCount++
-	
+
 	if rm.executionQueue != nil {
 		queueItem := &ExecutionQueueItem{
 			ExecutionID:   item.ExecutionID,
@@ -453,12 +453,12 @@ func (rm *ResilienceManager) RecoverQueueState(ctx context.Context) error {
 
 // ResilienceMetrics represents resilience statistics
 type ResilienceMetrics struct {
-	CancelledCount     int
-	PausedCount        int
-	TimeoutCount       int
-	DeadLetterCount    int
-	RecoveredCount     int
-	WorkerFailures     int
+	CancelledCount  int
+	PausedCount     int
+	TimeoutCount    int
+	DeadLetterCount int
+	RecoveredCount  int
+	WorkerFailures  int
 }
 
 // GetMetrics returns current resilience metrics

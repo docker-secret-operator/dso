@@ -22,12 +22,12 @@ func createTestRESTServer() *RESTServer {
 	hub := NewHub(logger)
 	go hub.Run()
 	return &RESTServer{
-		Cache:              agent.NewSecretCache(1 * time.Hour),
-		Config:             &config.Config{},
-		Logger:             logger,
-		Hub:                hub,
-		EventStore:         NewEventStore(100, hub),
-		PermissionMatrix:   auth.NewPermissionMatrix(),
+		Cache:                   agent.NewSecretCache(1 * time.Hour),
+		Config:                  &config.Config{},
+		Logger:                  logger,
+		Hub:                     hub,
+		EventStore:              NewEventStore(100, hub),
+		PermissionMatrix:        auth.NewPermissionMatrix(),
 		AuthorizationMiddleware: auth.NewAuthorizationMiddleware(),
 	}
 }
@@ -65,30 +65,6 @@ func TestRESTServer_HealthNoAuth(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Health endpoint should not require auth, got status %d", w.Code)
-	}
-}
-
-// ============================================================================
-// Authorization Tests
-// ============================================================================
-
-// TestRESTServer_Authorized_NoAuth returns true when no auth configured
-func TestRESTServer_Authorized_NoAuth(t *testing.T) {
-	server := createTestRESTServer()
-	req := httptest.NewRequest("GET", "/api/secrets", nil)
-
-	if !server.authorized(req) {
-		t.Error("Should be authorized when no auth is configured")
-	}
-}
-
-// TestRESTServer_Authorized_NoAuthConfigured accepts all when no auth configured
-func TestRESTServer_Authorized_NoAuthConfigured(t *testing.T) {
-	server := createTestRESTServer()
-	req := httptest.NewRequest("GET", "/api/secrets", nil)
-
-	if !server.authorized(req) {
-		t.Error("Should be authorized when no auth is configured")
 	}
 }
 

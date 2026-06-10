@@ -263,13 +263,13 @@ func (eae *ExecutionAuditEvents) LogExecutionFailed(executionID string, correlat
 // LogWorkerRegistered logs when a worker registers
 func (eae *ExecutionAuditEvents) LogWorkerRegistered(workerID string, capabilities []string) {
 	event := OrchestrationAuditEvent{
-		ID:            fmt.Sprintf("audit-%d", time.Now().UnixNano()),
-		Action:        "worker.registered",
-		Status:        "success",
-		ResourceID:    workerID,
-		ResourceType:  "worker",
-		Details:       fmt.Sprintf("registered with %d capabilities", len(capabilities)),
-		Timestamp:     time.Now(),
+		ID:           fmt.Sprintf("audit-%d", time.Now().UnixNano()),
+		Action:       "worker.registered",
+		Status:       "success",
+		ResourceID:   workerID,
+		ResourceType: "worker",
+		Details:      fmt.Sprintf("registered with %d capabilities", len(capabilities)),
+		Timestamp:    time.Now(),
 	}
 	eae.events = append(eae.events, event)
 	if eae.persister != nil {
@@ -280,13 +280,13 @@ func (eae *ExecutionAuditEvents) LogWorkerRegistered(workerID string, capabiliti
 // LogWorkerUnhealthy logs when a worker becomes unhealthy
 func (eae *ExecutionAuditEvents) LogWorkerUnhealthy(workerID string, reason string) {
 	event := OrchestrationAuditEvent{
-		ID:            fmt.Sprintf("audit-%d", time.Now().UnixNano()),
-		Action:        "worker.unhealthy",
-		Status:        "failure",
-		ResourceID:    workerID,
-		ResourceType:  "worker",
-		Details:       fmt.Sprintf("became unhealthy: %s", reason),
-		Timestamp:     time.Now(),
+		ID:           fmt.Sprintf("audit-%d", time.Now().UnixNano()),
+		Action:       "worker.unhealthy",
+		Status:       "failure",
+		ResourceID:   workerID,
+		ResourceType: "worker",
+		Details:      fmt.Sprintf("became unhealthy: %s", reason),
+		Timestamp:    time.Now(),
 	}
 	eae.events = append(eae.events, event)
 	if eae.persister != nil {
@@ -297,13 +297,13 @@ func (eae *ExecutionAuditEvents) LogWorkerUnhealthy(workerID string, reason stri
 // LogWorkerStopped logs when a worker stops
 func (eae *ExecutionAuditEvents) LogWorkerStopped(workerID string, reason string) {
 	event := OrchestrationAuditEvent{
-		ID:            fmt.Sprintf("audit-%d", time.Now().UnixNano()),
-		Action:        "worker.stopped",
-		Status:        "success",
-		ResourceID:    workerID,
-		ResourceType:  "worker",
-		Details:       fmt.Sprintf("stopped: %s", reason),
-		Timestamp:     time.Now(),
+		ID:           fmt.Sprintf("audit-%d", time.Now().UnixNano()),
+		Action:       "worker.stopped",
+		Status:       "success",
+		ResourceID:   workerID,
+		ResourceType: "worker",
+		Details:      fmt.Sprintf("stopped: %s", reason),
+		Timestamp:    time.Now(),
 	}
 	eae.events = append(eae.events, event)
 	if eae.persister != nil {

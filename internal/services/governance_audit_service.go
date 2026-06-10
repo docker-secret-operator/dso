@@ -20,7 +20,7 @@ func getGovernanceActor(ctx context.Context) (string, string) {
 
 // GovernanceAuditService logs governance-related events
 type GovernanceAuditService struct {
-	auditService *AuditService
+	auditService    *AuditService
 	approvalService *ApprovalService
 }
 

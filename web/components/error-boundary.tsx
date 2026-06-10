@@ -41,9 +41,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
               <AlertCircle className="w-8 h-8 text-red-600 mx-auto mb-3" />
               <h3 className="text-sm font-semibold text-red-900 mb-1">Something went wrong</h3>
               <p className="text-xs text-red-700 mb-4">{this.state.error?.message || 'An error occurred'}</p>
-              <Button onClick={this.handleReset} size="sm" variant="outline">
-                Try again
-              </Button>
+              <div className="flex gap-2 justify-center">
+                <Button onClick={this.handleReset} size="sm" variant="outline">
+                  Try again
+                </Button>
+                <Button onClick={() => window.location.reload()} size="sm" variant="outline">
+                  Refresh page
+                </Button>
+              </div>
             </div>
           </div>
         )

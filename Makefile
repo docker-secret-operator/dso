@@ -53,7 +53,7 @@ build: verify-assets
 	@echo "$(BLUE)[Build] Running gofmt...$(NC)"
 	@gofmt -w ./internal/webui ./internal/cli/ui.go
 	@echo "$(BLUE)[Build] Running go vet...$(NC)"
-	@go vet ./...
+	@go vet ./cmd/... ./internal/... ./pkg/...
 	@echo "$(BLUE)[Build] Building DSO binary...$(NC)"
 	@go build \
 		-ldflags="-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)" \

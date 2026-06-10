@@ -22,11 +22,11 @@ type ExecutionQueueItem struct {
 
 // ExecutionQueue manages pending executions
 type ExecutionQueue struct {
-	items      []*ExecutionQueueItem
-	itemsByID  map[string]*ExecutionQueueItem
-	mutex      sync.RWMutex
-	notifyCh   chan struct{}
-	closed     bool
+	items     []*ExecutionQueueItem
+	itemsByID map[string]*ExecutionQueueItem
+	mutex     sync.RWMutex
+	notifyCh  chan struct{}
+	closed    bool
 }
 
 // NewExecutionQueue creates a new execution queue

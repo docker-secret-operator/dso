@@ -45,37 +45,37 @@ func (h *OperationsTraceHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 // TraceEventResponse represents a trace event
 type TraceEventResponse struct {
-	ID              string    `json:"id"`
-	CorrelationID   string    `json:"correlation_id"`
-	ExecutionID     string    `json:"execution_id"`
-	Action          string    `json:"action"`
-	Status          string    `json:"status"`
-	Details         string    `json:"details"`
-	Timestamp       time.Time `json:"timestamp"`
-	DurationMs      int       `json:"duration_ms,omitempty"`
+	ID            string    `json:"id"`
+	CorrelationID string    `json:"correlation_id"`
+	ExecutionID   string    `json:"execution_id"`
+	Action        string    `json:"action"`
+	Status        string    `json:"status"`
+	Details       string    `json:"details"`
+	Timestamp     time.Time `json:"timestamp"`
+	DurationMs    int       `json:"duration_ms,omitempty"`
 }
 
 // TraceExplorerResponse represents a complete trace
 type TraceExplorerResponse struct {
-	CorrelationID   string                 `json:"correlation_id"`
-	ExecutionID     string                 `json:"execution_id"`
-	Status          string                 `json:"status"`
-	StartTime       time.Time              `json:"start_time"`
-	EndTime         *time.Time             `json:"end_time,omitempty"`
-	Duration        string                 `json:"duration"`
-	EventCount      int                    `json:"event_count"`
-	Events          []*TraceEventResponse  `json:"events"`
-	Timeline        []*TimelineEvent       `json:"timeline"`
-	StatusTransitions []*StatusTransition  `json:"status_transitions"`
-	FailureDetails  *FailureDetails        `json:"failure_details,omitempty"`
+	CorrelationID     string                `json:"correlation_id"`
+	ExecutionID       string                `json:"execution_id"`
+	Status            string                `json:"status"`
+	StartTime         time.Time             `json:"start_time"`
+	EndTime           *time.Time            `json:"end_time,omitempty"`
+	Duration          string                `json:"duration"`
+	EventCount        int                   `json:"event_count"`
+	Events            []*TraceEventResponse `json:"events"`
+	Timeline          []*TimelineEvent      `json:"timeline"`
+	StatusTransitions []*StatusTransition   `json:"status_transitions"`
+	FailureDetails    *FailureDetails       `json:"failure_details,omitempty"`
 }
 
 // TimelineEvent represents an event in the timeline
 type TimelineEvent struct {
-	Time     time.Time `json:"time"`
-	Action   string    `json:"action"`
-	Details  string    `json:"details"`
-	Status   string    `json:"status"`
+	Time    time.Time `json:"time"`
+	Action  string    `json:"action"`
+	Details string    `json:"details"`
+	Status  string    `json:"status"`
 }
 
 // StatusTransition represents a status transition

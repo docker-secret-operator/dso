@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +47,12 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// Initialize state tracker and lock manager for crash recovery and synchronization
 	// Note: StateTracker is best-effort (optional), but LockManager is CRITICAL for rotation safety
-	stateTracker, err := NewStateTracker("/var/lib/dso/state", logger)
+	statePath := "/var/lib/dso/state"
+	if err2 := os.MkdirAll(statePath, 0700); err2 != nil {
+		statePath = os.TempDir() + "/dso-state"
+		_ = os.MkdirAll(statePath, 0700)
+	}
+	stateTracker, err := NewStateTracker(statePath, logger)
 	if err != nil {
 		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
 			zap.Error(err))
@@ -56,7 +62,12 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// CRITICAL: Lock manager must be initialized. Rotation safety depends on it.
 	// Fail fast if lock manager initialization fails to prevent data corruption.
-	lockManager, err := rotation.NewLockManager("/var/lib/dso/locks", logger)
+	lockPath := "/var/lib/dso/locks"
+	if err2 := os.MkdirAll(lockPath, 0700); err2 != nil {
+		lockPath = os.TempDir() + "/dso-locks"
+		_ = os.MkdirAll(lockPath, 0700)
+	}
+	lockManager, err := rotation.NewLockManager(lockPath, logger)
 	if err != nil {
 		logger.Error("CRITICAL: Failed to initialize rotation lock manager - refusing to start",
 			zap.Error(err))

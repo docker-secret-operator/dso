@@ -20,29 +20,29 @@ const (
 
 // Worker represents an execution worker
 type Worker struct {
-	ID                string
-	State             WorkerState
-	Capabilities      []string
-	MaxConcurrent     int
-	CurrentlyRunning  int
-	CompletedCount    int
-	FailedCount       int
-	LastHeartbeat     time.Time
-	RegisteredAt      time.Time
-	Version           int
-	mutex             sync.RWMutex
+	ID               string
+	State            WorkerState
+	Capabilities     []string
+	MaxConcurrent    int
+	CurrentlyRunning int
+	CompletedCount   int
+	FailedCount      int
+	LastHeartbeat    time.Time
+	RegisteredAt     time.Time
+	Version          int
+	mutex            sync.RWMutex
 }
 
 // WorkerCapabilities defines what a worker can do
 type WorkerCapabilities struct {
-	CanRotateSecrets      bool
-	CanVerifyRotation     bool
-	CanUpdateConfig       bool
-	CanNotifyTeam         bool
-	CanExecuteArbitrary   bool
-	SupportedProviders    []string
-	MaxConcurrentSteps    int
-	StepTimeoutSeconds    int
+	CanRotateSecrets    bool
+	CanVerifyRotation   bool
+	CanUpdateConfig     bool
+	CanNotifyTeam       bool
+	CanExecuteArbitrary bool
+	SupportedProviders  []string
+	MaxConcurrentSteps  int
+	StepTimeoutSeconds  int
 }
 
 // Heartbeat represents worker health status

@@ -127,15 +127,15 @@ type UpdateReviewRequest struct {
 
 // ReviewResponse represents a review
 type ReviewResponse struct {
-	ID            string    `json:"id"`
-	DraftID       string    `json:"draft_id"`
-	CreatedBy     string    `json:"created_by,omitempty"`
-	Status        string    `json:"status"`
-	Title         string    `json:"title,omitempty"`
-	Description   string    `json:"description,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	ModifiedAt    time.Time `json:"modified_at"`
-	CommentCount  int       `json:"comment_count,omitempty"`
+	ID           string    `json:"id"`
+	DraftID      string    `json:"draft_id"`
+	CreatedBy    string    `json:"created_by,omitempty"`
+	Status       string    `json:"status"`
+	Title        string    `json:"title,omitempty"`
+	Description  string    `json:"description,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	ModifiedAt   time.Time `json:"modified_at"`
+	CommentCount int       `json:"comment_count,omitempty"`
 }
 
 // CommentRequest represents adding a comment
@@ -156,10 +156,10 @@ type CommentResponse struct {
 
 // HistoryEntry represents a timeline entry
 type HistoryEntry struct {
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"` // "status_change", "comment", "created"
-	Actor     string    `json:"actor"`
-	Message   string    `json:"message"`
+	Timestamp time.Time              `json:"timestamp"`
+	Type      string                 `json:"type"` // "status_change", "comment", "created"
+	Actor     string                 `json:"actor"`
+	Message   string                 `json:"message"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -454,14 +454,14 @@ func (h *ReviewHandler) AddComment(w http.ResponseWriter, r *http.Request, revie
 
 func (h *ReviewHandler) reviewToResponse(review *storage.Review) ReviewResponse {
 	return ReviewResponse{
-		ID:         review.ID,
-		DraftID:    review.DraftID,
-		CreatedBy:  review.CreatedBy,
-		Status:     review.Status,
-		Title:      review.Title,
+		ID:          review.ID,
+		DraftID:     review.DraftID,
+		CreatedBy:   review.CreatedBy,
+		Status:      review.Status,
+		Title:       review.Title,
 		Description: review.Description,
-		CreatedAt:  review.CreatedAt,
-		ModifiedAt: review.ModifiedAt,
+		CreatedAt:   review.CreatedAt,
+		ModifiedAt:  review.ModifiedAt,
 	}
 }
 

@@ -10,58 +10,83 @@ func NewPermissionMatrix() *PermissionMatrix {
 	return &PermissionMatrix{
 		Rules: map[string][]string{
 			// Public endpoints (no auth required)
-			"/health":              {},
-			"/api/auth/login":      {},
-			"/api/events":          {},
+			"/health":         {},
+			"/api/auth/login": {},
+			"/api/events":     {},
 
 			// Authentication endpoints (requires authentication)
-			"/api/auth/logout":     {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
-			"/api/auth/me":         {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
-			"/api/auth/session":    {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/auth/logout":  {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/auth/me":      {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/auth/session": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
 
 			// Dashboard endpoints (requires viewer+)
-			"/api/dashboard":       {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/dashboard": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
 
 			// Operations endpoints (requires viewer+)
-			"/api/operations":      {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/operations":           {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
 			"/api/operations/dlq/retry": {RoleOperator, RoleAdmin},
 
 			// Audit endpoints (requires viewer+)
-			"/api/audit":           {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/audit":             {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/audit/correlation": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/audit/actors":      {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/audit/export":      {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
 
 			// Execution endpoints (requires operator+)
-			"/api/executions":      {RoleOperator, RoleAdmin},
+			"/api/executions":         {RoleOperator, RoleAdmin},
+			"/api/executions/journey": {RoleOperator, RoleAdmin},
 
 			// Orchestration endpoints (requires operator+)
-			"/api/orchestration":   {RoleOperator, RoleAdmin},
+			"/api/orchestration": {RoleOperator, RoleAdmin},
 
 			// Review endpoints (requires reviewer+)
-			"/api/reviews":         {RoleReviewer, RoleAdmin},
+			"/api/reviews": {RoleReviewer, RoleAdmin},
 
 			// Approval endpoints (requires approver+)
-			"/api/approvals":       {RoleApprover, RoleAdmin},
+			"/api/approvals": {RoleApprover, RoleAdmin},
 
 			// Governance endpoints (requires reviewer+)
-			"/api/governance":      {RoleReviewer, RoleAdmin},
-			"/api/drafts":          {RoleReviewer, RoleAdmin},
+			"/api/governance": {RoleReviewer, RoleAdmin},
+			"/api/drafts":     {RoleReviewer, RoleAdmin},
 
 			// Configuration endpoints (requires admin)
-			"/api/config":          {RoleAdmin},
-			"/api/config/raw":      {RoleAdmin},
+			"/api/config":           {RoleAdmin},
+			"/api/config/raw":       {RoleAdmin},
 			"/api/config/providers": {RoleAdmin},
 
 			// Discovery endpoints (requires admin)
-			"/api/discovery":       {RoleAdmin},
-			"/api/discovery/docker": {RoleAdmin},
+			"/api/discovery":                 {RoleAdmin},
+			"/api/discovery/docker":          {RoleAdmin},
 			"/api/discovery/docker/mappings": {RoleAdmin},
-			"/api/discovery/refresh": {RoleAdmin},
-			"/api/discovery/metrics": {RoleAdmin},
+			"/api/discovery/refresh":         {RoleAdmin},
+			"/api/discovery/metrics":         {RoleAdmin},
 
 			// Secrets endpoints (requires operator+)
-			"/api/secrets":         {RoleOperator, RoleAdmin},
+			"/api/secrets": {RoleOperator, RoleAdmin},
 
 			// Logs endpoints (requires operator+)
-			"/api/logs":            {RoleOperator, RoleAdmin},
+			"/api/logs": {RoleOperator, RoleAdmin},
+
+			// User management (admin only)
+			"/api/users": {RoleAdmin},
+
+			// Session management (any authenticated user — lists own sessions)
+			"/api/sessions": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+
+			// Admin endpoints
+			"/api/admin/sessions": {RoleAdmin},
+
+			// Session refresh
+			"/api/auth/refresh": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+
+			// Password management
+			"/api/auth/change-password": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/auth/reset-password":  {RoleAdmin},
+
+			// Metrics analytics (requires viewer+)
+			"/api/metrics":         {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/metrics/history": {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
+			"/api/metrics/export":  {RoleViewer, RoleOperator, RoleReviewer, RoleApprover, RoleAdmin},
 		},
 	}
 }

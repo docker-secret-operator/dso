@@ -27,16 +27,16 @@ type HealthResponse struct {
 	Status      string    `json:"status"`
 	Timestamp   time.Time `json:"timestamp"`
 	Persistence struct {
-		Enabled       bool   `json:"enabled"`
-		Driver        string `json:"driver"`
-		Status        string `json:"status"`
-		MigrationVer  string `json:"migration_version,omitempty"`
-		DatabaseSize  string `json:"database_size,omitempty"`
-		WALMode       bool   `json:"wal_mode,omitempty"`
+		Enabled       bool      `json:"enabled"`
+		Driver        string    `json:"driver"`
+		Status        string    `json:"status"`
+		MigrationVer  string    `json:"migration_version,omitempty"`
+		DatabaseSize  string    `json:"database_size,omitempty"`
+		WALMode       bool      `json:"wal_mode,omitempty"`
 		LastCheckTime time.Time `json:"last_check_time"`
 	} `json:"persistence"`
-	Uptime   string `json:"uptime"`
-	Checks   []Check `json:"checks"`
+	Uptime string  `json:"uptime"`
+	Checks []Check `json:"checks"`
 }
 
 // Check represents an individual health check

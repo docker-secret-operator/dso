@@ -44,17 +44,22 @@ func BootstrapAuthSystem(ctx context.Context, userStore storage.UserStore, opts 
 		return fmt.Errorf("failed to hash admin password: %w", err)
 	}
 
+	// Force password change when the default "admin" password is used
+	mustChange := opts.AdminPassword == "admin"
+
 	// Create admin user
 	now := time.Now()
 	admin := &storage.User{
-		ID:           uuid.New().String(),
-		Username:     opts.AdminUsername,
-		PasswordHash: passwordHash,
-		DisplayName:  "Administrator",
-		Role:         "admin",
-		Disabled:     false,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                 uuid.New().String(),
+		Username:           opts.AdminUsername,
+		PasswordHash:       passwordHash,
+		DisplayName:        "Administrator",
+		Role:               "admin",
+		Disabled:           false,
+		MustChangePassword: mustChange,
+		PasswordChangedAt:  &now,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	if err := userStore.Create(ctx, admin); err != nil {

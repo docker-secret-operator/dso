@@ -567,13 +567,13 @@ func (d *DiscoveryAPI) HandleGetMetrics(w http.ResponseWriter, r *http.Request) 
 	isFresh := d.cache.IsFresh()
 
 	response := map[string]interface{}{
-		"cache_hits":        metrics.Hits,
-		"cache_misses":      metrics.Misses,
-		"refresh_count":     metrics.RefreshCount,
+		"cache_hits":         metrics.Hits,
+		"cache_misses":       metrics.Misses,
+		"refresh_count":      metrics.RefreshCount,
 		"refresh_latency_ms": metrics.RefreshLatency.Milliseconds(),
-		"cache_age_ms":      cacheAge.Milliseconds(),
-		"is_fresh":          isFresh,
-		"timestamp":         time.Now().UTC().Format(time.RFC3339),
+		"cache_age_ms":       cacheAge.Milliseconds(),
+		"is_fresh":           isFresh,
+		"timestamp":          time.Now().UTC().Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

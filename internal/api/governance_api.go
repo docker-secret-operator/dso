@@ -190,26 +190,26 @@ func (h *GovernanceHandler) checkApprovalExpiration(w http.ResponseWriter, r *ht
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"approval_id":    approvalID,
-		"is_expired":     expStatus.IsExpired,
-		"expires_at":     expStatus.ExpiresAt,
-		"time_remaining": expStatus.TimeRemaining.String(),
+		"approval_id":     approvalID,
+		"is_expired":      expStatus.IsExpired,
+		"expires_at":      expStatus.ExpiresAt,
+		"time_remaining":  expStatus.TimeRemaining.String(),
 		"percentage_used": int(expStatus.PercentageUsed),
 	})
 }
 
 // GovernanceDashboard represents the governance dashboard
 type GovernanceDashboard struct {
-	TotalWorkflows      int                        `json:"total_workflows"`
-	TotalViolations     int                        `json:"total_violations"`
-	CriticalViolations  int                        `json:"critical_violations"`
-	WarningViolations   int                        `json:"warning_violations"`
-	InfoViolations      int                        `json:"info_violations"`
-	HealthScore         int                        `json:"health_score"` // 0-100
-	RiskLevel           string                     `json:"risk_level"` // low, medium, high, critical
-	PolicyComplianceMap map[string]int             `json:"policy_compliance_map"` // policy -> percentage
-	ViolationsByType    map[string]int             `json:"violations_by_type"`
-	RecentViolations    []policy.PolicyViolation   `json:"recent_violations"`
+	TotalWorkflows      int                      `json:"total_workflows"`
+	TotalViolations     int                      `json:"total_violations"`
+	CriticalViolations  int                      `json:"critical_violations"`
+	WarningViolations   int                      `json:"warning_violations"`
+	InfoViolations      int                      `json:"info_violations"`
+	HealthScore         int                      `json:"health_score"`          // 0-100
+	RiskLevel           string                   `json:"risk_level"`            // low, medium, high, critical
+	PolicyComplianceMap map[string]int           `json:"policy_compliance_map"` // policy -> percentage
+	ViolationsByType    map[string]int           `json:"violations_by_type"`
+	RecentViolations    []policy.PolicyViolation `json:"recent_violations"`
 }
 
 // getGovernanceDashboard returns governance overview

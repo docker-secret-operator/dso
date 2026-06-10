@@ -42,10 +42,10 @@ func TestSessionExpirationEnforcement(t *testing.T) {
 // TestPrivilegeEscalationPrevention verifies role boundaries using CanAccessEndpoint
 func TestPrivilegeEscalationPrevention(t *testing.T) {
 	tests := []struct {
-		name        string
-		userRole    string
+		name         string
+		userRole     string
 		requiredRole string
-		shouldAllow bool
+		shouldAllow  bool
 	}{
 		// Viewer cannot escalate
 		{"viewer_cannot_access_operator", RoleViewer, RoleOperator, false},
@@ -97,9 +97,9 @@ func TestPrivilegeEscalationPrevention(t *testing.T) {
 // TestAuthenticationBypassPrevention verifies missing/invalid tokens are rejected
 func TestAuthenticationBypassPrevention(t *testing.T) {
 	tests := []struct {
-		name           string
-		authHeader     string
-		expectedValid  bool
+		name          string
+		authHeader    string
+		expectedValid bool
 	}{
 		{"empty_header", "", false},
 		{"missing_bearer_prefix", "invalid_token", false},

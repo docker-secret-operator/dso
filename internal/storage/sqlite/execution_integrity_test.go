@@ -281,19 +281,19 @@ func TestExecutionIntegrity_ExecutionPlan_1to1_Relationship(t *testing.T) {
 
 	// Create plan for request
 	plan := &storage.ExecutionPlan{
-		ID:                  "plan-1to1-001",
-		ExecutionID:         req.ID,
-		CorrelationID:       "corr-1to1-001",
-		ApprovalID:          "approval-001",
-		DraftID:             "draft-001",
-		Status:              "draft",
-		TotalSteps:          3,
-		EstimatedDuration:   int(time.Minute * 5 / time.Millisecond),
-		RiskScore:           25,
+		ID:                "plan-1to1-001",
+		ExecutionID:       req.ID,
+		CorrelationID:     "corr-1to1-001",
+		ApprovalID:        "approval-001",
+		DraftID:           "draft-001",
+		Status:            "draft",
+		TotalSteps:        3,
+		EstimatedDuration: int(time.Minute * 5 / time.Millisecond),
+		RiskScore:         25,
 		AffectedResources: jsonMarshal([]string{}),
-		RollbackAvailable:   true,
-		CreatedAt:           time.Now(),
-		Version:             1,
+		RollbackAvailable: true,
+		CreatedAt:         time.Now(),
+		Version:           1,
 	}
 
 	if err := planStore.Create(ctx, plan); err != nil {
@@ -304,19 +304,19 @@ func TestExecutionIntegrity_ExecutionPlan_1to1_Relationship(t *testing.T) {
 
 	// Try to create second plan for same request
 	plan2 := &storage.ExecutionPlan{
-		ID:                  "plan-1to1-002",
-		ExecutionID:         req.ID,
-		CorrelationID:       "corr-1to1-002",
-		ApprovalID:          "approval-001",
-		DraftID:             "draft-001",
-		Status:              "draft",
-		TotalSteps:          2,
-		EstimatedDuration:   int(time.Minute * 3 / time.Millisecond),
-		RiskScore:           20,
+		ID:                "plan-1to1-002",
+		ExecutionID:       req.ID,
+		CorrelationID:     "corr-1to1-002",
+		ApprovalID:        "approval-001",
+		DraftID:           "draft-001",
+		Status:            "draft",
+		TotalSteps:        2,
+		EstimatedDuration: int(time.Minute * 3 / time.Millisecond),
+		RiskScore:         20,
 		AffectedResources: jsonMarshal([]string{}),
-		RollbackAvailable:   false,
-		CreatedAt:           time.Now(),
-		Version:             1,
+		RollbackAvailable: false,
+		CreatedAt:         time.Now(),
+		Version:           1,
 	}
 
 	err = planStore.Create(ctx, plan2)
@@ -352,19 +352,19 @@ func TestExecutionIntegrity_ExecutionStep_Cascade(t *testing.T) {
 
 	// Create plan
 	plan := &storage.ExecutionPlan{
-		ID:                  "plan-cascade-001",
-		ExecutionID:         "req-cascade-001",
-		CorrelationID:       "corr-cascade-001",
-		ApprovalID:          "approval-001",
-		DraftID:             "draft-001",
-		Status:              "draft",
-		TotalSteps:          2,
-		EstimatedDuration:   int(time.Minute * 5 / time.Millisecond),
-		RiskScore:           30,
+		ID:                "plan-cascade-001",
+		ExecutionID:       "req-cascade-001",
+		CorrelationID:     "corr-cascade-001",
+		ApprovalID:        "approval-001",
+		DraftID:           "draft-001",
+		Status:            "draft",
+		TotalSteps:        2,
+		EstimatedDuration: int(time.Minute * 5 / time.Millisecond),
+		RiskScore:         30,
 		AffectedResources: jsonMarshal([]string{}),
-		RollbackAvailable:   true,
-		CreatedAt:           time.Now(),
-		Version:             1,
+		RollbackAvailable: true,
+		CreatedAt:         time.Now(),
+		Version:           1,
 	}
 
 	if err := planStore.Create(ctx, plan); err != nil {
@@ -454,19 +454,19 @@ func TestExecutionIntegrity_CorrelationIDPreservation(t *testing.T) {
 
 	// Create plan with same correlation ID
 	plan := &storage.ExecutionPlan{
-		ID:                  "plan-preserve-001",
-		ExecutionID:         req.ID,
-		CorrelationID:       correlationID,
-		ApprovalID:          "approval-001",
-		DraftID:             "draft-001",
-		Status:              "draft",
-		TotalSteps:          1,
-		EstimatedDuration:   int(time.Minute / time.Millisecond),
-		RiskScore:           10,
+		ID:                "plan-preserve-001",
+		ExecutionID:       req.ID,
+		CorrelationID:     correlationID,
+		ApprovalID:        "approval-001",
+		DraftID:           "draft-001",
+		Status:            "draft",
+		TotalSteps:        1,
+		EstimatedDuration: int(time.Minute / time.Millisecond),
+		RiskScore:         10,
 		AffectedResources: jsonMarshal([]string{}),
-		RollbackAvailable:   true,
-		CreatedAt:           time.Now(),
-		Version:             1,
+		RollbackAvailable: true,
+		CreatedAt:         time.Now(),
+		Version:           1,
 	}
 
 	if err := planStore.Create(ctx, plan); err != nil {

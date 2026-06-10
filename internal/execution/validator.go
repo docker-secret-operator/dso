@@ -35,11 +35,11 @@ func (v *ExecutionValidator) ValidateRequest(
 	approvalID string,
 ) (ValidationReport, error) {
 	report := ValidationReport{
-		ApprovalValid:     false,
-		GovernanceValid:   false,
-		VersionValid:      false,
-		SafetyValid:       false,
-		AllValid:          false,
+		ApprovalValid:   false,
+		GovernanceValid: false,
+		VersionValid:    false,
+		SafetyValid:     false,
+		AllValid:        false,
 	}
 
 	// Validate approval exists and is in correct state

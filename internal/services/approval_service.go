@@ -166,11 +166,11 @@ func (as *ApprovalService) CloseApproval(ctx context.Context, approvalID string)
 
 // CheckApprovalRules checks approval rules for a review
 type ApprovalRuleResult struct {
-	RuleName         string
-	Required         int
-	Received         int
-	IsMet            bool
-	Description      string
+	RuleName    string
+	Required    int
+	Received    int
+	IsMet       bool
+	Description string
 }
 
 // CheckUnanimousApproval checks if all reviewers approved

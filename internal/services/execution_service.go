@@ -12,16 +12,16 @@ import (
 
 // ExecutionService handles execution request creation, validation, and persistence
 type ExecutionService struct {
-	draftStore           storage.DraftStore
-	reviewStore          storage.ReviewStore
-	approvalStore        storage.ApprovalStore
-	executionReqStore    storage.ExecutionRequestStore
-	executionPlanStore   storage.ExecutionPlanStore
-	executionStepStore   storage.ExecutionStepStore
-	storageProvider      storage.StorageProvider
-	auditService         *AuditService
-	validator            *execution.ExecutionValidator
-	planner              *execution.ExecutionPlanner
+	draftStore         storage.DraftStore
+	reviewStore        storage.ReviewStore
+	approvalStore      storage.ApprovalStore
+	executionReqStore  storage.ExecutionRequestStore
+	executionPlanStore storage.ExecutionPlanStore
+	executionStepStore storage.ExecutionStepStore
+	storageProvider    storage.StorageProvider
+	auditService       *AuditService
+	validator          *execution.ExecutionValidator
+	planner            *execution.ExecutionPlanner
 }
 
 // NewExecutionService creates a new execution service with persistence

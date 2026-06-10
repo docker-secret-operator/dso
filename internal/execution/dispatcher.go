@@ -9,37 +9,37 @@ import (
 
 // Dispatcher manages worker assignment and execution flow
 type Dispatcher struct {
-	workerManager       *WorkerManager
-	executionQueue      *ExecutionQueue
-	executionRunner     *ExecutionRunner
-	stateMachine        *ExecutionStateMachine
-	activeExecutions    map[string]*DispatchedExecution
-	mutex               sync.RWMutex
-	stopChan            chan struct{}
-	dispatchInterval    time.Duration
+	workerManager        *WorkerManager
+	executionQueue       *ExecutionQueue
+	executionRunner      *ExecutionRunner
+	stateMachine         *ExecutionStateMachine
+	activeExecutions     map[string]*DispatchedExecution
+	mutex                sync.RWMutex
+	stopChan             chan struct{}
+	dispatchInterval     time.Duration
 	maxConcurrentWorkers int
 }
 
 // DispatchedExecution tracks an execution being processed
 type DispatchedExecution struct {
-	ExecutionID    string
-	CorrelationID  string
-	WorkerID       string
-	Status         ExecutionState
-	StartedAt      time.Time
-	CompletedAt    *time.Time
-	Duration       time.Duration
-	StepResults    []*StepResult
-	Error          *string
+	ExecutionID   string
+	CorrelationID string
+	WorkerID      string
+	Status        ExecutionState
+	StartedAt     time.Time
+	CompletedAt   *time.Time
+	Duration      time.Duration
+	StepResults   []*StepResult
+	Error         *string
 }
 
 // StepResult represents a step execution result (internal)
 type StepResult struct {
-	StepID      string
-	Status      string
-	Duration    time.Duration
-	Output      string
-	Error       *string
+	StepID   string
+	Status   string
+	Duration time.Duration
+	Output   string
+	Error    *string
 }
 
 // NewDispatcher creates a new execution dispatcher
@@ -220,14 +220,14 @@ func (d *Dispatcher) GetQueueStats(ctx context.Context) map[string]interface{} {
 
 // DispatcherMetrics represents dispatcher performance metrics
 type DispatcherMetrics struct {
-	QueuedCount        int
-	ActiveCount        int
-	CompletedCount     int
-	FailedCount        int
-	AverageDuration    time.Duration
-	ThroughputPerSec   float64
-	QueueWaitTime      time.Duration
-	DispatchWaitTime   time.Duration
+	QueuedCount      int
+	ActiveCount      int
+	CompletedCount   int
+	FailedCount      int
+	AverageDuration  time.Duration
+	ThroughputPerSec float64
+	QueueWaitTime    time.Duration
+	DispatchWaitTime time.Duration
 }
 
 // GetMetrics returns current dispatcher metrics

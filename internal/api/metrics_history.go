@@ -2,14 +2,18 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/execution"
 )
+
+const metricsRetentionDays = 30
 
 // MetricsSnapshot represents a point-in-time metrics snapshot
 type MetricsSnapshot struct {
@@ -20,25 +24,24 @@ type MetricsSnapshot struct {
 	QueueDepth        int       `json:"queue_depth"`
 	WorkerUtilization float64   `json:"worker_utilization"`
 	ActiveExecutions  int       `json:"active_executions"`
+	MemoryMB          float64   `json:"memory_mb"`
+	Goroutines        int       `json:"goroutines"`
 	CompletedCount    int       `json:"completed_count"`
 	FailedCount       int       `json:"failed_count"`
 }
 
-// MetricsCollector collects and stores historical metrics
+// MetricsCollector collects and stores historical metrics in SQLite
 type MetricsCollector struct {
 	dispatcher    *execution.Dispatcher
 	workerManager *execution.WorkerManager
-	mu            sync.RWMutex
-	snapshots     []*MetricsSnapshot
-	maxSnapshots  int
-	ticker        *time.Ticker
-	done          chan bool
+	db            *sql.DB
+	mu            sync.Mutex
+	done          chan struct{}
 	stopped       bool
-	lastMetrics   *execution.DispatcherMetrics
-	lastTime      time.Time
 }
 
-// NewMetricsCollector creates a new metrics collector
+// NewMetricsCollector creates a new metrics collector.
+// db may be nil — in that case metrics are collected but not persisted.
 func NewMetricsCollector(
 	dispatcher *execution.Dispatcher,
 	workerManager *execution.WorkerManager,
@@ -46,34 +49,40 @@ func NewMetricsCollector(
 	mc := &MetricsCollector{
 		dispatcher:    dispatcher,
 		workerManager: workerManager,
-		snapshots:     make([]*MetricsSnapshot, 0, 10080), // 7 days at 1min intervals
-		maxSnapshots:  10080,
-		done:          make(chan bool),
-		lastTime:      time.Now(),
+		done:          make(chan struct{}),
 	}
-
-	// Start collection goroutine
 	go mc.collectLoop()
-
 	return mc
 }
 
-// collectLoop captures metrics every 60 seconds
+// SetDB attaches a database connection for persistence.
+// Must be called before the first snapshot (call immediately after NewMetricsCollector).
+func (mc *MetricsCollector) SetDB(db *sql.DB) {
+	mc.mu.Lock()
+	mc.db = db
+	mc.mu.Unlock()
+}
+
+// collectLoop captures metrics every 60 seconds and purges old data daily.
 func (mc *MetricsCollector) collectLoop() {
 	ticker := time.NewTicker(60 * time.Second)
+	cleanup := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
+	defer cleanup.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			mc.captureSnapshot()
+		case <-cleanup.C:
+			mc.purgeOldSnapshots()
 		case <-mc.done:
 			return
 		}
 	}
 }
 
-// captureSnapshot captures current metrics
+// captureSnapshot captures current system and execution metrics and persists them.
 func (mc *MetricsCollector) captureSnapshot() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -81,77 +90,122 @@ func (mc *MetricsCollector) captureSnapshot() {
 	metrics := mc.dispatcher.GetMetrics(ctx)
 	workers, _ := mc.workerManager.ListWorkers(ctx)
 
-	// Calculate rates
 	now := time.Now()
-	throughput := metrics.ThroughputPerSec
+
 	successRate := 0.0
 	failureRate := 0.0
-
-	totalExecuted := metrics.CompletedCount + metrics.FailedCount
-	if totalExecuted > 0 {
-		successRate = float64(metrics.CompletedCount) / float64(totalExecuted)
-		failureRate = float64(metrics.FailedCount) / float64(totalExecuted)
+	total := metrics.CompletedCount + metrics.FailedCount
+	if total > 0 {
+		successRate = float64(metrics.CompletedCount) / float64(total)
+		failureRate = float64(metrics.FailedCount) / float64(total)
 	}
 
-	// Calculate worker utilization
 	workerUtilization := 0.0
 	if len(workers) > 0 {
-		totalCapacity := 0
-		totalRunning := 0
+		totalCap, totalRunning := 0, 0
 		for _, w := range workers {
-			totalCapacity += w.MaxConcurrent
+			totalCap += w.MaxConcurrent
 			totalRunning += w.CurrentlyRunning
 		}
-		if totalCapacity > 0 {
-			workerUtilization = float64(totalRunning) / float64(totalCapacity)
+		if totalCap > 0 {
+			workerUtilization = float64(totalRunning) / float64(totalCap)
 		}
 	}
 
-	snapshot := &MetricsSnapshot{
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	memMB := float64(memStats.Alloc) / (1024 * 1024)
+	goroutines := runtime.NumGoroutine()
+
+	snap := &MetricsSnapshot{
 		Timestamp:         now,
-		Throughput:        throughput,
+		Throughput:        metrics.ThroughputPerSec,
 		SuccessRate:       successRate,
 		FailureRate:       failureRate,
 		QueueDepth:        metrics.QueuedCount,
 		WorkerUtilization: workerUtilization,
 		ActiveExecutions:  metrics.ActiveCount,
+		MemoryMB:          memMB,
+		Goroutines:        goroutines,
 		CompletedCount:    metrics.CompletedCount,
 		FailedCount:       metrics.FailedCount,
 	}
 
 	mc.mu.Lock()
-	mc.snapshots = append(mc.snapshots, snapshot)
-	if len(mc.snapshots) > mc.maxSnapshots {
-		// Keep only the last maxSnapshots
-		mc.snapshots = mc.snapshots[len(mc.snapshots)-mc.maxSnapshots:]
-	}
-	mc.lastMetrics = &metrics
-	mc.lastTime = now
+	db := mc.db
 	mc.mu.Unlock()
+
+	if db != nil {
+		insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer insertCancel()
+		_, _ = db.ExecContext(insertCtx,
+			`INSERT INTO metrics_history
+				(timestamp, success_rate, failure_rate, throughput, queue_depth,
+				 worker_utilization, active_executions, memory_mb, goroutines)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			snap.Timestamp, snap.SuccessRate, snap.FailureRate, snap.Throughput,
+			snap.QueueDepth, snap.WorkerUtilization, snap.ActiveExecutions,
+			snap.MemoryMB, snap.Goroutines,
+		)
+	}
 }
 
-// GetHistory returns metrics history for a given period
-func (mc *MetricsCollector) GetHistory(period time.Duration) []*MetricsSnapshot {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+// purgeOldSnapshots deletes snapshots older than the retention period.
+func (mc *MetricsCollector) purgeOldSnapshots() {
+	mc.mu.Lock()
+	db := mc.db
+	mc.mu.Unlock()
 
-	if len(mc.snapshots) == 0 {
-		return []*MetricsSnapshot{}
+	if db == nil {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -metricsRetentionDays)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = db.ExecContext(ctx, `DELETE FROM metrics_history WHERE timestamp < ?`, cutoff)
+}
+
+// GetHistory queries snapshots from SQLite for the given period.
+func (mc *MetricsCollector) GetHistory(period time.Duration) ([]*MetricsSnapshot, error) {
+	mc.mu.Lock()
+	db := mc.db
+	mc.mu.Unlock()
+
+	if db == nil {
+		return []*MetricsSnapshot{}, nil
 	}
 
 	cutoff := time.Now().Add(-period)
-	result := make([]*MetricsSnapshot, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	for _, snapshot := range mc.snapshots {
-		if snapshot.Timestamp.After(cutoff) {
-			result = append(result, snapshot)
-		}
+	rows, err := db.QueryContext(ctx,
+		`SELECT timestamp, success_rate, failure_rate, throughput, queue_depth,
+			worker_utilization, active_executions, memory_mb, goroutines
+		 FROM metrics_history WHERE timestamp > ? ORDER BY timestamp ASC`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	return result
+	var result []*MetricsSnapshot
+	for rows.Next() {
+		s := &MetricsSnapshot{}
+		if err := rows.Scan(
+			&s.Timestamp, &s.SuccessRate, &s.FailureRate, &s.Throughput,
+			&s.QueueDepth, &s.WorkerUtilization, &s.ActiveExecutions,
+			&s.MemoryMB, &s.Goroutines,
+		); err != nil {
+			continue
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
 }
 
-// Stop stops the metrics collector (idempotent)
+// Stop stops the metrics collector (idempotent).
 func (mc *MetricsCollector) Stop() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -161,19 +215,19 @@ func (mc *MetricsCollector) Stop() {
 	}
 }
 
-// MetricsHistoryHandler handles metrics history endpoints
+// --------------------------------------------------------------------------
+// Legacy in-process handler (used by /api/operations/metrics-history)
+// --------------------------------------------------------------------------
+
+// MetricsHistoryHandler wraps the collector for the existing route
 type MetricsHistoryHandler struct {
 	collector *MetricsCollector
 }
 
-// NewMetricsHistoryHandler creates a new metrics history handler
 func NewMetricsHistoryHandler(collector *MetricsCollector) *MetricsHistoryHandler {
-	return &MetricsHistoryHandler{
-		collector: collector,
-	}
+	return &MetricsHistoryHandler{collector: collector}
 }
 
-// ServeHTTP handles metrics history requests
 func (h *MetricsHistoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -181,30 +235,22 @@ func (h *MetricsHistoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if periodStr == "" {
 		periodStr = "1h"
 	}
-
 	period, err := parsePeriod(periodStr)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("invalid period: %v", err),
-		})
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid period: %v", err)})
 		return
 	}
 
-	history := h.collector.GetHistory(period)
-
-	response := map[string]interface{}{
-		"timestamp":  time.Now(),
-		"period":     periodStr,
-		"count":      len(history),
-		"data":       history,
-	}
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	history, _ := h.collector.GetHistory(period)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"timestamp": time.Now(),
+		"period":    periodStr,
+		"count":     len(history),
+		"data":      history,
+	})
 }
 
-// parsePeriod parses period string to duration
 func parsePeriod(period string) (time.Duration, error) {
 	switch period {
 	case "1h":
@@ -213,11 +259,12 @@ func parsePeriod(period string) (time.Duration, error) {
 		return 24 * time.Hour, nil
 	case "7d":
 		return 7 * 24 * time.Hour, nil
+	case "30d":
+		return 30 * 24 * time.Hour, nil
 	default:
-		// Try to parse as Go duration
 		d, err := time.ParseDuration(period)
 		if err != nil {
-			return 0, fmt.Errorf("invalid period format: expected 1h, 24h, 7d, or valid duration")
+			return 0, fmt.Errorf("invalid period: expected 1h, 24h, 7d, 30d")
 		}
 		return d, nil
 	}

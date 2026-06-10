@@ -162,10 +162,13 @@ func TestReverseProxyConfig(t *testing.T) {
 
 	// Create reverse proxy
 	logger := zap.NewNop()
-	proxy := NewReverseProxy(ProxyConfig{
+	proxy, err := NewReverseProxy(ProxyConfig{
 		APITarget: apiServer.URL,
 		Logger:    logger,
 	})
+	if err != nil {
+		t.Fatalf("failed to create reverse proxy: %v", err)
+	}
 
 	// Test proxying a request
 	req := httptest.NewRequest("GET", "/api/health", nil)

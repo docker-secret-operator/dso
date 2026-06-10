@@ -36,40 +36,40 @@ func NewResourceMonitor(
 
 // ResourceResponse represents runtime resources
 type ResourceResponse struct {
-	Timestamp          time.Time       `json:"timestamp"`
-	Memory             MemoryStats     `json:"memory"`
-	Runtime            RuntimeStats    `json:"runtime"`
-	Database           DatabaseStats   `json:"database"`
-	Queue              QueueStats      `json:"queue"`
-	Workers            WorkerStats     `json:"workers"`
-	ExecutionMetrics   ExecutionStats  `json:"execution_metrics"`
+	Timestamp        time.Time      `json:"timestamp"`
+	Memory           MemoryStats    `json:"memory"`
+	Runtime          RuntimeStats   `json:"runtime"`
+	Database         DatabaseStats  `json:"database"`
+	Queue            QueueStats     `json:"queue"`
+	Workers          WorkerStats    `json:"workers"`
+	ExecutionMetrics ExecutionStats `json:"execution_metrics"`
 }
 
 // MemoryStats represents memory usage
 type MemoryStats struct {
-	AllocBytes       uint64 `json:"alloc_bytes"`
-	TotalAllocBytes  uint64 `json:"total_alloc_bytes"`
-	SysBytes         uint64 `json:"sys_bytes"`
-	HeapAllocBytes   uint64 `json:"heap_alloc_bytes"`
-	HeapInuseBytes   uint64 `json:"heap_inuse_bytes"`
-	AllocMB          float64 `json:"alloc_mb"`
-	HeapAllocMB      float64 `json:"heap_alloc_mb"`
+	AllocBytes      uint64  `json:"alloc_bytes"`
+	TotalAllocBytes uint64  `json:"total_alloc_bytes"`
+	SysBytes        uint64  `json:"sys_bytes"`
+	HeapAllocBytes  uint64  `json:"heap_alloc_bytes"`
+	HeapInuseBytes  uint64  `json:"heap_inuse_bytes"`
+	AllocMB         float64 `json:"alloc_mb"`
+	HeapAllocMB     float64 `json:"heap_alloc_mb"`
 }
 
 // RuntimeStats represents runtime statistics
 type RuntimeStats struct {
-	NumGoroutine     int       `json:"num_goroutine"`
-	GOMAXPROCS       int       `json:"gomaxprocs"`
-	GCRuns           uint32    `json:"gc_runs"`
-	LastGCTime       time.Time `json:"last_gc_time"`
-	NextGCBytes      uint64    `json:"next_gc_bytes"`
+	NumGoroutine int       `json:"num_goroutine"`
+	GOMAXPROCS   int       `json:"gomaxprocs"`
+	GCRuns       uint32    `json:"gc_runs"`
+	LastGCTime   time.Time `json:"last_gc_time"`
+	NextGCBytes  uint64    `json:"next_gc_bytes"`
 }
 
 // DatabaseStats represents database connection statistics
 type DatabaseStats struct {
-	OpenConnections int `json:"open_connections"`
-	InUse           int `json:"in_use"`
-	Idle            int `json:"idle"`
+	OpenConnections int   `json:"open_connections"`
+	InUse           int   `json:"in_use"`
+	Idle            int   `json:"idle"`
 	WaitCount       int64 `json:"wait_count"`
 	WaitDuration    int64 `json:"wait_duration_ms"`
 	MaxIdleTime     int64 `json:"max_idle_time_ms"`
@@ -77,20 +77,20 @@ type DatabaseStats struct {
 
 // QueueStats represents queue statistics
 type QueueStats struct {
-	Depth           int       `json:"depth"`
-	OldestItemAge   string    `json:"oldest_item_age"`
-	OldestItemAgeMs int64     `json:"oldest_item_age_ms"`
-	IncomingRate    float64   `json:"incoming_rate_per_sec"`
-	CompletionRate  float64   `json:"completion_rate_per_sec"`
-	AverageWaitTime string    `json:"average_wait_time"`
+	Depth           int     `json:"depth"`
+	OldestItemAge   string  `json:"oldest_item_age"`
+	OldestItemAgeMs int64   `json:"oldest_item_age_ms"`
+	IncomingRate    float64 `json:"incoming_rate_per_sec"`
+	CompletionRate  float64 `json:"completion_rate_per_sec"`
+	AverageWaitTime string  `json:"average_wait_time"`
 }
 
 // WorkerStats represents worker statistics
 type WorkerStats struct {
-	TotalWorkers      int `json:"total_workers"`
-	HealthyWorkers    int `json:"healthy_workers"`
-	BusyWorkers       int `json:"busy_workers"`
-	IdleWorkers       int `json:"idle_workers"`
+	TotalWorkers       int     `json:"total_workers"`
+	HealthyWorkers     int     `json:"healthy_workers"`
+	BusyWorkers        int     `json:"busy_workers"`
+	IdleWorkers        int     `json:"idle_workers"`
 	AverageUtilization float64 `json:"average_utilization"`
 }
 
@@ -229,4 +229,3 @@ func (rm *ResourceMonitor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resources)
 }
-

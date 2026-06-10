@@ -131,8 +131,8 @@ type DLQStatsResponse struct {
 
 // FailureReasonBreakdown represents failure breakdown
 type FailureReasonBreakdown struct {
-	Reason string `json:"reason"`
-	Count  int    `json:"count"`
+	Reason     string  `json:"reason"`
+	Count      int     `json:"count"`
 	Percentage float64 `json:"percentage"`
 }
 
@@ -212,15 +212,15 @@ func (h *OperationsDLQHandler) exportDLQ(w http.ResponseWriter, r *http.Request)
 	exportItems := make([]map[string]interface{}, len(items))
 	for i, item := range items {
 		exportItems[i] = map[string]interface{}{
-			"id":              item.ID,
-			"execution_id":    item.ExecutionID,
-			"correlation_id":  item.CorrelationID,
-			"reason":          item.Reason,
-			"error_message":   item.ErrorMessage,
-			"retry_count":     item.RetryCount,
-			"max_retries":     item.MaxRetries,
-			"enqueued_at":     item.EnqueuedAt,
-			"age_hours":       time.Since(item.EnqueuedAt).Hours(),
+			"id":             item.ID,
+			"execution_id":   item.ExecutionID,
+			"correlation_id": item.CorrelationID,
+			"reason":         item.Reason,
+			"error_message":  item.ErrorMessage,
+			"retry_count":    item.RetryCount,
+			"max_retries":    item.MaxRetries,
+			"enqueued_at":    item.EnqueuedAt,
+			"age_hours":      time.Since(item.EnqueuedAt).Hours(),
 		}
 	}
 

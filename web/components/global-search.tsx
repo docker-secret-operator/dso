@@ -36,12 +36,20 @@ export function GlobalSearch() {
     refetchInterval: 30000,
   })
 
+  const { data: auditData } = useQuery({
+    queryKey: ['audit-search'],
+    queryFn: () => apiClient.getAuditEvents({ limit: 200 }),
+    refetchInterval: 60000,
+  })
+  const auditEvents = auditData?.events ?? []
+
   // Use global search hook
   const { query, isOpen, results, groupedResults, isEmpty, hasResults, handleQueryChange, handleOpenChange } =
     useGlobalSearch({
       containers,
       secrets,
       events,
+      auditEvents,
     })
 
   // Handle keyboard shortcuts

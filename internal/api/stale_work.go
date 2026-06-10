@@ -13,26 +13,26 @@ import (
 
 // StaleWorkHandler handles stale work detection
 type StaleWorkHandler struct {
-	db        *sql.DB
+	db         *sql.DB
 	resilience *execution.ResilienceManager
 }
 
 // NewStaleWorkHandler creates a new stale work handler
 func NewStaleWorkHandler(db *sql.DB, resilience *execution.ResilienceManager) *StaleWorkHandler {
 	return &StaleWorkHandler{
-		db:        db,
+		db:         db,
 		resilience: resilience,
 	}
 }
 
 // StaleWorkCategory represents a category of stale work
 type StaleWorkCategory struct {
-	Category      string         `json:"category"`
-	Count         int            `json:"count"`
-	OldestItemAge string         `json:"oldest_item_age"`
-	AgeMs         int64          `json:"age_ms"`
-	Threshold     string         `json:"threshold"`
-	Status        string         `json:"status"` // normal, warning, critical
+	Category      string           `json:"category"`
+	Count         int              `json:"count"`
+	OldestItemAge string           `json:"oldest_item_age"`
+	AgeMs         int64            `json:"age_ms"`
+	Threshold     string           `json:"threshold"`
+	Status        string           `json:"status"` // normal, warning, critical
 	Items         []*StaleWorkItem `json:"items"`
 }
 
@@ -48,9 +48,9 @@ type StaleWorkItem struct {
 
 // StaleWorkResponse represents stale work status
 type StaleWorkResponse struct {
-	Timestamp  time.Time              `json:"timestamp"`
-	Total      int                    `json:"total"`
-	Categories []*StaleWorkCategory   `json:"categories"`
+	Timestamp  time.Time            `json:"timestamp"`
+	Total      int                  `json:"total"`
+	Categories []*StaleWorkCategory `json:"categories"`
 }
 
 // ServeHTTP handles stale work requests

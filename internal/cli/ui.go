@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -121,9 +123,24 @@ Examples:
 	return cmd
 }
 
-// openBrowserURL attempts to open a URL in the default browser
+// openBrowserURL opens url in the default browser. Runs non-blocking; logs failures but does not crash.
 func openBrowserURL(url string, logger *zap.Logger) {
-	// This is a no-op on remote/headless systems, which is fine
-	// Users can manually navigate to the URL
-	logger.Debug("Browser opening not yet implemented - navigate manually", zap.String("url", url))
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		logger.Debug("Browser auto-open not supported on this OS", zap.String("goos", runtime.GOOS))
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		logger.Debug("Failed to open browser", zap.String("url", url), zap.Error(err))
+		return
+	}
+	// Detach — do not wait; let the process run independently
+	go func() { _ = cmd.Wait() }()
 }

@@ -52,6 +52,7 @@ export interface ExecutionStatusDist {
   cancelled: number;
   paused: number;
   timed_out: number;
+  [key: string]: number;
 }
 
 export interface RecoveryStats {

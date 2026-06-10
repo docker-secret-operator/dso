@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ type ExecutionHandler struct {
 	executionService *services.ExecutionService
 	approvalService  *services.ApprovalService
 	draftService     *services.DraftService
+	db               *sql.DB
 }
 
 // NewExecutionHandler creates a new execution handler
@@ -29,6 +31,11 @@ func NewExecutionHandler(
 		approvalService:  approvalService,
 		draftService:     draftService,
 	}
+}
+
+// SetDB attaches a DB connection for journey queries
+func (h *ExecutionHandler) SetDB(db *sql.DB) {
+	h.db = db
 }
 
 // ServeHTTP handles execution requests
@@ -73,8 +80,152 @@ func (h *ExecutionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /api/executions/{id}/journey - Get execution journey (Phase 5.6)
+	if strings.Contains(path, "/journey") && r.Method == http.MethodGet {
+		h.getJourney(w, r)
+		return
+	}
+
 	w.WriteHeader(http.StatusNotFound)
 	json.NewEncoder(w).Encode(map[string]string{"error": "Not found"})
+}
+
+// JourneyStep is one timestamped step in an execution's lifecycle
+type JourneyStep struct {
+	Step          string    `json:"step"`
+	Action        string    `json:"action"`
+	Status        string    `json:"status"`
+	Actor         string    `json:"actor"`
+	ActorID       string    `json:"actor_id"`
+	CorrelationID string    `json:"correlation_id"`
+	Details       string    `json:"details"`
+	Timestamp     time.Time `json:"timestamp"`
+}
+
+// ExecutionJourneyResponse is the full lifecycle of one execution
+type ExecutionJourneyResponse struct {
+	ExecutionID   string         `json:"execution_id"`
+	CorrelationID string         `json:"correlation_id"`
+	TotalSteps    int            `json:"total_steps"`
+	DurationMs    int64          `json:"duration_ms"`
+	Steps         []*JourneyStep `json:"steps"`
+	Timestamp     time.Time      `json:"timestamp"`
+}
+
+// getJourney serves GET /api/executions/{id}/journey
+func (h *ExecutionHandler) getJourney(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/executions/")
+	executionID := strings.TrimSuffix(path, "/journey")
+	if executionID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "missing execution ID"})
+		return
+	}
+
+	ctx := r.Context()
+	steps := make([]*JourneyStep, 0)
+	correlationID := ""
+
+	if h.db != nil {
+		// Query main audit_events for actor-attributed steps
+		q := `SELECT action, status, actor_name, actor_id, COALESCE(correlation_id,''),
+			COALESCE(result_message,''), timestamp
+			FROM audit_events
+			WHERE (resource_id = ? AND resource_type = 'execution')
+			ORDER BY timestamp ASC`
+		rows, err := h.db.QueryContext(ctx, q, executionID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var s JourneyStep
+				var ts time.Time
+				if err := rows.Scan(&s.Action, &s.Status, &s.Actor, &s.ActorID,
+					&s.CorrelationID, &s.Details, &ts); err == nil {
+					s.Timestamp = ts
+					s.Step = actionToStep(s.Action)
+					if correlationID == "" {
+						correlationID = s.CorrelationID
+					}
+					steps = append(steps, &s)
+				}
+			}
+		}
+
+		// Query execution_audit_events for system-level steps
+		eq := `SELECT action, status, COALESCE(details,''), correlation_id, timestamp
+			FROM execution_audit_events
+			WHERE execution_id = ?
+			ORDER BY timestamp ASC`
+		erows, err := h.db.QueryContext(ctx, eq, executionID)
+		if err == nil {
+			defer erows.Close()
+			for erows.Next() {
+				var s JourneyStep
+				var ts time.Time
+				if err := erows.Scan(&s.Action, &s.Status, &s.Details, &s.CorrelationID, &ts); err == nil {
+					s.Timestamp = ts
+					s.Actor = "system"
+					s.Step = actionToStep(s.Action)
+					if correlationID == "" {
+						correlationID = s.CorrelationID
+					}
+					steps = append(steps, &s)
+				}
+			}
+		}
+
+		// Sort steps chronologically
+		for i := 1; i < len(steps); i++ {
+			key := steps[i]
+			j := i - 1
+			for j >= 0 && steps[j].Timestamp.After(key.Timestamp) {
+				steps[j+1] = steps[j]
+				j--
+			}
+			steps[j+1] = key
+		}
+	}
+
+	var durationMs int64
+	if len(steps) >= 2 {
+		durationMs = steps[len(steps)-1].Timestamp.Sub(steps[0].Timestamp).Milliseconds()
+	}
+
+	json.NewEncoder(w).Encode(&ExecutionJourneyResponse{
+		ExecutionID:   executionID,
+		CorrelationID: correlationID,
+		TotalSteps:    len(steps),
+		DurationMs:    durationMs,
+		Steps:         steps,
+		Timestamp:     time.Now(),
+	})
+}
+
+func actionToStep(action string) string {
+	switch {
+	case strings.Contains(action, "queue"):
+		return "queued"
+	case strings.Contains(action, "start"):
+		return "started"
+	case strings.Contains(action, "pause"):
+		return "paused"
+	case strings.Contains(action, "resum"):
+		return "resumed"
+	case strings.Contains(action, "cancel"):
+		return "cancelled"
+	case strings.Contains(action, "recover"):
+		return "recovered"
+	case strings.Contains(action, "complet"):
+		return "completed"
+	case strings.Contains(action, "fail"):
+		return "failed"
+	case strings.Contains(action, "timeout"):
+		return "timed_out"
+	case strings.Contains(action, "dlq"):
+		return "dlq"
+	default:
+		return action
+	}
 }
 
 // CreateExecutionRequest represents the request to create execution
@@ -85,13 +236,13 @@ type CreateExecutionRequest struct {
 
 // ExecutionResponse represents execution request response
 type ExecutionResponse struct {
-	ID            string `json:"id"`
-	DraftID       string `json:"draft_id"`
-	ApprovalID    string `json:"approval_id"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"created_at"`
-	ExpiresAt     string `json:"expires_at"`
-	ReadinessScore int   `json:"readiness_score"`
+	ID             string `json:"id"`
+	DraftID        string `json:"draft_id"`
+	ApprovalID     string `json:"approval_id"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	ExpiresAt      string `json:"expires_at"`
+	ReadinessScore int    `json:"readiness_score"`
 }
 
 // createExecution creates a new execution request
@@ -134,12 +285,12 @@ func (h *ExecutionHandler) createExecution(w http.ResponseWriter, r *http.Reques
 	score, _ := h.executionService.GetReadinessScore(ctx, req.DraftID, req.ApprovalID)
 
 	response := ExecutionResponse{
-		ID:            execReq.ID,
-		DraftID:       execReq.DraftID,
-		ApprovalID:    execReq.ApprovalID,
-		Status:        execReq.Status,
-		CreatedAt:     execReq.CreatedAt.String(),
-		ExpiresAt:     execReq.ExpiresAt.String(),
+		ID:             execReq.ID,
+		DraftID:        execReq.DraftID,
+		ApprovalID:     execReq.ApprovalID,
+		Status:         execReq.Status,
+		CreatedAt:      execReq.CreatedAt.String(),
+		ExpiresAt:      execReq.ExpiresAt.String(),
 		ReadinessScore: score,
 	}
 
@@ -232,15 +383,15 @@ func (h *ExecutionHandler) getExecution(w http.ResponseWriter, r *http.Request) 
 
 // ExecutionPlanResponse represents execution plan response
 type ExecutionPlanResponse struct {
-	ID                string        `json:"id"`
-	ExecutionID       string        `json:"execution_id"`
-	Status            string        `json:"status"`
-	TotalSteps        int           `json:"total_steps"`
-	EstimatedDuration string        `json:"estimated_duration"`
-	RiskScore         int           `json:"risk_score"`
-	AffectedResources []string      `json:"affected_resources"`
-	RollbackAvailable bool          `json:"rollback_available"`
-	CreatedAt         string        `json:"created_at"`
+	ID                string         `json:"id"`
+	ExecutionID       string         `json:"execution_id"`
+	Status            string         `json:"status"`
+	TotalSteps        int            `json:"total_steps"`
+	EstimatedDuration string         `json:"estimated_duration"`
+	RiskScore         int            `json:"risk_score"`
+	AffectedResources []string       `json:"affected_resources"`
+	RollbackAvailable bool           `json:"rollback_available"`
+	CreatedAt         string         `json:"created_at"`
 	Steps             []StepResponse `json:"steps,omitempty"`
 }
 
@@ -366,9 +517,9 @@ func (h *ExecutionHandler) getTrace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	trace := map[string]interface{}{
-		"execution":       executionToResponse(exec),
-		"plan":            plan,
-		"correlation_id":  exec.CorrelationID,
+		"execution":      executionToResponse(exec),
+		"plan":           plan,
+		"correlation_id": exec.CorrelationID,
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -396,13 +547,13 @@ func parseInt(s string) (int, error) {
 
 // ValidationResponse represents validation result
 type ValidationResponse struct {
-	Ready             bool     `json:"ready"`
-	Score             int      `json:"score"`
-	ApprovalValid     bool     `json:"approval_valid"`
-	GovernanceValid   bool     `json:"governance_valid"`
-	VersionValid      bool     `json:"version_valid"`
-	SafetyValid       bool     `json:"safety_valid"`
-	Messages          []string `json:"messages"`
+	Ready           bool     `json:"ready"`
+	Score           int      `json:"score"`
+	ApprovalValid   bool     `json:"approval_valid"`
+	GovernanceValid bool     `json:"governance_valid"`
+	VersionValid    bool     `json:"version_valid"`
+	SafetyValid     bool     `json:"safety_valid"`
+	Messages        []string `json:"messages"`
 }
 
 // getValidation retrieves validation results
@@ -428,13 +579,13 @@ func (h *ExecutionHandler) getValidation(w http.ResponseWriter, r *http.Request)
 	}
 
 	response := ValidationResponse{
-		Ready:             score == 100,
-		Score:             score,
-		ApprovalValid:     true,
-		GovernanceValid:   true,
-		VersionValid:      true,
-		SafetyValid:       true,
-		Messages:          []string{},
+		Ready:           score == 100,
+		Score:           score,
+		ApprovalValid:   true,
+		GovernanceValid: true,
+		VersionValid:    true,
+		SafetyValid:     true,
+		Messages:        []string{},
 	}
 
 	w.WriteHeader(http.StatusOK)

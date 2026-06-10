@@ -81,17 +81,17 @@ func benchmarkCachePerformance(b *testing.B, containerCount int, targetLatency t
 		}
 
 		return &DiscoveryResponse{
-			Containers:     containers,
-			TotalCount:     containerCount,
-			ManagedCount:   0,
-			UnmanagedCount: containerCount,
-			PartialCount:   0,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		}, &MappingResponse{
-			Suggestions: make([]SecretMappingSuggestion, 0),
-			TotalCount:  0,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}, nil
+				Containers:     containers,
+				TotalCount:     containerCount,
+				ManagedCount:   0,
+				UnmanagedCount: containerCount,
+				PartialCount:   0,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			}, &MappingResponse{
+				Suggestions: make([]SecretMappingSuggestion, 0),
+				TotalCount:  0,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 	}
 
 	cache := NewDiscoveryCache(30*time.Second, refreshFn)
@@ -145,17 +145,17 @@ func TestDiscoveryCacheCorrectness(t *testing.T) {
 	refreshFn := func() (*DiscoveryResponse, *MappingResponse, error) {
 		callCount++
 		return &DiscoveryResponse{
-			Containers:     make([]ContainerMetadata, 5),
-			TotalCount:     5,
-			ManagedCount:   0,
-			UnmanagedCount: 5,
-			PartialCount:   0,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		}, &MappingResponse{
-			Suggestions: make([]SecretMappingSuggestion, 0),
-			TotalCount:  0,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}, nil
+				Containers:     make([]ContainerMetadata, 5),
+				TotalCount:     5,
+				ManagedCount:   0,
+				UnmanagedCount: 5,
+				PartialCount:   0,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			}, &MappingResponse{
+				Suggestions: make([]SecretMappingSuggestion, 0),
+				TotalCount:  0,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 	}
 
 	cache := NewDiscoveryCache(100*time.Millisecond, refreshFn)
@@ -218,17 +218,17 @@ func TestDiscoveryCacheMetrics(t *testing.T) {
 	refreshFn := func() (*DiscoveryResponse, *MappingResponse, error) {
 		refreshCount++
 		return &DiscoveryResponse{
-			Containers:     make([]ContainerMetadata, 1),
-			TotalCount:     1,
-			ManagedCount:   0,
-			UnmanagedCount: 1,
-			PartialCount:   0,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		}, &MappingResponse{
-			Suggestions: make([]SecretMappingSuggestion, 0),
-			TotalCount:  0,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}, nil
+				Containers:     make([]ContainerMetadata, 1),
+				TotalCount:     1,
+				ManagedCount:   0,
+				UnmanagedCount: 1,
+				PartialCount:   0,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			}, &MappingResponse{
+				Suggestions: make([]SecretMappingSuggestion, 0),
+				TotalCount:  0,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 	}
 
 	cache := NewDiscoveryCache(1*time.Second, refreshFn)
@@ -272,17 +272,17 @@ func TestDiscoveryCacheInvalidation(t *testing.T) {
 	refreshFn := func() (*DiscoveryResponse, *MappingResponse, error) {
 		callCount++
 		return &DiscoveryResponse{
-			Containers:     make([]ContainerMetadata, callCount),
-			TotalCount:     callCount,
-			ManagedCount:   0,
-			UnmanagedCount: callCount,
-			PartialCount:   0,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		}, &MappingResponse{
-			Suggestions: make([]SecretMappingSuggestion, 0),
-			TotalCount:  0,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}, nil
+				Containers:     make([]ContainerMetadata, callCount),
+				TotalCount:     callCount,
+				ManagedCount:   0,
+				UnmanagedCount: callCount,
+				PartialCount:   0,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			}, &MappingResponse{
+				Suggestions: make([]SecretMappingSuggestion, 0),
+				TotalCount:  0,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 	}
 
 	cache := NewDiscoveryCache(10*time.Second, refreshFn)
@@ -322,17 +322,17 @@ func TestEndpointCacheIntegration(t *testing.T) {
 		apiCallCount++
 		apiCallMutex.Unlock()
 		return &DiscoveryResponse{
-			Containers:     make([]ContainerMetadata, 3),
-			TotalCount:     3,
-			ManagedCount:   0,
-			UnmanagedCount: 3,
-			PartialCount:   0,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		}, &MappingResponse{
-			Suggestions: make([]SecretMappingSuggestion, 0),
-			TotalCount:  0,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		}, nil
+				Containers:     make([]ContainerMetadata, 3),
+				TotalCount:     3,
+				ManagedCount:   0,
+				UnmanagedCount: 3,
+				PartialCount:   0,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			}, &MappingResponse{
+				Suggestions: make([]SecretMappingSuggestion, 0),
+				TotalCount:  0,
+				Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 	}
 
 	cache := NewDiscoveryCache(500*time.Millisecond, refreshFn)

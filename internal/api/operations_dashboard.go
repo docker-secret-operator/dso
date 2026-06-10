@@ -12,11 +12,11 @@ import (
 
 // OperationsDashboardHandler handles operations console endpoints
 type OperationsDashboardHandler struct {
-	dispatcher       *execution.Dispatcher
-	workerManager    *execution.WorkerManager
-	executionQueue   *execution.ExecutionQueue
-	auditEvents      *execution.ExecutionAuditEvents
-	resilience       *execution.ResilienceManager
+	dispatcher     *execution.Dispatcher
+	workerManager  *execution.WorkerManager
+	executionQueue *execution.ExecutionQueue
+	auditEvents    *execution.ExecutionAuditEvents
+	resilience     *execution.ResilienceManager
 }
 
 // NewOperationsDashboardHandler creates a new operations dashboard handler
@@ -72,93 +72,93 @@ func (h *OperationsDashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 // DashboardResponse represents the operations dashboard
 type DashboardResponse struct {
-	Timestamp          time.Time              `json:"timestamp"`
-	OverviewKPIs       OverviewKPIs           `json:"overview_kpis"`
-	QueueHealth        QueueHealth            `json:"queue_health"`
-	WorkerHealth       WorkerHealth           `json:"worker_health"`
-	ExecutionStatus    ExecutionStatusDist    `json:"execution_status"`
-	RecoveryStats      RecoveryStats          `json:"recovery_stats"`
-	DLQStats           DLQStats               `json:"dlq_stats"`
-	RecentFailures     []*FailureEvent        `json:"recent_failures"`
-	SystemHealth       SystemHealth           `json:"system_health"`
+	Timestamp       time.Time           `json:"timestamp"`
+	OverviewKPIs    OverviewKPIs        `json:"overview_kpis"`
+	QueueHealth     QueueHealth         `json:"queue_health"`
+	WorkerHealth    WorkerHealth        `json:"worker_health"`
+	ExecutionStatus ExecutionStatusDist `json:"execution_status"`
+	RecoveryStats   RecoveryStats       `json:"recovery_stats"`
+	DLQStats        DLQStats            `json:"dlq_stats"`
+	RecentFailures  []*FailureEvent     `json:"recent_failures"`
+	SystemHealth    SystemHealth        `json:"system_health"`
 }
 
 // OverviewKPIs represents key performance indicators
 type OverviewKPIs struct {
-	SuccessRate        float64 `json:"success_rate"`
-	FailureRate        float64 `json:"failure_rate"`
-	AvgExecutionTime   string  `json:"avg_execution_time"`
-	Throughput         float64 `json:"throughput_per_sec"`
-	WorkerUtilization  float64 `json:"worker_utilization"`
-	TotalExecuted      int     `json:"total_executed"`
-	TotalSucceeded     int     `json:"total_succeeded"`
-	TotalFailed        int     `json:"total_failed"`
+	SuccessRate       float64 `json:"success_rate"`
+	FailureRate       float64 `json:"failure_rate"`
+	AvgExecutionTime  string  `json:"avg_execution_time"`
+	Throughput        float64 `json:"throughput_per_sec"`
+	WorkerUtilization float64 `json:"worker_utilization"`
+	TotalExecuted     int     `json:"total_executed"`
+	TotalSucceeded    int     `json:"total_succeeded"`
+	TotalFailed       int     `json:"total_failed"`
 }
 
 // QueueHealth represents queue status
 type QueueHealth struct {
-	Depth              int       `json:"depth"`
-	OldestItemAge      string    `json:"oldest_item_age"`
-	IncomingRate       float64   `json:"incoming_rate_per_sec"`
-	CompletionRate     float64   `json:"completion_rate_per_sec"`
-	HealthScore        int       `json:"health_score"` // 0-100
-	Status             string    `json:"status"`       // healthy, warning, critical
-	AverageWaitTime    string    `json:"avg_wait_time"`
+	Depth           int     `json:"depth"`
+	OldestItemAge   string  `json:"oldest_item_age"`
+	IncomingRate    float64 `json:"incoming_rate_per_sec"`
+	CompletionRate  float64 `json:"completion_rate_per_sec"`
+	HealthScore     int     `json:"health_score"` // 0-100
+	Status          string  `json:"status"`       // healthy, warning, critical
+	AverageWaitTime string  `json:"avg_wait_time"`
 }
 
 // WorkerHealth represents worker status
 type WorkerHealth struct {
-	TotalWorkers       int                    `json:"total_workers"`
-	HealthyWorkers     int                    `json:"healthy_workers"`
-	UnhealthyWorkers   int                    `json:"unhealthy_workers"`
-	AverageCapacity    int                    `json:"avg_capacity"`
-	AverageUtilization float64                `json:"avg_utilization"`
-	HealthScore        int                    `json:"health_score"` // 0-100
-	Status             string                 `json:"status"`       // healthy, warning, critical
-	Workers            []*WorkerHealthDetail  `json:"workers"`
+	TotalWorkers       int                   `json:"total_workers"`
+	HealthyWorkers     int                   `json:"healthy_workers"`
+	UnhealthyWorkers   int                   `json:"unhealthy_workers"`
+	AverageCapacity    int                   `json:"avg_capacity"`
+	AverageUtilization float64               `json:"avg_utilization"`
+	HealthScore        int                   `json:"health_score"` // 0-100
+	Status             string                `json:"status"`       // healthy, warning, critical
+	Workers            []*WorkerHealthDetail `json:"workers"`
 }
 
 // WorkerHealthDetail represents individual worker status
 type WorkerHealthDetail struct {
-	ID              string  `json:"id"`
-	State           string  `json:"state"`
-	Healthy         bool    `json:"healthy"`
-	Capacity        int     `json:"capacity"`
-	Running         int     `json:"running"`
-	Utilization     float64 `json:"utilization"`
-	CompletedCount  int     `json:"completed_count"`
-	FailedCount     int     `json:"failed_count"`
-	LastHeartbeat   time.Time `json:"last_heartbeat"`
+	ID             string    `json:"id"`
+	State          string    `json:"state"`
+	Healthy        bool      `json:"healthy"`
+	Capacity       int       `json:"capacity"`
+	Running        int       `json:"running"`
+	Utilization    float64   `json:"utilization"`
+	CompletedCount int       `json:"completed_count"`
+	FailedCount    int       `json:"failed_count"`
+	LastHeartbeat  time.Time `json:"last_heartbeat"`
 }
 
 // ExecutionStatusDist represents execution status distribution
 type ExecutionStatusDist struct {
-	Queued     int `json:"queued"`
-	Running    int `json:"running"`
-	Completed  int `json:"completed"`
-	Failed     int `json:"failed"`
-	Cancelled  int `json:"cancelled"`
-	Paused     int `json:"paused"`
-	TimedOut   int `json:"timed_out"`
+	Queued    int `json:"queued"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+	Paused    int `json:"paused"`
+	TimedOut  int `json:"timed_out"`
 }
 
 // RecoveryStats represents recovery event statistics
 type RecoveryStats struct {
-	WorkerFailures     int    `json:"worker_failures"`
-	AutoRecoveries     int    `json:"auto_recoveries"`
-	RecoverySuccessRate float64 `json:"recovery_success_rate"`
-	LastRecoveryTime   *time.Time `json:"last_recovery_time"`
-	CancelledCount     int    `json:"cancelled_count"`
-	PausedCount        int    `json:"paused_count"`
+	WorkerFailures      int        `json:"worker_failures"`
+	AutoRecoveries      int        `json:"auto_recoveries"`
+	RecoverySuccessRate float64    `json:"recovery_success_rate"`
+	LastRecoveryTime    *time.Time `json:"last_recovery_time"`
+	CancelledCount      int        `json:"cancelled_count"`
+	PausedCount         int        `json:"paused_count"`
 }
 
 // DLQStats represents dead letter queue statistics
 type DLQStats struct {
-	TotalItems     int       `json:"total_items"`
-	GrowthRate     float64   `json:"growth_rate_per_hour"`
-	OldestItemAge  string    `json:"oldest_item_age"`
+	TotalItems     int            `json:"total_items"`
+	GrowthRate     float64        `json:"growth_rate_per_hour"`
+	OldestItemAge  string         `json:"oldest_item_age"`
 	FailureReasons map[string]int `json:"failure_reasons"`
-	Status         string    `json:"status"` // healthy, warning, critical
+	Status         string         `json:"status"` // healthy, warning, critical
 }
 
 // FailureEvent represents a failure event
@@ -173,10 +173,10 @@ type FailureEvent struct {
 
 // SystemHealth represents overall system health
 type SystemHealth struct {
-	OverallScore   int    `json:"overall_score"` // 0-100
-	Status         string `json:"status"`        // healthy, warning, critical
-	AlertCount     int    `json:"alert_count"`
-	CriticalCount  int    `json:"critical_count"`
+	OverallScore  int    `json:"overall_score"` // 0-100
+	Status        string `json:"status"`        // healthy, warning, critical
+	AlertCount    int    `json:"alert_count"`
+	CriticalCount int    `json:"critical_count"`
 }
 
 // getDashboard returns the operations dashboard
@@ -353,7 +353,7 @@ func (h *OperationsDashboardHandler) getDashboard(w http.ResponseWriter, r *http
 		},
 		DLQStats: DLQStats{
 			TotalItems:    resilience.DeadLetterCount,
-			GrowthRate:    0.5, // Placeholder
+			GrowthRate:    0.5,  // Placeholder
 			OldestItemAge: "2h", // Placeholder
 			Status:        dlqStatus,
 		},
@@ -373,7 +373,7 @@ func (h *OperationsDashboardHandler) getDashboard(w http.ResponseWriter, r *http
 // AlertResponse represents an alert
 type AlertResponse struct {
 	ID        string    `json:"id"`
-	Type      string    `json:"type"` // queue_depth, worker_unhealthy, failure_rate, timeout_rate, dlq_growth, recovery_spike
+	Type      string    `json:"type"`     // queue_depth, worker_unhealthy, failure_rate, timeout_rate, dlq_growth, recovery_spike
 	Severity  string    `json:"severity"` // info, warning, critical
 	Message   string    `json:"message"`
 	Value     float64   `json:"value"`
@@ -491,9 +491,9 @@ func (h *OperationsDashboardHandler) getRecoveryEvents(w http.ResponseWriter, r 
 	allEvents := h.auditEvents.ListEvents()
 	for _, event := range allEvents {
 		if strings.Contains(event.Action, "worker") ||
-		   strings.Contains(event.Action, "queue") ||
-		   strings.Contains(event.Details, "Cancelled") ||
-		   strings.Contains(event.Details, "Paused") {
+			strings.Contains(event.Action, "queue") ||
+			strings.Contains(event.Details, "Cancelled") ||
+			strings.Contains(event.Details, "Paused") {
 			eventType := "unknown"
 			if strings.Contains(event.Action, "worker") {
 				eventType = "worker_failure"
@@ -526,15 +526,15 @@ func (h *OperationsDashboardHandler) getRecoveryEvents(w http.ResponseWriter, r 
 	})
 }
 
-// MetricsHistoryResponse represents historical metrics
-type MetricsHistoryResponse struct {
-	Timestamp          time.Time   `json:"timestamp"`
-	SuccessRate        float64     `json:"success_rate"`
-	FailureRate        float64     `json:"failure_rate"`
-	Throughput         float64     `json:"throughput_per_sec"`
-	QueueDepth         int         `json:"queue_depth"`
-	WorkerUtilization  float64     `json:"worker_utilization"`
-	DLQCount           int         `json:"dlq_count"`
+// OpsMetricsSnapshot represents historical metrics
+type OpsMetricsSnapshot struct {
+	Timestamp         time.Time `json:"timestamp"`
+	SuccessRate       float64   `json:"success_rate"`
+	FailureRate       float64   `json:"failure_rate"`
+	Throughput        float64   `json:"throughput_per_sec"`
+	QueueDepth        int       `json:"queue_depth"`
+	WorkerUtilization float64   `json:"worker_utilization"`
+	DLQCount          int       `json:"dlq_count"`
 }
 
 // getMetricsHistory returns historical metrics snapshots
@@ -569,7 +569,7 @@ func (h *OperationsDashboardHandler) getMetricsHistory(w http.ResponseWriter, r 
 
 	resilience := h.resilience.GetMetrics()
 
-	snapshot := MetricsHistoryResponse{
+	snapshot := OpsMetricsSnapshot{
 		Timestamp:         time.Now(),
 		SuccessRate:       successRate,
 		FailureRate:       failureRate,
@@ -581,6 +581,6 @@ func (h *OperationsDashboardHandler) getMetricsHistory(w http.ResponseWriter, r 
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"snapshots": []*MetricsHistoryResponse{&snapshot},
+		"snapshots": []*OpsMetricsSnapshot{&snapshot},
 	})
 }

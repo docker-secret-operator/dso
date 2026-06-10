@@ -17,7 +17,7 @@ func TestResilience_ExecutionCancellation(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -64,7 +64,7 @@ func TestResilience_PauseResume(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -113,7 +113,7 @@ func TestResilience_WorkerFailureRecovery(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -179,7 +179,7 @@ func TestResilience_QueueRecovery(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -231,7 +231,7 @@ func TestResilience_TimeoutHandling(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -274,7 +274,7 @@ func TestResilience_DeadLetterQueue(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)
@@ -331,7 +331,7 @@ func TestResilience_Metrics(t *testing.T) {
 
 	ctx := context.Background()
 
-	auditEvents := NewExecutionAuditEvents()
+	auditEvents := NewExecutionAuditEvents(nil)
 	workerManager := NewWorkerManager()
 	queue := NewExecutionQueue()
 	resilience := NewResilienceManager(auditEvents, workerManager, queue)

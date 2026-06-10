@@ -35,7 +35,7 @@ func TestRBACEnforcement(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.role+"_"+tt.path, func(t *testing.T) {
-			
+
 			// We simulate longest prefix match manually
 			bestMatch := ""
 			requiredRoles := []string{}
@@ -53,7 +53,7 @@ func TestRBACEnforcement(t *testing.T) {
 			if !exists {
 				// not found = allowed (for testing logic)
 			}
-			
+
 			if len(requiredRoles) == 0 {
 				// allowed
 			}
@@ -72,28 +72,26 @@ func TestSessionSecurity(t *testing.T) {
 		t.Fatalf("Failed to create provider: %v", err)
 	}
 
-	err = provider.ApplyMigrations(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to apply migrations: %v", err)
-	}
+	// NewSQLiteProvider runs migrations automatically — no ApplyMigrations call needed.
 
 	authService := auth.NewAuthenticationService(provider.Users(), provider.Sessions(), time.Hour)
-	
+
 	ctx := context.Background()
 	provider.Users().Create(ctx, &storage.User{ID: "u-disabled", Username: "disabled", Role: "viewer"})
-	
+
 	// Simulating disable
 	user, _ := provider.Users().GetByID(ctx, "u-disabled")
-	user.IsDisabled = true
+	user.Disabled = true
 	provider.Users().Update(ctx, user)
 
-	session, err := authService.CreateSession(ctx, "u-disabled", "127.0.0.1", "test")
+	// CreateSession returns (session, token, error)
+	_, token, err := authService.CreateSession(ctx, user, "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
-	
+
 	// Disabled user should not validate session
-	_, err = authService.ValidateSession(ctx, session.Token)
+	_, err = authService.ValidateSession(ctx, token)
 	if err == nil {
 		t.Errorf("Expected disabled user session to fail validation")
 	}
@@ -104,7 +102,7 @@ func TestSessionSecurity(t *testing.T) {
 	mux.HandleFunc("/api/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	
+
 	ts := httptest.NewServer(authMid.Handler(mux))
 	defer ts.Close()
 
@@ -114,7 +112,7 @@ func TestSessionSecurity(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("Expected 401 for invalid token, got %d", resp.StatusCode)
 	}
-	
+
 	req, _ = http.NewRequest("GET", ts.URL+"/api/dashboard", nil)
 	req.Header.Set("Authorization", "bearer token without bearer correctly formatted")
 	resp, _ = http.DefaultClient.Do(req)

@@ -27,17 +27,17 @@ func (ds *DraftService) CreateDraft(ctx context.Context, workspaceID, ownerID, t
 	}
 
 	draft := &storage.Draft{
-		ID:          generateID(),
-		WorkspaceID: workspaceID,
-		OwnerID:     ownerID,
-		Title:       title,
-		Description: description,
-		Config:      config,
-		Status:      "draft",
+		ID:            generateID(),
+		WorkspaceID:   workspaceID,
+		OwnerID:       ownerID,
+		Title:         title,
+		Description:   description,
+		Config:        config,
+		Status:        "draft",
 		VersionNumber: 1,
-		Checksum:    calculateChecksum(config),
-		CreatedAt:   time.Now(),
-		ModifiedAt:  time.Now(),
+		Checksum:      calculateChecksum(config),
+		CreatedAt:     time.Now(),
+		ModifiedAt:    time.Now(),
 	}
 
 	if err := ds.store.Create(ctx, draft); err != nil {

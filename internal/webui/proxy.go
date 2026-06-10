@@ -21,11 +21,12 @@ type ProxyConfig struct {
 	Logger *zap.Logger
 }
 
-// NewReverseProxy creates a configured reverse proxy to the API server
-func NewReverseProxy(cfg ProxyConfig) *httputil.ReverseProxy {
+// NewReverseProxy creates a configured reverse proxy to the API server.
+// Returns an error instead of panicking on an invalid target URL.
+func NewReverseProxy(cfg ProxyConfig) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(cfg.APITarget)
 	if err != nil {
-		panic(fmt.Sprintf("invalid api target: %v", err))
+		return nil, fmt.Errorf("invalid api target %q: %w", cfg.APITarget, err)
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -76,7 +77,7 @@ func NewReverseProxy(cfg ProxyConfig) *httputil.ReverseProxy {
 		return nil
 	}
 
-	return proxy
+	return proxy, nil
 }
 
 // WebSocketProxyConfig holds configuration for WebSocket proxying
@@ -145,8 +146,17 @@ func ProxyWebSocket(w http.ResponseWriter, r *http.Request, cfg WebSocketProxyCo
 		}).Dial,
 	}
 
+	// Forward auth-relevant headers from the browser request to the backend
+	backendHeaders := http.Header{}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		backendHeaders.Set("Authorization", auth)
+	}
+	if cookie := r.Header.Get("Cookie"); cookie != "" {
+		backendHeaders.Set("Cookie", cookie)
+	}
+
 	// Connect to backend WebSocket
-	backendConn, _, err := dialer.Dial(wsURL, nil)
+	backendConn, _, err := dialer.Dial(wsURL, backendHeaders)
 	if err != nil {
 		if cfg.Logger != nil {
 			cfg.Logger.Error("Failed to connect to backend WebSocket",

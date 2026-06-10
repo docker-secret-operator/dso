@@ -7,10 +7,10 @@ import (
 
 // CacheMetrics tracks cache performance
 type CacheMetrics struct {
-	Hits          int64
-	Misses        int64
-	RefreshCount  int64
-	LastRefresh   time.Time
+	Hits           int64
+	Misses         int64
+	RefreshCount   int64
+	LastRefresh    time.Time
 	RefreshLatency time.Duration
 }
 

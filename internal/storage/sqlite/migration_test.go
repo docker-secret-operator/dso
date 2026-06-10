@@ -109,12 +109,12 @@ func TestMigrationConstraints(t *testing.T) {
 
 	// Test draft status constraint by trying invalid status
 	draft := &storage.Draft{
-		ID:            "test-invalid",
-		WorkspaceID:   "ws",
-		OwnerID:       "owner",
-		Status:        "invalid_status_value",
-		Config:        "{}",
-		Checksum:      "x",
+		ID:          "test-invalid",
+		WorkspaceID: "ws",
+		OwnerID:     "owner",
+		Status:      "invalid_status_value",
+		Config:      "{}",
+		Checksum:    "x",
 	}
 
 	err = draftStore.Create(ctx, draft)

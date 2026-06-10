@@ -200,8 +200,8 @@ func TestOrchestration_StateMachineTransitions(t *testing.T) {
 
 	// Valid transitions
 	transitions := []struct {
-		from ExecutionState
-		to   ExecutionState
+		from  ExecutionState
+		to    ExecutionState
 		valid bool
 	}{
 		{ExecutionStatePending, ExecutionStateValidated, true},

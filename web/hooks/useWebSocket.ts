@@ -3,11 +3,17 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { Event } from '@/lib/api-client'
 
+export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected'
+
+// Fixed backoff sequence: 1s, 2s, 5s, 10s, 30s (stays at 30s afterward)
+const BACKOFF_DELAYS = [1000, 2000, 5000, 10000, 30000]
+
 interface UseWebSocketOptions {
   path?: string
   maxMessageHistory?: number
   onError?: (error: Error) => void
   onConnect?: () => void
+  onReconnect?: () => void
   onDisconnect?: () => void
 }
 
@@ -16,34 +22,40 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
     maxMessageHistory = 100,
     onError,
     onConnect,
+    onReconnect,
     onDisconnect,
   } = options
 
   const [events, setEvents] = useState<Event[]>([])
-  const [isConnected, setIsConnected] = useState(false)
+  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
   const reconnectAttemptsRef = useRef(0)
-  const maxReconnectAttemptsRef = useRef(5)
-  const reconnectDelayRef = useRef(1000)
+  const isFirstConnectRef = useRef(true)
+  const mountedRef = useRef(true)
 
   const connect = useCallback(() => {
-    if (typeof window === 'undefined') return
+    if (typeof window === 'undefined' || !mountedRef.current) return
 
     try {
-      // Use same origin as dashboard server (which proxies to REST API)
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const host = window.location.host // Includes port from dashboard
+      const host = window.location.host
       const wsUrl = `${protocol}//${host}${path}`
 
       const ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
+        if (!mountedRef.current) { ws.close(); return }
         console.log('[WebSocket] Connected')
-        setIsConnected(true)
+        setConnectionState('connected')
+        const wasReconnect = !isFirstConnectRef.current
+        isFirstConnectRef.current = false
         reconnectAttemptsRef.current = 0
-        reconnectDelayRef.current = 1000
-        onConnect?.()
+        if (wasReconnect) {
+          onReconnect?.()
+        } else {
+          onConnect?.()
+        }
       }
 
       ws.onmessage = (event) => {
@@ -60,54 +72,44 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
 
       ws.onerror = (err) => {
         console.error('[WebSocket] Error:', err)
-        const error = new Error('WebSocket error')
-        onError?.(error)
+        onError?.(new Error('WebSocket error'))
       }
 
       ws.onclose = () => {
+        if (!mountedRef.current) return
         console.log('[WebSocket] Disconnected')
-        setIsConnected(false)
+        setConnectionState('reconnecting')
         onDisconnect?.()
 
-        // Attempt to reconnect with exponential backoff
-        if (reconnectAttemptsRef.current < maxReconnectAttemptsRef.current) {
-          reconnectAttemptsRef.current += 1
-          const delay = Math.min(
-            reconnectDelayRef.current * Math.pow(2, reconnectAttemptsRef.current - 1),
-            30000
-          )
-          reconnectDelayRef.current = delay
-
-          console.log(
-            `[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`
-          )
-          reconnectTimeoutRef.current = setTimeout(connect, delay)
-        }
+        // Always reconnect — no attempt limit; progress through fixed delay sequence
+        const idx = Math.min(reconnectAttemptsRef.current, BACKOFF_DELAYS.length - 1)
+        const delay = BACKOFF_DELAYS[idx]
+        reconnectAttemptsRef.current += 1
+        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+        reconnectTimeoutRef.current = setTimeout(connect, delay)
       }
 
       wsRef.current = ws
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Unknown WebSocket error')
-      onError?.(error)
+      onError?.(err instanceof Error ? err : new Error('Unknown WebSocket error'))
     }
-  }, [path, maxMessageHistory, onConnect, onDisconnect, onError])
+  }, [path, maxMessageHistory, onConnect, onReconnect, onDisconnect, onError])
 
   useEffect(() => {
+    mountedRef.current = true
     connect()
 
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-      }
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
+      mountedRef.current = false
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+      if (wsRef.current) wsRef.current.close()
     }
   }, [connect])
 
   return {
     events,
-    isConnected,
+    isConnected: connectionState === 'connected',
+    connectionState,
     ws: wsRef.current,
   }
 }

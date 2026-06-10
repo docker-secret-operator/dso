@@ -32,12 +32,12 @@ func NewDashboardService(
 
 // WorkflowOverview provides high-level workflow metrics
 type WorkflowOverview struct {
-	DraftStats     DraftStats     `json:"draft_stats"`
-	ReviewStats    ReviewStats    `json:"review_stats"`
-	ApprovalStats  ApprovalStats  `json:"approval_stats"`
-	AuditEventCount int            `json:"audit_event_count"`
-	LastActivity   time.Time      `json:"last_activity"`
-	HealthStatus   string         `json:"health_status"` // healthy, warning, critical
+	DraftStats      DraftStats    `json:"draft_stats"`
+	ReviewStats     ReviewStats   `json:"review_stats"`
+	ApprovalStats   ApprovalStats `json:"approval_stats"`
+	AuditEventCount int           `json:"audit_event_count"`
+	LastActivity    time.Time     `json:"last_activity"`
+	HealthStatus    string        `json:"health_status"` // healthy, warning, critical
 }
 
 // DraftStats provides draft metrics
@@ -150,22 +150,22 @@ func (ds *DashboardService) GetWorkflowOverview(ctx context.Context) (*WorkflowO
 
 // WorkflowMetrics provides workflow performance metrics
 type WorkflowMetrics struct {
-	AverageDraftDuration      int64   `json:"avg_draft_duration_minutes"`
-	AverageReviewDuration     int64   `json:"avg_review_duration_minutes"`
-	AverageApprovalDuration   int64   `json:"avg_approval_duration_minutes"`
-	OpenReviews               int     `json:"open_reviews"`
-	PendingApprovals          int     `json:"pending_approvals"`
-	ApprovalSuccessRate       float64 `json:"approval_success_rate"` // 0-100%
-	WorkflowCompletionRate    float64 `json:"workflow_completion_rate"` // 0-100%
-	TotalCompletedWorkflows   int     `json:"total_completed_workflows"`
-	TotalActiveWorkflows      int     `json:"total_active_workflows"`
+	AverageDraftDuration    int64   `json:"avg_draft_duration_minutes"`
+	AverageReviewDuration   int64   `json:"avg_review_duration_minutes"`
+	AverageApprovalDuration int64   `json:"avg_approval_duration_minutes"`
+	OpenReviews             int     `json:"open_reviews"`
+	PendingApprovals        int     `json:"pending_approvals"`
+	ApprovalSuccessRate     float64 `json:"approval_success_rate"`    // 0-100%
+	WorkflowCompletionRate  float64 `json:"workflow_completion_rate"` // 0-100%
+	TotalCompletedWorkflows int     `json:"total_completed_workflows"`
+	TotalActiveWorkflows    int     `json:"total_active_workflows"`
 }
 
 // GetWorkflowMetrics returns workflow performance metrics
 func (ds *DashboardService) GetWorkflowMetrics(ctx context.Context) (*WorkflowMetrics, error) {
 	metrics := &WorkflowMetrics{
-		AverageDraftDuration:   0,
-		AverageReviewDuration:  0,
+		AverageDraftDuration:    0,
+		AverageReviewDuration:   0,
 		AverageApprovalDuration: 0,
 	}
 
@@ -234,13 +234,13 @@ func (ds *DashboardService) GetWorkflowMetrics(ctx context.Context) (*WorkflowMe
 
 // WorkflowChain represents a complete workflow for a draft
 type WorkflowChain struct {
-	DraftID     string                 `json:"draft_id"`
-	Draft       *storage.Draft         `json:"draft,omitempty"`
-	Reviews     []*storage.Review      `json:"reviews,omitempty"`
+	DraftID     string                         `json:"draft_id"`
+	Draft       *storage.Draft                 `json:"draft,omitempty"`
+	Reviews     []*storage.Review              `json:"reviews,omitempty"`
 	Approvals   map[string][]*storage.Approval `json:"approvals,omitempty"` // keyed by review_id
-	Status      string                 `json:"status"` // draft_workflow, active_workflow, complete
-	Progress    float64                `json:"progress"` // 0-100%
-	LastUpdated time.Time              `json:"last_updated"`
+	Status      string                         `json:"status"`              // draft_workflow, active_workflow, complete
+	Progress    float64                        `json:"progress"`            // 0-100%
+	LastUpdated time.Time                      `json:"last_updated"`
 }
 
 // GetWorkflowChain returns complete workflow for a draft
@@ -302,10 +302,10 @@ func (ds *DashboardService) GetWorkflowChain(ctx context.Context, draftID string
 
 // AuditSummary summarizes audit events
 type AuditSummary struct {
-	TotalEvents int                  `json:"total_events"`
-	EventsByType map[string]int      `json:"events_by_type"`
-	EventsByActor map[string]int     `json:"events_by_actor"`
-	RecentEvents []*storage.AuditEvent `json:"recent_events"`
+	TotalEvents   int                   `json:"total_events"`
+	EventsByType  map[string]int        `json:"events_by_type"`
+	EventsByActor map[string]int        `json:"events_by_actor"`
+	RecentEvents  []*storage.AuditEvent `json:"recent_events"`
 }
 
 // GetAuditSummary returns audit event summary

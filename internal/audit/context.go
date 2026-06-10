@@ -39,12 +39,12 @@ func BuildAuditEvent(ctx context.Context, action, resourceType, resourceID, stat
 	session := auth.CurrentSession(ctx)
 
 	event := &storage.AuditEvent{
-		Action:        action,
-		ActorName:     actor.Username,
-		ActorID:       actor.UserID,
-		ResourceType:  resourceType,
-		ResourceID:    resourceID,
-		Status:        status,
+		Action:       action,
+		ActorName:    actor.Username,
+		ActorID:      actor.UserID,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Status:       status,
 	}
 
 	// Add session ID if available
