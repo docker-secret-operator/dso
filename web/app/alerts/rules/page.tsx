@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Plus, Edit, Trash2, Toggle2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Edit, Trash2, ToggleRight, ChevronLeft, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 

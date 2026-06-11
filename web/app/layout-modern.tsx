@@ -1,12 +1,13 @@
 import type { Metadata } from 'next'
 import { Providers } from '@/components/providers'
 import { AuthGuard } from '@/components/auth-guard'
-import { SidebarPremium } from '@/components/sidebar-premium'
+import { SidebarModern } from '@/components/sidebar-modern'
+import { Header } from '@/components/header-modern'
 import '@/styles/globals.css'
 
 export const metadata: Metadata = {
-  title: 'DSO - Enterprise Docker Operations Platform',
-  description: 'Intelligent operations platform for Docker secrets, drift detection, and autonomous remediation',
+  title: 'DSO Dashboard - Docker Secret Operator',
+  description: 'Enterprise-grade intelligent operations platform',
   icons: {
     icon: '/favicon.ico',
   },
@@ -23,20 +24,23 @@ export default function RootLayout({
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
-      <body className="bg-slate-50 text-slate-900 antialiased">
+      <body className="bg-gradient-to-b from-slate-50 to-white text-slate-900 antialiased">
         <Providers>
           <AuthGuard>
             <div className="flex h-screen overflow-hidden">
-              {/* Premium Sidebar */}
-              <SidebarPremium />
+              {/* Modern Sidebar */}
+              <SidebarModern />
 
               {/* Main Content */}
-              <main className="flex-1 flex flex-col overflow-hidden pt-0 pl-56">
+              <div className="flex-1 flex flex-col overflow-hidden ml-4">
+                {/* Header */}
+                <Header />
+
                 {/* Page Content */}
-                <div className="flex-1 overflow-y-auto">
+                <main className="flex-1 overflow-y-auto">
                   {children}
-                </div>
-              </main>
+                </main>
+              </div>
             </div>
           </AuthGuard>
         </Providers>

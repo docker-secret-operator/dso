@@ -454,6 +454,148 @@ class APIClient {
     return `/api/metrics/export?period=${period}&format=${format}`
   }
 
+  // ── Incidents (Correlation Engine) ────────────────────────────────────────
+
+  async getIncidents(params?: { limit?: number; offset?: number }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/incidents', { params })
+      return response.data
+    } catch (error) {
+      return { incidents: [], total: 0, metrics: null }
+    }
+  }
+
+  async getIncidentMetrics(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/incidents/metrics')
+      return response.data
+    } catch (error) {
+      return { open: 0, critical: 0, acknowledged: 0, resolved: 0 }
+    }
+  }
+
+  // ── Forecasts (Forecast Engine) ──────────────────────────────────────────
+
+  async getForecasts(params?: { limit?: number }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/forecasts', { params })
+      return response.data
+    } catch (error) {
+      return { forecasts: [], total: 0, metrics: null }
+    }
+  }
+
+  async getForecastMetrics(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/forecasts/metrics')
+      return response.data
+    } catch (error) {
+      return { at_risk: 0, memory: 0, queue: 0, storage: 0 }
+    }
+  }
+
+  // ── Autonomy (Autonomy Engine) ───────────────────────────────────────────
+
+  async getAutonomyActions(params?: { limit?: number }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/autonomy/actions', { params })
+      return response.data
+    } catch (error) {
+      return { actions: [], total: 0, metrics: null }
+    }
+  }
+
+  async getAutonomyMetrics(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/autonomy/metrics')
+      return response.data
+    } catch (error) {
+      return { executed: 0, pending: 0, failed: 0, rolled_back: 0 }
+    }
+  }
+
+  // ── Alerts (Alert Engine) ────────────────────────────────────────────────
+
+  async getAlerts(params?: { limit?: number; status?: string }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/alerts', { params })
+      return response.data
+    } catch (error) {
+      return { alerts: [], total: 0 }
+    }
+  }
+
+  async getAlertRules(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/alerts/rules')
+      return response.data
+    } catch (error) {
+      return { rules: [], total: 0 }
+    }
+  }
+
+  // ── Drift (Drift Engine) ─────────────────────────────────────────────────
+
+  async getDriftFindings(params?: { limit?: number }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/drift', { params })
+      return response.data
+    } catch (error) {
+      return { findings: [], total: 0, metrics: null }
+    }
+  }
+
+  async getDriftMetrics(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/drift/metrics')
+      return response.data
+    } catch (error) {
+      return { critical: 0, acknowledged: 0, unresolved: 0 }
+    }
+  }
+
+  // ── Recommendations (Graph/Recommendation Engine) ──────────────────────────
+
+  async getRecommendations(params?: { limit?: number }): Promise<any> {
+    try {
+      const response = await this.client.get('/api/recommendations', { params })
+      return response.data
+    } catch (error) {
+      return { recommendations: [], total: 0 }
+    }
+  }
+
+  // ── Discovery (Discovery Service) ────────────────────────────────────────
+
+  async getDiscoverySummary(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/discovery/summary')
+      return response.data
+    } catch (error) {
+      return { managed: 0, partial: 0, unmanaged: 0, total: 0 }
+    }
+  }
+
+  // ── Dashboard Overview ───────────────────────────────────────────────────
+
+  async getDashboardOverview(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/dashboard/overview')
+      return response.data
+    } catch (error) {
+      return null
+    }
+  }
+
+  async getDashboardMetrics(): Promise<any> {
+    try {
+      const response = await this.client.get('/api/dashboard/metrics')
+      return response.data
+    } catch (error) {
+      return null
+    }
+  }
+
   // WebSocket connection
   // Use same origin as dashboard server (which proxies to REST API)
   getWebSocketURL(path: string = '/api/events/ws'): string {

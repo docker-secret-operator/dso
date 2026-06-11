@@ -225,15 +225,22 @@ Account
 
 ---
 
-## Phase 6: Next Steps - Apply Design System to All Pages
+## Phase 6: Apply Modern Design to Core Dashboard ✅ COMPLETE
 
-### Pages to Modernize (19 total)
+### Pages Modernized
 
 **Core Operations:**
-- [ ] `/dashboard` - Main dashboard
+- [x] `/dashboard` - Main dashboard (MODERNIZED)
+- [x] `/layout.tsx` - Root layout with SidebarModern and Header (MODERNIZED)
+- [x] `/profile` - User profile page (ENHANCED with fallback data)
+
+### Remaining Pages to Modernize (18 total)
+
+**Core Operations:**
 - [ ] `/secrets` - Secrets management
 - [ ] `/configuration` - System configuration
 - [ ] `/audit` - Audit logs
+- [ ] `/discovery` - Discovery page
 
 **Operations & Monitoring:**
 - [ ] `/alerts` & `/alerts/rules` - Alert management
@@ -490,7 +497,10 @@ Account
 - ✅ Sidebar Modernized
 - ✅ Dashboard Redesigned
 - ✅ Profile Page Enhanced
-- ⏳ Apply to All Pages (in progress)
+- ✅ Root Layout Integrated (SidebarModern + Header)
+- ✅ Dashboard (/dashboard) Modernized with Modern Components
+- ✅ Header with Profile Avatar in Top-Right Corner
+- ⏳ Apply to Remaining Pages (18 pages)
 - ⏳ Testing Across Browsers
 - ⏳ Performance Optimization
 

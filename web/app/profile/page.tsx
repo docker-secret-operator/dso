@@ -47,11 +47,11 @@ export default function ProfilePage() {
         if (!response.ok) {
           // Fallback to mock data for development
           const mockProfile: UserProfile = {
-            id: 'user-123',
+            id: authUser?.id || 'user-123',
             username: authUser?.username || 'johndoe',
-            email: authUser?.email || 'john@example.com',
-            full_name: authUser?.name || 'John Doe',
-            avatar_url: 'https://api.dicebear.com/7.x/avataaars/svg?seed=johndoe',
+            email: authUser?.username ? `${authUser.username}@example.com` : 'john@example.com',
+            full_name: authUser?.display_name || 'John Doe',
+            avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${authUser?.username || 'johndoe'}`,
             role: authUser?.role || 'user',
             status: 'active',
             created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
@@ -63,7 +63,7 @@ export default function ProfilePage() {
           setFormData({
             full_name: mockProfile.full_name,
             email: mockProfile.email,
-            avatar_url: mockProfile.avatar_url,
+            avatar_url: mockProfile.avatar_url || '',
           })
           return
         }
