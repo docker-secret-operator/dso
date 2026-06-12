@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -38,10 +39,13 @@ func NewHub(logger *zap.Logger) *Hub {
 	}
 }
 
-func (h *Hub) Run() {
+func (h *Hub) Run(ctx context.Context) {
 	h.logger.Info("Starting WebSocket Hub")
 	for {
 		select {
+		case <-ctx.Done():
+			h.logger.Info("Stopping WebSocket Hub")
+			return
 		case client := <-h.register:
 			h.mutex.Lock()
 			h.clients[client] = true

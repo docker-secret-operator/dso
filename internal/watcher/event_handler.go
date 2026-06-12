@@ -15,6 +15,10 @@ var (
 	recentDSOActions sync.Map
 	// purgeOnce ensures the background purge goroutine is started exactly once.
 	purgeOnce sync.Once
+	// purgeStop signals the background purge goroutine to exit (CQ-H2).
+	purgeStop = make(chan struct{})
+	// shutdownOnce guards StopEventProcessing so it is safe to call more than once.
+	shutdownOnce sync.Once
 )
 
 // actionEntryTTL is how long an action entry is retained before being purged.
@@ -27,10 +31,26 @@ func startActionPurge() {
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			purgeStaleActions()
+		for {
+			select {
+			case <-purgeStop:
+				return
+			case <-ticker.C:
+				purgeStaleActions()
+			}
 		}
 	}()
+}
+
+// StopEventProcessing stops the package-level background goroutines started by
+// the event handler — the debouncer cleanup loop and the recentDSOActions purge
+// loop (CQ-H2). It is safe to call multiple times and should be invoked during
+// agent shutdown so no watcher goroutine survives termination.
+func StopEventProcessing() {
+	shutdownOnce.Do(func() {
+		close(purgeStop)
+		debouncer.Stop()
+	})
 }
 
 // purgeStaleActions removes entries from recentDSOActions that are older than

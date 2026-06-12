@@ -48,6 +48,7 @@ type SecretCache struct {
 	items     map[string]CacheItem
 	ttl       time.Duration
 	stopCh    chan struct{}
+	done      chan struct{} // closed by the cleanup goroutine when it exits
 	closeOnce sync.Once
 }
 
@@ -56,6 +57,7 @@ func NewSecretCache(ttl time.Duration) *SecretCache {
 		items:  make(map[string]CacheItem),
 		ttl:    ttl,
 		stopCh: make(chan struct{}),
+		done:   make(chan struct{}),
 	}
 	// Start background cleanup
 	go sc.cleanupExpiredEntries()
@@ -127,6 +129,9 @@ func (c *SecretCache) ListKeys() []string {
 // Uses TTL/2 as cleanup interval to ensure expired entries are removed promptly.
 // Secrets are explicitly zeroized before deletion to prevent memory retention.
 func (c *SecretCache) cleanupExpiredEntries() {
+	// Signal Close() that this goroutine has exited (CQ-H8).
+	defer close(c.done)
+
 	cleanupInterval := c.ttl / 2
 	if cleanupInterval < 10*time.Second {
 		cleanupInterval = 10 * time.Second
@@ -158,21 +163,30 @@ func (c *SecretCache) cleanupExpiredEntries() {
 	}
 }
 
-// Close stops the cleanup goroutine and zeroizes all remaining secrets
+// Close stops the cleanup goroutine and zeroizes all remaining secrets.
+//
+// CQ-H8: Close now blocks until the cleanup goroutine has actually exited, so
+// after it returns no goroutine is still iterating over cache memory. The stop
+// signal is sent before waiting (and without holding the lock) to avoid
+// deadlocking against a goroutine that is mid-iteration holding c.mu. Close is
+// idempotent and safe to call multiple times.
 func (c *SecretCache) Close() {
+	// Signal the cleanup goroutine to stop, exactly once.
+	c.closeOnce.Do(func() {
+		close(c.stopCh)
+	})
+
+	// Wait for the goroutine to finish without holding the lock.
+	<-c.done
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Zeroize all remaining secrets on shutdown
+	// Zeroize all remaining secrets on shutdown.
 	for _, item := range c.items {
 		zeroCacheItem(&item)
 	}
 	c.items = make(map[string]CacheItem)
-
-	// Close stopCh exactly once to signal cleanup goroutine
-	c.closeOnce.Do(func() {
-		close(c.stopCh)
-	})
 }
 
 // Cache holds the in-memory state of active DSO Native Vault secrets.

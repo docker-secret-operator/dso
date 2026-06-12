@@ -61,8 +61,14 @@ func TestCryptoManager_DecryptError(t *testing.T) {
 func TestDeriveKeyFromPassword(t *testing.T) {
 	password := "mypassword"
 	salt := make([]byte, 16)
-	key1 := DeriveKeyFromPassword(password, salt)
-	key2 := DeriveKeyFromPassword(password, salt)
+	key1, err := DeriveKeyFromPassword(password, salt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	key2, err := DeriveKeyFromPassword(password, salt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(key1) != 32 {
 		t.Errorf("expected 32 bytes, got %d", len(key1))
@@ -75,10 +81,35 @@ func TestDeriveKeyFromPassword(t *testing.T) {
 	}
 }
 
-func TestDeriveKeyFromPassword_DefaultSalt(t *testing.T) {
-	key := DeriveKeyFromPassword("pass", nil)
-	if len(key) != 32 {
-		t.Errorf("expected 32 bytes, got %d", len(key))
+// SEC-H4: an invalid salt must produce an error, never a silently substituted
+// static salt.
+func TestDeriveKeyFromPassword_InvalidSalt(t *testing.T) {
+	if _, err := DeriveKeyFromPassword("pass", nil); err == nil {
+		t.Error("expected error for nil salt, got nil")
+	}
+	if _, err := DeriveKeyFromPassword("pass", make([]byte, 8)); err == nil {
+		t.Error("expected error for short salt, got nil")
+	}
+	if _, err := DeriveKeyFromPassword("pass", make([]byte, 32)); err == nil {
+		t.Error("expected error for oversized salt, got nil")
+	}
+}
+
+// Distinct salts must yield distinct keys (defeats precomputed-table attacks).
+func TestDeriveKeyFromPassword_SaltUniqueness(t *testing.T) {
+	salt1 := make([]byte, 16)
+	salt2 := make([]byte, 16)
+	salt2[0] = 1
+	k1, err := DeriveKeyFromPassword("pass", salt1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	k2, err := DeriveKeyFromPassword("pass", salt2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(k1) == string(k2) {
+		t.Fatal("different salts produced identical keys")
 	}
 }
 

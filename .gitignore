@@ -77,3 +77,8 @@ CLAUDE.md
 
 # Local release utility — not committed, run manually
 scripts/bump-version.sh
+
+# Web UI artifacts (from feature/web-ui branch)
+web/
+ui-dist/
+internal/webui/

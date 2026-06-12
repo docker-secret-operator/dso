@@ -47,11 +47,13 @@ func ComputeFingerprint(msg events.Message) EventFingerprint {
 // DedupCache provides short-lived event deduplication
 // Prevents replay amplification during daemon restarts
 type DedupCache struct {
-	mu      sync.RWMutex
-	cache   map[EventFingerprint]time.Time // fingerprint -> expiration time
-	ttl     time.Duration
-	maxSize int
-	stopCh  chan struct{}
+	mu        sync.RWMutex
+	cache     map[EventFingerprint]time.Time // fingerprint -> expiration time
+	ttl       time.Duration
+	maxSize   int
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	doneCh    chan struct{}
 }
 
 // NewDedupCache creates a new deduplication cache
@@ -63,6 +65,7 @@ func NewDedupCache(ttl time.Duration, maxSize int) *DedupCache {
 		ttl:     ttl,
 		maxSize: maxSize,
 		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 	}
 
 	go dc.cleanupLoop()
@@ -139,13 +142,19 @@ func (dc *DedupCache) GetStats() map[string]interface{} {
 	}
 }
 
-// cleanupLoop periodically removes expired entries
-// Stop terminates the background cleanup goroutine.
+// Stop terminates the background cleanup goroutine and blocks until it has
+// exited. CQ-H3: it is now idempotent (guarded by sync.Once) so callers — and
+// tests — can always safely defer it without risking a double-close panic.
 func (dc *DedupCache) Stop() {
-	close(dc.stopCh)
+	dc.stopOnce.Do(func() {
+		close(dc.stopCh)
+	})
+	<-dc.doneCh
 }
 
 func (dc *DedupCache) cleanupLoop() {
+	defer close(dc.doneCh)
+
 	ticker := time.NewTicker(dc.ttl)
 	defer ticker.Stop()
 

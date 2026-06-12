@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -94,12 +95,15 @@ type RESTServer struct {
 }
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Public endpoints that don't require authorization
+	// Public endpoints that don't require authorization.
+	// SEC-C3: /api/events/secret-update is intentionally NOT public. The webhook
+	// endpoint must pass through the global DSO auth middleware first (defense in
+	// depth), and then perform its own webhook-token check as a second factor.
 	publicPaths := map[string]bool{
 		"/health": true,
 	}
 
-	isPublic := publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, "/api/events/secret-update")
+	isPublic := publicPaths[r.URL.Path]
 	if !isPublic && !s.authorized(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -204,9 +208,14 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// SEC-C4: use a constant-time comparison to avoid leaking the webhook token
+	// via response timing. The endpoint is reachable from external systems, so a
+	// byte-by-byte short-circuiting comparison is a directly exploitable timing
+	// oracle. crypto/subtle.ConstantTimeCompare is already the project-wide pattern
+	// (see internal/auth/auth.go, pkg/provider/plugin_verifier.go).
 	authHeader := r.Header.Get("Authorization")
 	expectedToken := "Bearer " + s.Config.Agent.Watch.Webhook.AuthToken
-	if s.Config.Agent.Watch.Webhook.AuthToken != "" && authHeader != expectedToken {
+	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
 		observability.BackendFailuresTotal.WithLabelValues("webhook", "unauthorized").Inc()
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -261,8 +270,35 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 	_, _ = fmt.Fprintf(w, `{"status":"accepted"}`)
 }
 
+// handleLogs returns recent runtime events from the in-memory EventStore.
+// OPS-C3: previously this returned a hardcoded {"status":"up"} stub that
+// fabricated nothing useful. It now serves the same real event data as
+// /api/events so operators get actual runtime logs instead of a placeholder.
 func (s *RESTServer) handleLogs(w http.ResponseWriter, r *http.Request) {
-	_, _ = fmt.Fprintf(w, `{"status":"up"}`)
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	severity := r.URL.Query().Get("severity")
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.EventStore == nil {
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+
+	events := s.EventStore.GetLast(limit, severity)
+	if len(events) == 0 {
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+	if err := json.NewEncoder(w).Encode(events); err != nil {
+		s.Logger.Error("Failed to encode logs response", zap.Error(err))
+	}
 }
 
 func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
@@ -314,14 +350,9 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if len(keys) == 0 {
-		res = append(res, SecretResponse{
-			Name: "db_password", Provider: "aws", Status: "synced", LastSyncedAt: time.Now().Format(time.RFC3339), LastUpdatedAt: time.Now().Format(time.RFC3339), InjectionType: "file", MountPath: "/run/secrets/db_password", RotationEnabled: true, AutoSyncEnabled: true,
-		})
-		res = append(res, SecretResponse{
-			Name: "api_key", Provider: "azure", Status: "pending", LastSyncedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339), LastUpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339), InjectionType: "env", RotationEnabled: false, AutoSyncEnabled: false,
-		})
-	}
+	// OPS-C3: never fabricate secret state. When the live cache is empty (the
+	// normal state on first startup or in Local Mode) return an empty list rather
+	// than injecting fictional secrets. Reviewers and operators must see real data.
 
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"active_secrets": res,
@@ -331,18 +362,38 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// StartRESTServer starts the REST API server on the specified address with secure timeouts
-// StartRESTServer starts the REST API server and returns a shutdown function.
-// The shutdown function should be called on graceful agent shutdown to properly close connections.
-func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) func() {
+// StartRESTServer starts the REST API server on the specified address with secure
+// timeouts and returns a shutdown function.
+//
+// SEC-C1: if the server is asked to bind to a non-loopback address while
+// DSO_AUTH_TOKEN is unset, startup fails with an error instead of silently
+// serving an unauthenticated secrets API to the network. Loopback and
+// unix-socket deployments may still run without a token for local development.
+// The shutdown function should be called on graceful agent shutdown to properly
+// close connections.
+func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) (func(), error) {
+	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
+		return nil, fmt.Errorf(
+			"refusing to start REST API on non-loopback address %q without authentication: "+
+				"set DSO_AUTH_TOKEN, or bind the API to a loopback address (e.g. 127.0.0.1)", addr)
+	}
+
 	hub := NewHub(logger)
-	go hub.Run()
+	go hub.Run(ctx)
 
 	eventStore := NewEventStore(500, hub)
 
 	go func() {
-		for ev := range observability.EventStream {
-			eventStore.Add(ev)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-observability.EventStream:
+				if !ok {
+					return
+				}
+				eventStore.Add(ev)
+			}
 		}
 	}()
 
@@ -373,9 +424,6 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		zap.String("addr", addr),
 		zap.Duration("read_timeout", server.ReadTimeout),
 		zap.Duration("write_timeout", server.WriteTimeout))
-	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
-		logger.Warn("REST API is bound to a non-loopback address without DSO_AUTH_TOKEN")
-	}
 
 	// Launch server in goroutine
 	go func() {
@@ -401,7 +449,7 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("REST API server shutdown error", zap.Error(err))
 		}
-	}
+	}, nil
 }
 
 func bindsPublic(addr string) bool {

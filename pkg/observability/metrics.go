@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -113,8 +114,13 @@ var (
 	)
 )
 
-// StartMetricsServer starts the Prometheus exporter with security measures
-func StartMetricsServer(addr string, logger *zap.Logger) {
+// StartMetricsServer starts the Prometheus exporter with security measures.
+//
+// It serves in a background goroutine and returns immediately with a shutdown
+// function. The server is drained when ctx is cancelled (SIGTERM) and/or when the
+// returned function is called, so the metrics goroutine does not survive agent
+// shutdown.
+func StartMetricsServer(ctx context.Context, addr string, logger *zap.Logger) func() {
 	mux := http.NewServeMux()
 
 	// Wrap metrics handler with security checks
@@ -157,8 +163,28 @@ func StartMetricsServer(addr string, logger *zap.Logger) {
 		IdleTimeout:       30 * time.Second, // close idle connections
 	}
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("Metrics server failed", zap.Error(err))
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Metrics server failed", zap.Error(err))
+		}
+	}()
+
+	// Drain on context cancellation.
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("Metrics server shutdown error", zap.Error(err))
+		}
+	}()
+
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("Metrics server shutdown error", zap.Error(err))
+		}
 	}
 }
 

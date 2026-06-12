@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,6 +21,11 @@ import (
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// peerIdentity, peerAuthorized and readPeerIdentity live in peercred.go and the
+// platform-specific peercred_linux.go / peercred_other.go files. SO_PEERCRED is
+// Linux-only, so the credential read is build-tagged to keep the package
+// compiling on darwin and other platforms (the agent targets Linux in production).
 
 func prepareSocketPath(socketPath string, perm os.FileMode) error {
 	if socketPath == "" {
@@ -150,7 +156,18 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	return nil
 }
 
-func StartSocketServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) (*AgentServer, error) {
+// StartSocketServer starts the internal IPC RPC server on a Unix domain socket.
+//
+// CQ-C2: the accept loop is bound to ctx. When ctx is cancelled (SIGTERM) the
+// listener is closed, which unblocks Accept and lets the loop exit; the returned
+// shutdown function additionally force-closes any in-flight connections and waits
+// (via a WaitGroup) for every goroutine to finish, so no goroutine survives
+// shutdown.
+//
+// SEC-C2: every accepted connection's peer credentials (PID/UID/GID) are read via
+// SO_PEERCRED, authorized against a least-privilege policy, and recorded in the
+// audit log before the connection is served.
+func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) (*AgentServer, func(), error) {
 	server := &AgentServer{
 		Cache:  cache,
 		Store:  store,
@@ -159,11 +176,11 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	if err := prepareSocketPath(socketPath, 0750); err != nil {
-		return nil, fmt.Errorf("failed to prepare socket path %s: %w", socketPath, err)
+		return nil, nil, fmt.Errorf("failed to prepare socket path %s: %w", socketPath, err)
 	}
 
 	if err := rpc.RegisterName("Agent", server); err != nil {
-		return nil, fmt.Errorf("failed to register RPC service: %w", err)
+		return nil, nil, fmt.Errorf("failed to register RPC service: %w", err)
 	}
 
 	// Pre-bind check: is there another agent already running?
@@ -171,7 +188,7 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return nil, fmt.Errorf("another DSO agent is already responsive on %s", socketPath)
+			return nil, nil, fmt.Errorf("another DSO agent is already responsive on %s", socketPath)
 		}
 		// Stale socket, remove it
 		logger.Warn("Removing stale Unix socket", zap.String("path", socketPath))
@@ -183,7 +200,7 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 	logger.Info("Starting local Unix socket", zap.String("path", socketPath))
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
+		return nil, nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
 	}
 
 	// Set socket permissions: 0660 root:dso so dso group members can connect without sudo.
@@ -211,24 +228,127 @@ func StartSocketServer(socketPath string, cache *SecretCache, store *providers.S
 		logger.Error("FATAL: Failed to set socket permissions. Agent cannot start securely.",
 			zap.String("path", socketPath),
 			zap.Error(err))
-		return nil, fmt.Errorf("failed to secure socket permissions: %w", err)
+		return nil, nil, fmt.Errorf("failed to secure socket permissions: %w", err)
 	}
 
+	selfUID := os.Getuid()
+	dsoGID := socketGID // -1 when the dso group does not exist
+
+	// Track in-flight connections so the shutdown path can force-close them and
+	// every serving goroutine can be awaited. rpc.ServeConn returns as soon as the
+	// connection is closed, so closing tracked conns reliably unblocks them.
+	var (
+		wg        sync.WaitGroup
+		connMu    sync.Mutex
+		conns     = make(map[net.Conn]struct{})
+		shutdown  bool
+		closeOnce sync.Once
+		stopOnce  sync.Once
+		stopWatch = make(chan struct{})
+	)
+	closeListener := func() { closeOnce.Do(func() { _ = listener.Close() }) }
+	stopWatcher := func() { stopOnce.Do(func() { close(stopWatch) }) }
+
+	// Close the listener when ctx is cancelled (or shutdown is requested) to
+	// unblock Accept(). The stopWatch channel lets shutdownFn release this
+	// goroutine even if ctx has not yet been cancelled, so wg.Wait() never hangs.
+	wg.Add(1)
 	go func() {
-		defer func() {
-			_ = listener.Close()
-		}()
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+		case <-stopWatch:
+		}
+		closeListener()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
+				// A closed listener (shutdown) surfaces here as an error; exit cleanly.
+				select {
+				case <-ctx.Done():
+					logger.Info("IPC socket accept loop shutting down")
+					return
+				default:
+				}
+				connMu.Lock()
+				closing := shutdown
+				connMu.Unlock()
+				if closing {
+					return
+				}
 				logger.Error("Socket accept error", zap.Error(err))
 				continue
 			}
-			go rpc.ServeConn(conn)
+
+			// SEC-C2: authenticate and audit the peer before serving.
+			peer, perr := readPeerIdentity(conn)
+			switch {
+			case errors.Is(perr, errPeerCredUnsupported):
+				// Non-Linux platform: peer-credential auth is unavailable, so we
+				// fall back to the socket's filesystem permissions (the same guard
+				// the code had before SEC-C2). Production runs on Linux where the
+				// full check applies.
+				logger.Warn("Peer credential check unsupported on this platform; relying on socket file permissions")
+			case perr != nil:
+				logger.Warn("Rejecting IPC connection: cannot read peer credentials",
+					zap.Error(perr))
+				_ = conn.Close()
+				continue
+			case !peerAuthorized(peer, selfUID, dsoGID):
+				logger.Warn("Rejecting unauthorized IPC connection",
+					zap.Int32("peer_pid", peer.pid),
+					zap.Uint32("peer_uid", peer.uid),
+					zap.Uint32("peer_gid", peer.gid))
+				_ = conn.Close()
+				continue
+			default:
+				logger.Info("IPC connection authorized",
+					zap.Int32("peer_pid", peer.pid),
+					zap.Uint32("peer_uid", peer.uid),
+					zap.Uint32("peer_gid", peer.gid))
+			}
+
+			connMu.Lock()
+			if shutdown {
+				connMu.Unlock()
+				_ = conn.Close()
+				continue
+			}
+			conns[conn] = struct{}{}
+			connMu.Unlock()
+
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer func() {
+					connMu.Lock()
+					delete(conns, c)
+					connMu.Unlock()
+					_ = c.Close()
+				}()
+				rpc.ServeConn(c)
+			}(conn)
 		}
 	}()
 
-	return server, nil
+	shutdownFn := func() {
+		connMu.Lock()
+		shutdown = true
+		for c := range conns {
+			_ = c.Close()
+		}
+		connMu.Unlock()
+		stopWatcher() // release the listener-watcher goroutine if ctx is still live
+		closeListener()
+		wg.Wait()
+	}
+
+	return server, shutdownFn, nil
 }
 
 // ServeHTTP handles Docker V2 Secret Driver requests (POST /SecretDriver.Get)
@@ -273,7 +393,16 @@ func (s *AgentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func StartDriverServer(socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) error {
+// StartDriverServer starts the Docker V2 Secret Driver HTTP server on a Unix
+// socket.
+//
+// CQ-C3: Serve() previously ran synchronously and blocked its caller until
+// process death, with no Shutdown path. It now starts serving in an internal
+// goroutine and returns immediately. The server is drained via http.Shutdown
+// when ctx is cancelled, and the returned shutdown function lets the caller
+// drain it explicitly on SIGTERM. The function returns only setup errors; a
+// post-startup serve error is logged.
+func StartDriverServer(ctx context.Context, socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) (func(), error) {
 	server := &AgentServer{
 		Cache:  cache,
 		Store:  store,
@@ -282,7 +411,7 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 	}
 
 	if err := prepareSocketPath(socketPath, 0755); err != nil {
-		return fmt.Errorf("failed to prepare driver socket path %s: %w", socketPath, err)
+		return nil, fmt.Errorf("failed to prepare driver socket path %s: %w", socketPath, err)
 	}
 
 	if _, err := os.Stat(socketPath); err == nil {
@@ -294,7 +423,7 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 	logger.Info("Starting Docker Secret Driver socket", zap.String("path", socketPath))
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to listen on driver socket %s: %w", socketPath, err)
+		return nil, fmt.Errorf("failed to listen on driver socket %s: %w", socketPath, err)
 	}
 
 	// CRITICAL: Socket permissions MUST be restrictive (0600).
@@ -305,7 +434,7 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 		logger.Error("FATAL: Failed to set driver socket permissions. Agent cannot start securely.",
 			zap.String("path", socketPath),
 			zap.Error(err))
-		return fmt.Errorf("failed to secure driver socket permissions: %w", err)
+		return nil, fmt.Errorf("failed to secure driver socket permissions: %w", err)
 	}
 
 	httpServer := &http.Server{
@@ -316,5 +445,30 @@ func StartDriverServer(socketPath string, cache *SecretCache, store *providers.S
 		IdleTimeout:       30 * time.Second,
 	}
 
-	return httpServer.Serve(listener)
+	// Serve in the background so the caller regains control immediately.
+	go func() {
+		if serveErr := httpServer.Serve(listener); serveErr != nil && serveErr != http.ErrServerClosed {
+			logger.Error("Docker Driver server error", zap.Error(serveErr))
+		}
+	}()
+
+	// Drain on context cancellation.
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("Driver server shutdown error", zap.Error(err))
+		}
+	}()
+
+	shutdownFn := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("Driver server shutdown error", zap.Error(err))
+		}
+	}
+
+	return shutdownFn, nil
 }

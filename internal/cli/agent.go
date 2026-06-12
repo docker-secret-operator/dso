@@ -59,6 +59,7 @@ func NewAgentCmd() *cobra.Command {
 	var socketPath string
 	var driverSocket string
 	var apiAddr string
+	var metricsAddr string
 
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -110,28 +111,39 @@ func NewAgentCmd() *cobra.Command {
 			// Initialize Trigger Engine
 			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 
+			// Handle Termination with Graceful Shutdown. The context is created up
+			// front so every long-running server below is bound to it and exits
+			// cleanly on SIGTERM (CQ-C2, CQ-C3).
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
 			// 1. Start Unix Socket Server (Internal IPC)
-			agentServer, err := agent.StartSocketServer(socketPath, cache, storeManager, logger, cfg)
+			agentServer, socketShutdown, err := agent.StartSocketServer(ctx, socketPath, cache, storeManager, logger, cfg)
 			if err != nil {
 				logger.Fatal("Failed to start agent socket server", zap.Error(err))
 			}
 			trigger.Server = agentServer
 			reloader.Server = agentServer
 
-			// Handle Termination with Graceful Shutdown
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
+			// 2. Start Docker Secret Driver Server (V2 Plugin). Serve runs in the
+			// background internally; we keep the shutdown handle to drain it.
+			driverShutdown, err := agent.StartDriverServer(ctx, driverSocket, cache, storeManager, logger, cfg)
+			if err != nil {
+				logger.Fatal("Failed to start Docker Driver server", zap.Error(err))
+			}
 
-			// 2. Start Docker Secret Driver Server (V2 Plugin)
-			go func() {
-				if err := agent.StartDriverServer(driverSocket, cache, storeManager, logger, cfg); err != nil {
-					logger.Error("Docker Driver server error", zap.Error(err))
-				}
-			}()
+			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
+			// returns an error (and refuses to start) if bound to a non-loopback
+			// address without DSO_AUTH_TOKEN.
+			restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
+			if err != nil {
+				logger.Fatal("Failed to start REST API server", zap.Error(err))
+			}
 
-			// 3. Start REST API Server (Health Checks & Monitoring)
-			restShutdown := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
-			defer restShutdown()
+			// 3b. Start Prometheus metrics server (OPS-H1). Previously registered
+			// metrics were never exposed because StartMetricsServer had no caller.
+			// It now serves in the background and drains on ctx/SIGTERM.
+			metricsShutdown := observability.StartMetricsServer(ctx, metricsAddr, logger)
 
 			// 4. Start Docker Event Loop for the Reloader — MUST run before StartAll so
 			// that populateInitialTargets completes before any polling goroutine fires
@@ -150,7 +162,7 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent is now running",
-				zap.String("version", "v3.5.20"),
+				zap.String("version", Version),
 				zap.String("ipc_socket", socketPath),
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
@@ -163,20 +175,18 @@ func NewAgentCmd() *cobra.Command {
 			logger.Info("Stopping trigger engine...")
 			trigger.Stop()
 
-			// Step 2: Wait for in-flight operations to complete (with timeout)
-			shutdownTimeout := 30 * time.Second
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-			defer shutdownCancel()
+			// Step 2: Drain the network servers. Each shutdown function blocks
+			// until its accept loop and in-flight connections have finished (or its
+			// internal timeout fires), so no server goroutine survives shutdown
+			// (CQ-C2, CQ-C3).
+			logger.Info("Draining network servers...")
+			restShutdown()
+			driverShutdown()
+			socketShutdown()
+			metricsShutdown()
 
-			logger.Info("Waiting for in-flight operations to complete",
-				zap.Duration("timeout", shutdownTimeout))
-
-			// Wait for context cancellation to propagate to all goroutines
-			<-shutdownCtx.Done()
-			if shutdownCtx.Err() == context.DeadlineExceeded {
-				logger.Warn("Shutdown timeout exceeded, forcing cleanup",
-					zap.Duration("timeout", shutdownTimeout))
-			}
+			// Stop the watcher's package-level background goroutines (CQ-H2).
+			watcher.StopEventProcessing()
 
 			// Step 3: Close resources
 			logger.Info("Closing resources...")
@@ -210,6 +220,7 @@ func NewAgentCmd() *cobra.Command {
 	cmd.Flags().StringVar(&socketPath, "socket", "/run/dso/dso.sock", "Path to DSO internal IPC socket")
 	cmd.Flags().StringVar(&driverSocket, "driver-socket", "/run/docker/plugins/dso.sock", "Path to Docker Secret Driver socket")
 	cmd.Flags().StringVar(&apiAddr, "api-addr", "127.0.0.1:8471", "Address to bind the REST API server")
+	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", "127.0.0.1:9090", "Address to bind the Prometheus metrics server")
 
 	return cmd
 }

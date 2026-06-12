@@ -11,12 +11,12 @@ func NewMetadataCmd() *cobra.Command {
 		Short:  "Return Docker CLI plugin metadata",
 		Hidden: true,
 		Run: func(cmd *cobra.Command, args []string) {
-			metadata := `{
+			metadata := fmt.Sprintf(`{
   "SchemaVersion": "0.1.0",
   "Vendor": "Umair",
-  "Version": "v3.5.20",
+  "Version": "%s",
   "ShortDescription": "Docker Secret Operator CLI"
-}`
+}`, Version)
 			fmt.Println(metadata)
 		},
 	}

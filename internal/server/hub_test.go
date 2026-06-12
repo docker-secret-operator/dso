@@ -44,7 +44,7 @@ func TestHub_ClientRegistration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Create mock client
 	client := &Client{
@@ -75,7 +75,7 @@ func TestHub_ClientUnregistration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Create and register client
 	client := &Client{
@@ -116,7 +116,7 @@ func TestHub_MultipleClients(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Register multiple clients
 	clients := make([]*Client, 5)
@@ -156,7 +156,7 @@ func TestHub_Broadcast(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Create and register clients with buffered channels
 	numClients := 3
@@ -202,7 +202,7 @@ func TestHub_BroadcastWithMultipleEvents(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Create client with large buffer
 	client := &Client{
@@ -245,7 +245,7 @@ func TestHub_HandleBlockedClient(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	// Create client with non-buffered channel
 	blockedClient := &Client{
@@ -293,7 +293,7 @@ func TestHub_ConcurrentRegisterUnregister(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	done := make(chan bool)
 	clientsCreated := int32(0)
@@ -353,7 +353,7 @@ func TestHub_BroadcastToConcurrentClients(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	done := make(chan bool)
 
@@ -406,7 +406,7 @@ func TestHub_DuplicateUnregister(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	client := &Client{
 		hub:  hub,
@@ -437,7 +437,7 @@ func TestHub_LargeEventBroadcast(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	client := &Client{
 		hub:  hub,
@@ -478,7 +478,7 @@ func TestHub_ThreadSafeMutex(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	done := make(chan bool, 100)
 
@@ -527,7 +527,7 @@ func TestHub_RunLoopBlocksBroadcast(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	client := &Client{
 		hub:  hub,
@@ -562,7 +562,7 @@ func TestHub_MultipleSequentialBroadcasts(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	client := &Client{
 		hub:  hub,
@@ -616,7 +616,7 @@ func TestHub_ContextCancellation(t *testing.T) {
 				return
 			default:
 			}
-			hub.Run()
+			hub.Run(context.Background())
 		}
 	}()
 

@@ -117,50 +117,14 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	}
 }
 
-// recoverPendingRotations detects and recovers from crashed rotations
-// This is CRITICAL for preventing orphaned containers after agent crashes
-func (t *TriggerEngine) recoverPendingRotations() {
-	if t.StateTracker == nil {
-		return
-	}
-
-	pending := t.StateTracker.GetPendingRotations()
-	if len(pending) == 0 {
-		return
-	}
-
-	t.Logger.Warn("CRITICAL: Detected crashed rotations, attempting recovery",
-		zap.Int("count", len(pending)))
-
-	for _, rotation := range pending {
-		t.Logger.Info("Recovering crashed rotation",
-			zap.String("provider", rotation.ProviderName),
-			zap.String("secret", rotation.SecretName),
-			zap.String("status", rotation.Status),
-			zap.Time("started", rotation.StartTime),
-			zap.Duration("elapsed", time.Since(rotation.StartTime)))
-
-		// For in_progress rotations older than 5 minutes, attempt rollback
-		if rotation.Status == "in_progress" && time.Since(rotation.StartTime) > 5*time.Minute {
-			t.Logger.Error("Rotation appears to have crashed, marking for manual review",
-				zap.String("secret", rotation.SecretName),
-				zap.String("original_container", rotation.OriginalContainerID),
-				zap.String("new_container", rotation.NewContainerID))
-
-			// Mark as requiring manual intervention
-			if err := t.StateTracker.MarkRollback(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID); err != nil {
-				t.Logger.Error("Failed to mark rotation for rollback", zap.Error(err))
-			}
-		}
-
-		// For rollback_required, log for operator intervention
-		if rotation.Status == "rollback_required" {
-			t.Logger.Error("MANUAL INTERVENTION REQUIRED",
-				zap.String("secret", rotation.SecretName),
-				zap.String("action", "verify container state and run dso-cli recover or manually cleanup"))
-		}
-	}
-}
+// OPS-M3: the former recoverPendingRotations() method was removed. It only logged
+// "MANUAL INTERVENTION REQUIRED" and marked states rollback_required without ever
+// executing a rollback, which contradicted the project's automatic-recovery claim.
+// The real, executed recovery path is performAutomaticRecovery() ->
+// AutomaticRecovery.RecoverFromCrash(), which cleans up orphaned shadow/backup
+// containers and restores the original container (see internal/agent/recovery.go).
+// That method was the only caller-less duplicate; runtime behavior and the
+// documented automatic-recovery contract now match.
 
 // SetLimitCache wires a LimitEnforcingCache into the engine. When set, all
 // cache writes in ExecuteRotation go through limit enforcement instead of
@@ -433,10 +397,13 @@ func (t *TriggerEngine) HandleWebhook(providerName string, pCfg config.ProviderC
 		return nil
 	}
 
-	go func() {
-		time.Sleep(5 * time.Minute)
+	// CQ-H7: schedule idempotency-key cleanup with time.AfterFunc rather than a
+	// goroutine that blocks on time.Sleep for 5 minutes. Under a webhook storm the
+	// old approach accumulated thousands of sleeping goroutines that could not be
+	// interrupted by shutdown. AfterFunc holds no blocked goroutine while waiting.
+	time.AfterFunc(5*time.Minute, func() {
 		t.events.Delete(idempKey)
-	}()
+	})
 
 	prov, err := t.Store.GetProvider(providerName, pCfg)
 	if err != nil {

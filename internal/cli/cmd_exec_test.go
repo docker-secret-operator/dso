@@ -40,8 +40,11 @@ func TestVersionOutput(t *testing.T) {
 	io.Copy(&buf, r)
 	os.Stdout = oldStdout
 
-	if !bytes.Contains(buf.Bytes(), []byte("v3.5.20")) {
+	if !bytes.Contains(buf.Bytes(), []byte("Version: "+Version)) {
 		t.Errorf("Expected version output, got: %s", buf.String())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("Commit: "+Commit)) {
+		t.Errorf("Expected commit output, got: %s", buf.String())
 	}
 }
 

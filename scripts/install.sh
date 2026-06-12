@@ -87,64 +87,29 @@ case "${ARCH}" in
         ;;
 esac
 
-# ── Resolve version ────────────────────────────────────────────────────────────
-# Always pick the latest stable release unless the caller pins a version.
-# Strategy 1 (preferred): follow the /releases/latest redirect — zero API quota cost.
-# Strategy 2 (fallback):  parse the GitHub Releases JSON API.
-if [ -z "${DSO_VERSION:-}" ]; then
-    echo -e "${BLUE}Fetching latest DSO version...${NC}"
-
-    # Strategy 1: follow redirect (works without GitHub token, not rate-limited)
-    DSO_VERSION="$(
-        curl -fsSLI \
-            --max-time 10 \
-            --connect-timeout 5 \
-            --retry 2 \
-            "https://github.com/${REPO}/releases/latest" 2>/dev/null \
-        | grep -i '^location:' \
-        | sed 's|.*/tag/||' \
-        | tr -d '[:space:]\r'
-    )" 2>/dev/null || true
-
-    # Strategy 2: GitHub API JSON (handles private repos or redirect issues)
-    if [ -z "${DSO_VERSION}" ]; then
-        DSO_VERSION="$(
-            curl -fsSL \
-                --max-time 15 \
-                --connect-timeout 5 \
-                --retry 2 \
-                "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-            | grep '"tag_name"' \
-            | head -1 \
-            | sed 's/.*"tag_name": *"\(.*\)".*/\1/'
-        )" 2>/dev/null || true
-    fi
-fi
-
-if [ -z "${DSO_VERSION}" ]; then
-    echo -e "${RED}Error: Failed to fetch the latest DSO version.${NC}"
-    echo -e "${RED}       Both version-resolution strategies failed.${NC}"
-    echo -e "${RED}       This may be caused by a GitHub API rate limit or network issue.${NC}"
-    echo -e ""
-    echo -e "${YELLOW}Fix: Pin the version manually and re-run:${NC}"
-    echo -e "       export DSO_VERSION=v3.5.0"
-    echo -e "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash"
-    echo -e ""
-    echo -e "${YELLOW}Available releases: https://github.com/${REPO}/releases${NC}"
-    exit 1
-fi
-
+# ── Check if installing over existing version ────────────────────────────────────
 if [ -f "${PLUGIN_DIR}/${BINARY_NAME}" ]; then
     echo -e "${BLUE}Reinstalling / upgrading existing DSO installation...${NC}"
 else
-    echo -e "${BLUE}Installing DSO ${DSO_VERSION} (${GOOS}/${GOARCH})...${NC}"
+    echo -e "${BLUE}Installing DSO (${GOOS}/${GOARCH})...${NC}"
 fi
 
 # ── Construct download URL ─────────────────────────────────────────────────────
-# File naming convention: dso-VERSION-OS-ARCH.tar.gz (e.g., dso-3.3.0-linux-amd64.tar.gz)
-TARBALL_NAME="dso-${DSO_VERSION#v}-${GOOS}-${GOARCH}.tar.gz"
-TARBALL_URL="${RELEASE_BASE}/${DSO_VERSION}/${TARBALL_NAME}"
-CHECKSUM_URL="${RELEASE_BASE}/${DSO_VERSION}/dso-${DSO_VERSION#v}-checksums.txt"
+echo -e "  Resolving latest version..."
+LATEST_URL=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/docker-secret-operator/dso/releases/latest" 2>/dev/null || true)
+TAG="${LATEST_URL##*/}"
+
+if [ -z "${TAG}" ] || [ "${TAG}" = "latest" ]; then
+    echo -e "${RED}Error: Failed to fetch latest release metadata from GitHub.${NC}"
+    exit 1
+fi
+
+VERSION="${TAG#v}"
+# File naming convention: dso-VERSION-OS-ARCH.tar.gz
+TARBALL_NAME="dso-${VERSION}-${GOOS}-${GOARCH}.tar.gz"
+TARBALL_URL="https://github.com/docker-secret-operator/dso/releases/download/${TAG}/${TARBALL_NAME}"
+CHECKSUM_URL="https://github.com/docker-secret-operator/dso/releases/download/${TAG}/dso-${VERSION}-checksums.txt"
+
 
 # ── PATH shadowing guard ───────────────────────────────────────────────────────
 # If a global binary exists but we are running without root, warn loudly.
@@ -174,7 +139,7 @@ HTTP_CODE=$(curl -fsSL \
     "${TARBALL_URL}" 2>/dev/null || echo "000")
 
 if [ "${HTTP_CODE}" = "404" ]; then
-    echo -e "${RED}Error: Release not found for version '${DSO_VERSION}'.${NC}"
+    echo -e "${RED}Error: Release not found.${NC}"
     echo -e "${RED}       URL tried: ${TARBALL_URL}${NC}"
     echo -e "${YELLOW}Fix: Check available releases at https://github.com/${REPO}/releases${NC}"
     exit 1
@@ -272,7 +237,7 @@ done < <(find "${TMP_DIR}" -maxdepth 2 -type f -name 'dso-provider-*' | sort)
 
 # ── Print result and context-aware next steps ──────────────────────────────────
 echo ""
-echo -e "${GREEN}✅ DSO ${DSO_VERSION} installed successfully!${NC}"
+echo -e "${GREEN}✅ DSO installed successfully!${NC}"
 echo -e "   Plugin:     ${PLUGIN_DIR}/${BINARY_NAME}"
 echo -e "   Standalone: ${INSTALL_DIR}/dso (symlink)"
 if [ "${PROVIDER_COUNT}" -gt 0 ]; then
@@ -290,7 +255,7 @@ if [ "${IS_ROOT}" = true ]; then
     echo "  ⭐ RECOMMENDED: Interactive Setup Wizard (2-3 minutes)"
     echo "     docker dso setup"
     echo ""
-    echo "  OR use manual bootstrap (more control):"
+    echo "  OR use manual bootstrap (advanced/lower-level):"
     echo "     1. LOCAL Mode (development):  docker dso bootstrap local"
     echo "     2. CLOUD Mode (production):   sudo docker dso bootstrap agent"
     echo ""
@@ -317,7 +282,7 @@ else
     echo "  ⭐ RECOMMENDED: Interactive Setup Wizard (2-3 minutes)"
     echo "     docker dso setup"
     echo ""
-    echo "  OR manual setup (LOCAL Mode):"
+    echo "  OR manual setup (advanced LOCAL Mode):"
     echo "     docker dso bootstrap local"
     echo ""
     echo "  Then verify installation:"

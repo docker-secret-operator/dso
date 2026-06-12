@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,7 +20,7 @@ import (
 func createTestRESTServer() *RESTServer {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
-	go hub.Run()
+	go hub.Run(context.Background())
 	return &RESTServer{
 		Cache:      agent.NewSecretCache(1 * time.Hour),
 		Config:     &config.Config{},

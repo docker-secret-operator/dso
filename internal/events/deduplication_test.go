@@ -72,6 +72,7 @@ func TestComputeFingerprint_DifferentActions(t *testing.T) {
 
 func TestDedupCache_NewEventNotDuplicate(t *testing.T) {
 	dc := NewDedupCache(1*time.Second, 100)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	msg := events.Message{
@@ -89,6 +90,7 @@ func TestDedupCache_NewEventNotDuplicate(t *testing.T) {
 
 func TestDedupCache_DuplicateEventDetected(t *testing.T) {
 	dc := NewDedupCache(1*time.Second, 100)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	msg := events.Message{
@@ -111,6 +113,7 @@ func TestDedupCache_DuplicateEventDetected(t *testing.T) {
 
 func TestDedupCache_TTLExpiration(t *testing.T) {
 	dc := NewDedupCache(100*time.Millisecond, 100)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	msg := events.Message{
@@ -142,6 +145,7 @@ func TestDedupCache_TTLExpiration(t *testing.T) {
 func TestDedupCache_MaxSizeEnforcement(t *testing.T) {
 	maxSize := 10
 	dc := NewDedupCache(30*time.Second, maxSize)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	// Add more events than max size
@@ -163,6 +167,7 @@ func TestDedupCache_MaxSizeEnforcement(t *testing.T) {
 
 func TestDedupCache_ClearOperation(t *testing.T) {
 	dc := NewDedupCache(1*time.Second, 100)
+	defer dc.Stop()
 
 	msg := events.Message{
 		Action: "start",
@@ -190,6 +195,7 @@ func TestDedupCache_ClearOperation(t *testing.T) {
 
 func TestDedupCache_ConcurrentAccess(t *testing.T) {
 	dc := NewDedupCache(5*time.Second, 1000)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	var wg sync.WaitGroup
@@ -229,6 +235,7 @@ func TestDedupCache_ConcurrentAccess(t *testing.T) {
 
 func TestDedupCache_GetStats(t *testing.T) {
 	dc := NewDedupCache(1*time.Second, 100)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	// Add some events
@@ -359,6 +366,7 @@ func TestImmediateDedup_Reset(t *testing.T) {
 func TestDeduplication_ReplayScenario(t *testing.T) {
 	// Simulate daemon reconnect with replayed events
 	dc := NewDedupCache(2*time.Second, 1000)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	// Original events during normal operation
@@ -393,6 +401,7 @@ func TestDeduplication_ReplayScenario(t *testing.T) {
 func TestDeduplication_ConcurrentDaemonRestart(t *testing.T) {
 	// Simulate concurrent event processing with daemon restart
 	dc := NewDedupCache(1*time.Second, 1000)
+	defer dc.Stop()
 	defer dc.Clear()
 
 	var wg sync.WaitGroup

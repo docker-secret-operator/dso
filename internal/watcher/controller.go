@@ -286,10 +286,14 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 
 // handleContainerEventWithContext wraps handleContainerEvent for use with the bounded queue
 func (r *ReloaderController) handleContainerEventWithContext(ctx context.Context, msg events.Message) error {
-	return r.handleContainerEvent(msg)
+	return r.handleContainerEvent(ctx, msg)
 }
 
-func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
+// handleContainerEvent processes a single Docker event. CQ-C5: it threads the
+// caller's context (carrying the agent shutdown signal and the bounded queue's
+// per-event timeout) into every Docker API call instead of context.Background(),
+// so a slow daemon can no longer pin a worker past shutdown or the event deadline.
+func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg events.Message) error {
 	// Defensive: validate container ID
 	if msg.Actor.ID == "" {
 		r.Logger.Warn("Received event with empty container ID", zap.String("action", string(msg.Action)))
@@ -394,7 +398,7 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 		// Register with proxy for any container that has DSO-managed host ports
 		if r.ProxyManager != nil {
 			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
-				inspect, ierr := r.cli.ContainerInspect(context.Background(), msg.Actor.ID)
+				inspect, ierr := r.cli.ContainerInspect(ctx, msg.Actor.ID)
 				if ierr == nil {
 					containerIP := ""
 					for _, ep := range inspect.NetworkSettings.Networks {
@@ -688,15 +692,18 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
 
-			go func(newEnvs map[string]string, hTimeout time.Duration) {
+			// CQ-C4: pass target and releaseLock as explicit arguments so the
+			// goroutine holds a stable, independent reference rather than capturing
+			// the sync.Map range variable by reference.
+			go func(tc *TargetContainer, release func(), newEnvs map[string]string, hTimeout time.Duration) {
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
-						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", target.ID[:12]))
+						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", tc.ID[:12]))
 					}
 				}
 
-				err := rs.Execute(ctx, target.ID, newEnvs, hTimeout)
-				releaseLock()
+				err := rs.Execute(ctx, tc.ID, newEnvs, hTimeout)
+				release()
 				if err != nil {
 					r.Logger.Error("Rolling rotation failed, triggering fallback restart", zap.Error(err))
 					if r.Server != nil {
@@ -705,11 +712,11 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 					}
 					// Fallback: full container recreation via shared helper (L5).
-					if ferr := r.executeSimpleRestart(ctx, target.ID, newEnvs); ferr != nil {
+					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs); ferr != nil {
 						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
 					}
 				}
-			}(rollingEnvs, healthTimeout)
+			}(target, releaseLock, rollingEnvs, healthTimeout)
 
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
@@ -721,7 +728,11 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 			}
 
-			go func() {
+			// CQ-C4: target, releaseLock and serviceName are passed as explicit
+			// arguments (shadowing the sync.Map range variables) so this goroutine
+			// operates on stable, independent values even if the Targets map entry
+			// is concurrently deleted or replaced.
+			go func(target *TargetContainer, releaseLock func(), serviceName string) {
 				// 1. Inspect original container
 				inspect, err := r.cli.ContainerInspect(ctx, target.ID)
 				if err != nil {
@@ -778,8 +789,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					return
 				}
 
-				// 4. Prepare new config
-				config := inspect.Config
+				// 4. Prepare new config. CQ-H5: deep-copy before mutating so we never
+				// modify the struct returned by the Docker client.
+				config := cloneContainerConfig(inspect.Config)
 				// Clean up state that shouldn't be copied
 				config.Hostname = ""
 
@@ -933,7 +945,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
 				r.degraded.Delete(serviceName)
 				releaseLock()
-			}()
+			}(target, releaseLock, serviceName)
 		} else {
 			// If we skipped all strategies (e.g. signal), release lock immediately
 			releaseLock()
@@ -1031,6 +1043,35 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 		zap.String("service", serviceName))
 }
 
+// cloneContainerConfig returns a deep copy of a *container.Config that is safe to
+// mutate without affecting the struct returned by the Docker client (CQ-H5).
+// The Docker SDK returns pointers into the client's response; mutating them in
+// place is a data race if the client ever caches or reuses inspect responses.
+// This mirrors the defensive copying in rotation.PrepareShadowConfig.
+func cloneContainerConfig(src *container.Config) *container.Config {
+	if src == nil {
+		return nil
+	}
+	dst := *src // copy value fields (Hostname, Image, etc.)
+	if src.Env != nil {
+		dst.Env = make([]string, len(src.Env))
+		copy(dst.Env, src.Env)
+	}
+	if src.Labels != nil {
+		dst.Labels = make(map[string]string, len(src.Labels))
+		for k, v := range src.Labels {
+			dst.Labels[k] = v
+		}
+	}
+	if src.Volumes != nil {
+		dst.Volumes = make(map[string]struct{}, len(src.Volumes))
+		for k, v := range src.Volumes {
+			dst.Volumes[k] = v
+		}
+	}
+	return &dst
+}
+
 // executeSimpleRestart recreates containerID with envOverrides merged into its environment.
 // Used by the rolling-strategy fallback path (L5). It does not perform health checks,
 // exec probes, or proxy swaps — those belong to the primary restart strategy path.
@@ -1047,7 +1088,8 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		return fmt.Errorf("executeSimpleRestart: rename failed: %w", err)
 	}
 
-	cfg := inspect.Config
+	// CQ-H5: deep-copy before mutating so we never modify the Docker-returned struct.
+	cfg := cloneContainerConfig(inspect.Config)
 	cfg.Hostname = ""
 	for k, v := range envOverrides {
 		found := false

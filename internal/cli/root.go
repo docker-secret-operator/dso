@@ -10,6 +10,12 @@ import (
 
 var CfgFile string
 
+var (
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
+)
+
 func ResolveConfig() string {
 	// Priority 1: CLI flag (-c)
 	if CfgFile != "" && CfgFile != "dso.yaml" {
@@ -40,8 +46,11 @@ Quick start:
   docker dso setup                  # Interactive setup wizard (recommended)
 
 Usage:
-  docker dso bootstrap local        # For development
-  sudo docker dso bootstrap agent   # For production
+  docker dso setup                  # Interactive setup wizard (handles everything)
+
+Advanced Usage (Manual Bootstrapping):
+  docker dso bootstrap local        # Lower-level manual local mode init
+  sudo docker dso bootstrap agent   # Lower-level manual production init
 
 Quick reference:
   docker dso doctor                 # Validate environment

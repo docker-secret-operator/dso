@@ -4,12 +4,22 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/argon2"
+)
+
+// Argon2id parameters. These are unified with the stronger values used in
+// pkg/vault/crypto.go (SEC-H4) so password-derived keys are consistent and
+// resistant to GPU/ASIC attacks.
+const (
+	argonSaltSize = 16
+	argonTime     = 3
+	argonMemory   = 128 * 1024 // 131072 KiB
+	argonThreads  = 4
+	argonKeyLen   = 32
 )
 
 // CryptoManager handles encryption/decryption of sensitive credentials
@@ -26,14 +36,21 @@ func NewCryptoManager(masterKey []byte) (*CryptoManager, error) {
 	return &CryptoManager{masterKey: masterKey}, nil
 }
 
-// DeriveKeyFromPassword derives a 32-byte key from a password using Argon2id
-func DeriveKeyFromPassword(password string, salt []byte) []byte {
-	if len(salt) != 16 {
-		h := sha256.Sum256([]byte("dso-default-salt"))
-		salt = h[:16]
+// DeriveKeyFromPassword derives a 32-byte key from a password using Argon2id.
+//
+// SEC-H4: a valid, random, per-use salt of exactly argonSaltSize (16) bytes is
+// REQUIRED. The previous implementation silently substituted a hardcoded static
+// salt (sha256("dso-default-salt")) for invalid input, which made every key
+// derived from a given password identical and therefore vulnerable to
+// precomputed dictionary and rainbow-table attacks. The fallback has been
+// removed; callers must supply a cryptographically random salt and handle the
+// returned error.
+func DeriveKeyFromPassword(password string, salt []byte) ([]byte, error) {
+	if len(salt) != argonSaltSize {
+		return nil, fmt.Errorf("invalid salt length: got %d bytes, require exactly %d", len(salt), argonSaltSize)
 	}
-	key := argon2.IDKey([]byte(password), salt, 2, 65536, 8, 32)
-	return key
+	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	return key, nil
 }
 
 // Encrypt encrypts plaintext and returns base64-encoded ciphertext with IV prepended

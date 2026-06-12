@@ -17,6 +17,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.42.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.48.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -132,7 +133,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.51.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect

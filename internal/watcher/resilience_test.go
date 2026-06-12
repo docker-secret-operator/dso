@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestReloaderController_HandleContainerEvent_InvalidSecrets(t *testing.T) {
 
 	// Create mock event with empty secrets
 	mockEvent := mockContainerStartEvent("container-123", "")
-	err := controller.handleContainerEvent(mockEvent)
+	err := controller.handleContainerEvent(context.Background(), mockEvent)
 
 	if err != nil {
 		t.Errorf("Should handle empty secrets gracefully, got error: %v", err)
@@ -220,7 +221,7 @@ func TestReloaderController_EventHandlingErrorResilience(t *testing.T) {
 	}
 
 	// Should not crash
-	err := controller.handleContainerEvent(mockEvent)
+	err := controller.handleContainerEvent(context.Background(), mockEvent)
 	if err != nil {
 		t.Logf("Error handling malformed event: %v", err)
 	}

@@ -59,7 +59,10 @@ func TestGracefulShutdown_RESTServerShutdown(t *testing.T) {
 
 	// Start REST server
 	apiAddr := "127.0.0.1:0" // Use random port
-	restShutdown := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger)
+	restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger)
+	if err != nil {
+		t.Fatalf("StartRESTServer failed: %v", err)
+	}
 
 	// Server should start successfully
 	time.Sleep(100 * time.Millisecond)
@@ -94,7 +97,10 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// Start REST server with timeout context
-	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger)
+	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger)
+	if err != nil {
+		t.Fatalf("StartRESTServer failed: %v", err)
+	}
 
 	// Wait for context to timeout
 	<-ctx.Done()
@@ -130,7 +136,10 @@ func TestGracefulShutdown_SignalHandling(t *testing.T) {
 	})
 
 	// Create REST server with cancellable context
-	restShutdown := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger)
+	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger)
+	if err != nil {
+		t.Fatalf("StartRESTServer failed: %v", err)
+	}
 
 	// Simulate what signal handler would do - cancel the context
 	go func() {

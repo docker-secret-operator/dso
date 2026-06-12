@@ -174,6 +174,56 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 		return
 	}
 
+	// AUTOMATIC ROLLBACK (OPS-M3): if the original container survived the crash but
+	// is not running — e.g. it was stopped mid-rotation before the new container
+	// became healthy — start it so the service is actually restored. This is the
+	// concrete rollback action that makes the "automatic recovery" contract true
+	// rather than merely logging that intervention is required.
+	//
+	// SAFETY: only auto-start when the original still owns its normal name. If a
+	// rotation strategy already renamed it (e.g. "<name>_old_<ts>", "_dso_backup_",
+	// "_dso_shadow"), a replacement container is likely holding the real name and
+	// host ports. Starting the stale backup in that case would create a duplicate
+	// instance and a port conflict — corrupting container state. We refuse to do
+	// that and flag the rotation for operator review instead.
+	if !originalInspect.State.Running {
+		originalName := strings.TrimPrefix(originalInspect.Name, "/")
+		rotatedAway := strings.Contains(originalName, "_old_") ||
+			strings.Contains(originalName, "_dso_backup_") ||
+			strings.Contains(originalName, "_dso_new_") ||
+			strings.Contains(originalName, "_dso_shadow")
+
+		if rotatedAway {
+			logger.Warn("Original container was renamed during rotation and is stopped; "+
+				"refusing to auto-start to avoid a duplicate instance — flagging for review",
+				zap.String("original_id", shortID(rotation.OriginalContainerID)),
+				zap.String("current_name", originalName))
+			if merr := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName,
+				rotation.OriginalContainerID,
+				"original container renamed and stopped after crash; manual review required to avoid a duplicate"); merr != nil {
+				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
+			}
+			return
+		}
+
+		logger.Warn("Original container is stopped; starting it to complete rollback",
+			zap.String("original_id", shortID(rotation.OriginalContainerID)),
+			zap.String("state", originalInspect.State.Status))
+		if startErr := ar.cli.ContainerStart(ctx, rotation.OriginalContainerID, container.StartOptions{}); startErr != nil {
+			logger.Error("Failed to restart original container during automatic rollback",
+				zap.String("original_id", shortID(rotation.OriginalContainerID)),
+				zap.Error(startErr))
+			if merr := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName,
+				rotation.OriginalContainerID,
+				"failed to restart original container during automatic rollback"); merr != nil {
+				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
+			}
+			return
+		}
+		logger.Info("Original container restarted; rollback complete",
+			zap.String("original_id", shortID(rotation.OriginalContainerID)))
+	}
+
 	logger.Info("Automatic recovery completed",
 		zap.String("container_state", originalInspect.State.Status),
 		zap.Bool("running", originalInspect.State.Running))

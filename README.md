@@ -7,7 +7,7 @@
 [![Go Report](https://goreportcard.com/badge/github.com/docker-secret-operator/dso)](https://goreportcard.com/report/github.com/docker-secret-operator/dso)
 [![Code Coverage](https://codecov.io/gh/docker-secret-operator/dso/branch/main/graph/badge.svg)](https://codecov.io/gh/docker-secret-operator/dso)
 
-> **Current version: v3.5.20**  
+> **Current version: latest**  
 > **Status**: CNCF Sandbox Ready ✅  
 > **Governance**: [View GOVERNANCE.md](GOVERNANCE.md) | **Roadmap**: [View ROADMAP.md](ROADMAP.md)
 
@@ -79,8 +79,8 @@ docker dso status
 # 1. Install DSO system-wide
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# 2. Bootstrap agent mode (auto-detects cloud provider, configures systemd service)
-sudo docker dso bootstrap agent
+# 2. Run setup wizard for agent mode (auto-detects cloud provider, configures systemd service)
+docker dso setup
 
 # 3. Configure your secrets
 sudo vi /etc/dso/dso.yaml
@@ -133,7 +133,7 @@ docker dso init
 
 # Agent mode (non-interactive)
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
-sudo docker dso bootstrap agent --non-interactive --provider aws
+docker dso setup --mode agent --provider aws --non-interactive
 ```
 
 ---
@@ -335,7 +335,7 @@ docker dso compose up    # Injects DSO labels and starts containers
 
 ## Non-Root Access
 
-After running `docker dso setup` or `docker dso bootstrap agent`, all DSO directories and the agent socket are group-owned by `dso`:
+After running `docker dso setup`, all DSO directories and the agent socket are group-owned by `dso`:
 
 | Path | Permissions | Notes |
 |------|------------|-------|
