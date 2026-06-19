@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect } from 'react'
-import { Card, Badge } from '@/components/ui-modern'
-import { X } from 'lucide-react'
+import { useEffect, useState, useMemo } from 'react'
+import { Badge, Skeleton } from '@/components/ui-modern'
+import { X, ChevronDown, Copy, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Execution } from '@/lib/api/types'
 
@@ -13,9 +13,17 @@ interface ExecutionDetailsDrawerProps {
 }
 
 /**
- * Drawer modal showing detailed information about a selected execution
+ * Drawer showing detailed execution information with 5 collapsible sections:
+ * 1. General - basic info and timeline
+ * 2. Plan - execution steps
+ * 3. Validation - readiness and checks
+ * 4. Trace - log events
+ * 5. Journey - timeline of events
  */
 export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: ExecutionDetailsDrawerProps) {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['general']))
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+
   // Handle escape key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -30,6 +38,22 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
     }
   }, [isOpen, onClose])
 
+  const toggleSection = (section: string) => {
+    const newSections = new Set(expandedSections)
+    if (newSections.has(section)) {
+      newSections.delete(section)
+    } else {
+      newSections.add(section)
+    }
+    setExpandedSections(newSections)
+  }
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
+
   if (!isOpen || !execution) return null
 
   const getStatusColor = (status: string) => {
@@ -43,9 +67,9 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
       case 'queued':
         return 'bg-slate-500/10 text-slate-400 border-slate-500/20'
       case 'cancelled':
-        return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
-      case 'paused':
         return 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+      case 'paused':
+        return 'bg-amber-500/10 text-amber-400 border-amber-500/20'
       case 'timed_out':
         return 'bg-red-500/10 text-red-400 border-red-500/20'
       default:
@@ -69,6 +93,26 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
     return `${minutes}m ${seconds % 60}s`
   }
 
+  const relativeTime = (timestamp: string) => {
+    try {
+      const diff = Date.now() - new Date(timestamp).getTime()
+      if (diff < 60000) return 'just now'
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
+      return `${Math.floor(diff / 86400000)}d ago`
+    } catch {
+      return timestamp
+    }
+  }
+
+  const sections = [
+    { id: 'general', title: 'General', icon: 'ℹ️' },
+    { id: 'plan', title: 'Plan', icon: '📋' },
+    { id: 'validation', title: 'Validation', icon: '✓' },
+    { id: 'trace', title: 'Trace', icon: '📝' },
+    { id: 'journey', title: 'Journey', icon: '🗺️' },
+  ]
+
   return (
     <>
       {/* Backdrop */}
@@ -80,12 +124,16 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
       {/* Drawer */}
       <div
         className={cn(
-          'fixed right-0 top-0 h-full w-full max-w-md bg-slate-900 border-l border-white/10 shadow-xl z-50 transition-transform duration-300 overflow-y-auto',
+          'fixed right-0 top-0 h-full w-full max-w-2xl bg-[#111318] border-l border-white/10 shadow-xl z-50 transition-transform duration-300 flex flex-col',
           isOpen ? 'translate-x-0' : 'translate-x-full'
         )}
       >
-        <div className="sticky top-0 bg-slate-900 border-b border-white/10 p-6 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Execution Details</h2>
+        {/* Header */}
+        <div className="sticky top-0 bg-[#111318] border-b border-white/10 p-6 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Execution Details</h2>
+            <code className="text-xs text-slate-500 mt-1">{execution.id.substring(0, 16)}…</code>
+          </div>
           <button
             onClick={onClose}
             className="p-1 hover:bg-white/10 rounded transition-colors"
@@ -95,67 +143,145 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
-          {/* Status Section */}
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Status</h3>
-            <Badge className={getStatusColor(execution.status)}>
-              {execution.status}
-            </Badge>
-          </div>
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-6 space-y-3">
+            {sections.map((section) => (
+              <div key={section.id} className="rounded-lg border border-white/5 overflow-hidden">
+                <button
+                  onClick={() => toggleSection(section.id)}
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors text-left"
+                >
+                  <ChevronDown
+                    className={cn(
+                      'w-4 h-4 text-slate-500 transition-transform flex-shrink-0',
+                      expandedSections.has(section.id) && 'rotate-180'
+                    )}
+                  />
+                  <span className="text-sm font-medium text-slate-300">{section.title}</span>
+                  <span className="text-xs text-slate-600">{section.icon}</span>
+                </button>
 
-          {/* Execution ID Section */}
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Execution ID</h3>
-            <code className="block text-sm text-slate-300 bg-black/40 px-3 py-2 rounded border border-white/5 break-all">
-              {execution.id}
-            </code>
-          </div>
+                {expandedSections.has(section.id) && (
+                  <div className="px-4 py-3 border-t border-white/5 bg-white/[0.01] space-y-3">
+                    {section.id === 'general' && (
+                      <>
+                        {/* ID */}
+                        <div>
+                          <p className="text-xs text-slate-500 mb-1">Execution ID</p>
+                          <div className="flex items-center gap-2">
+                            <code className="text-sm text-slate-300 bg-black/40 px-2 py-1 rounded flex-1 truncate">
+                              {execution.id}
+                            </code>
+                            <button
+                              onClick={() => copyToClipboard(execution.id, 'exec-id')}
+                              className="p-1 hover:bg-white/10 rounded transition-colors flex-shrink-0"
+                              title="Copy ID"
+                            >
+                              {copiedField === 'exec-id' ? (
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-4 h-4 text-slate-500" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
 
-          {/* Correlation ID Section */}
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Correlation ID</h3>
-            <code className="block text-sm text-slate-300 bg-black/40 px-3 py-2 rounded border border-white/5 break-all">
-              {execution.correlation_id}
-            </code>
-          </div>
+                        {/* Status */}
+                        <div>
+                          <p className="text-xs text-slate-500 mb-1">Status</p>
+                          <Badge className={getStatusColor(execution.status)}>
+                            {execution.status}
+                          </Badge>
+                        </div>
 
-          {/* Timestamps Section */}
-          <div className="space-y-3 p-4 rounded-lg bg-white/[0.02] border border-white/5">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Timeline</h3>
+                        {/* Timeline */}
+                        <div className="space-y-2">
+                          <p className="text-xs text-slate-500">Created</p>
+                          <p className="text-sm text-slate-300">{formatDate(execution.created_at)}</p>
 
-            <div>
-              <p className="text-xs text-slate-500 mb-1">Created</p>
-              <p className="text-sm text-slate-300">{formatDate(execution.created_at)}</p>
+                          {execution.started_at && (
+                            <>
+                              <p className="text-xs text-slate-500 mt-2">Started</p>
+                              <p className="text-sm text-slate-300">{formatDate(execution.started_at)}</p>
+                            </>
+                          )}
+
+                          {execution.completed_at && (
+                            <>
+                              <p className="text-xs text-slate-500 mt-2">Completed</p>
+                              <p className="text-sm text-slate-300">{formatDate(execution.completed_at)}</p>
+                            </>
+                          )}
+
+                          {execution.duration_ms !== undefined && (
+                            <>
+                              <p className="text-xs text-slate-500 mt-2">Duration</p>
+                              <p className="text-sm text-slate-300">{formatDuration(execution.duration_ms)}</p>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Readiness Score */}
+                        <div>
+                          <p className="text-xs text-slate-500 mb-1">Readiness Score</p>
+                          <p className="text-sm text-slate-300">—</p>
+                        </div>
+                      </>
+                    )}
+
+                    {section.id === 'plan' && (
+                      <div className="text-xs text-slate-500">
+                        <p className="mb-2">No plan data available</p>
+                        <p>Plan information will be loaded when available via API</p>
+                      </div>
+                    )}
+
+                    {section.id === 'validation' && (
+                      <div className="text-xs text-slate-500">
+                        <p className="mb-2">No validation data available</p>
+                        <p>Validation checks will be loaded when available via API</p>
+                      </div>
+                    )}
+
+                    {section.id === 'trace' && (
+                      <div className="text-xs text-slate-500">
+                        <p className="mb-2">No trace events available</p>
+                        <p>Trace logs will be loaded when available via API</p>
+                      </div>
+                    )}
+
+                    {section.id === 'journey' && (
+                      <div className="text-xs text-slate-500">
+                        <p className="mb-2">No journey events available</p>
+                        <p>Journey timeline will be loaded when available via API</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Correlation ID */}
+            <div className="rounded-lg border border-white/5 px-4 py-3 bg-white/[0.01]">
+              <p className="text-xs text-slate-500 mb-2">Correlation ID</p>
+              <div className="flex items-center gap-2">
+                <code className="text-sm text-slate-300 bg-black/40 px-2 py-1 rounded flex-1 truncate">
+                  {execution.correlation_id}
+                </code>
+                <button
+                  onClick={() => copyToClipboard(execution.correlation_id, 'corr-id')}
+                  className="p-1 hover:bg-white/10 rounded transition-colors flex-shrink-0"
+                  title="Copy ID"
+                >
+                  {copiedField === 'corr-id' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-4 h-4 text-slate-500" />
+                  )}
+                </button>
+              </div>
             </div>
-
-            {execution.started_at && (
-              <div>
-                <p className="text-xs text-slate-500 mb-1">Started</p>
-                <p className="text-sm text-slate-300">{formatDate(execution.started_at)}</p>
-              </div>
-            )}
-
-            {execution.completed_at && (
-              <div>
-                <p className="text-xs text-slate-500 mb-1">Completed</p>
-                <p className="text-sm text-slate-300">{formatDate(execution.completed_at)}</p>
-              </div>
-            )}
-
-            {execution.duration_ms !== undefined && (
-              <div>
-                <p className="text-xs text-slate-500 mb-1">Duration</p>
-                <p className="text-sm text-slate-300">{formatDuration(execution.duration_ms)}</p>
-              </div>
-            )}
-          </div>
-
-          {/* Additional Info */}
-          <div className="p-4 rounded-lg bg-blue-500/5 border border-blue-500/10">
-            <p className="text-xs text-slate-400">
-              Use the execution ID to fetch detailed traces and journey information via the API.
-            </p>
           </div>
         </div>
       </div>

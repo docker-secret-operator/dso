@@ -1,16 +1,45 @@
-import { Card } from '@/components/ui-modern'
+import { Card, Skeleton } from '@/components/ui-modern'
 import { Activity } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { QueueHealth } from '@/lib/api/types'
 
 interface QueueHealthCardProps {
   data?: QueueHealth
+  isLoading?: boolean
+  error?: string | null
 }
 
 /**
- * Queue health card showing depth, completion rate, and health score
+ * Queue health card showing depth, oldest item age, incoming rate, completion rate, and health score
  */
-export function QueueHealthCard({ data }: QueueHealthCardProps) {
+export function QueueHealthCard({ data, isLoading, error }: QueueHealthCardProps) {
+  if (isLoading) {
+    return (
+      <Card className="p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 rounded-lg bg-blue-500/10" />
+          <div>
+            <Skeleton className="h-4 w-24 rounded mb-1" />
+            <Skeleton className="h-3 w-32 rounded" />
+          </div>
+        </div>
+        <div className="space-y-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-3 w-full rounded" />
+          ))}
+        </div>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card className="p-6">
+        <p className="text-red-400 text-sm">{error}</p>
+      </Card>
+    )
+  }
+
   if (!data) {
     return (
       <Card className="p-6">
@@ -21,6 +50,12 @@ export function QueueHealthCard({ data }: QueueHealthCardProps) {
 
   const healthColor = data.health_score > 75 ? '#10b981' : data.health_score > 50 ? '#f59e0b' : '#ef4444'
   const healthStatus = data.status === 'healthy' ? 'text-emerald-400' : data.status === 'warning' ? 'text-amber-400' : 'text-red-400'
+
+  const formatAge = (seconds: number) => {
+    if (seconds < 60) return `${Math.round(seconds)}s`
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+    return `${Math.round(seconds / 3600)}h`
+  }
 
   return (
     <Card className="p-6">
@@ -49,12 +84,22 @@ export function QueueHealthCard({ data }: QueueHealthCardProps) {
           </div>
         </div>
 
+        {/* Oldest Item Age */}
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">Oldest Item Age</span>
+          <span className="font-semibold text-slate-200">{formatAge(data.oldest_item_age_seconds)}</span>
+        </div>
+
+        {/* Incoming Rate */}
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">Incoming Rate</span>
+          <span className="font-semibold text-slate-200">{data.incoming_rate.toFixed(2)}/s</span>
+        </div>
+
         {/* Completion Rate */}
-        <div>
-          <div className="flex justify-between mb-1">
-            <span className="text-xs text-slate-400">Completion Rate</span>
-            <span className="text-xs font-semibold text-slate-200">{data.completion_rate.toFixed(2)}/s</span>
-          </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">Completion Rate</span>
+          <span className="font-semibold text-slate-200">{data.completion_rate.toFixed(2)}/s</span>
         </div>
 
         {/* Health Score */}
@@ -63,12 +108,12 @@ export function QueueHealthCard({ data }: QueueHealthCardProps) {
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: healthColor }} />
             <span className={cn('text-sm font-semibold', healthStatus)}>
-              {data.health_score} {data.status}
+              {data.health_score}
             </span>
           </div>
         </div>
 
-        {/* Wait Time */}
+        {/* Avg Wait Time */}
         <div className="text-xs text-slate-500">
           Avg wait: {data.avg_wait_time_seconds.toFixed(2)}s
         </div>

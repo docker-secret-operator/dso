@@ -111,54 +111,37 @@ function OperationsContent() {
           </div>
 
           {/* ── Operations Overview ── */}
-          {dashboardLoading ? (
-            <Skeleton className="h-32 rounded-lg" />
-          ) : dashboardError ? (
-            <Card className="p-6 bg-red-500/10 border-red-500/20">
-              <p className="text-red-400 text-sm">Failed to load operations overview</p>
-            </Card>
-          ) : (
-            <OperationsOverview data={operationsDashboard} />
-          )}
+          <OperationsOverview
+            data={operationsDashboard}
+            isLoading={dashboardLoading}
+            error={dashboardError ? 'Failed to load operations overview' : null}
+          />
 
           {/* ── Health Section (Queue & Worker) - 2 columns ── */}
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             {/* Queue Health Card */}
-            {dashboardLoading ? (
-              <Skeleton className="h-40 rounded-lg" />
-            ) : dashboardError ? (
-              <Card className="p-6 bg-red-500/10 border-red-500/20">
-                <p className="text-red-400 text-sm">Failed to load queue health</p>
-              </Card>
-            ) : (
-              <QueueHealthCard data={operationsDashboard?.queue_health} />
-            )}
+            <QueueHealthCard
+              data={operationsDashboard?.queue_health}
+              isLoading={dashboardLoading}
+              error={dashboardError ? 'Failed to load queue health' : null}
+            />
 
             {/* Worker Health Card */}
-            {dashboardLoading ? (
-              <Skeleton className="h-40 rounded-lg" />
-            ) : dashboardError ? (
-              <Card className="p-6 bg-red-500/10 border-red-500/20">
-                <p className="text-red-400 text-sm">Failed to load worker health</p>
-              </Card>
-            ) : (
-              <WorkerHealthCard data={operationsDashboard?.worker_health} />
-            )}
+            <WorkerHealthCard
+              data={operationsDashboard?.worker_health}
+              isLoading={dashboardLoading}
+              error={dashboardError ? 'Failed to load worker health' : null}
+            />
           </div>
 
           {/* ── Execution Table - Full width ── */}
-          {executionsLoading ? (
-            <Skeleton className="h-96 rounded-lg" />
-          ) : executionsError ? (
-            <Card className="p-6 bg-red-500/10 border-red-500/20">
-              <p className="text-red-400 text-sm">Failed to load executions</p>
-            </Card>
-          ) : (
-            <ExecutionTable
-              executions={executionList?.executions ?? []}
-              onSelectExecution={setSelectedExecution}
-            />
-          )}
+          <ExecutionTable
+            executions={executionList?.executions ?? []}
+            total={executionList?.count}
+            isLoading={executionsLoading}
+            error={executionsError ? 'Failed to load executions' : null}
+            onSelectExecution={setSelectedExecution}
+          />
 
           {/* ── Alerts & Recovery Events - 3 column layout ── */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
