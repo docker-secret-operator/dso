@@ -9,7 +9,13 @@
     "start": "next start",
     "lint": "next lint",
     "export": "next build && rm -rf ../ui-dist && cp -r out ../ui-dist",
-    "benchmark": "node scripts/benchmark-report.js"
+    "benchmark": "node scripts/benchmark-report.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:a11y": "axe-core --verbose"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -29,16 +35,29 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@testing-library/jest-dom": "^6.1.5",
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/user-event": "^14.5.1",
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
     "@typescript-eslint/parser": "^7.10.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^1.0.4",
+    "@vitest/ui": "^1.0.4",
     "autoprefixer": "^10.4.19",
+    "axe-core": "^4.8.2",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.3",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.3",
-    "typescript": "^5.4.5"
+    "ts-jest": "^29.1.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.0.8",
+    "vitest": "^1.0.4"
   }
 }
