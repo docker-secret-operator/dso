@@ -154,3 +154,59 @@ export function isValidRole(role: unknown): role is Role {
   const validRoles: Role[] = ['viewer', 'operator', 'reviewer', 'approver', 'admin']
   return typeof role === 'string' && validRoles.includes(role as Role)
 }
+
+/**
+ * Permission types
+ */
+export type Permission = 'view' | 'operate' | 'review' | 'approve'
+
+/**
+ * Role permissions matrix
+ */
+const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  viewer: ['view'],
+  operator: ['view', 'operate'],
+  reviewer: ['view', 'operate', 'review'],
+  approver: ['view', 'operate', 'review', 'approve'],
+  admin: ['view', 'operate', 'review', 'approve'],
+}
+
+/**
+ * Check if a role has a specific permission
+ */
+export function hasPermission(role: string | Role, permission: Permission): boolean {
+  if (!isValidRole(role)) {
+    return false
+  }
+
+  const permissions = ROLE_PERMISSIONS[role]
+  return permissions.includes(permission)
+}
+
+/**
+ * Check if role can view
+ */
+export function canView(role: string | Role): boolean {
+  return hasPermission(role, 'view')
+}
+
+/**
+ * Check if role can operate
+ */
+export function canOperate(role: string | Role): boolean {
+  return hasPermission(role, 'operate')
+}
+
+/**
+ * Check if role can review
+ */
+export function canReview(role: string | Role): boolean {
+  return hasPermission(role, 'review')
+}
+
+/**
+ * Check if role can approve
+ */
+export function canApprove(role: string | Role): boolean {
+  return hasPermission(role, 'approve')
+}
