@@ -8,6 +8,12 @@ describe('Session Management', () => {
     vi.clearAllMocks()
   })
 
+  afterEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
   describe('isSessionValid', () => {
     it('should return false when no token stored', () => {
       expect(session.isSessionValid()).toBe(false)
@@ -53,17 +59,22 @@ describe('Session Management', () => {
     })
 
     it('should return remaining seconds when session valid', () => {
-      const futureDate = new Date(Date.now() + 3600000).toISOString()
+      vi.useFakeTimers()
+      const now = new Date('2026-06-19T12:00:00Z').getTime()
+      vi.setSystemTime(now)
+
+      const expiryTime = new Date(now + 3600000) // 1 hour from now
       storage.setStoredSession({
         id: 'sess-1',
-        created_at: new Date().toISOString(),
-        expires_at: futureDate,
+        created_at: new Date(now).toISOString(),
+        expires_at: expiryTime.toISOString(),
         ip_address: '127.0.0.1',
       })
 
       const remaining = session.getSessionTimeRemaining()
-      expect(remaining).toBeGreaterThan(3590)
-      expect(remaining).toBeLessThanOrEqual(3600)
+      expect(remaining).toBe(3600) // Exactly 3600 seconds with fake timers
+
+      vi.useRealTimers()
     })
   })
 
@@ -78,6 +89,42 @@ describe('Session Management', () => {
       })
 
       expect(session.isSessionExpiringSoon()).toBe(true)
+    })
+
+    it('should return true when just under 5 minutes remaining (boundary case)', () => {
+      const justUnder = new Date(Date.now() + 299999).toISOString()
+      storage.setStoredSession({
+        id: 'sess-1',
+        created_at: new Date().toISOString(),
+        expires_at: justUnder,
+        ip_address: '127.0.0.1',
+      })
+
+      expect(session.isSessionExpiringSoon()).toBe(true)
+    })
+
+    it('should return false when at exactly 5 minutes (boundary case)', () => {
+      const exactBoundary = new Date(Date.now() + 300000).toISOString()
+      storage.setStoredSession({
+        id: 'sess-1',
+        created_at: new Date().toISOString(),
+        expires_at: exactBoundary,
+        ip_address: '127.0.0.1',
+      })
+
+      expect(session.isSessionExpiringSoon()).toBe(false)
+    })
+
+    it('should return false when just over 5 minutes remaining (boundary case)', () => {
+      const justOver = new Date(Date.now() + 300001).toISOString()
+      storage.setStoredSession({
+        id: 'sess-1',
+        created_at: new Date().toISOString(),
+        expires_at: justOver,
+        ip_address: '127.0.0.1',
+      })
+
+      expect(session.isSessionExpiringSoon()).toBe(false)
     })
 
     it('should return false when more than 5 minutes remaining', () => {
