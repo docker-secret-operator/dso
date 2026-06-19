@@ -7,9 +7,11 @@ import { ChevronRight } from 'lucide-react'
 interface ContainerRowProps {
   container: ContainerMetadata
   onSelect: (container: ContainerMetadata) => void
+  onToggleSelect?: (containerId: string) => void
+  isSelected?: boolean
 }
 
-export function ContainerRow({ container, onSelect }: ContainerRowProps) {
+export function ContainerRow({ container, onSelect, onToggleSelect, isSelected }: ContainerRowProps) {
   const classificationColor: Record<string, string> = {
     managed: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
     partial: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
@@ -30,7 +32,21 @@ export function ContainerRow({ container, onSelect }: ContainerRowProps) {
       onClick={() => onSelect(container)}
       className="w-full px-4 py-3 border-b border-white/[0.06] hover:bg-white/[0.02] transition-colors text-left"
     >
-      <div className="grid grid-cols-6 gap-3 items-center">
+      <div className={`grid ${onToggleSelect ? 'grid-cols-7' : 'grid-cols-6'} gap-3 items-center`}>
+        {onToggleSelect && (
+          <div className="col-span-1">
+            <input
+              type="checkbox"
+              checked={isSelected ?? false}
+              onChange={(e) => {
+                e.stopPropagation()
+                onToggleSelect(container.container_id)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-4 h-4 rounded border-white/20 text-indigo-500 focus:ring-indigo-500/20"
+            />
+          </div>
+        )}
         <div className="col-span-1 truncate">
           <p className="text-sm font-medium text-slate-200 truncate">{container.container_name}</p>
         </div>
