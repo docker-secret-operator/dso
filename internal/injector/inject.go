@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -29,7 +30,7 @@ func InjectFiles(ctx context.Context, cli *client.Client, containerID string, fi
 }
 
 func injectOneFile(ctx context.Context, cli *client.Client, containerID, fileName, content string, uid, gid int) error {
-	destPath := "/run/secrets/dso/" + fileName
+	destPath := "/run/secrets/dso/" + filepath.Base(fileName)
 
 	// base64-encode the secret so it is shell-safe (alphabet: A-Za-z0-9+/=,
 	// no quotes, no special chars). We embed it directly in the command

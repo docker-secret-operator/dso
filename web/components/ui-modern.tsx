@@ -1,28 +1,32 @@
 /**
- * Modern UI Components
- * Premium SaaS components inspired by Linear, Vercel, Stripe
+ * DSO Modern UI Component Library
+ * Dark-themed premium components — no coral, no white cards.
  */
 
 import { cn } from '@/lib/utils'
 import React from 'react'
+import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
 // ============================================================================
-// CARD COMPONENT
+// CARD
 // ============================================================================
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
-  variant?: 'default' | 'gradient' | 'bordered'
+  variant?: 'default' | 'elevated' | 'ghost' | 'glass'
+  interactive?: boolean
 }
 
 export const Card = React.forwardRef<HTMLDivElement, CardProps>(
-  ({ className, variant = 'default', ...props }, ref) => (
+  ({ className, variant = 'glass', interactive = false, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        'rounded-2xl transition-all duration-200',
-        variant === 'default' && 'bg-white border border-slate-100 shadow-sm hover:shadow-md',
-        variant === 'gradient' && 'bg-gradient-to-br from-white to-slate-50 border border-slate-100 shadow-sm hover:shadow-md',
-        variant === 'bordered' && 'bg-white border-2 border-slate-200 shadow-none hover:shadow-sm',
+        'rounded-xl border transition-all duration-150',
+        variant === 'default'  && 'bg-[#111318] border-white/[0.07]',
+        variant === 'elevated' && 'bg-[#1a1d24] border-white/[0.10]',
+        variant === 'ghost'    && 'bg-transparent border-transparent',
+        variant === 'glass'    && 'glass-panel',
+        interactive && 'cursor-pointer hover:border-white/[0.14] hover:bg-[#1a1d24] hover:-translate-y-0.5 hover:shadow-card-hover',
         className
       )}
       {...props}
@@ -32,12 +36,12 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
 Card.displayName = 'Card'
 
 // ============================================================================
-// BUTTON COMPONENT
+// BUTTON
 // ============================================================================
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline'
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'icon'
   isLoading?: boolean
 }
 
@@ -47,24 +51,22 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       ref={ref}
       disabled={disabled || isLoading}
       className={cn(
-        'inline-flex items-center justify-center font-semibold rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed',
+        'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-100',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0b0f]',
+        'disabled:opacity-50 disabled:cursor-not-allowed',
 
         // Sizes
-        size === 'sm' && 'px-3 py-1.5 text-sm',
-        size === 'md' && 'px-4 py-2.5 text-sm',
-        size === 'lg' && 'px-6 py-3 text-base',
+        size === 'sm'   && 'px-3 py-1.5 text-xs gap-1.5',
+        size === 'md'   && 'px-4 py-2 text-sm gap-2',
+        size === 'lg'   && 'px-5 py-2.5 text-sm gap-2',
+        size === 'icon' && 'p-2 text-sm',
 
         // Variants
-        variant === 'primary' &&
-          'bg-gradient-to-r from-coral-600 to-coral-500 text-white shadow-md hover:shadow-lg hover:from-coral-700 hover:to-coral-600 focus:ring-coral-500',
-        variant === 'secondary' &&
-          'bg-white text-slate-900 border border-slate-200 shadow-sm hover:shadow-md hover:bg-slate-50 hover:border-slate-300 focus:ring-slate-500',
-        variant === 'danger' &&
-          'bg-red-600 text-white shadow-md hover:shadow-lg hover:bg-red-700 focus:ring-red-500',
-        variant === 'ghost' &&
-          'bg-transparent text-slate-700 hover:bg-slate-100 focus:ring-slate-500',
-        variant === 'outline' &&
-          'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 focus:ring-slate-500',
+        variant === 'primary'   && 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-sm',
+        variant === 'secondary' && 'bg-white/8 text-slate-200 border border-white/10 hover:bg-white/12 hover:border-white/15',
+        variant === 'danger'    && 'bg-red-600/90 text-white hover:bg-red-500',
+        variant === 'ghost'     && 'text-slate-400 hover:text-slate-200 hover:bg-white/6',
+        variant === 'outline'   && 'border border-white/12 text-slate-300 hover:bg-white/6 hover:border-white/20',
 
         className
       )}
@@ -72,95 +74,131 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     >
       {isLoading ? (
         <>
-          <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <svg className="animate-spin w-3.5 h-3.5 mr-1.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-          Loading...
+          Loading…
         </>
-      ) : (
-        children
-      )}
+      ) : children}
     </button>
   )
 )
 Button.displayName = 'Button'
 
 // ============================================================================
-// BADGE COMPONENT
+// BADGE
 // ============================================================================
 
 interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
-  variant?: 'success' | 'warning' | 'danger' | 'info' | 'default'
+  variant?: 'success' | 'warning' | 'danger' | 'info' | 'default' | 'outline'
   size?: 'sm' | 'md'
+  dot?: boolean
 }
 
 export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
-  ({ className, variant = 'default', size = 'md', ...props }, ref) => (
+  ({ className, variant = 'default', size = 'sm', dot = false, children, ...props }, ref) => (
     <span
       ref={ref}
       className={cn(
-        'inline-flex items-center rounded-full font-semibold',
+        'inline-flex items-center gap-1 rounded-full font-medium',
+        size === 'sm' && 'px-2 py-0.5 text-[11px]',
+        size === 'md' && 'px-2.5 py-1 text-xs',
 
-        // Sizes
-        size === 'sm' && 'px-2 py-1 text-xs',
-        size === 'md' && 'px-3 py-1 text-sm',
-
-        // Variants
-        variant === 'success' && 'bg-green-100 text-green-800',
-        variant === 'warning' && 'bg-yellow-100 text-yellow-800',
-        variant === 'danger' && 'bg-red-100 text-red-800',
-        variant === 'info' && 'bg-blue-100 text-blue-800',
-        variant === 'default' && 'bg-slate-100 text-slate-800',
+        variant === 'success' && 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20',
+        variant === 'warning' && 'bg-amber-500/15   text-amber-400   ring-1 ring-amber-500/20',
+        variant === 'danger'  && 'bg-red-500/15     text-red-400     ring-1 ring-red-500/20',
+        variant === 'info'    && 'bg-blue-500/15    text-blue-400    ring-1 ring-blue-500/20',
+        variant === 'default' && 'bg-slate-500/15   text-slate-400   ring-1 ring-slate-500/20',
+        variant === 'outline' && 'border border-white/15 text-slate-400',
 
         className
       )}
       {...props}
-    />
+    >
+      {dot && (
+        <span className={cn(
+          'w-1.5 h-1.5 rounded-full flex-shrink-0',
+          variant === 'success' && 'bg-emerald-400',
+          variant === 'warning' && 'bg-amber-400',
+          variant === 'danger'  && 'bg-red-400',
+          variant === 'info'    && 'bg-blue-400',
+          variant === 'default' && 'bg-slate-400',
+        )} />
+      )}
+      {children}
+    </span>
   )
 )
 Badge.displayName = 'Badge'
 
 // ============================================================================
-// INPUT COMPONENT
+// STATUS BADGE — semantic shorthand
+// ============================================================================
+
+interface StatusBadgeProps { status: string; label?: string }
+
+export function StatusBadge({ status, label }: StatusBadgeProps) {
+  const s = status.toLowerCase()
+  const variant =
+    s === 'ok' || s === 'healthy' || s === 'active' || s === 'success' || s === 'operational' ? 'success' :
+    s === 'pending' || s === 'warning' || s === 'acknowledged' ? 'warning' :
+    s === 'error' || s === 'critical' || s === 'failed' || s === 'failure' ? 'danger' :
+    s === 'offline' || s === 'disabled' || s === 'suppressed' ? 'default' :
+    'info'
+
+  return <Badge variant={variant} dot>{label ?? status}</Badge>
+}
+
+// ============================================================================
+// INPUT
 // ============================================================================
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string
   error?: string
   helperText?: string
+  startIcon?: React.ReactNode
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, label, error, helperText, ...props }, ref) => (
+  ({ className, label, error, helperText, startIcon, ...props }, ref) => (
     <div className="w-full">
       {label && (
-        <label className="block text-sm font-semibold text-slate-900 mb-2">
+        <label className="block text-sm font-medium text-slate-300 mb-1.5">
           {label}
         </label>
       )}
-      <input
-        ref={ref}
-        className={cn(
-          'w-full px-4 py-2.5 rounded-lg border-2 transition-all duration-200 font-medium',
-          'bg-white text-slate-900 placeholder-slate-400',
-          'border-slate-200 focus:border-coral-600 focus:ring-2 focus:ring-coral-500/20',
-          'hover:border-slate-300',
-          'disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed',
-          error && 'border-red-500 focus:border-red-600 focus:ring-red-500/20',
-          className
+      <div className="relative">
+        {startIcon && (
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+            {startIcon}
+          </span>
         )}
-        {...props}
-      />
-      {error && <p className="mt-1 text-sm font-medium text-red-600">{error}</p>}
-      {helperText && !error && <p className="mt-1 text-sm text-slate-500">{helperText}</p>}
+        <input
+          ref={ref}
+          className={cn(
+            'w-full rounded-lg border text-sm transition-all duration-100',
+            'bg-[#1a1d24] text-slate-200 placeholder:text-slate-600',
+            'border-white/10 hover:border-white/16',
+            'focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30',
+            'disabled:opacity-50 disabled:cursor-not-allowed',
+            startIcon ? 'pl-9 pr-3 py-2' : 'px-3 py-2',
+            error && 'border-red-500/60 focus:border-red-500 focus:ring-red-500/20',
+            className
+          )}
+          {...props}
+        />
+      </div>
+      {error      && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
+      {helperText && !error && <p className="mt-1.5 text-xs text-slate-500">{helperText}</p>}
     </div>
   )
 )
 Input.displayName = 'Input'
 
 // ============================================================================
-// SELECT COMPONENT
+// SELECT
 // ============================================================================
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
@@ -173,89 +211,106 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
   ({ className, label, options, error, ...props }, ref) => (
     <div className="w-full">
       {label && (
-        <label className="block text-sm font-semibold text-slate-900 mb-2">
+        <label className="block text-sm font-medium text-slate-300 mb-1.5">
           {label}
         </label>
       )}
       <select
         ref={ref}
         className={cn(
-          'w-full px-4 py-2.5 rounded-lg border-2 transition-all duration-200 font-medium',
-          'bg-white text-slate-900',
-          'border-slate-200 focus:border-coral-600 focus:ring-2 focus:ring-coral-500/20',
-          'hover:border-slate-300',
-          'disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed',
-          error && 'border-red-500 focus:border-red-600 focus:ring-red-500/20',
+          'w-full rounded-lg border text-sm transition-all duration-100',
+          'bg-[#1a1d24] text-slate-200',
+          'border-white/10 hover:border-white/16',
+          'focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30',
+          'disabled:opacity-50 disabled:cursor-not-allowed',
+          'px-3 py-2',
+          error && 'border-red-500/60',
           className
         )}
         {...props}
       >
-        {options.map(option => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
+        {options.map(o => (
+          <option key={o.value} value={o.value} className="bg-[#1a1d24]">{o.label}</option>
         ))}
       </select>
-      {error && <p className="mt-1 text-sm font-medium text-red-600">{error}</p>}
+      {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
     </div>
   )
 )
 Select.displayName = 'Select'
 
 // ============================================================================
-// METRIC CARD COMPONENT
+// METRIC CARD
 // ============================================================================
 
 interface MetricCardProps {
   label: string
   value: string | number
   change?: number
-  icon?: React.ReactNode
   trend?: 'up' | 'down' | 'neutral'
-  gradient?: 'coral' | 'blue' | 'green'
+  icon?: React.ReactNode
+  loading?: boolean
+  onClick?: () => void
+  sublabel?: string
+  accentColor?: 'indigo' | 'emerald' | 'amber' | 'red' | 'blue' | 'slate'
 }
 
-export function MetricCard({
-  label,
-  value,
-  change,
-  icon,
-  trend = 'neutral',
-  gradient = 'coral',
-}: MetricCardProps) {
-  const gradientClass = {
-    coral: 'from-coral-600/20 to-coral-500/10',
-    blue: 'from-blue-600/20 to-blue-500/10',
-    green: 'from-green-600/20 to-green-500/10',
-  }[gradient]
+const accentMap = {
+  indigo:  { icon: 'text-indigo-400',  bar: 'bg-indigo-500' },
+  emerald: { icon: 'text-emerald-400', bar: 'bg-emerald-500' },
+  amber:   { icon: 'text-amber-400',   bar: 'bg-amber-500' },
+  red:     { icon: 'text-red-400',     bar: 'bg-red-500' },
+  blue:    { icon: 'text-blue-400',    bar: 'bg-blue-500' },
+  slate:   { icon: 'text-slate-400',   bar: 'bg-slate-500' },
+}
+
+export function MetricCard({ label, value, change, trend = 'neutral', icon, loading, onClick, sublabel, accentColor = 'indigo' }: MetricCardProps) {
+  const ac = accentMap[accentColor]
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5 space-y-3">
+        <div className="skeleton h-3.5 w-20 rounded" />
+        <div className="skeleton h-8 w-16 rounded" />
+        <div className="skeleton h-3 w-24 rounded" />
+      </div>
+    )
+  }
 
   return (
-    <Card className={cn('bg-gradient-to-br', gradientClass)}>
-      <div className="p-6">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <p className="text-sm font-medium text-slate-600 mb-1">{label}</p>
-            <p className="text-3xl font-bold text-slate-900">{value}</p>
-          </div>
-          {icon && <div className="text-slate-400">{icon}</div>}
-        </div>
+    <div
+      className={cn(
+        'rounded-xl border border-white/[0.07] glass-panel p-5 transition-all duration-300',
+        onClick && 'cursor-pointer hover:border-white/[0.14] hover:-translate-y-1 hover:shadow-glow-indigo'
+      )}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{label}</p>
+        {icon && <span className={cn('flex-shrink-0', ac.icon)}>{icon}</span>}
+      </div>
 
+      <p className="text-2xl font-semibold text-slate-100 tabular-nums">{value}</p>
+
+      <div className="flex items-center justify-between mt-2">
+        {sublabel && <p className="text-xs text-slate-600">{sublabel}</p>}
         {change !== undefined && (
-          <div
-            className={cn(
-              'inline-flex items-center gap-1 text-sm font-semibold',
-              trend === 'up' && 'text-green-600',
-              trend === 'down' && 'text-red-600',
-              trend === 'neutral' && 'text-slate-600'
-            )}
-          >
+          <div className={cn(
+            'flex items-center gap-1 text-xs font-medium',
+            trend === 'up'   && 'text-emerald-400',
+            trend === 'down' && 'text-red-400',
+            trend === 'neutral' && 'text-slate-500',
+          )}>
+            {trend === 'up'      && <TrendingUp className="w-3 h-3" />}
+            {trend === 'down'    && <TrendingDown className="w-3 h-3" />}
+            {trend === 'neutral' && <Minus className="w-3 h-3" />}
             <span>{change > 0 ? '+' : ''}{change}%</span>
-            {trend === 'up' && <span>↑</span>}
-            {trend === 'down' && <span>↓</span>}
           </div>
         )}
       </div>
-    </Card>
+    </div>
   )
 }
 
@@ -264,29 +319,96 @@ export function MetricCard({
 // ============================================================================
 
 interface StatusIndicatorProps {
-  status: 'healthy' | 'warning' | 'critical' | 'offline'
+  status: 'healthy' | 'warning' | 'critical' | 'offline' | 'info'
   label?: string
+  pulse?: boolean
 }
 
-export function StatusIndicator({ status, label }: StatusIndicatorProps) {
-  const colors = {
-    healthy: 'bg-green-500',
-    warning: 'bg-yellow-500',
-    critical: 'bg-red-500',
-    offline: 'bg-slate-400',
-  }
+const statusStyles = {
+  healthy:  'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)]',
+  warning:  'bg-amber-400   shadow-[0_0_6px_rgba(251,191,36,0.6)]',
+  critical: 'bg-red-400     shadow-[0_0_6px_rgba(248,113,113,0.6)]',
+  offline:  'bg-slate-500',
+  info:     'bg-blue-400    shadow-[0_0_6px_rgba(96,165,250,0.6)]',
+}
 
-  const labels = {
-    healthy: 'Healthy',
-    warning: 'Warning',
-    critical: 'Critical',
-    offline: 'Offline',
-  }
-
+export function StatusIndicator({ status, label, pulse = true }: StatusIndicatorProps) {
   return (
     <div className="flex items-center gap-2">
-      <div className={cn('w-3 h-3 rounded-full animate-pulse', colors[status])} />
-      <span className="text-sm font-medium text-slate-700">{label || labels[status]}</span>
+      <span className={cn(
+        'w-2 h-2 rounded-full flex-shrink-0',
+        statusStyles[status],
+        pulse && status !== 'offline' && 'animate-pulse'
+      )} />
+      {label && <span className="text-sm text-slate-400">{label}</span>}
+    </div>
+  )
+}
+
+// ============================================================================
+// PAGE HEADER
+// ============================================================================
+
+interface PageHeaderProps {
+  title: string
+  description?: string
+  actions?: React.ReactNode
+  badge?: React.ReactNode
+}
+
+export function PageHeader({ title, description, actions, badge }: PageHeaderProps) {
+  return (
+    <div className="flex items-start justify-between gap-4 mb-6">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2.5">
+          <h1 className="text-xl font-semibold text-slate-100 truncate">{title}</h1>
+          {badge}
+        </div>
+        {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
+      </div>
+      {actions && <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>}
+    </div>
+  )
+}
+
+// ============================================================================
+// SKELETON
+// ============================================================================
+
+interface SkeletonProps { className?: string; count?: number }
+
+export function Skeleton({ className, count = 1 }: SkeletonProps) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className={cn('skeleton', className)} />
+      ))}
+    </>
+  )
+}
+
+// ============================================================================
+// EMPTY STATE
+// ============================================================================
+
+interface EmptyStateProps {
+  icon?: React.ReactNode
+  title: string
+  description?: string
+  action?: React.ReactNode
+}
+
+export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+      {icon && (
+        <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-500 mb-4">
+          {icon}
+        </div>
+      )}
+      <p className="text-sm font-medium text-slate-300">{title}</p>
+      {description && <p className="mt-1 text-xs text-slate-600 max-w-xs">{description}</p>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   )
 }
@@ -295,20 +417,22 @@ export function StatusIndicator({ status, label }: StatusIndicatorProps) {
 // STAT ROW
 // ============================================================================
 
-interface StatRowProps {
-  label: string
-  value: string | number
-  icon?: React.ReactNode
-}
-
-export function StatRow({ label, value, icon }: StatRowProps) {
+export function StatRow({ label, value, icon }: { label: string; value: React.ReactNode; icon?: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between py-3 border-b border-slate-100 last:border-b-0">
-      <div className="flex items-center gap-3">
-        {icon && <div className="text-slate-400">{icon}</div>}
-        <span className="text-sm text-slate-600">{label}</span>
+    <div className="flex items-center justify-between py-2.5 border-b border-white/[0.05] last:border-0">
+      <div className="flex items-center gap-2.5">
+        {icon && <span className="text-slate-600">{icon}</span>}
+        <span className="text-sm text-slate-500">{label}</span>
       </div>
-      <span className="text-sm font-semibold text-slate-900">{value}</span>
+      <span className="text-sm font-medium text-slate-300">{value}</span>
     </div>
   )
+}
+
+// ============================================================================
+// DIVIDER
+// ============================================================================
+
+export function Divider({ className }: { className?: string }) {
+  return <hr className={cn('border-0 border-t border-white/[0.07]', className)} />
 }

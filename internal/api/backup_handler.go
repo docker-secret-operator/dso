@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -97,6 +98,9 @@ func (h *BackupHandler) handleGetBackups(w http.ResponseWriter, r *http.Request,
 	limit := 50
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil {
+			if l > 100 {
+				l = 100
+			}
 			limit = l
 		}
 	}
@@ -137,7 +141,7 @@ func (h *BackupHandler) handleGetBackups(w http.ResponseWriter, r *http.Request,
 
 func (h *BackupHandler) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	go func() {
-		if err := h.backupService.CreateBackup(r.Context(), "manual"); err != nil {
+		if err := h.backupService.CreateBackup(context.Background(), "manual"); err != nil {
 			// Error already logged by service
 		}
 	}()
@@ -195,15 +199,16 @@ func (h *BackupHandler) handleDownload(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
-	backupPath := filepath.Join("data/backups", backup.Filename)
+	backupPath := filepath.Join("data/backups", filepath.Base(backup.Filename))
 	if _, err := os.Stat(backupPath); err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "backup file not found"})
 		return
 	}
 
+	safeFilename := strings.ReplaceAll(filepath.Base(backup.Filename), "\"", "")
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+backup.Filename+"\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+safeFilename+"\"")
 	http.ServeFile(w, r, backupPath)
 }
 

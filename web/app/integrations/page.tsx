@@ -28,19 +28,26 @@ interface QueueStats {
   total: number;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function IntegrationsPage() {
   const router = useRouter();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [selectedIntegration, setSelectedIntegration] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
+      const headers = getAuthHeaders();
       const [integrationsRes, queueRes] = await Promise.all([
-        fetch('/api/integrations'),
-        fetch('/api/integrations/queue'),
+        fetch('/api/integrations', { headers }),
+        fetch('/api/integrations/queue', { headers }),
       ]);
 
       if (!integrationsRes.ok) {
@@ -73,21 +80,21 @@ export default function IntegrationsPage() {
 
   const handleTest = async (pluginID: string) => {
     try {
-      const res = await fetch(`/api/integrations/${pluginID}/test`, { method: 'POST' });
+      const res = await fetch(`/api/integrations/${pluginID}/test`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         await fetchData();
-        alert('Test delivery succeeded');
+        setActionMessage({ text: 'Test delivery succeeded', type: 'success' });
       } else {
-        alert('Test delivery failed');
+        setActionMessage({ text: 'Test delivery failed', type: 'error' });
       }
     } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      setActionMessage({ text: `Error: ${err instanceof Error ? err.message : 'unknown'}`, type: 'error' });
     }
   };
 
   const handleEnable = async (pluginID: string) => {
     try {
-      const res = await fetch(`/api/integrations/${pluginID}/enable`, { method: 'POST' });
+      const res = await fetch(`/api/integrations/${pluginID}/enable`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         await fetchData();
       }
@@ -98,7 +105,7 @@ export default function IntegrationsPage() {
 
   const handleDisable = async (pluginID: string) => {
     try {
-      const res = await fetch(`/api/integrations/${pluginID}/disable`, { method: 'POST' });
+      const res = await fetch(`/api/integrations/${pluginID}/disable`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         await fetchData();
       }
@@ -108,11 +115,11 @@ export default function IntegrationsPage() {
   };
 
   const getHealthColor = (integration: Integration) => {
-    if (!integration.enabled) return 'bg-gray-100 text-gray-800';
+    if (!integration.enabled) return 'bg-slate-700/30 text-slate-400';
     if (integration.metrics.failed_count > integration.metrics.successful_count) {
-      return 'bg-yellow-100 text-yellow-800';
+      return 'bg-amber-500/15 text-amber-300';
     }
-    return 'bg-green-100 text-green-800';
+    return 'bg-emerald-500/15 text-emerald-300';
   };
 
   const getHealthText = (integration: Integration) => {
@@ -124,7 +131,7 @@ export default function IntegrationsPage() {
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-screen">Loading...</div>;
+    return <div className="flex items-center justify-center h-screen text-slate-200">Loading...</div>;
   }
 
   const healthyCount = integrations.filter(
@@ -136,76 +143,73 @@ export default function IntegrationsPage() {
   const disabledCount = integrations.filter((i) => !i.enabled).length;
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
+    <div className="min-h-screen p-6">
       <div className="max-w-7xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Integrations</h1>
-          <p className="text-gray-600">Manage webhooks and external system integrations</p>
+          <h1 className="text-3xl font-bold text-slate-100 mb-2">Integrations</h1>
+          <p className="text-slate-400">Manage webhooks and external system integrations</p>
         </div>
 
         {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+          <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-300">
             {error}
+          </div>
+        )}
+
+        {actionMessage && (
+          <div className={`mb-4 p-4 rounded-lg flex items-center justify-between ${
+            actionMessage.type === 'success'
+              ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+              : 'bg-red-500/10 border border-red-500/30 text-red-300'
+          }`}>
+            <span>{actionMessage.text}</span>
+            <button onClick={() => setActionMessage(null)} className="ml-4 font-bold opacity-70 hover:opacity-100">×</button>
           </div>
         )}
 
         {/* Summary Cards */}
         <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="bg-white p-4 rounded-lg shadow">
-            <div className="text-gray-600 text-sm">Total Integrations</div>
-            <div className="text-2xl font-bold text-gray-900">{integrations.length}</div>
+          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="text-slate-400 text-sm">Total Integrations</div>
+            <div className="text-2xl font-bold text-slate-100">{integrations.length}</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <div className="text-gray-600 text-sm">Healthy</div>
-            <div className="text-2xl font-bold text-green-600">{healthyCount}</div>
+          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="text-slate-400 text-sm">Healthy</div>
+            <div className="text-2xl font-bold text-emerald-400">{healthyCount}</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <div className="text-gray-600 text-sm">Degraded</div>
-            <div className="text-2xl font-bold text-yellow-600">{failedCount}</div>
+          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="text-slate-400 text-sm">Degraded</div>
+            <div className="text-2xl font-bold text-amber-400">{failedCount}</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <div className="text-gray-600 text-sm">Pending Queue</div>
-            <div className="text-2xl font-bold text-blue-600">{queueStats?.pending || 0}</div>
+          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="text-slate-400 text-sm">Pending Queue</div>
+            <div className="text-2xl font-bold text-blue-400">{queueStats?.pending || 0}</div>
           </div>
         </div>
 
         {/* Integrations Table */}
         {integrations.length === 0 ? (
-          <div className="bg-white rounded-lg shadow p-8 text-center">
-            <p className="text-gray-500">No integrations configured</p>
+          <div className="bg-[#111318] border border-slate-700/50 rounded-lg p-8 text-center">
+            <p className="text-slate-500">No integrations configured</p>
           </div>
         ) : (
-          <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="bg-[#111318] border border-slate-700/50 rounded-lg overflow-hidden">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
+              <thead className="bg-[#0f1015] border-b border-slate-700/50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Plugin
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Health
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Endpoint
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Deliveries
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Failures
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Last Success
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Actions
-                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Plugin</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Health</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Endpoint</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Deliveries</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Failures</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Last Success</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-slate-700/30">
                 {integrations.map((integration) => (
-                  <tr key={integration.plugin_id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
+                  <tr key={integration.plugin_id} className="hover:bg-slate-800/50/[0.02]">
+                    <td className="px-6 py-4 whitespace-nowrap font-medium text-slate-200">
                       {integration.plugin_id}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -213,18 +217,18 @@ export default function IntegrationsPage() {
                         {getHealthText(integration)}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-700 truncate">
+                    <td className="px-6 py-4 text-sm text-slate-400 truncate">
                       {integration.endpoint}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
                       {integration.metrics.total_events}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="text-sm text-red-600">
+                      <span className="text-sm text-red-400">
                         {integration.metrics.failed_count}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
                       {integration.metrics.last_success_time
                         ? new Date(integration.metrics.last_success_time).toLocaleDateString()
                         : 'Never'}

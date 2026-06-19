@@ -112,9 +112,12 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get client IP
+	// Get client IP — take only the first (leftmost) entry from X-Forwarded-For
+	// to prevent IP spoofing via attacker-controlled header values.
 	ipAddress := r.Header.Get("X-Forwarded-For")
-	if ipAddress == "" {
+	if ipAddress != "" {
+		ipAddress = strings.TrimSpace(strings.SplitN(ipAddress, ",", 2)[0])
+	} else {
 		ipAddress = r.RemoteAddr
 	}
 

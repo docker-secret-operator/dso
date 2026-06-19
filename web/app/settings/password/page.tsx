@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { apiClient } from '@/lib/api-client'
 
 function validatePolicy(password: string): string | null {
-  if (password.length < 12) return 'Password must be at least 12 characters.'
+  if (password.length < 8) return 'Password must be at least 8 characters.'
   if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter.'
   if (!/[a-z]/.test(password)) return 'Password must contain at least one lowercase letter.'
   if (!/[0-9]/.test(password)) return 'Password must contain at least one digit.'
@@ -50,25 +50,25 @@ export default function ChangePasswordPage() {
   return (
     <div className="p-6 max-w-md">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Change Password</h1>
-        <p className="text-sm text-muted-foreground mt-1">Update your account password</p>
+        <h1 className="text-2xl font-semibold text-slate-100">Change Password</h1>
+        <p className="text-sm text-slate-400 mt-1">Update your account password</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         {success && (
-          <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-700">
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
             Password changed successfully.
           </div>
         )}
 
         {error && (
-          <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {error}
           </div>
         )}
 
-        <div className="space-y-1">
-          <label className="text-sm font-medium">Current Password</label>
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-slate-300">Current Password</label>
           <input
             type="password"
             value={current}
@@ -76,12 +76,12 @@ export default function ChangePasswordPage() {
             required
             disabled={loading}
             autoComplete="current-password"
-            className="w-full px-3 py-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+            className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-700 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50 transition-all"
           />
         </div>
 
-        <div className="space-y-1">
-          <label className="text-sm font-medium">New Password</label>
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-slate-300">New Password</label>
           <input
             type="password"
             value={next}
@@ -89,16 +89,16 @@ export default function ChangePasswordPage() {
             required
             disabled={loading}
             autoComplete="new-password"
-            placeholder="Min 12 chars, upper, lower, digit"
-            className="w-full px-3 py-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+            placeholder="Min 8 chars, upper, lower, digit"
+            className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50 transition-all"
           />
           {policyViolation && (
-            <p className="text-xs text-red-600">{policyViolation}</p>
+            <p className="text-xs text-red-400">{policyViolation}</p>
           )}
         </div>
 
-        <div className="space-y-1">
-          <label className="text-sm font-medium">Confirm New Password</label>
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-slate-300">Confirm New Password</label>
           <input
             type="password"
             value={confirm}
@@ -106,21 +106,21 @@ export default function ChangePasswordPage() {
             required
             disabled={loading}
             autoComplete="new-password"
-            className="w-full px-3 py-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+            className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50 transition-all"
           />
           {mismatch && (
-            <p className="text-xs text-red-600">Passwords do not match.</p>
+            <p className="text-xs text-red-400">Passwords do not match.</p>
           )}
         </div>
 
         <div className="pt-2">
-          <p className="text-xs text-muted-foreground mb-3">
-            Requirements: at least 12 characters, one uppercase letter, one lowercase letter, one digit.
+          <p className="text-xs text-slate-500 mb-3">
+            Requirements: at least 8 characters, one uppercase letter, one lowercase letter, one digit.
           </p>
           <button
             type="submit"
             disabled={loading || !current || !next || !confirm || !!policyViolation || !!mismatch}
-            className="w-full px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-[#0a0b0f] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {loading ? 'Saving…' : 'Change Password'}
           </button>

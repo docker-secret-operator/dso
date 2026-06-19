@@ -64,11 +64,11 @@ func (m *Manager) RegisterContainer(containerID, containerIP string, hostPort, c
 	addr := fmt.Sprintf("%s:%d", containerIP, containerPort)
 
 	if err := m.registry.Add(Backend{ID: backendID, Addr: addr}); err != nil {
-		return fmt.Errorf("proxy: register container %s: %w", containerID[:12], err)
+		return fmt.Errorf("proxy: register container %s: %w", shortID(containerID), err)
 	}
 	m.containerToBackendID.Store(containerID, backendID)
 	m.log.Info("proxy: container registered as backend",
-		zap.String("container", containerID[:12]),
+		zap.String("container", shortID(containerID)),
 		zap.String("addr", addr),
 		zap.Int("host_port", hostPort))
 	return nil
@@ -177,7 +177,7 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 		containerIP := extractContainerIP(c.NetworkSettings)
 		if containerIP == "" {
 			m.log.Warn("proxy: container has no IP, skipping",
-				zap.String("id", c.ID[:12]))
+				zap.String("id", shortID(c.ID)))
 			continue
 		}
 		for _, pm := range portMaps {
@@ -188,11 +188,11 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 			}
 			if err := m.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
 				m.log.Warn("proxy: failed to register container",
-					zap.String("id", c.ID[:12]), zap.Error(err))
+					zap.String("id", shortID(c.ID)), zap.Error(err))
 			}
 		}
 		m.log.Info("proxy: registered existing container",
-			zap.String("id", c.ID[:12]),
+			zap.String("id", shortID(c.ID)),
 			zap.String("ports", portsLabel))
 	}
 }

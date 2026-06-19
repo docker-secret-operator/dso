@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// shortID returns up to the first 12 characters of a container ID,
+// safe for empty or short strings (e.g. test fixtures, future Docker versions).
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
 // EventRecord tracks when an event was last seen
 type EventRecord struct {
 	lastSeen time.Time

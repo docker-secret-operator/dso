@@ -38,7 +38,7 @@ type TriggerEngine struct {
 	DockerClient      *client.Client // For crash recovery
 }
 
-func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) *TriggerEngine {
+func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
 	if rw != nil {
 		rw.Cache = cache
 		rw.Config = cfg
@@ -73,9 +73,8 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 			zap.Error(err))
 		logger.Error("Lock manager is REQUIRED for rotation safety. Cannot proceed without it.",
 			zap.String("path", "/var/lib/dso/locks"))
-		// FAIL FAST: Return nil to cause fatal error upstream
-		// This prevents silent data corruption from concurrent rotations
-		panic(fmt.Sprintf("rotation lock manager initialization failed: %v", err))
+		cancel()
+		return nil, fmt.Errorf("rotation lock manager initialization failed: %w", err)
 	}
 
 	timeoutController := NewTimeoutController(logger)
@@ -92,7 +91,7 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 		LockManager:       lockManager,
 		TimeoutController: timeoutController,
 		DockerClient:      dockerCli,
-	}
+	}, nil
 }
 
 // performAutomaticRecovery automatically recovers from agent crashes by cleaning up

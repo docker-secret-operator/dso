@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react'
 import { useConfiguration } from '@/hooks/useConfiguration'
+import { useAuth } from '@/contexts/AuthContext'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -182,11 +183,11 @@ export default function ConfigurationPage() {
             <CardDescription>Configured secret providers and their status</CardDescription>
           </CardHeader>
           <CardContent>
-            {Object.keys(providers.active).length === 0 ? (
+            {Object.keys(providers.active || {}).length === 0 ? (
               <p className="text-sm text-gray-600 py-4">No providers configured</p>
             ) : (
               <div className="space-y-3">
-                {Object.entries(providers.active).map(([name, provider]) => {
+                {Object.entries(providers.active || {}).map(([name, provider]) => {
                   const testResult = testResults[name]
                   const isTesting = testingProvider === name
 
@@ -245,16 +246,18 @@ export default function ConfigurationPage() {
         </Card>
       )}
 
-      {/* Raw YAML Viewer */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Raw Configuration</CardTitle>
-          <CardDescription>YAML configuration file contents</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <RawYAMLViewer />
-        </CardContent>
-      </Card>
+      {/* Raw YAML Viewer — admin only (contains credentials) */}
+      <AdminOnly>
+        <Card>
+          <CardHeader>
+            <CardTitle>Raw Configuration</CardTitle>
+            <CardDescription>YAML configuration file contents — admin access only</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RawYAMLViewer />
+          </CardContent>
+        </Card>
+      </AdminOnly>
 
       {/* Info Banner */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -268,6 +271,20 @@ export default function ConfigurationPage() {
     </div>
     </ErrorBoundary>
   )
+}
+
+// AdminOnly renders children only for admin-role users; shows an access message otherwise.
+function AdminOnly({ children }: { children: React.ReactNode }) {
+  const { role, isLoading } = useAuth()
+  if (isLoading) return null
+  if (role !== 'admin') {
+    return (
+      <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 text-slate-400 text-sm">
+        Admin access required to view this section.
+      </div>
+    )
+  }
+  return <>{children}</>
 }
 
 // Raw YAML Viewer Component

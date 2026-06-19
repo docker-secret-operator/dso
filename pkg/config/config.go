@@ -33,6 +33,27 @@ type RotationConfigV2 struct {
 	HealthCheckTimeout string `yaml:"health_check_timeout,omitempty"`
 }
 
+func (r *RotationConfigV2) UnmarshalYAML(value *yaml.Node) error {
+	// If it's a boolean, we handle the legacy v1 format
+	if value.Kind == yaml.ScalarNode {
+		var b bool
+		if err := value.Decode(&b); err == nil {
+			r.Enabled = b
+			r.Strategy = "restart" // Default strategy when enabled via bool
+			return nil
+		}
+	}
+
+	// Otherwise, unmarshal as a normal struct
+	type alias RotationConfigV2
+	var aux alias
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+	*r = RotationConfigV2(aux)
+	return nil
+}
+
 type AuthConfig struct {
 	Method string            `yaml:"method"` // iam_role, access_key, token, env
 	Params map[string]string `yaml:"params,omitempty"`
@@ -56,6 +77,26 @@ type InjectionConfig struct {
 	Path string `yaml:"path,omitempty"`
 	UID  int    `yaml:"uid,omitempty"`
 	GID  int    `yaml:"gid,omitempty"`
+}
+
+func (i *InjectionConfig) UnmarshalYAML(value *yaml.Node) error {
+	// If it's a string, we handle the legacy v1 format
+	if value.Kind == yaml.ScalarNode {
+		var s string
+		if err := value.Decode(&s); err == nil {
+			i.Type = s
+			return nil
+		}
+	}
+
+	// Otherwise, unmarshal as a normal struct
+	type alias InjectionConfig
+	var aux alias
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+	*i = InjectionConfig(aux)
+	return nil
 }
 
 type TargetConfig struct {
@@ -145,9 +186,8 @@ func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 	var v2 v2Type
 	if err := value.Decode(&v2); err != nil {
 		// First-pass failure is expected for legacy (v1) format entries; fall through
-		// to the raw-map path below which handles them. Log so operators can diagnose
-		// accidental misconfiguration vs. intentional legacy format.
-		fmt.Fprintf(os.Stderr, "[DSO] config: v2 decode of secret mapping failed (will attempt legacy fallback): %v\n", err)
+		// to the raw-map path below which handles them.
+		// Suppressing noisy stderr logs to prevent confusion.
 	}
 	*s = SecretMapping(v2)
 

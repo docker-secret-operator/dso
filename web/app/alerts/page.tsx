@@ -1,326 +1,308 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle, XCircle, Clock, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState, useCallback } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import {
+  AlertTriangle, CheckCircle, XCircle, Clock,
+  ChevronLeft, ChevronRight, X, Bell,
+} from 'lucide-react'
+import { PageHeader, Card, StatusBadge, Badge, Button, EmptyState, Skeleton } from '@/components/ui-modern'
+import { apiClient } from '@/lib/api-client'
 
-interface MetricAlert {
-  id: string
-  rule_id: string
-  state: string
-  severity: string
-  metric: string
-  message: string
-  value: number
-  threshold: number
-  acknowledged_by?: string
-  acknowledged_at?: string
-  resolved_by?: string
-  resolved_at?: string
-  suppressed_by?: string
-  suppressed_until?: string
-  last_fired_at: string
-  created_at: string
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function alertAge(createdAt: string) {
+  const diffMs = Date.now() - new Date(createdAt).getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 60) return `${diffMins}m`
+  const diffH = Math.floor(diffMins / 60)
+  if (diffH < 24) return `${diffH}h ${diffMins % 60}m`
+  return `${Math.floor(diffH / 24)}d`
 }
 
-function getSeverityIcon(severity: string) {
-  switch (severity) {
-    case 'critical':
-      return <AlertTriangle className="w-5 h-5 text-red-600" />
-    case 'high':
-      return <AlertTriangle className="w-5 h-5 text-orange-600" />
-    case 'medium':
-      return <AlertTriangle className="w-5 h-5 text-yellow-600" />
-    default:
-      return <AlertTriangle className="w-5 h-5 text-blue-600" />
-  }
+function severityVariant(s: string): 'danger' | 'warning' | 'info' | 'default' {
+  if (s === 'critical' || s === 'high') return 'danger'
+  if (s === 'medium') return 'warning'
+  if (s === 'low') return 'info'
+  return 'default'
 }
 
-function getStateIcon(state: string) {
-  switch (state) {
-    case 'active':
-      return <XCircle className="w-5 h-5 text-red-600" />
-    case 'acknowledged':
-      return <Clock className="w-5 h-5 text-yellow-600" />
-    case 'resolved':
-      return <CheckCircle className="w-5 h-5 text-green-600" />
-    case 'suppressed':
-      return <XCircle className="w-5 h-5 text-gray-400" />
-    default:
-      return <XCircle className="w-5 h-5 text-gray-400" />
-  }
+// ── Alert card ────────────────────────────────────────────────────────────────
+
+interface AlertCardProps {
+  alert: any
+  onAck: (id: string) => void
+  onResolve: (id: string) => void
+  onSuppress: (id: string) => void
+  acting: boolean
+  actionError: string | null
 }
 
-export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<MetricAlert[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
-  const [pageSize] = useState(20)
-  const [state, setState] = useState<string>('')
-  const [severity, setSeverity] = useState<string>('')
-  const [actingAlert, setActingAlert] = useState<string | null>(null)
-  const router = useRouter()
-
-  useEffect(() => {
-    fetchAlerts()
-  }, [page, state, severity])
-
-  const fetchAlerts = async () => {
-    setLoading(true)
-    try {
-      const params = new URLSearchParams()
-      if (state) params.append('state', state)
-      params.append('limit', pageSize.toString())
-      params.append('offset', ((page - 1) * pageSize).toString())
-
-      const response = await fetch(`/api/alerts?${params}`)
-      if (!response.ok) {
-        if (response.status === 403) {
-          router.push('/login')
-          return
-        }
-        throw new Error('Failed to fetch alerts')
-      }
-      const data = await response.json()
-      setAlerts(data || [])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleAcknowledge = async (alertId: string) => {
-    setActingAlert(alertId)
-    try {
-      const response = await fetch(`/api/alerts/${alertId}/acknowledge`, { method: 'POST' })
-      if (!response.ok) throw new Error('Failed to acknowledge')
-      fetchAlerts()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to acknowledge')
-    } finally {
-      setActingAlert(null)
-    }
-  }
-
-  const handleResolve = async (alertId: string) => {
-    setActingAlert(alertId)
-    try {
-      const response = await fetch(`/api/alerts/${alertId}/resolve`, { method: 'POST' })
-      if (!response.ok) throw new Error('Failed to resolve')
-      fetchAlerts()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to resolve')
-    } finally {
-      setActingAlert(null)
-    }
-  }
-
-  const handleSuppress = async (alertId: string) => {
-    setActingAlert(alertId)
-    try {
-      const response = await fetch(`/api/alerts/${alertId}/suppress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ suppress_until: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
-      })
-      if (!response.ok) throw new Error('Failed to suppress')
-      fetchAlerts()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to suppress')
-    } finally {
-      setActingAlert(null)
-    }
-  }
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString()
-  }
-
-  const activeCritical = alerts.filter((a) => a.state === 'active' && a.severity === 'critical').length
-  const activeHigh = alerts.filter((a) => a.state === 'active' && a.severity === 'high').length
-  const acknowledged = alerts.filter((a) => a.state === 'acknowledged').length
+function AlertCard({ alert, onAck, onResolve, onSuppress, acting, actionError }: AlertCardProps) {
+  const isActive = alert.state === 'active'
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Active Alerts Dashboard</h1>
-        <div className="flex gap-2">
-          <Link href="/alerts/rules" className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 text-sm">
-            Manage Rules
-          </Link>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-red-700 text-sm font-medium">Critical</p>
-              <p className="text-3xl font-bold text-red-900">{activeCritical}</p>
-            </div>
-            <AlertTriangle className="w-8 h-8 text-red-600" />
-          </div>
+    <div className="p-4 border-b border-white/[0.05] last:border-0 hover:bg-white/[0.02] transition-colors">
+      <div className="flex items-start gap-4">
+        {/* Severity indicator */}
+        <div className="flex flex-col items-center gap-1.5 pt-0.5 flex-shrink-0">
+          <span className={`w-2 h-2 rounded-full ${
+            alert.severity === 'critical' ? 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.6)]' :
+            alert.severity === 'high'     ? 'bg-orange-400' :
+            alert.severity === 'medium'   ? 'bg-amber-400' : 'bg-blue-400'
+          } ${isActive ? 'animate-pulse' : ''}`} />
         </div>
 
-        <div className="bg-orange-50 border border-orange-200 rounded-lg p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-orange-700 text-sm font-medium">High</p>
-              <p className="text-3xl font-bold text-orange-900">{activeHigh}</p>
-            </div>
-            <AlertTriangle className="w-8 h-8 text-orange-600" />
-          </div>
-        </div>
-
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-yellow-700 text-sm font-medium">Acknowledged</p>
-              <p className="text-3xl font-bold text-yellow-900">{acknowledged}</p>
-            </div>
-            <Clock className="w-8 h-8 text-yellow-600" />
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-4">
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="block text-sm font-medium mb-1">State Filter</label>
-            <select
-              value={state}
-              onChange={(e) => {
-                setState(e.target.value)
-                setPage(1)
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-medium text-slate-200">{alert.message}</p>
+            <Badge variant={severityVariant(alert.severity)} size="sm">{alert.severity}</Badge>
+            <Badge
+              variant={alert.state === 'active' ? 'danger' : alert.state === 'acknowledged' ? 'warning' : 'success'}
+              size="sm"
             >
-              <option value="">All States</option>
-              <option value="active">Active</option>
-              <option value="acknowledged">Acknowledged</option>
-              <option value="resolved">Resolved</option>
-              <option value="suppressed">Suppressed</option>
-            </select>
+              {alert.state}
+            </Badge>
+          </div>
+
+          <div className="flex items-center gap-4 mt-1.5 text-xs text-slate-600 flex-wrap">
+            <span className="font-mono">{alert.metric}</span>
+            <span>Value: <span className="text-slate-400">{alert.value?.toFixed(2)}</span></span>
+            <span>Threshold: <span className="text-slate-400">{alert.threshold?.toFixed(2)}</span></span>
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Active for {alertAge(alert.created_at)}
+            </span>
+            {alert.acknowledged_by && (
+              <span>Ack by <span className="text-slate-400">{alert.acknowledged_by}</span></span>
+            )}
+          </div>
+
+          {actionError && (
+            <div className="mt-2 px-3 py-1.5 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-400">
+              {actionError}
+            </div>
+          )}
+
+          {/* Actions — only for active */}
+          {isActive && (
+            <div className="flex items-center gap-2 mt-3">
+              <button
+                onClick={() => onAck(alert.id)}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
+              >
+                <Clock className="w-3 h-3" />
+                Acknowledge
+              </button>
+              <button
+                onClick={() => onResolve(alert.id)}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
+              >
+                <CheckCircle className="w-3 h-3" />
+                Resolve
+              </button>
+              <button
+                onClick={() => onSuppress(alert.id)}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-white/10 text-slate-500 hover:bg-white/5 transition-colors disabled:opacity-50"
+              >
+                <XCircle className="w-3 h-3" />
+                Suppress 24h
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 20
+
+export default function AlertsPage() {
+  const qc = useQueryClient()
+  const [page, setPage]           = useState(1)
+  const [stateFilter, setStateFilter] = useState('')
+  const [actingId, setActingId]   = useState<string | null>(null)
+  const [errors, setErrors]       = useState<Record<string, string>>({})
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ['alerts', stateFilter, page],
+    queryFn: async () => {
+      const params: any = { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }
+      if (stateFilter) params.state = stateFilter
+      const res = await apiClient.getAlerts(params)
+      return res
+    },
+    refetchInterval: 15000,
+  })
+
+  const { data: statsData } = useQuery({
+    queryKey: ['alerts-stats'],
+    queryFn: async () => {
+      const res = await apiClient.getAlerts({ limit: 1, summary: true } as any)
+      return res
+    },
+    refetchInterval: 30000,
+  })
+
+  const alerts: any[] = (data as any)?.alerts ?? []
+  const total: number = (data as any)?.total  ?? 0
+
+  const mutate = useCallback(async (id: string, fn: () => Promise<any>) => {
+    setActingId(id)
+    setErrors(prev => { const n = { ...prev }; delete n[id]; return n })
+    try {
+      await fn()
+      await qc.invalidateQueries({ queryKey: ['alerts'] })
+    } catch (e: any) {
+      setErrors(prev => ({ ...prev, [id]: e?.message ?? 'Action failed' }))
+    } finally {
+      setActingId(null)
+    }
+  }, [qc])
+
+  const authHeader = (): Record<string, string> => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  const handleAck      = (id: string) => mutate(id, () => fetch(`/api/alerts/${id}/acknowledge`, { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to acknowledge') }))
+  const handleResolve  = (id: string) => mutate(id, () => fetch(`/api/alerts/${id}/resolve`,     { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to resolve') }))
+  const handleSuppress = (id: string) => mutate(id, () =>
+    fetch(`/api/alerts/${id}/suppress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ suppress_until: new Date(Date.now() + 86400 * 1000).toISOString() }),
+    }).then(r => { if (!r.ok) throw new Error('Failed to suppress') })
+  )
+
+  // Summary counts: prefer server-side stats when available, fall back to current page data
+  const statsFromServer = (statsData as any)?.stats
+  const critical    = statsFromServer?.critical    ?? alerts.filter(a => a.state === 'active' && a.severity === 'critical').length
+  const high        = statsFromServer?.high        ?? alerts.filter(a => a.state === 'active' && a.severity === 'high').length
+  const acknowledged = statsFromServer?.acknowledged ?? alerts.filter(a => a.state === 'acknowledged').length
+  const totalPages  = Math.ceil(total / PAGE_SIZE)
+
+  return (
+    <div className="p-6 space-y-5">
+      <PageHeader
+        title="Alerts"
+        description="Monitor and respond to active metric alerts."
+        actions={
+          <Link href="/alerts/rules">
+            <Button variant="secondary" size="sm">Manage Rules</Button>
+          </Link>
+        }
+      />
+
+      {/* Summary strip */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center">
+            <AlertTriangle className="w-4 h-4 text-red-400" />
+          </div>
+          <div>
+            <p className="text-xl font-semibold text-red-400 tabular-nums">{critical}</p>
+            <p className="text-[11px] text-slate-600">Critical active{!statsFromServer ? ' (this page)' : ''}</p>
+          </div>
+        </div>
+        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-orange-500/15 flex items-center justify-center">
+            <AlertTriangle className="w-4 h-4 text-orange-400" />
+          </div>
+          <div>
+            <p className="text-xl font-semibold text-orange-400 tabular-nums">{high}</p>
+            <p className="text-[11px] text-slate-600">High active{!statsFromServer ? ' (this page)' : ''}</p>
+          </div>
+        </div>
+        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center">
+            <Clock className="w-4 h-4 text-amber-400" />
+          </div>
+          <div>
+            <p className="text-xl font-semibold text-amber-400 tabular-nums">{acknowledged}</p>
+            <p className="text-[11px] text-slate-600">Acknowledged{!statsFromServer ? ' (this page)' : ''}</p>
           </div>
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
-      )}
+      {/* Filter bar */}
+      <div className="flex items-center gap-3">
+        <select
+          value={stateFilter}
+          onChange={e => { setStateFilter(e.target.value); setPage(1) }}
+          className="px-3 py-2 text-sm bg-[#1a1d24] border border-white/[0.09] rounded-lg text-slate-400 focus:outline-none focus:border-indigo-500/50"
+        >
+          <option value="">All states</option>
+          <option value="active">Active</option>
+          <option value="acknowledged">Acknowledged</option>
+          <option value="resolved">Resolved</option>
+          <option value="suppressed">Suppressed</option>
+        </select>
+        {isFetching && <span className="text-xs text-slate-600 animate-pulse">Refreshing…</span>}
+        <span className="ml-auto text-xs text-slate-600 tabular-nums">{total} total</span>
+      </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        {loading ? (
-          <div className="p-8 text-center text-gray-500">Loading alerts...</div>
+      {/* Alert list */}
+      <Card className="overflow-hidden">
+        {isLoading ? (
+          <div className="p-5 space-y-3">
+            <Skeleton className="h-24 w-full rounded" count={3} />
+          </div>
         ) : alerts.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No alerts</div>
+          <EmptyState
+            icon={<Bell className="w-5 h-5" />}
+            title={stateFilter ? `No ${stateFilter} alerts` : 'No alerts'}
+            description="The system is running normally."
+          />
         ) : (
-          <div className="space-y-2">
-            {alerts.map((alert) => (
-              <div key={alert.id} className="border-b last:border-b-0 p-6 hover:bg-gray-50">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-4 flex-1">
-                    <div className="flex flex-col gap-2 mt-1">
-                      {getSeverityIcon(alert.severity)}
-                      {getStateIcon(alert.state)}
-                    </div>
-                    <div className="flex-1">
-                      <h3 className="font-bold text-lg">{alert.message}</h3>
-                      <p className="text-sm text-gray-600 mt-1">
-                        Metric: {alert.metric} | Value: {alert.value.toFixed(2)} | Threshold: {alert.threshold.toFixed(2)}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-2">
-                        Created: {formatDate(alert.created_at)} | Last fired: {formatDate(alert.last_fired_at)}
-                      </p>
-                      {alert.acknowledged_by && (
-                        <p className="text-xs text-gray-500">Acknowledged by {alert.acknowledged_by}</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2 whitespace-nowrap">
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                      alert.severity === 'critical'
-                        ? 'bg-red-100 text-red-800'
-                        : alert.severity === 'high'
-                        ? 'bg-orange-100 text-orange-800'
-                        : alert.severity === 'medium'
-                        ? 'bg-yellow-100 text-yellow-800'
-                        : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {alert.severity}
-                    </span>
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                      alert.state === 'active'
-                        ? 'bg-red-100 text-red-800'
-                        : alert.state === 'acknowledged'
-                        ? 'bg-yellow-100 text-yellow-800'
-                        : alert.state === 'resolved'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-gray-100 text-gray-800'
-                    }`}>
-                      {alert.state}
-                    </span>
-                  </div>
-                </div>
-
-                {alert.state === 'active' && (
-                  <div className="flex gap-2 mt-4 pt-4 border-t">
-                    <button
-                      onClick={() => handleAcknowledge(alert.id)}
-                      disabled={actingAlert === alert.id}
-                      className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded text-sm hover:bg-yellow-200 disabled:opacity-50"
-                    >
-                      Acknowledge
-                    </button>
-                    <button
-                      onClick={() => handleResolve(alert.id)}
-                      disabled={actingAlert === alert.id}
-                      className="px-3 py-1 bg-green-100 text-green-800 rounded text-sm hover:bg-green-200 disabled:opacity-50"
-                    >
-                      Resolve
-                    </button>
-                    <button
-                      onClick={() => handleSuppress(alert.id)}
-                      disabled={actingAlert === alert.id}
-                      className="px-3 py-1 bg-gray-100 text-gray-800 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
-                    >
-                      Suppress
-                    </button>
-                  </div>
-                )}
-              </div>
+          <div>
+            {alerts.map(alert => (
+              <AlertCard
+                key={alert.id}
+                alert={alert}
+                onAck={handleAck}
+                onResolve={handleResolve}
+                onSuppress={handleSuppress}
+                acting={actingId === alert.id}
+                actionError={errors[alert.id] ?? null}
+              />
             ))}
           </div>
         )}
 
-        {!loading && alerts.length > 0 && (
-          <div className="flex items-center justify-between px-6 py-4 bg-gray-50 border-t border-gray-200">
-            <div className="text-sm text-gray-600">
-              Page <span className="font-medium">{page}</span>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPage(Math.max(1, page - 1))}
-                disabled={page === 1}
-                className="p-2 hover:bg-gray-200 rounded disabled:opacity-50"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <button
-                onClick={() => setPage(page + 1)}
-                disabled={alerts.length < pageSize}
-                className="p-2 hover:bg-gray-200 rounded disabled:opacity-50"
-              >
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06]">
+            <Button
+              variant="ghost" size="sm"
+              disabled={page === 1}
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Previous
+            </Button>
+            <span className="text-xs text-slate-600">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              variant="ghost" size="sm"
+              disabled={page >= totalPages}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next
+              <ChevronRight className="w-4 h-4" />
+            </Button>
           </div>
         )}
-      </div>
+      </Card>
     </div>
   )
 }

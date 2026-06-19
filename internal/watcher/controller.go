@@ -241,7 +241,7 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 				Secrets:     secretList,
 			})
 			r.Logger.Info("Reconciliation: re-registered container missed during reconnect",
-				zap.String("id", c.ID[:12]),
+				zap.String("id", shortID(c.ID)),
 				zap.Strings("secrets", secretList))
 			added++
 
@@ -267,7 +267,7 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 								}
 								if err := r.ProxyManager.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
 									r.Logger.Debug("Reconciliation: container already in proxy registry",
-										zap.String("id", c.ID[:12]))
+										zap.String("id", shortID(c.ID)))
 								}
 							}
 						}
@@ -412,7 +412,7 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 							}
 							if err := r.ProxyManager.RegisterContainer(msg.Actor.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
 								r.Logger.Warn("proxy: failed to register container",
-									zap.String("id", msg.Actor.ID[:12]), zap.Error(err))
+									zap.String("id", shortID(msg.Actor.ID)), zap.Error(err))
 							}
 						}
 					}
@@ -691,7 +691,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			go func(newEnvs map[string]string, hTimeout time.Duration) {
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
-						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", target.ID[:12]))
+						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", shortID(target.ID)))
 					}
 				}
 

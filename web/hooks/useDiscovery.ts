@@ -73,6 +73,11 @@ export interface CacheMetrics {
   timestamp: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export function useDiscovery() {
   const [containers, setContainers] = useState<ContainerMetadata[]>([])
   const [loading, setLoading] = useState(true)
@@ -84,7 +89,9 @@ export function useDiscovery() {
       setLoading(true)
       setError(null)
 
-      const response = await fetch('/api/discovery/docker')
+      const response = await fetch('/api/discovery/docker', {
+        headers: getAuthHeaders(),
+      })
       if (!response.ok) {
         throw new Error(`Failed to fetch containers: ${response.statusText}`)
       }
@@ -126,7 +133,9 @@ export function useSecretMappings() {
       setLoading(true)
       setError(null)
 
-      const response = await fetch('/api/discovery/docker/mappings')
+      const response = await fetch('/api/discovery/docker/mappings', {
+        headers: getAuthHeaders(),
+      })
       if (!response.ok) {
         throw new Error(`Failed to fetch mappings: ${response.statusText}`)
       }
@@ -167,7 +176,9 @@ export function useDiscoveryMetrics() {
       setLoading(true)
       setError(null)
 
-      const response = await fetch('/api/discovery/metrics')
+      const response = await fetch('/api/discovery/metrics', {
+        headers: getAuthHeaders(),
+      })
       if (!response.ok) {
         throw new Error(`Failed to fetch metrics: ${response.statusText}`)
       }

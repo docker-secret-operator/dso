@@ -181,6 +181,11 @@ export interface HealthResponse {
   uptime: number
   persistence: PersistenceInfo
   checks: Check[]
+  goroutines?: number
+  memory_mb?: number
+  memory_sys_mb?: number
+  num_gc?: number
+  version?: string
 }
 
 export interface ReadyResponse {

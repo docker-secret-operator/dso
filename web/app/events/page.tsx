@@ -1,108 +1,221 @@
 'use client'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { ErrorBoundary } from '@/components/error-boundary'
-import { Badge } from '@/components/ui/badge'
-import { formatTime } from '@/lib/utils'
-import { Loader2, AlertCircle } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useWebSocket } from '@/hooks/useWebSocket'
+import { PageHeader, Card, Badge, StatusIndicator, EmptyState, Button } from '@/components/ui-modern'
+import { AlertCircle, AlertTriangle, Info, Pause, Play, Trash2, ArrowDown } from 'lucide-react'
 
-export default function EventsPage() {
-  const { events, isConnected } = useWebSocket('/api/events/ws')
+// ── Event row ─────────────────────────────────────────────────────────────────
 
+interface WSEvent {
+  timestamp: string
+  severity: 'info' | 'warning' | 'error'
+  message: string
+  secret_name?: string
+  provider?: string
+  error?: string
+  action?: string
+}
+
+function SeverityIcon({ s }: { s: string }) {
+  if (s === 'error')   return <AlertCircle  className="w-3.5 h-3.5 flex-shrink-0" />
+  if (s === 'warning') return <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+  return <Info className="w-3.5 h-3.5 flex-shrink-0" />
+}
+
+const SEV_STYLES: Record<string, string> = {
+  error:   'border-l-red-500    bg-red-500/[0.04]',
+  warning: 'border-l-amber-500  bg-amber-500/[0.04]',
+  info:    'border-l-blue-500   bg-transparent',
+}
+
+const SEV_TEXT: Record<string, string> = {
+  error:   'text-red-400',
+  warning: 'text-amber-400',
+  info:    'text-blue-400',
+}
+
+function EventRow({ event }: { event: WSEvent }) {
+  const sev = event.severity ?? 'info'
   return (
-    <ErrorBoundary>
-      <div className="space-y-8 p-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-foreground">Events</h1>
-          <p className="text-muted-foreground">Real-time event stream</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              isConnected ? 'bg-green-500' : 'bg-red-500'
-            }`}
-          />
-          <span className="text-sm text-muted-foreground">
-            {isConnected ? 'Connected' : 'Disconnected'}
+    <div className={`flex items-start gap-3 px-4 py-3 border-b border-white/[0.04] border-l-2 ${SEV_STYLES[sev] ?? SEV_STYLES.info}`}>
+      <span className={`mt-0.5 ${SEV_TEXT[sev] ?? SEV_TEXT.info}`}>
+        <SeverityIcon s={sev} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge
+            variant={sev === 'error' ? 'danger' : sev === 'warning' ? 'warning' : 'info'}
+            size="sm"
+          >
+            {sev.toUpperCase()}
+          </Badge>
+          <span className="text-[11px] text-slate-600 font-mono">
+            {new Date(event.timestamp).toLocaleTimeString()}
           </span>
         </div>
+        <p className="text-sm text-slate-300 mt-1">{event.message}</p>
+        {(event.secret_name || event.provider || event.error) && (
+          <div className="flex flex-wrap gap-3 mt-1.5 text-[11px] text-slate-600 font-mono">
+            {event.secret_name && <span>secret: <span className="text-slate-400">{event.secret_name}</span></span>}
+            {event.provider    && <span>provider: <span className="text-slate-400 capitalize">{event.provider}</span></span>}
+            {event.error       && <span className="text-red-500">{event.error}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+type SevFilter = 'all' | 'info' | 'warning' | 'error'
+
+export default function EventsPage() {
+  const { events: rawEvents, isConnected } = useWebSocket('/api/events/ws')
+  const [paused, setPaused]       = useState(false)
+  const [sevFilter, setSevFilter] = useState<SevFilter>('all')
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [buffered, setBuffered]   = useState<WSEvent[]>([])
+  const [displayed, setDisplayed] = useState<WSEvent[]>([])
+  const listRef = useRef<HTMLDivElement>(null)
+
+  // Newest-first — accumulate events; buffer while paused
+  useEffect(() => {
+    if (rawEvents.length === 0) return
+    const newest = rawEvents[rawEvents.length - 1] as WSEvent
+    if (paused) {
+      setBuffered(prev => [newest, ...prev])
+    } else {
+      setDisplayed(prev => [newest, ...prev].slice(0, 500))
+    }
+  }, [rawEvents]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resume = useCallback(() => {
+    setPaused(false)
+    setDisplayed(prev => [...buffered, ...prev].slice(0, 500))
+    setBuffered([])
+  }, [buffered])
+
+  // Auto-scroll to top (newest) when not paused
+  useEffect(() => {
+    if (autoScroll && !paused && listRef.current) {
+      listRef.current.scrollTop = 0
+    }
+  }, [displayed, autoScroll, paused])
+
+  const filtered = sevFilter === 'all'
+    ? displayed
+    : displayed.filter(e => e.severity === sevFilter)
+
+  return (
+    <div className="p-6 space-y-5 h-full flex flex-col">
+      <PageHeader
+        title="Events"
+        description="Real-time event stream from the DSO agent."
+        badge={
+          <StatusIndicator
+            status={isConnected ? 'healthy' : 'critical'}
+            label={isConnected ? 'Connected' : 'Disconnected'}
+            pulse={isConnected}
+          />
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setDisplayed([])}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/10 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-colors"
+              title="Clear events"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear
+            </button>
+            {paused ? (
+              <button
+                onClick={resume}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-indigo-600/80 text-white hover:bg-indigo-500 transition-colors"
+              >
+                <Play className="w-3.5 h-3.5" />
+                Resume {buffered.length > 0 && `(${buffered.length} buffered)`}
+              </button>
+            ) : (
+              <button
+                onClick={() => setPaused(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors"
+              >
+                <Pause className="w-3.5 h-3.5" />
+                Pause
+              </button>
+            )}
+          </div>
+        }
+      />
+
+      {/* Filter + auto-scroll */}
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1 bg-[#1a1d24] rounded-lg border border-white/[0.07] p-1">
+          {(['all', 'info', 'warning', 'error'] as SevFilter[]).map(s => (
+            <button
+              key={s}
+              onClick={() => setSevFilter(s)}
+              className={`px-3 py-1 text-xs rounded-md transition-colors capitalize ${
+                sevFilter === s
+                  ? 'bg-white/10 text-slate-200 font-medium'
+                  : 'text-slate-600 hover:text-slate-400'
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={() => setAutoScroll(v => !v)}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+            autoScroll
+              ? 'border-indigo-500/40 text-indigo-400 bg-indigo-500/10'
+              : 'border-white/10 text-slate-600 hover:text-slate-400'
+          }`}
+        >
+          <ArrowDown className="w-3 h-3" />
+          Auto-scroll
+        </button>
+
+        {paused && (
+          <span className="text-xs text-amber-400 animate-pulse">
+            Paused — {buffered.length} event{buffered.length !== 1 ? 's' : ''} buffered
+          </span>
+        )}
+
+        <span className="ml-auto text-xs text-slate-700 tabular-nums">
+          {filtered.length} event{filtered.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Live Events</CardTitle>
-          <CardDescription>Real-time updates from the DSO agent</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {!isConnected && (
-            <div className="mb-4 rounded-md bg-yellow-50 p-3 text-sm text-yellow-800">
-              Connecting to event stream...
-            </div>
-          )}
+      {/* Event list */}
+      <Card className="flex-1 min-h-0 overflow-hidden flex flex-col">
+        {!isConnected && (
+          <div className="px-4 py-3 border-b border-white/[0.06] bg-amber-500/5 text-xs text-amber-400">
+            Connecting to event stream…
+          </div>
+        )}
 
-          {events.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-              <AlertCircle className="mb-2 h-6 w-6" />
-              <p>No events yet</p>
-            </div>
+        <div ref={listRef} className="flex-1 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon={<AlertCircle className="w-5 h-5" />}
+              title="No events"
+              description={isConnected
+                ? "Waiting for events from the DSO agent. Trigger a secret rotation to see activity."
+                : "Connecting to the WebSocket event stream…"}
+            />
           ) : (
-            <div className="space-y-3">
-              {events.map((event, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-start gap-4 border-l-4 border-muted bg-muted/50 p-4"
-                  style={{
-                    borderLeftColor:
-                      event.severity === 'error'
-                        ? '#dc2626'
-                        : event.severity === 'warning'
-                          ? '#f59e0b'
-                          : '#3b82f6',
-                  }}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        variant={
-                          event.severity === 'error'
-                            ? 'destructive'
-                            : event.severity === 'warning'
-                              ? 'secondary'
-                              : 'default'
-                        }
-                      >
-                        {event.severity.toUpperCase()}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {formatTime(event.timestamp)}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm font-medium text-foreground">
-                      {event.message}
-                    </p>
-                    {(event.secret_name || event.provider || event.error) && (
-                      <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-                        {event.secret_name && (
-                          <p>Secret: <span className="font-mono">{event.secret_name}</span></p>
-                        )}
-                        {event.provider && (
-                          <p>Provider: <span className="capitalize">{event.provider}</span></p>
-                        )}
-                        {event.error && (
-                          <p>Error: <span className="text-red-600">{event.error}</span></p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+            filtered.map((event, i) => (
+              <EventRow key={`${event.timestamp}-${i}`} event={event} />
+            ))
           )}
-        </CardContent>
+        </div>
       </Card>
     </div>
-    </ErrorBoundary>
   )
 }

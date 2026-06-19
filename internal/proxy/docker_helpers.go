@@ -5,6 +5,15 @@ import (
 	"github.com/docker/docker/api/types/filters"
 )
 
+// shortID returns up to the first 12 characters of a container ID,
+// safe for empty or short strings (e.g. test fixtures, future Docker versions).
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
 func containerListOptions() container.ListOptions {
 	f := filters.NewArgs()
 	f.Add("status", "running")

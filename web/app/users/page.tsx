@@ -10,11 +10,11 @@ type Role = typeof ROLES[number]
 
 function roleBadgeClass(role: string): string {
   switch (role) {
-    case 'admin':    return 'bg-red-100 text-red-700'
-    case 'approver': return 'bg-purple-100 text-purple-700'
-    case 'reviewer': return 'bg-blue-100 text-blue-700'
-    case 'operator': return 'bg-green-100 text-green-700'
-    default:         return 'bg-gray-100 text-gray-600'
+    case 'admin':    return 'bg-red-500/15 text-red-400'
+    case 'approver': return 'bg-purple-500/15 text-purple-400'
+    case 'reviewer': return 'bg-blue-500/15 text-blue-400'
+    case 'operator': return 'bg-emerald-500/15 text-emerald-400'
+    default:         return 'bg-slate-700/30 text-slate-400'
   }
 }
 
@@ -36,6 +36,7 @@ export default function UsersPage() {
   const [form, setForm]           = useState<UserFormData>(emptyForm)
   const [formError, setFormError] = useState('')
   const [actionError, setActionError] = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState<User | null>(null)
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['users', search, roleFilter],
@@ -114,21 +115,21 @@ export default function UsersPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Users</h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage system users and roles</p>
+          <h1 className="text-2xl font-semibold text-slate-100">Users</h1>
+          <p className="text-sm text-slate-400 mt-1">Manage system users and roles</p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-md border border-border hover:bg-muted disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-white/[0.09] text-slate-300 hover:bg-white/5 disabled:opacity-50 transition-colors"
           >
             <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
             Refresh
           </button>
           <button
             onClick={openCreate}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
           >
             <UserPlus className="h-4 w-4" />
             New User
@@ -143,12 +144,12 @@ export default function UsersPage() {
           placeholder="Search username…"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="flex-1 max-w-xs px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          className="flex-1 max-w-xs px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
         />
         <select
           value={roleFilter}
           onChange={e => setRoleFilter(e.target.value)}
-          className="px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          className="px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
         >
           <option value="">All roles</option>
           {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
@@ -156,45 +157,67 @@ export default function UsersPage() {
       </div>
 
       {actionError && (
-        <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-          {actionError}
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300 flex items-center justify-between">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError('')} className="text-red-400 hover:text-red-300 ml-4 text-xs">Dismiss</button>
         </div>
       )}
 
       {isError && (
-        <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
           Failed to load users.
+        </div>
+      )}
+
+      {/* Inline delete confirm */}
+      {deleteConfirm && (
+        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 flex items-center justify-between gap-4">
+          <p className="text-sm text-red-300">Delete user <span className="font-mono font-semibold">{deleteConfirm.username}</span>? This cannot be undone.</p>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={() => setDeleteConfirm(null)}
+              className="px-3 py-1.5 text-xs rounded-lg border border-white/[0.09] text-slate-300 hover:bg-white/5 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => { const u = deleteConfirm; setDeleteConfirm(null); setActionError(''); deleteMutation.mutate(u.id) }}
+              className="px-3 py-1.5 text-xs rounded-lg bg-red-600 text-white hover:bg-red-500 transition-colors"
+            >
+              Delete
+            </button>
+          </div>
         </div>
       )}
 
       {/* Table */}
       {isLoading ? (
         <div className="space-y-2">
-          {[...Array(4)].map((_, i) => <div key={i} className="h-12 rounded-md bg-muted animate-pulse" />)}
+          {[...Array(4)].map((_, i) => <div key={i} className="h-12 rounded-lg bg-white/5 animate-pulse" />)}
         </div>
       ) : users.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center space-y-2">
-          <p className="text-muted-foreground">No users found.</p>
+          <p className="text-slate-500">No users found.</p>
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
+        <div className="rounded-lg border border-white/[0.07] overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50">
+            <thead className="bg-[#0f1015] border-b border-white/[0.07]">
               <tr>
-                <th className="px-4 py-3 text-left font-medium">Username</th>
-                <th className="px-4 py-3 text-left font-medium">Display Name</th>
-                <th className="px-4 py-3 text-left font-medium">Role</th>
-                <th className="px-4 py-3 text-left font-medium">Status</th>
-                <th className="px-4 py-3 text-left font-medium">Security</th>
-                <th className="px-4 py-3 text-left font-medium">Created</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Username</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Display Name</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Role</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Security</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Created</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-slate-400 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
+            <tbody className="divide-y divide-white/[0.05]">
               {users.map(u => (
-                <tr key={u.id} className="hover:bg-muted/30 transition-colors">
-                  <td className="px-4 py-3 font-mono">{u.username}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{u.display_name || '—'}</td>
+                <tr key={u.id} className="hover:bg-white/[0.03] transition-colors">
+                  <td className="px-4 py-3 font-mono text-slate-200">{u.username}</td>
+                  <td className="px-4 py-3 text-slate-400">{u.display_name || '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize ${roleBadgeClass(u.role)}`}>
                       {u.role}
@@ -202,68 +225,65 @@ export default function UsersPage() {
                   </td>
                   <td className="px-4 py-3">
                     {u.disabled
-                      ? <span className="text-xs text-red-600 font-medium">Disabled</span>
-                      : <span className="text-xs text-green-600 font-medium">Active</span>}
+                      ? <span className="text-xs text-red-400 font-medium">Disabled</span>
+                      : <span className="text-xs text-emerald-400 font-medium">Active</span>}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {u.locked && (
-                        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">Locked</span>
+                        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-orange-500/15 text-orange-400">Locked</span>
                       )}
                       {u.must_change_password && (
-                        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-700">Pwd Reset</span>
+                        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-400">Pwd Reset</span>
                       )}
                       {!u.locked && !u.must_change_password && (
-                        <span className="text-xs text-muted-foreground">—</span>
+                        <span className="text-xs text-slate-600">—</span>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground text-xs">
+                  <td className="px-4 py-3 text-slate-500 text-xs">
                     {new Date(u.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
                       <button
                         onClick={() => openEdit(u)}
-                        className="p-1.5 rounded hover:bg-muted"
+                        className="p-1.5 rounded-md hover:bg-white/5 text-slate-500 hover:text-slate-300 transition-colors"
                         title="Edit"
                       >
-                        <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                        <Pencil className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => { setActionError(''); toggleMutation.mutate(u) }}
-                        className="p-1.5 rounded hover:bg-muted"
+                        className="p-1.5 rounded-md hover:bg-white/5 transition-colors"
                         title={u.disabled ? 'Enable' : 'Disable'}
                       >
                         {u.disabled
-                          ? <ShieldCheck className="h-3.5 w-3.5 text-green-600" />
-                          : <ShieldOff className="h-3.5 w-3.5 text-yellow-600" />}
+                          ? <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+                          : <ShieldOff className="h-3.5 w-3.5 text-amber-500" />}
                       </button>
                       {u.locked && (
                         <button
                           onClick={() => { setActionError(''); unlockMutation.mutate(u.id) }}
-                          className="p-1.5 rounded hover:bg-muted"
+                          className="p-1.5 rounded-md hover:bg-white/5 transition-colors"
                           title="Unlock account"
                         >
-                          <Unlock className="h-3.5 w-3.5 text-blue-500" />
+                          <Unlock className="h-3.5 w-3.5 text-blue-400" />
                         </button>
                       )}
                       <button
                         onClick={() => { setActionError(''); forceResetMutation.mutate(u.id) }}
-                        className="p-1.5 rounded hover:bg-muted"
+                        className="p-1.5 rounded-md hover:bg-white/5 transition-colors"
                         title="Force password reset"
                       >
-                        <KeyRound className="h-3.5 w-3.5 text-purple-500" />
+                        <KeyRound className="h-3.5 w-3.5 text-purple-400" />
                       </button>
                       <button
-                        onClick={() => {
-                          setActionError('')
-                          if (confirm(`Delete user "${u.username}"?`)) deleteMutation.mutate(u.id)
-                        }}
-                        className="p-1.5 rounded hover:bg-muted"
+                        onClick={() => { setActionError(''); setDeleteConfirm(u) }}
+                        className="p-1.5 rounded-md hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition-colors"
                         title="Delete"
                       >
-                        <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                        <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   </td>
@@ -276,12 +296,12 @@ export default function UsersPage() {
 
       {/* Create / Edit modal */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-full max-w-md space-y-4">
-            <h2 className="text-lg font-semibold">{editUser ? 'Edit User' : 'Create User'}</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[#111318] rounded-xl border border-white/[0.09] shadow-2xl p-6 w-full max-w-md space-y-4">
+            <h2 className="text-base font-semibold text-slate-100">{editUser ? 'Edit User' : 'Create User'}</h2>
 
             {formError && (
-              <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
                 {formError}
               </div>
             )}
@@ -290,41 +310,41 @@ export default function UsersPage() {
               {!editUser && (
                 <>
                   <div>
-                    <label className="text-sm font-medium">Username</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-1.5">Username</label>
                     <input
                       type="text"
                       value={form.username}
                       onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
-                      className="mt-1 w-full px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
                     />
                   </div>
                   <div>
-                    <label className="text-sm font-medium">Password</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-1.5">Password</label>
                     <input
                       type="password"
                       value={form.password}
                       onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                      className="mt-1 w-full px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
                       placeholder="Min 12 chars, upper, lower, number"
                     />
                   </div>
                 </>
               )}
               <div>
-                <label className="text-sm font-medium">Display Name</label>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">Display Name</label>
                 <input
                   type="text"
                   value={form.display_name}
                   onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-                  className="mt-1 w-full px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">Role</label>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">Role</label>
                 <select
                   value={form.role}
                   onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))}
-                  className="mt-1 w-full px-3 py-2 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
                 >
                   {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
@@ -334,14 +354,14 @@ export default function UsersPage() {
             <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => { setShowForm(false); setEditUser(null) }}
-                className="px-4 py-2 text-sm rounded-md border border-border hover:bg-muted"
+                className="px-4 py-2 text-sm rounded-lg border border-white/[0.09] text-slate-300 hover:bg-white/5 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={() => saveMutation.mutate()}
                 disabled={saveMutation.isPending}
-                className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                className="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
               >
                 {saveMutation.isPending ? 'Saving…' : editUser ? 'Save' : 'Create'}
               </button>

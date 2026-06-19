@@ -29,6 +29,11 @@ interface IncidentMetrics {
   last_updated: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export default function IncidentsPage() {
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [metrics, setMetrics] = useState<IncidentMetrics | null>(null)
@@ -40,9 +45,10 @@ export default function IncidentsPage() {
     const fetchData = async () => {
       try {
         setLoading(true)
+        const headers = getAuthHeaders()
         const [incidentsRes, metricsRes] = await Promise.all([
-          fetch(`/api/incidents?status=${filter}`),
-          fetch('/api/incidents/metrics'),
+          fetch(`/api/incidents?status=${filter}`, { headers }),
+          fetch('/api/incidents/metrics', { headers }),
         ])
 
         if (!incidentsRes.ok || !metricsRes.ok) {
@@ -69,7 +75,7 @@ export default function IncidentsPage() {
 
   const handleAcknowledge = async (incidentId: string) => {
     try {
-      const res = await fetch(`/api/incidents/${incidentId}/acknowledge`, { method: 'POST' })
+      const res = await fetch(`/api/incidents/${incidentId}/acknowledge`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setIncidents(incidents.map(i => i.id === incidentId ? { ...i, status: 'acknowledged' } : i))
       }
@@ -80,7 +86,7 @@ export default function IncidentsPage() {
 
   const handleResolve = async (incidentId: string) => {
     try {
-      const res = await fetch(`/api/incidents/${incidentId}/resolve`, { method: 'POST' })
+      const res = await fetch(`/api/incidents/${incidentId}/resolve`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setIncidents(incidents.filter(i => i.id !== incidentId))
       }
@@ -90,15 +96,15 @@ export default function IncidentsPage() {
   }
 
   if (loading && !metrics) {
-    return <div className="p-8">Loading...</div>
+    return <div className="p-8 text-slate-200">Loading...</div>
   }
 
   const severityColors: Record<string, string> = {
-    critical: 'bg-red-100 text-red-800 border-red-300',
-    high: 'bg-orange-100 text-orange-800 border-orange-300',
-    medium: 'bg-yellow-100 text-yellow-800 border-yellow-300',
-    low: 'bg-blue-100 text-blue-800 border-blue-300',
-    info: 'bg-gray-100 text-gray-800 border-gray-300',
+    critical: 'bg-red-500/15 text-red-300 border-red-500/40',
+    high: 'bg-orange-500/15 text-orange-300 border-orange-500/40',
+    medium: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+    low: 'bg-blue-500/15 text-blue-300 border-blue-500/40',
+    info: 'bg-slate-700/30 text-slate-300 border-slate-600/40',
   }
 
   const severityIcons: Record<string, React.ReactNode> = {
@@ -110,28 +116,28 @@ export default function IncidentsPage() {
   }
 
   const statusColors: Record<string, string> = {
-    open: 'bg-red-50 border-red-200',
-    acknowledged: 'bg-yellow-50 border-yellow-200',
-    resolved: 'bg-green-50 border-green-200',
+    open: 'bg-red-500/10 border-red-500/30',
+    acknowledged: 'bg-amber-500/10 border-amber-500/30',
+    resolved: 'bg-emerald-500/10 border-emerald-500/30',
   }
 
   const statusBadges: Record<string, string> = {
-    open: 'bg-red-100 text-red-800',
-    acknowledged: 'bg-yellow-100 text-yellow-800',
-    resolved: 'bg-green-100 text-green-800',
+    open: 'bg-red-500/15 text-red-300',
+    acknowledged: 'bg-amber-500/15 text-amber-300',
+    resolved: 'bg-emerald-500/15 text-emerald-300',
   }
 
   return (
     <div className="space-y-8 p-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Incidents</h1>
-          <p className="mt-2 text-gray-600">Manage correlated incidents and root causes</p>
+          <h1 className="text-3xl font-bold text-slate-100">Incidents</h1>
+          <p className="mt-2 text-slate-400">Manage correlated incidents and root causes</p>
         </div>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           {error}
         </div>
       )}
@@ -170,13 +176,13 @@ export default function IncidentsPage() {
       )}
 
       {/* Filter Tabs */}
-      <div className="flex gap-2 border-b border-gray-200">
+      <div className="flex gap-2 border-b border-slate-700/50">
         <button
           onClick={() => setFilter('open')}
           className={`px-4 py-2 font-medium border-b-2 ${
             filter === 'open'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-600 hover:text-gray-900'
+              ? 'border-indigo-400 text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
           Open ({metrics?.open_incidents || 0})
@@ -185,8 +191,8 @@ export default function IncidentsPage() {
           onClick={() => setFilter('resolved')}
           className={`px-4 py-2 font-medium border-b-2 ${
             filter === 'resolved'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-600 hover:text-gray-900'
+              ? 'border-indigo-400 text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
           Resolved ({metrics?.resolved_incidents || 0})
@@ -196,7 +202,7 @@ export default function IncidentsPage() {
       {/* Incidents List */}
       <div className="space-y-4">
         {incidents.length === 0 ? (
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-8 text-center text-gray-500">
+          <div className="rounded-lg border border-slate-700/50 bg-[#0f1015] p-8 text-center text-slate-500">
             No {filter} incidents
           </div>
         ) : (
@@ -219,32 +225,32 @@ export default function IncidentsPage() {
                     </span>
                   </div>
 
-                  <h3 className="mt-2 text-lg font-semibold text-gray-900">{incident.title}</h3>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-100">{incident.title}</h3>
 
-                  <p className="mt-2 text-sm text-gray-700">
+                  <p className="mt-2 text-sm text-slate-300">
                     <span className="font-medium">Root Cause:</span> {incident.root_cause}
                   </p>
 
                   <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
                     <div>
-                      <p className="text-xs text-gray-600">Correlation Score</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">
+                      <p className="text-xs text-slate-400">Correlation Score</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-100">
                         {incident.correlation_score.toFixed(1)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-600">Events</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">{incident.event_count}</p>
+                      <p className="text-xs text-slate-400">Events</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-100">{incident.event_count}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-600">Affected Nodes</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">
+                      <p className="text-xs text-slate-400">Affected Nodes</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-100">
                         {incident.affected_nodes.length}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-600">Duration</p>
-                      <p className="mt-1 text-sm text-gray-900">
+                      <p className="text-xs text-slate-400">Duration</p>
+                      <p className="mt-1 text-sm text-slate-200">
                         {formatDuration(incident.last_seen - incident.first_seen)}
                       </p>
                     </div>
@@ -252,18 +258,18 @@ export default function IncidentsPage() {
 
                   {incident.affected_nodes.length > 0 && (
                     <div className="mt-4">
-                      <p className="text-sm font-medium text-gray-700">Affected Nodes:</p>
+                      <p className="text-sm font-medium text-slate-300">Affected Nodes:</p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {incident.affected_nodes.slice(0, 5).map(node => (
                           <span
                             key={node}
-                            className="rounded-full bg-gray-200 px-3 py-1 text-xs text-gray-700"
+                            className="rounded-full bg-slate-700/50 px-3 py-1 text-xs text-slate-300"
                           >
                             {node}
                           </span>
                         ))}
                         {incident.affected_nodes.length > 5 && (
-                          <span className="text-xs text-gray-600">
+                          <span className="text-xs text-slate-500">
                             +{incident.affected_nodes.length - 5} more
                           </span>
                         )}
@@ -307,12 +313,12 @@ interface MetricCardProps {
   valueClass?: string
 }
 
-function MetricCard({ label, value, icon, valueClass = 'text-gray-900' }: MetricCardProps) {
+function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-600">{label}</span>
-        {icon && <div className="text-gray-400">{icon}</div>}
+        <span className="text-sm text-slate-400">{label}</span>
+        {icon && <div className="text-slate-500">{icon}</div>}
       </div>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>

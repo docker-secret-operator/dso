@@ -2,13 +2,16 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"strconv"
@@ -18,6 +21,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/execution"
 	"github.com/docker-secret-operator/dso/internal/plugins"
+	"github.com/docker-secret-operator/dso/internal/scheduler"
 	"github.com/docker-secret-operator/dso/internal/services"
 	"github.com/docker-secret-operator/dso/internal/storage"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -129,18 +133,22 @@ type RESTServer struct {
 	// Phase 5.9 backup and restore
 	BackupHandler *api.BackupHandler
 	// Phase 5.10 plugins and extensions
-	PluginHandler    *api.PluginHandler
-	PluginRegistry   *plugins.Registry
-	PluginManager    *plugins.Manager
-	EventBus         *plugins.EventBus
+	PluginHandler  *api.PluginHandler
+	PluginRegistry *plugins.Registry
+	PluginManager  *plugins.Manager
+	EventBus       *plugins.EventBus
 	// Phase 5.11 webhooks and integrations
-	IntegrationHandler  *api.IntegrationHandler
-	IntegrationManager  *plugins.IntegrationManager
+	IntegrationHandler *api.IntegrationHandler
+	IntegrationManager *plugins.IntegrationManager
 	// Phase 5.12 internal scheduler
 	SchedulerHandler *api.SchedulerHandler
 	Scheduler        interface{} // *scheduler.Scheduler
+	// Phase 6 intelligence and governance handlers
+	RecommendationHandler *api.RecommendationHandler
+	DriftHandler          *api.DriftHandler
+	ForecastHandler       *api.ForecastHandler
 	// startup time for uptime reporting
-	startTime        time.Time
+	startTime time.Time
 }
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +349,24 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "Orchestration API not initialized", http.StatusInternalServerError)
 		}
+	case strings.HasPrefix(r.URL.Path, "/api/recommendations"):
+		if s.RecommendationHandler != nil {
+			s.RecommendationHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Recommendation API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/drift"):
+		if s.DriftHandler != nil {
+			s.DriftHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Drift API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/forecasts"):
+		if s.ForecastHandler != nil {
+			s.ForecastHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Forecast API not initialized", http.StatusInternalServerError)
+		}
 	case strings.HasPrefix(r.URL.Path, "/api/metrics"):
 		if s.MetricsAPIHandler != nil {
 			s.MetricsAPIHandler.ServeHTTP(w, r)
@@ -471,13 +497,23 @@ func (s *RESTServer) checkPasswordChangeRequired(w http.ResponseWriter, r *http.
 var ServerVersion = "dev"
 
 func (s *RESTServer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	uptime := time.Since(s.startTime).Round(time.Second).String()
+	uptimeDur := time.Since(s.startTime)
+	uptime := uptimeDur.Round(time.Second).String()
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":    "up",
-		"version":   ServerVersion,
-		"uptime":    uptime,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "up",
+		"version":        ServerVersion,
+		"uptime":         uptime,
+		"uptime_seconds": int64(uptimeDur.Seconds()),
+		"goroutines":     runtime.NumGoroutine(),
+		"memory_mb":      float64(memStats.Alloc) / (1024 * 1024),
+		"memory_sys_mb":  float64(memStats.Sys) / (1024 * 1024),
+		"num_gc":         memStats.NumGC,
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -551,7 +587,8 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 
 	authHeader := r.Header.Get("Authorization")
 	expectedToken := "Bearer " + s.Config.Agent.Watch.Webhook.AuthToken
-	if s.Config.Agent.Watch.Webhook.AuthToken != "" && authHeader != expectedToken {
+	// Fix C3: use constant-time comparison to prevent timing attacks
+	if s.Config.Agent.Watch.Webhook.AuthToken != "" && subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
 		observability.BackendFailuresTotal.WithLabelValues("webhook", "unauthorized").Inc()
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -874,6 +911,100 @@ func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
+// memSchedulerJobStore is a minimal in-memory implementation of scheduler.SchedulerStore.
+// It satisfies the interface required by scheduler.NewScheduler so that SchedulerHandler
+// can be wired up without needing a full database-backed adapter bridging the two type systems.
+type memSchedulerJobStore struct {
+	mu   sync.RWMutex
+	jobs map[string]*scheduler.Job
+}
+
+func newMemSchedulerJobStore() *memSchedulerJobStore {
+	return &memSchedulerJobStore{jobs: make(map[string]*scheduler.Job)}
+}
+
+func (m *memSchedulerJobStore) CreateJob(_ context.Context, job *scheduler.Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs[job.ID] = job
+	return nil
+}
+
+func (m *memSchedulerJobStore) UpdateJob(_ context.Context, job *scheduler.Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs[job.ID] = job
+	return nil
+}
+
+func (m *memSchedulerJobStore) GetJob(_ context.Context, id string) (*scheduler.Job, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return nil, fmt.Errorf("job not found: %s", id)
+	}
+	return j, nil
+}
+
+func (m *memSchedulerJobStore) ListJobs(_ context.Context) ([]*scheduler.Job, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*scheduler.Job, 0, len(m.jobs))
+	for _, j := range m.jobs {
+		out = append(out, j)
+	}
+	return out, nil
+}
+
+func (m *memSchedulerJobStore) DeleteJob(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.jobs, id)
+	return nil
+}
+
+func (m *memSchedulerJobStore) ListJobsByStatus(_ context.Context, status scheduler.JobStatus) ([]*scheduler.Job, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*scheduler.Job
+	for _, j := range m.jobs {
+		if j.Status == status {
+			out = append(out, j)
+		}
+	}
+	return out, nil
+}
+
+// memSchedulerExecStore is a minimal in-memory implementation of scheduler.ExecutionStore.
+type memSchedulerExecStore struct {
+	mu         sync.Mutex
+	executions []*scheduler.JobExecution
+}
+
+func (m *memSchedulerExecStore) LogExecution(_ context.Context, exec *scheduler.JobExecution) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.executions = append(m.executions, exec)
+	return nil
+}
+
+func (m *memSchedulerExecStore) GetExecutions(_ context.Context, jobID string, limit int) ([]*scheduler.JobExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*scheduler.JobExecution
+	for i := len(m.executions) - 1; i >= 0 && len(out) < limit; i-- {
+		if m.executions[i].JobID == jobID {
+			out = append(out, m.executions[i])
+		}
+	}
+	return out, nil
+}
+
+func (m *memSchedulerExecStore) CleanupOldExecutions(_ context.Context, _ int) error {
+	return nil
+}
+
 // StartRESTServer starts the REST API server on the specified address with secure timeouts
 // StartRESTServer starts the REST API server and returns a shutdown function.
 // The shutdown function should be called on graceful agent shutdown to properly close connections.
@@ -1043,6 +1174,19 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		logger,
 	)
 
+	// Phase 5.12 scheduler initialization.
+	// The scheduler package uses its own Job/JobExecution types which differ from
+	// the storage layer types, so we use lightweight in-memory stores here.
+	sch := scheduler.NewScheduler(
+		newMemSchedulerJobStore(),
+		&memSchedulerExecStore{},
+		logger,
+	)
+	if err := sch.Initialize(ctx); err != nil {
+		logger.Error("failed to initialize scheduler", zap.Error(err))
+	}
+	schedulerHandler := api.NewSchedulerHandler(sch)
+
 	restServer := &RESTServer{
 		startTime:               time.Now(),
 		Cache:                   cache,
@@ -1082,6 +1226,11 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		EventBus:                pluginEventBus,
 		IntegrationHandler:      integrationHandler,
 		IntegrationManager:      integrationManager,
+		SchedulerHandler:        schedulerHandler,
+		Scheduler:               sch,
+		RecommendationHandler:   nil, // TODO: Initialize with actual engines
+		DriftHandler:            nil,
+		ForecastHandler:         nil,
 	}
 
 	mux := http.NewServeMux()
@@ -1143,44 +1292,39 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		}
 	}()
 
-	// Return shutdown function that closes server on context cancellation
+	// Fix H6: wrap all shutdown logic in sync.Once so it executes at most once,
+	// regardless of whether the context goroutine or the returned closure fires first.
+	var shutdownOnce sync.Once
+	doShutdown := func() {
+		shutdownOnce.Do(func() {
+			metricsCollector.Stop()
+			sessionCleanupManager.Stop()
+			alertService.Stop()
+			backupService.Stop()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := sch.Shutdown(shutdownCtx); err != nil {
+				logger.Error("scheduler shutdown error", zap.Error(err))
+			}
+			if err := pluginManager.Shutdown(shutdownCtx); err != nil {
+				logger.Error("plugin manager shutdown error", zap.Error(err))
+			}
+			if err := integrationManager.Shutdown(shutdownCtx); err != nil {
+				logger.Error("integration manager shutdown error", zap.Error(err))
+			}
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				logger.Error("REST API server shutdown error", zap.Error(err))
+			}
+		})
+	}
+
 	go func() {
 		<-ctx.Done()
-		metricsCollector.Stop()
-		sessionCleanupManager.Stop()
-		alertService.Stop()
-		backupService.Stop()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := pluginManager.Shutdown(shutdownCtx); err != nil {
-			logger.Error("plugin manager shutdown error", zap.Error(err))
-		}
-		if err := integrationManager.Shutdown(shutdownCtx); err != nil {
-			logger.Error("integration manager shutdown error", zap.Error(err))
-		}
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("REST API server shutdown error", zap.Error(err))
-		}
+		doShutdown()
 	}()
 
 	// Return explicit shutdown function for manual control
-	return func() {
-		metricsCollector.Stop()
-		sessionCleanupManager.Stop()
-		alertService.Stop()
-		backupService.Stop()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := pluginManager.Shutdown(shutdownCtx); err != nil {
-			logger.Error("plugin manager shutdown error", zap.Error(err))
-		}
-		if err := integrationManager.Shutdown(shutdownCtx); err != nil {
-			logger.Error("integration manager shutdown error", zap.Error(err))
-		}
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("REST API server shutdown error", zap.Error(err))
-		}
-	}
+	return doShutdown
 }
 
 func bindsPublic(addr string) bool {

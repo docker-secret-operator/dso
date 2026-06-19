@@ -30,6 +30,11 @@ interface Metrics {
   last_updated: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export default function AutonomyPage() {
   const [actions, setActions] = useState<Action[]>([])
   const [metrics, setMetrics] = useState<Metrics | null>(null)
@@ -40,9 +45,10 @@ export default function AutonomyPage() {
     const fetchData = async () => {
       try {
         setLoading(true)
+        const headers = getAuthHeaders()
         const [actionsRes, metricsRes] = await Promise.all([
-          fetch('/api/autonomy/actions'),
-          fetch('/api/autonomy/metrics'),
+          fetch('/api/autonomy/actions', { headers }),
+          fetch('/api/autonomy/metrics', { headers }),
         ])
 
         if (!actionsRes.ok || !metricsRes.ok) {
@@ -69,7 +75,7 @@ export default function AutonomyPage() {
 
   const handleExecute = async (actionId: string) => {
     try {
-      const res = await fetch(`/api/autonomy/actions/${actionId}/execute`, { method: 'POST' })
+      const res = await fetch(`/api/autonomy/actions/${actionId}/execute`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setActions(actions.map(a => a.id === actionId ? { ...a, status: 'running' } : a))
       }
@@ -80,7 +86,7 @@ export default function AutonomyPage() {
 
   const handleCancel = async (actionId: string) => {
     try {
-      const res = await fetch(`/api/autonomy/actions/${actionId}/cancel`, { method: 'POST' })
+      const res = await fetch(`/api/autonomy/actions/${actionId}/cancel`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setActions(actions.map(a => a.id === actionId ? { ...a, status: 'cancelled' } : a))
       }
@@ -91,7 +97,7 @@ export default function AutonomyPage() {
 
   const handleRollback = async (actionId: string) => {
     try {
-      const res = await fetch(`/api/autonomy/actions/${actionId}/rollback`, { method: 'POST' })
+      const res = await fetch(`/api/autonomy/actions/${actionId}/rollback`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setActions(actions.map(a => a.id === actionId ? { ...a, status: 'rolled_back' } : a))
       }
@@ -101,33 +107,33 @@ export default function AutonomyPage() {
   }
 
   if (loading && !metrics) {
-    return <div className="p-8">Loading...</div>
+    return <div className="p-8 text-slate-200">Loading...</div>
   }
 
   const statusColors: Record<string, string> = {
-    pending: 'bg-gray-100 text-gray-800',
-    running: 'bg-blue-100 text-blue-800',
-    succeeded: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    rolled_back: 'bg-yellow-100 text-yellow-800',
-    cancelled: 'bg-gray-100 text-gray-800',
+    pending: 'bg-slate-700/30 text-slate-300 border border-slate-600/50',
+    running: 'bg-blue-500/15 text-blue-300 border border-blue-500/30',
+    succeeded: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
+    failed: 'bg-red-500/15 text-red-300 border border-red-500/30',
+    rolled_back: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+    cancelled: 'bg-slate-700/30 text-slate-400 border border-slate-600/50',
   }
 
   const safetyColors: Record<string, string> = {
-    manual_only: 'bg-red-100 text-red-800',
-    approval_required: 'bg-yellow-100 text-yellow-800',
-    automatic: 'bg-green-100 text-green-800',
+    manual_only: 'bg-red-500/15 text-red-300 border border-red-500/30',
+    approval_required: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+    automatic: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
   }
 
   return (
     <div className="space-y-8 p-8">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Autonomous Operations</h1>
-        <p className="mt-2 text-gray-600">Self-healing remediation with human control and auditability</p>
+        <h1 className="text-3xl font-bold text-slate-100">Autonomous Operations</h1>
+        <p className="mt-2 text-slate-400">Self-healing remediation with human control and auditability</p>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           {error}
         </div>
       )}
@@ -144,37 +150,37 @@ export default function AutonomyPage() {
       )}
 
       {/* Actions Table */}
-      <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
-        <div className="border-b border-gray-200 px-6 py-4">
-          <h2 className="font-semibold text-gray-900">Autonomous Actions ({actions.length})</h2>
+      <div className="rounded-lg border border-slate-700/50 bg-[#111318] overflow-hidden">
+        <div className="border-b border-slate-700/50 px-6 py-4">
+          <h2 className="font-semibold text-slate-200">Autonomous Actions ({actions.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-gray-200 bg-gray-50">
+            <thead className="border-b border-slate-700/50 bg-[#0f1015]">
               <tr>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Action</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Resource</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Trigger</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Safety</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Status</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Rollback</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Actions</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Action</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Resource</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Trigger</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Safety</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Status</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Rollback</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Actions</th>
               </tr>
             </thead>
             <tbody>
               {actions.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
                     No actions
                   </td>
                 </tr>
               ) : (
                 actions.slice(0, 50).map(action => (
-                  <tr key={action.id} className="border-b border-gray-200 hover:bg-gray-50">
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">{action.action_type}</td>
-                    <td className="px-6 py-4 text-sm text-gray-600">{action.resource_id}</td>
-                    <td className="px-6 py-4 text-sm text-gray-600">{action.trigger}</td>
+                  <tr key={action.id} className="border-b border-slate-700/30 hover:bg-slate-800/50/[0.02]">
+                    <td className="px-6 py-4 text-sm font-medium text-slate-200">{action.action_type}</td>
+                    <td className="px-6 py-4 text-sm text-slate-400">{action.resource_id}</td>
+                    <td className="px-6 py-4 text-sm text-slate-400">{action.trigger}</td>
                     <td className="px-6 py-4">
                       <span className={`rounded px-2 py-1 text-xs font-semibold ${safetyColors[action.safety_level]}`}>
                         {action.safety_level}
@@ -187,9 +193,9 @@ export default function AutonomyPage() {
                     </td>
                     <td className="px-6 py-4 text-sm">
                       {action.rollback_supported ? (
-                        <span className="text-green-600">✓</span>
+                        <span className="text-emerald-400">✓</span>
                       ) : (
-                        <span className="text-gray-400">—</span>
+                        <span className="text-slate-600">—</span>
                       )}
                     </td>
                     <td className="px-6 py-4 flex gap-2">
@@ -229,9 +235,9 @@ export default function AutonomyPage() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-gray-200 bg-blue-50 p-6">
-        <h3 className="font-semibold text-gray-900">Safety Features</h3>
-        <ul className="mt-4 space-y-2 text-sm text-gray-700">
+      <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-6">
+        <h3 className="font-semibold text-slate-200">Safety Features</h3>
+        <ul className="mt-4 space-y-2 text-sm text-slate-300">
           <li>✓ Deterministic: All actions are fully predictable and repeatable</li>
           <li>✓ Auditable: Complete audit trail with timestamps and correlation IDs</li>
           <li>✓ Reversible: Rollback support for all critical operations</li>
@@ -250,10 +256,10 @@ interface MetricCardProps {
   valueClass?: string
 }
 
-function MetricCard({ label, value, valueClass = 'text-gray-900' }: MetricCardProps) {
+function MetricCard({ label, value, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
-      <span className="text-sm text-gray-600">{label}</span>
+    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
+      <span className="text-sm text-slate-400">{label}</span>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>
   )

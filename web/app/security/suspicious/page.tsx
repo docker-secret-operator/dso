@@ -29,10 +29,16 @@ function getSeverityColor(severity: string) {
   return colors[severity as keyof typeof colors] || 'bg-gray-100 text-gray-800'
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export default function SuspiciousActivityPage() {
   const [activities, setActivities] = useState<SuspiciousActivity[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(10)
   const [acknowledging, setAcknowledging] = useState<string | null>(null)
@@ -43,7 +49,7 @@ export default function SuspiciousActivityPage() {
       setLoading(true)
       try {
         const offset = (page - 1) * pageSize
-        const response = await fetch(`/api/security/suspicious?limit=${pageSize}&offset=${offset}`)
+        const response = await fetch(`/api/security/suspicious?limit=${pageSize}&offset=${offset}`, { headers: getAuthHeaders() })
         if (!response.ok) {
           if (response.status === 403) {
             router.push('/login')
@@ -65,17 +71,18 @@ export default function SuspiciousActivityPage() {
 
   const handleAcknowledge = async (activityID: string) => {
     setAcknowledging(activityID)
+    setActionError(null)
     try {
       const response = await fetch(`/api/security/suspicious/${activityID}/acknowledge`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       })
       if (!response.ok) {
         throw new Error('Failed to acknowledge activity')
       }
       setActivities(activities.filter((a) => a.id !== activityID))
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to acknowledge')
+      setActionError(err instanceof Error ? err.message : 'Failed to acknowledge')
     } finally {
       setAcknowledging(null)
     }
@@ -105,6 +112,13 @@ export default function SuspiciousActivityPage() {
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
+      )}
+
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-center justify-between">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="ml-4 text-red-500 hover:text-red-700 font-bold">×</button>
+        </div>
       )}
 
       <div className="space-y-4">

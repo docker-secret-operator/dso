@@ -1,9 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { AlertTriangle, Shield, Users, Lock, Zap, TrendingUp, TrendingDown } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import {
+  AlertTriangle, Lock, Zap, Shield, Users,
+  ChevronRight, TrendingUp, TrendingDown,
+} from 'lucide-react'
+import { PageHeader, Card, StatusIndicator, EmptyState, Skeleton } from '@/components/ui-modern'
 
 interface SecurityOverview {
   active_sessions: number
@@ -17,180 +20,199 @@ interface SecurityOverview {
   trends: Record<string, string>
 }
 
-interface StatCard {
+function useSecurity() {
+  return useQuery<SecurityOverview>({
+    queryKey: ['security-overview'],
+    queryFn: async () => {
+      const res = await fetch('/api/security/overview')
+      if (!res.ok) throw new Error('Failed to load security overview')
+      return res.json()
+    },
+    refetchInterval: 30000,
+  })
+}
+
+function StatCard({
+  title, value, icon, href, trend, urgent,
+}: {
   title: string
   value: number
   icon: React.ReactNode
-  trend?: string
-  color: string
   href: string
+  trend?: string
+  urgent?: boolean
+}) {
+  return (
+    <Link href={href} className="block group">
+      <div className={`
+        rounded-xl border transition-all duration-150 p-5
+        ${urgent && value > 0
+          ? 'bg-red-500/5 border-red-500/20 hover:border-red-500/30'
+          : 'bg-[#111318] border-white/[0.07] hover:border-white/[0.14] hover:bg-[#1a1d24]'
+        }
+      `}>
+        <div className="flex items-start justify-between mb-3">
+          <span className={urgent && value > 0 ? 'text-red-400' : 'text-slate-600'}>{icon}</span>
+          <div className="flex items-center gap-1.5">
+            {trend === '↑' && <TrendingUp className="w-3.5 h-3.5 text-red-400" />}
+            {trend === '↓' && <TrendingDown className="w-3.5 h-3.5 text-emerald-400" />}
+            <ChevronRight className="w-3.5 h-3.5 text-slate-700 group-hover:text-slate-500 transition-colors" />
+          </div>
+        </div>
+        <p className={`text-2xl font-semibold tabular-nums ${urgent && value > 0 ? 'text-red-400' : 'text-slate-100'}`}>
+          {value}
+        </p>
+        <p className="text-xs text-slate-500 mt-0.5">{title}</p>
+      </div>
+    </Link>
+  )
 }
 
-export default function SecurityDashboard() {
-  const [overview, setOverview] = useState<SecurityOverview | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const router = useRouter()
-
-  useEffect(() => {
-    const fetchOverview = async () => {
-      try {
-        const response = await fetch('/api/security/overview')
-        if (!response.ok) {
-          if (response.status === 403) {
-            router.push('/login')
-            return
-          }
-          throw new Error('Failed to fetch security overview')
-        }
-        const data = await response.json()
-        setOverview(data)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchOverview()
-    const interval = setInterval(fetchOverview, 30000)
-    return () => clearInterval(interval)
-  }, [router])
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="animate-spin">
-          <Shield className="w-8 h-8 text-blue-500" />
-        </div>
-      </div>
-    )
-  }
-
-  if (error || !overview) {
-    return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-        {error || 'Failed to load security overview'}
-      </div>
-    )
-  }
-
-  const getTrendIcon = (trend?: string) => {
-    if (trend === '↑') return <TrendingUp className="w-4 h-4 text-red-500" />
-    if (trend === '↓') return <TrendingDown className="w-4 h-4 text-green-500" />
-    return <TrendingUp className="w-4 h-4 text-gray-300" />
-  }
-
-  const stats: StatCard[] = [
-    {
-      title: 'Failed Logins (24h)',
-      value: overview.failed_logins_24h,
-      icon: <AlertTriangle className="w-6 h-6" />,
-      trend: overview.trends?.failed_logins,
-      color: 'bg-red-50 border-red-200',
-      href: '/security/events?type=LOGIN_FAILURE',
-    },
-    {
-      title: 'Locked Accounts',
-      value: overview.locked_accounts,
-      icon: <Lock className="w-6 h-6" />,
-      color: 'bg-orange-50 border-orange-200',
-      href: '/users',
-    },
-    {
-      title: 'Active Sessions',
-      value: overview.active_sessions,
-      icon: <Zap className="w-6 h-6" />,
-      color: 'bg-blue-50 border-blue-200',
-      href: '/security/sessions',
-    },
-    {
-      title: 'Password Resets (24h)',
-      value: overview.password_resets_24h,
-      icon: <Shield className="w-6 h-6" />,
-      color: 'bg-purple-50 border-purple-200',
-      href: '/security/events?type=PASSWORD_RESET',
-    },
-    {
-      title: 'Suspicious Activities',
-      value: overview.suspicious_activities,
-      icon: <AlertTriangle className="w-6 h-6" />,
-      trend: overview.trends?.suspicious_activities,
-      color: 'bg-yellow-50 border-yellow-200',
-      href: '/security/suspicious',
-    },
-    {
-      title: 'Disabled Users',
-      value: overview.disabled_users,
-      icon: <Users className="w-6 h-6" />,
-      color: 'bg-gray-50 border-gray-200',
-      href: '/users',
-    },
-  ]
+export default function SecurityPage() {
+  const { data: overview, isLoading, error } = useSecurity()
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Security Operations Console</h1>
-        <div className="flex gap-2">
-          <Link href="/security/events" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
-            View Events
-          </Link>
-          <Link href="/security/alerts" className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm">
-            View Alerts
-          </Link>
-        </div>
-      </div>
+    <div className="p-6 space-y-5">
+      <PageHeader
+        title="Security"
+        description="Authentication events, session health, and suspicious activity."
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href="/security/events">
+              <button className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-white/10 text-slate-300 hover:bg-white/5 transition-colors">
+                Events
+              </button>
+            </Link>
+            <Link href="/security/sessions">
+              <button className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-colors">
+                Sessions
+              </button>
+            </Link>
+          </div>
+        }
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {stats.map((stat) => (
-          <Link key={stat.title} href={stat.href}>
-            <div className={`border rounded-lg p-6 cursor-pointer hover:shadow-lg transition-shadow ${stat.color}`}>
-              <div className="flex items-start justify-between mb-4">
-                <div className="text-gray-600">{stat.icon}</div>
-                {stat.trend && getTrendIcon(stat.trend)}
+      {error && (
+        <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+          {(error as Error).message}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="rounded-xl border border-white/[0.07] bg-[#111318] p-5 space-y-3">
+              <Skeleton className="h-4 w-20 rounded" />
+              <Skeleton className="h-8 w-12 rounded" />
+            </div>
+          ))}
+        </div>
+      ) : overview ? (
+        <>
+          {/* Stats grid */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <StatCard
+              title="Failed Logins (24h)"
+              value={overview.failed_logins_24h}
+              icon={<AlertTriangle className="w-5 h-5" />}
+              href="/security/events?type=LOGIN_FAILURE"
+              trend={overview.trends?.failed_logins}
+              urgent
+            />
+            <StatCard
+              title="Suspicious Activities"
+              value={overview.suspicious_activities}
+              icon={<AlertTriangle className="w-5 h-5" />}
+              href="/security/suspicious"
+              trend={overview.trends?.suspicious_activities}
+              urgent
+            />
+            <StatCard
+              title="Locked Accounts"
+              value={overview.locked_accounts}
+              icon={<Lock className="w-5 h-5" />}
+              href="/users"
+              urgent
+            />
+            <StatCard
+              title="Active Sessions"
+              value={overview.active_sessions}
+              icon={<Zap className="w-5 h-5" />}
+              href="/security/sessions"
+            />
+            <StatCard
+              title="Password Resets (24h)"
+              value={overview.password_resets_24h}
+              icon={<Shield className="w-5 h-5" />}
+              href="/security/events?type=PASSWORD_RESET"
+            />
+            <StatCard
+              title="Disabled Users"
+              value={overview.disabled_users}
+              icon={<Users className="w-5 h-5" />}
+              href="/users"
+            />
+          </div>
+
+          {/* System status — from real data */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-300 mb-4">Login Activity (24h)</h2>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">Successful</span>
+                  <span className="text-sm font-medium text-emerald-400 tabular-nums">{overview.successful_logins_24h}</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full"
+                    style={{
+                      width: `${Math.min(
+                        overview.successful_logins_24h / Math.max(overview.successful_logins_24h + overview.failed_logins_24h, 1) * 100,
+                        100
+                      )}%`
+                    }}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">Failed</span>
+                  <span className="text-sm font-medium text-red-400 tabular-nums">{overview.failed_logins_24h}</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div
+                    className="h-full bg-red-500 rounded-full"
+                    style={{
+                      width: `${Math.min(
+                        overview.failed_logins_24h / Math.max(overview.successful_logins_24h + overview.failed_logins_24h, 1) * 100,
+                        100
+                      )}%`
+                    }}
+                  />
+                </div>
               </div>
-              <div className="text-2xl font-bold text-gray-900">{stat.value}</div>
-              <p className="text-sm text-gray-600 mt-2">{stat.title}</p>
-            </div>
-          </Link>
-        ))}
-      </div>
+            </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
-          <div className="space-y-2">
-            <Link href="/security/events" className="block px-4 py-2 hover:bg-gray-50 rounded text-blue-600 hover:underline">
-              → Security Event Timeline
-            </Link>
-            <Link href="/security/suspicious" className="block px-4 py-2 hover:bg-gray-50 rounded text-blue-600 hover:underline">
-              → Suspicious Activity Panel
-            </Link>
-            <Link href="/security/sessions" className="block px-4 py-2 hover:bg-gray-50 rounded text-blue-600 hover:underline">
-              → Session Security Console
-            </Link>
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-300 mb-4">System Security Status</h2>
+              <div className="space-y-3">
+                {[
+                  { label: 'Active Admins',       value: overview.active_admins,       ok: overview.active_admins > 0 },
+                  { label: 'Sessions Active',      value: overview.active_sessions,     ok: true },
+                  { label: 'Suspicious Activity',  value: overview.suspicious_activities, ok: overview.suspicious_activities === 0 },
+                ].map(row => (
+                  <div key={row.label} className="flex items-center justify-between">
+                    <span className="text-sm text-slate-500">{row.label}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-300 tabular-nums">{row.value}</span>
+                      <StatusIndicator status={row.ok ? 'healthy' : 'warning'} pulse={false} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
           </div>
-        </div>
-
-        <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <h2 className="text-xl font-bold mb-4">Status</h2>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Security Events</span>
-              <span className="inline-block w-3 h-3 bg-green-500 rounded-full"></span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Detection System</span>
-              <span className="inline-block w-3 h-3 bg-green-500 rounded-full"></span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Alert System</span>
-              <span className="inline-block w-3 h-3 bg-green-500 rounded-full"></span>
-            </div>
-          </div>
-        </div>
-      </div>
+        </>
+      ) : null}
     </div>
   )
 }

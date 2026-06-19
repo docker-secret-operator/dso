@@ -44,8 +44,9 @@ func BootstrapAuthSystem(ctx context.Context, userStore storage.UserStore, opts 
 		return fmt.Errorf("failed to hash admin password: %w", err)
 	}
 
-	// Force password change when the default "admin" password is used
-	mustChange := opts.AdminPassword == "admin"
+	// Always force a password change for bootstrapped accounts; the initial
+	// password is never considered production-safe regardless of its value.
+	mustChange := true
 
 	// Create admin user
 	now := time.Now()

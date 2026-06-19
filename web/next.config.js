@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
+const backendURL = process.env.DSO_API_URL || 'http://localhost:8471'
+
 const nextConfig = {
-  output: 'export',
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -10,35 +11,20 @@ const nextConfig = {
   basePath: '',
   assetPrefix: '/',
 
-  // Development proxy for API calls
-  // Uncomment the rewrites section below to enable API proxying during development
-  // You need to have the DSO backend running on localhost:8471
+  async rewrites() {
+    return {
+      beforeFiles: [
+        {
+          source: '/api/:path*',
+          destination: `${backendURL}/api/:path*`,
+        },
+        {
+          source: '/health',
+          destination: `${backendURL}/health`,
+        },
+      ],
+    }
+  },
 }
-
-// Rewrites for development (commented out for static export)
-// Uncomment this for local development with running backend
-/*
-const withRewrites = async () => {
-  return {
-    ...nextConfig,
-    async rewrites() {
-      return {
-        beforeFiles: [
-          {
-            source: '/api/:path*',
-            destination: 'http://localhost:8471/api/:path*',
-          },
-          {
-            source: '/health',
-            destination: 'http://localhost:8471/health',
-          },
-        ],
-      }
-    },
-  }
-}
-
-module.exports = withRewrites()
-*/
 
 module.exports = nextConfig

@@ -61,9 +61,10 @@ func NewSQLiteProvider(path string) (*SQLiteProvider, error) {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
-	// Configure connection pool
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	// SQLite WAL mode allows concurrent readers but only one writer at a time.
+	// Limiting to 1 open connection prevents write contention and busy-timeout errors.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

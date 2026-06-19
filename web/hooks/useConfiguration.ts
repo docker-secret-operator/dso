@@ -30,6 +30,11 @@ export interface ProviderTestResult {
   latency_ms?: number
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export function useConfiguration() {
   const [config, setConfig] = useState<ConfigStatus | null>(null)
   const [providers, setProviders] = useState<ProvidersData | null>(null)
@@ -44,7 +49,9 @@ export function useConfiguration() {
       setLoading(true)
       setError(null)
 
-      const configResponse = await fetch('/api/config')
+      const configResponse = await fetch('/api/config', {
+        headers: getAuthHeaders(),
+      })
       const configData = (await configResponse.json()) as ConfigStatus
       setConfig(configData)
 
@@ -61,7 +68,9 @@ export function useConfiguration() {
   // Load providers
   const loadProviders = async () => {
     try {
-      const providersResponse = await fetch('/api/config/providers')
+      const providersResponse = await fetch('/api/config/providers', {
+        headers: getAuthHeaders(),
+      })
       const providersData = (await providersResponse.json()) as ProvidersData
       setProviders(providersData)
     } catch (err) {
@@ -75,6 +84,7 @@ export function useConfiguration() {
       setTestingProvider(providerName)
       const response = await fetch(`/api/config/providers/${providerName}/test`, {
         method: 'POST',
+        headers: getAuthHeaders(),
       })
       const result = (await response.json()) as ProviderTestResult
       setTestResults((prev) => ({

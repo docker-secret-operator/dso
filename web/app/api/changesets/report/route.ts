@@ -4,10 +4,11 @@ export const runtime = 'nodejs'
 
 export async function GET(request: NextRequest) {
   try {
+    const baseUrl = process.env.DSO_API_URL || 'http://localhost:8471'
     const [containersRes, secretsRes, eventsRes] = await Promise.all([
-      fetch('http://localhost:8471/api/discovery/docker', { cache: 'no-store' }),
-      fetch('http://localhost:8471/api/secrets', { cache: 'no-store' }),
-      fetch('http://localhost:8471/api/events', { cache: 'no-store' }),
+      fetch(`${baseUrl}/api/discovery/docker`, { cache: 'no-store' }),
+      fetch(`${baseUrl}/api/secrets`, { cache: 'no-store' }),
+      fetch(`${baseUrl}/api/events`, { cache: 'no-store' }),
     ])
 
     if (!containersRes.ok || !secretsRes.ok || !eventsRes.ok) {

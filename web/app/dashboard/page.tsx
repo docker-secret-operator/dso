@@ -2,696 +2,476 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
-import { apiClient } from '@/lib/api-client'
+import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { cn } from '@/lib/utils'
 import { ErrorBoundary } from '@/components/error-boundary'
 import {
-  AlertCircle,
-  Activity,
-  Shield,
-  CheckCircle2,
-  Server,
-  Workflow,
-  BarChart3,
-  Lightbulb,
-  GitBranch,
-  Bot,
-  TrendingUp,
-  TrendingDown,
-  Zap,
-  Clock,
-  ChevronRight,
-  RefreshCw,
+  Card,
+  Badge,
+  MetricCard,
+  StatusIndicator,
+  StatusBadge,
+  EmptyState,
+  Skeleton,
+  PageHeader,
+} from '@/components/ui-modern'
+import {
+  AlertCircle, Shield, Server, GitBranch, Bot,
+  BarChart3, Lightbulb, ChevronRight, Zap,
+  TrendingUp, TrendingDown, Activity, Cpu
 } from 'lucide-react'
-import { Card, Badge } from '@/components/ui-modern'
+import * as systemApi from '@/lib/api/system'
+import * as operationsApi from '@/lib/api/operations'
+import * as metricsApi from '@/lib/api/metrics'
+import * as auditApi from '@/lib/api/audit'
+import * as dashboardApi from '@/lib/api/dashboard'
 
-// ============================================================================
-// TYPES
-// ============================================================================
+// ── Tiny sparkline using SVG ─────────────────────────────────────────────────
 
-interface SystemMetrics {
-  healthy: number
-  degraded: number
-  failed: number
-  lastUpdate: string
+function Sparkline({ data, color = '#6366f1' }: { data: number[]; color?: string }) {
+  if (!data || data.length < 2) return null
+  const max = Math.max(...data)
+  const min = Math.min(...data)
+  const range = max - min || 1
+  const W = 80, H = 28
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * W
+    const y = H - ((v - min) / range) * H
+    return `${x},${y}`
+  }).join(' ')
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="overflow-visible">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
-interface MetricValue {
-  value: number | string
-  label: string
-  trend?: number
-  status?: 'healthy' | 'warning' | 'critical'
+// ── Mini progress bar ─────────────────────────────────────────────────────────
+
+function MiniBar({ value, max = 100, color }: { value: number; max?: number; color: string }) {
+  const pct = Math.min((value / max) * 100, 100)
+  return (
+    <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+      <div className="h-full rounded-full transition-all duration-300" style={{ width: `${pct}%`, backgroundColor: color }} />
+    </div>
+  )
 }
 
-interface LoadingState {
-  incidents: boolean
-  forecasts: boolean
-  autonomy: boolean
-  alerts: boolean
-  drift: boolean
-  recommendations: boolean
-  discovery: boolean
-  health: boolean
+// ─────────────────────────────────────────────────────────────────────────────
+
+function DashboardHero({ health, version }: { health: any, version: string }) {
+  const isUp = health?.status === 'up'
+  return (
+    <div className="relative overflow-hidden rounded-2xl glass-panel p-8 mb-6 border border-indigo-500/20 shadow-glow-indigo">
+      <div className="absolute inset-0 bg-mesh opacity-40 animate-mesh-gradient"></div>
+      <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div>
+          <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight mb-2">
+            Operations <span className="gradient-text">Command Center</span>
+          </h1>
+          <p className="text-slate-400 text-sm max-w-xl">
+            Real-time overview of system health, secrets, and autonomous operational status.
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-black/40 border border-white/10 backdrop-blur-md">
+            <div className="flex flex-col items-end">
+              <span className="text-xs text-slate-400 font-medium">System Status</span>
+              <span className={cn("text-sm font-semibold", isUp ? "text-emerald-400" : "text-red-400")}>
+                {isUp ? 'Operational' : 'Degraded'}
+              </span>
+            </div>
+            <span className={cn("w-3 h-3 rounded-full", isUp ? "bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.8)]" : "bg-red-500 animate-pulse shadow-[0_0_12px_rgba(239,68,68,0.8)]")} />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
-// ============================================================================
-// DASHBOARD COMPONENT
-// ============================================================================
+function AgentUtilizationPanel({ goroutines, memoryMB, activeExec }: { goroutines: number, memoryMB: number, activeExec: number }) {
+  // Use goroutines as a proxy for load (assuming baseline ~15, max ~200 for our simple UI scale)
+  const loadPct = Math.round(Math.min((goroutines / 200) * 100, 100))
+  const memPct = Math.round(Math.min((memoryMB / 2048) * 100, 100)) // Assuming 2GB max for visual gauge
 
-export default function DashboardPremium() {
+  return (
+    <div className="glass-panel p-6 rounded-2xl mb-6 flex flex-col md:flex-row items-center gap-8 border border-white/10 hover:border-indigo-500/30 transition-colors duration-300">
+      <div className="flex items-center gap-4 w-full md:w-auto md:min-w-[200px]">
+        <div className="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20 text-indigo-400">
+          <Cpu className="w-6 h-6" />
+        </div>
+        <div>
+          <h2 className="text-sm font-semibold text-slate-300">DSO Agent Load</h2>
+          <p className="text-xs text-slate-500">Real-time utilization</p>
+        </div>
+      </div>
+
+      <div className="flex-1 grid grid-cols-2 md:grid-cols-3 gap-6 w-full">
+        {/* Load (Goroutines proxy) */}
+        <div className="flex flex-col">
+          <div className="flex justify-between items-end mb-2">
+            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Agent Load</span>
+            <span className={cn("text-lg font-bold tabular-nums", loadPct > 85 ? "text-red-400" : loadPct > 60 ? "text-amber-400" : "text-emerald-400")}>
+              {loadPct}%
+            </span>
+          </div>
+          <div className="h-2 w-full bg-black/40 rounded-full overflow-hidden border border-white/5">
+            <div 
+              className={cn("h-full rounded-full transition-all duration-1000", loadPct > 85 ? "bg-red-500" : loadPct > 60 ? "bg-amber-500" : "bg-emerald-500")} 
+              style={{ width: `${loadPct}%` }} 
+            />
+          </div>
+        </div>
+
+        {/* Memory */}
+        <div className="flex flex-col">
+          <div className="flex justify-between items-end mb-2">
+            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Memory</span>
+            <span className={cn("text-lg font-bold tabular-nums", memoryMB > 1500 ? "text-red-400" : memoryMB > 1000 ? "text-amber-400" : "text-blue-400")}>
+              {Math.round(memoryMB)} MB
+            </span>
+          </div>
+          <div className="h-2 w-full bg-black/40 rounded-full overflow-hidden border border-white/5">
+            <div 
+              className={cn("h-full rounded-full transition-all duration-1000", memoryMB > 1500 ? "bg-red-500" : memoryMB > 1000 ? "bg-amber-500" : "bg-blue-500")} 
+              style={{ width: `${memPct}%` }} 
+            />
+          </div>
+        </div>
+
+        {/* Active Goroutines */}
+        <div className="col-span-2 md:col-span-1 flex flex-col md:items-end justify-center">
+           <span className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Active Routines</span>
+           <span className="text-2xl font-bold text-slate-100 tabular-nums">{goroutines}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+function DashboardContent() {
   const router = useRouter()
-  const now = new Date()
 
-  // ── Fetch all real data ──────────────────────────────────────────────────
+  // ── Data fetching ────────────────────────────────────────────────────────
 
-  // Health & Status
-  const { data: health } = useQuery({
+  const { data: health, isLoading: healthLoading } = useQuery({
     queryKey: ['health'],
-    queryFn: () => apiClient.getHealth(),
-    refetchInterval: 5000,
+    queryFn: () => systemApi.getHealth(),
+    refetchInterval: 30000, // Poll every 30 seconds
   })
 
-  // Incidents
-  const { data: incidents, isLoading: incidentsLoading } = useQuery({
-    queryKey: ['incidents'],
-    queryFn: async () => {
-      const list = await apiClient.getIncidents({ limit: 10 })
-      const metrics = await apiClient.getIncidentMetrics()
-      return { list, metrics }
-    },
-    refetchInterval: 10000,
-  })
-
-  // Forecasts
-  const { data: forecasts, isLoading: forecastsLoading } = useQuery({
-    queryKey: ['forecasts'],
-    queryFn: async () => {
-      const list = await apiClient.getForecasts({ limit: 5 })
-      const metrics = await apiClient.getForecastMetrics()
-      return { list, metrics }
-    },
+  const { data: opsData, isLoading: opsLoading } = useQuery({
+    queryKey: ['operations-dashboard'],
+    queryFn: () => operationsApi.getDashboard(),
     refetchInterval: 30000,
   })
 
-  // Autonomy
-  const { data: autonomy, isLoading: autonomyLoading } = useQuery({
-    queryKey: ['autonomy'],
-    queryFn: async () => {
-      const actions = await apiClient.getAutonomyActions({ limit: 10 })
-      const metrics = await apiClient.getAutonomyMetrics()
-      return { actions, metrics }
-    },
-    refetchInterval: 10000,
-  })
-
-  // Alerts
   const { data: alerts, isLoading: alertsLoading } = useQuery({
-    queryKey: ['alerts'],
-    queryFn: () => apiClient.getAlerts({ limit: 20 }),
-    refetchInterval: 5000,
-  })
-
-  // Drift
-  const { data: drift, isLoading: driftLoading } = useQuery({
-    queryKey: ['drift'],
-    queryFn: async () => {
-      const findings = await apiClient.getDriftFindings({ limit: 10 })
-      const metrics = await apiClient.getDriftMetrics()
-      return { findings, metrics }
-    },
+    queryKey: ['alerts-dashboard'],
+    queryFn: () => operationsApi.getAlerts({ limit: 5 }),
     refetchInterval: 30000,
   })
 
-  // Recommendations
-  const { data: recommendations, isLoading: recommendationsLoading } = useQuery({
-    queryKey: ['recommendations'],
-    queryFn: () => apiClient.getRecommendations({ limit: 5 }),
-    refetchInterval: 60000,
-  })
-
-  // Discovery
-  const { data: discovery, isLoading: discoveryLoading } = useQuery({
-    queryKey: ['discovery'],
-    queryFn: () => apiClient.getDiscoverySummary(),
-    refetchInterval: 30000,
-  })
-
-  // Secrets
-  const { data: secrets = [] } = useQuery({
-    queryKey: ['secrets'],
-    queryFn: () => apiClient.getSecrets(),
-    refetchInterval: 30000,
-  })
-
-  // Metrics history for charts
   const { data: metricsHistory } = useQuery({
     queryKey: ['metricsHistory'],
-    queryFn: () => apiClient.getMetricsHistory({ period: '1h', granularity: '1m' }),
+    queryFn: () => metricsApi.getHistory({ period: '1h', granularity: '1m' }),
     refetchInterval: 60000,
   })
 
-  const isLoading = {
-    incidents: incidentsLoading,
-    forecasts: forecastsLoading,
-    autonomy: autonomyLoading,
-    alerts: alertsLoading,
-    drift: driftLoading,
-    recommendations: recommendationsLoading,
-    discovery: discoveryLoading,
-    health: !health,
-  }
+  const { data: recentAudit } = useQuery({
+    queryKey: ['audit-recent'],
+    queryFn: () => auditApi.getAuditEvents({ limit: 5 }),
+    refetchInterval: 30000,
+  })
 
-  // ── Compute derived values ───────────────────────────────────────────────
+  const { data: dashboardMetrics } = useQuery({
+    queryKey: ['dashboard-metrics'],
+    queryFn: () => dashboardApi.getMetrics(),
+    refetchInterval: 60000,
+  })
 
-  const healthPercent = health?.status === 'up' ? 99 : 20
-  const secretsHealthy = secrets.filter((s: any) => s.status === 'ok').length
-  const secretsRotationRisk = secrets.filter((s: any) => {
-    if (!s.next_rotation) return false
-    const nextRotation = new Date(s.next_rotation).getTime()
-    const sevenDaysFromNow = Date.now() + 7 * 24 * 60 * 60 * 1000
-    return nextRotation <= sevenDaysFromNow && nextRotation > Date.now()
-  }).length
-  const secretsFailures = secrets.filter((s: any) => s.status === 'error').length
+  // ── Derived values — all from real API ──────────────────────────────────
 
-  const incidentsCount = incidents?.metrics?.open || 0
-  const incidentsCritical = incidents?.metrics?.critical || 0
-  const forecastsAtRisk = forecasts?.metrics?.at_risk || 0
-  const autonomyExecuted = autonomy?.metrics?.executed || 0
-  const autonomyPending = autonomy?.metrics?.pending || 0
-  const driftCritical = drift?.metrics?.critical || 0
-  const recommendationsCount = recommendations?.total || 0
-  const alertsCount = alerts?.total || 0
+  const isUp         = health?.status === 'up'
+  const histPoints   = metricsHistory?.data ?? []
+  const queueData    = histPoints.map((p: any) => p.qd ?? 0)
+  const workerData   = histPoints.map((p: any) => Math.round((p.wu ?? 0) * 100))
+  const memData      = histPoints.map((p: any) => p.mm ?? 0)
+  const lastPoint    = histPoints[histPoints.length - 1] ?? {}
+  const queueDepth   = lastPoint.qd ?? 0
+  const workerUtil   = lastPoint.wu ?? 0
+  const memoryMB     = lastPoint.mm ?? 0
+  const activeExec   = lastPoint.ae ?? 0
 
-  const lastMetricsPoint = metricsHistory?.data?.[metricsHistory.data.length - 1]
-  const queueDepth = lastMetricsPoint?.qd || 0
-  const workerUtil = lastMetricsPoint?.wu || 0
-  const memoryUsage = lastMetricsPoint?.mm || 0
-  const activeExecutions = lastMetricsPoint?.ae || 0
+  const activeAlerts = (alerts as any)?.alerts ?? []
+  const totalAlerts  = (alerts as any)?.count ?? 0
+
+  const rtGoroutines = health?.goroutines ?? 0
+  const rtMemoryMB = health?.memory_mb ?? 0
+
+  // Operations dashboard data
+  const kpis = opsData?.overview_kpis
+  const queueHealth = opsData?.queue_health
+  const workerHealth = opsData?.worker_health
+  const executionStatus = opsData?.execution_status
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white p-8">
-        <div className="max-w-7xl mx-auto space-y-8">
-          {/* ══════════════════════════════════════════════════════════════════
-              HERO SECTION
-              ══════════════════════════════════════════════════════════════════ */}
+      <div className="relative min-h-[calc(100vh-4rem)]">
+        <div className="absolute inset-0 bg-dashboard-orbs z-0 pointer-events-none"></div>
+        <div className="p-6 space-y-4 max-w-[1400px] relative z-10">
 
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-6xl font-bold tracking-tight text-slate-900">DSO Operations Center</h1>
-              <p className="text-xl text-slate-600 mt-3">Enterprise-grade Intelligent Docker Operations Platform</p>
+        {/* ── Page hero & Utilization ── */}
+        <DashboardHero health={health} version={health?.version ?? '—'} />
+
+        {health && (
+          <AgentUtilizationPanel goroutines={rtGoroutines} memoryMB={rtMemoryMB} activeExec={activeExec} />
+        )}
+
+        <div className="h-2" /> {/* Spacing */}
+
+        {/* ── System health strip ── */}
+        <Card className="p-4">
+          <div className="flex items-center gap-6 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">System</span>
+              <span className="text-xs text-slate-600">{health?.status === 'up' ? 'Operational' : 'Degraded'}</span>
             </div>
-
-            {/* System Health Hero */}
-            <Card className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-700">
-              <div className="p-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6">
-                  {/* Overall Health */}
-                  <div className="flex flex-col justify-between">
-                    <p className="text-sm font-medium text-slate-400">System Health</p>
-                    <div className="mt-4">
-                      <div className="relative w-20 h-20">
-                        <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-                          <circle cx="50" cy="50" r="45" fill="none" stroke="#1e293b" strokeWidth="8" />
-                          <circle
-                            cx="50"
-                            cy="50"
-                            r="45"
-                            fill="none"
-                            stroke="#10b981"
-                            strokeWidth="8"
-                            strokeDasharray={`${(healthPercent / 100) * 2 * Math.PI * 45} ${2 * Math.PI * 45}`}
-                          />
-                        </svg>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <span className="text-2xl font-bold text-white">{healthPercent}%</span>
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-green-400 mt-3">Operational</p>
-                  </div>
-
-                  {/* Service Status */}
-                  {[
-                    { name: 'API Server', status: 'healthy' },
-                    { name: 'Agent', status: health?.status === 'up' ? 'healthy' : 'failed' },
-                    { name: 'Scheduler', status: 'healthy' },
-                    { name: 'EventBus', status: 'healthy' },
-                    { name: 'WebSocket', status: 'healthy' },
-                  ].map((service, idx) => (
-                    <div key={idx} className="flex flex-col">
-                      <p className="text-xs font-medium text-slate-400 uppercase">{service.name}</p>
-                      <div className="flex items-center gap-2 mt-auto">
-                        <div
-                          className={`w-2 h-2 rounded-full ${
-                            service.status === 'healthy'
-                              ? 'bg-green-500 animate-pulse'
-                              : service.status === 'degraded'
-                                ? 'bg-yellow-500'
-                                : 'bg-red-500'
-                          }`}
-                        />
-                        <span className="text-sm font-medium text-white capitalize">{service.status}</span>
-                      </div>
-                    </div>
-                  ))}
-
-                  {/* Last Update */}
-                  <div className="flex flex-col">
-                    <p className="text-xs font-medium text-slate-400 uppercase">Last Update</p>
-                    <p className="text-sm text-slate-300 mt-auto">{now.toLocaleTimeString()}</p>
-                  </div>
+            {health?.persistence && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span className="text-xs text-slate-400">Database: {health.persistence.driver}</span>
                 </div>
+                {health.persistence.wal_mode && (
+                  <div className="text-xs text-slate-600">WAL Enabled</div>
+                )}
+                <div className="text-xs text-slate-600">Migration: v{health.persistence.migration_version}</div>
+              </>
+            )}
+            {health?.uptime != null && (
+              <div className="ml-auto text-xs text-slate-600">
+                Uptime: {Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m
               </div>
-            </Card>
+            )}
           </div>
+        </Card>
 
-          {/* ══════════════════════════════════════════════════════════════════
-              PRIMARY METRICS - SECRETS
-              ══════════════════════════════════════════════════════════════════ */}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {/* Healthy Secrets */}
-            <Card className="hover:shadow-lg transition-shadow">
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <Shield className="w-5 h-5 text-blue-600" />
-                  <Badge variant="success" size="sm">Healthy</Badge>
-                </div>
-                <p className="text-sm text-slate-600 font-medium">Healthy Secrets</p>
-                <p className="text-4xl font-bold text-slate-900 mt-2">{secretsHealthy}</p>
-                <p className="text-xs text-slate-500 mt-3">{secrets.length} total secrets</p>
-              </div>
-            </Card>
-
-            {/* Rotation Risk */}
-            <Card className="hover:shadow-lg transition-shadow">
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <AlertCircle className="w-5 h-5 text-amber-600" />
-                  <Badge variant={secretsRotationRisk > 0 ? 'warning' : 'success'} size="sm">
-                    {secretsRotationRisk > 0 ? 'At Risk' : 'Safe'}
-                  </Badge>
-                </div>
-                <p className="text-sm text-slate-600 font-medium">Rotation Risk (7d)</p>
-                <p className="text-4xl font-bold text-slate-900 mt-2">{secretsRotationRisk}</p>
-                <p className="text-xs text-slate-500 mt-3">Rotating soon</p>
-              </div>
-            </Card>
-
-            {/* Failures */}
-            <Card className="hover:shadow-lg transition-shadow">
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <Zap className="w-5 h-5 text-red-600" />
-                  <Badge variant={secretsFailures > 0 ? 'danger' : 'success'} size="sm">
-                    {secretsFailures > 0 ? 'Failures' : 'OK'}
-                  </Badge>
-                </div>
-                <p className="text-sm text-slate-600 font-medium">Rotation Failures</p>
-                <p className="text-4xl font-bold text-slate-900 mt-2">{secretsFailures}</p>
-                <p className="text-xs text-slate-500 mt-3">Needs attention</p>
-              </div>
-            </Card>
-
-            {/* Managed Containers */}
-            <Card className="hover:shadow-lg transition-shadow">
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <Server className="w-5 h-5 text-green-600" />
-                  <Badge variant="success" size="sm">Managed</Badge>
-                </div>
-                <p className="text-sm text-slate-600 font-medium">Managed Containers</p>
-                <p className="text-4xl font-bold text-slate-900 mt-2">{discovery?.managed || 0}</p>
-                <p className="text-xs text-slate-500 mt-3">
-                  {discovery?.total ? `${((discovery?.managed / discovery?.total) * 100).toFixed(0)}% coverage` : 'No data'}
-                </p>
-              </div>
-            </Card>
+        {/* ── KPI Cards from Operations Dashboard ── */}
+        {opsLoading ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[...Array(4)].map((_, i) => (
+              <Skeleton key={i} className="h-24 rounded-lg" />
+            ))}
           </div>
-
-          {/* ══════════════════════════════════════════════════════════════════
-              BENTO GRID - INTELLIGENCE FEATURES
-              ══════════════════════════════════════════════════════════════════ */}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6">
-            {/* LARGE: Incidents */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/incidents')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">INCIDENTS</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Active Incidents</h3>
-                  </div>
-                  <Lightbulb className="w-6 h-6 text-orange-600" />
-                </div>
-
-                {isLoading.incidents ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                    <div className="h-4 bg-slate-200 rounded animate-pulse w-2/3" />
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-3xl font-bold text-slate-900">{incidentsCount}</p>
-                        <p className="text-xs text-slate-500 mt-1">Open incidents</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-200">
-                        <div>
-                          <p className="text-2xl font-bold text-red-600">{incidentsCritical}</p>
-                          <p className="text-xs text-slate-500">Critical</p>
-                        </div>
-                        <div>
-                          <p className="text-2xl font-bold text-slate-600">{incidents?.metrics?.acknowledged || 0}</p>
-                          <p className="text-xs text-slate-500">Acknowledged</p>
-                        </div>
-                      </div>
-                    </div>
-                    <button className="w-full mt-6 px-4 py-2 rounded-lg bg-orange-50 text-orange-700 text-sm font-medium hover:bg-orange-100 transition-colors flex items-center justify-center gap-2">
-                      View Details <ChevronRight className="w-4 h-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* LARGE: Recommendations */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/recommendations')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">RECOMMENDATIONS</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Pending Actions</h3>
-                  </div>
-                  <Lightbulb className="w-6 h-6 text-purple-600" />
-                </div>
-
-                {isLoading.recommendations ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                    <div className="h-4 bg-slate-200 rounded animate-pulse w-2/3" />
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-3xl font-bold text-slate-900">{recommendationsCount}</p>
-                        <p className="text-xs text-slate-500 mt-1">Recommendations</p>
-                      </div>
-                      {recommendations?.recommendations?.[0] && (
-                        <div className="pt-4 border-t border-slate-200">
-                          <p className="text-sm font-medium text-slate-700 truncate">{recommendations.recommendations[0].title || 'Top recommendation'}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            <Badge variant="warning" size="sm">High Priority</Badge>
-                            <Badge variant="info" size="sm">95% Confidence</Badge>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <button className="w-full mt-6 px-4 py-2 rounded-lg bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 transition-colors flex items-center justify-center gap-2">
-                      View Details <ChevronRight className="w-4 h-4" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* MEDIUM: Forecast Risks */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/forecasts')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">FORECASTS</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Predicted Risks</h3>
-                  </div>
-                  <BarChart3 className="w-6 h-6 text-cyan-600" />
-                </div>
-
-                {isLoading.forecasts ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-3xl font-bold text-slate-900">{forecastsAtRisk}</p>
-                    <p className="text-xs text-slate-500 mt-1">At risk in next 7 days</p>
-                    <div className="mt-6 space-y-2 text-xs text-slate-600">
-                      <p>• Memory trending up</p>
-                      <p>• Queue saturation risk</p>
-                      <p>• Storage growth detected</p>
-                    </div>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* MEDIUM: Drift */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/drift')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">CONFIG DRIFT</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Drift Findings</h3>
-                  </div>
-                  <GitBranch className="w-6 h-6 text-amber-600" />
-                </div>
-
-                {isLoading.drift ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-3xl font-bold text-slate-900">{driftCritical}</p>
-                    <p className="text-xs text-slate-500 mt-1">Critical findings</p>
-                    <div className="mt-6 grid grid-cols-2 gap-3 text-xs">
-                      <div className="p-2 bg-amber-50 rounded">
-                        <p className="text-amber-900 font-medium">{drift?.metrics?.acknowledged || 0}</p>
-                        <p className="text-amber-700">Acknowledged</p>
-                      </div>
-                      <div className="p-2 bg-red-50 rounded">
-                        <p className="text-red-900 font-medium">{drift?.metrics?.unresolved || 0}</p>
-                        <p className="text-red-700">Unresolved</p>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* SMALL: Autonomy */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/autonomy')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <p className="text-sm font-medium text-slate-500">AUTONOMY</p>
-                  <Bot className="w-6 h-6 text-green-600" />
-                </div>
-
-                {isLoading.autonomy ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-3">
-                      <div>
-                        <p className="text-2xl font-bold text-green-600">{autonomyExecuted}</p>
-                        <p className="text-xs text-slate-500">Executed today</p>
-                      </div>
-                      <div className="p-2 bg-amber-50 rounded">
-                        <p className="text-sm font-bold text-amber-900">{autonomyPending}</p>
-                        <p className="text-xs text-amber-700">Pending approval</p>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* MEDIUM: Alerts */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/alerts')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">ALERTS</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Active Alerts</h3>
-                  </div>
-                  <AlertCircle className="w-6 h-6 text-red-600" />
-                </div>
-
-                {isLoading.alerts ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-3xl font-bold text-slate-900">{alertsCount}</p>
-                    <p className="text-xs text-slate-500 mt-1">Total alerts</p>
-                    {alerts?.alerts?.[0] && (
-                      <div className="mt-4 p-3 bg-red-50 rounded border border-red-200">
-                        <p className="text-sm font-medium text-red-900 truncate">{alerts.alerts[0].title || 'Latest alert'}</p>
-                        <p className="text-xs text-red-700 mt-1">Most recent</p>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* MEDIUM: Container Discovery */}
-            <Card className="lg:col-span-3 hover:shadow-lg transition-shadow cursor-pointer" onClick={() => router.push('/discovery')}>
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">DISCOVERY</p>
-                    <h3 className="text-lg font-bold text-slate-900 mt-2">Container Status</h3>
-                  </div>
-                  <Server className="w-6 h-6 text-blue-600" />
-                </div>
-
-                {isLoading.discovery ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-slate-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-3 gap-2">
-                        <div className="p-2 bg-green-50 rounded">
-                          <p className="text-lg font-bold text-green-700">{discovery?.managed || 0}</p>
-                          <p className="text-xs text-green-700">Managed</p>
-                        </div>
-                        <div className="p-2 bg-amber-50 rounded">
-                          <p className="text-lg font-bold text-amber-700">{discovery?.partial || 0}</p>
-                          <p className="text-xs text-amber-700">Partial</p>
-                        </div>
-                        <div className="p-2 bg-slate-100 rounded">
-                          <p className="text-lg font-bold text-slate-700">{discovery?.unmanaged || 0}</p>
-                          <p className="text-xs text-slate-700">Unmanaged</p>
-                        </div>
-                      </div>
-                      <div className="text-xs text-slate-600">{discovery?.total || 0} total</div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </Card>
+        ) : kpis ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <MetricCard
+              label="Success Rate"
+              value={`${Math.round(kpis.success_rate)}%`}
+              sublabel="executions"
+              icon={<TrendingUp className="w-4 h-4" />}
+              accentColor="emerald"
+            />
+            <MetricCard
+              label="Failure Rate"
+              value={`${Math.round(kpis.failure_rate)}%`}
+              sublabel="executions"
+              icon={<TrendingDown className="w-4 h-4" />}
+              accentColor={kpis.failure_rate > 10 ? 'red' : 'slate'}
+            />
+            <MetricCard
+              label="Throughput"
+              value={`${(kpis.throughput_per_second ?? 0).toFixed(1)}`}
+              sublabel="executions/sec"
+              icon={<Zap className="w-4 h-4" />}
+              accentColor="blue"
+            />
+            <MetricCard
+              label="Worker Util"
+              value={`${Math.round(kpis.worker_utilization)}%`}
+              sublabel="average"
+              icon={<Cpu className="w-4 h-4" />}
+              accentColor={kpis.worker_utilization > 85 ? 'red' : 'blue'}
+            />
           </div>
+        ) : null}
 
-          {/* ══════════════════════════════════════════════════════════════════
-              SYSTEM METRICS
-              ══════════════════════════════════════════════════════════════════ */}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {/* Queue Depth */}
-            <Card>
-              <div className="p-6">
-                <p className="text-sm font-medium text-slate-500">Queue Depth</p>
-                <p className="text-3xl font-bold text-slate-900 mt-2">{queueDepth.toFixed(0)}</p>
-                <p className="text-xs text-slate-500 mt-2">Jobs pending</p>
-                <div className="mt-4 h-1 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${
-                      queueDepth > 1000 ? 'bg-red-500' : queueDepth > 500 ? 'bg-amber-500' : 'bg-green-500'
-                    }`}
-                    style={{ width: `${Math.min(queueDepth / 1000, 1) * 100}%` }}
-                  />
-                </div>
-              </div>
-            </Card>
-
-            {/* Worker Utilization */}
-            <Card>
-              <div className="p-6">
-                <p className="text-sm font-medium text-slate-500">Worker Utilization</p>
-                <p className="text-3xl font-bold text-slate-900 mt-2">{(workerUtil * 100).toFixed(0)}%</p>
-                <p className="text-xs text-slate-500 mt-2">Active workers</p>
-                <div className="mt-4 h-1 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${
-                      workerUtil > 0.9 ? 'bg-red-500' : workerUtil > 0.75 ? 'bg-amber-500' : 'bg-green-500'
-                    }`}
-                    style={{ width: `${workerUtil * 100}%` }}
-                  />
-                </div>
-              </div>
-            </Card>
-
-            {/* Memory Usage */}
-            <Card>
-              <div className="p-6">
-                <p className="text-sm font-medium text-slate-500">Memory Usage</p>
-                <p className="text-3xl font-bold text-slate-900 mt-2">{memoryUsage.toFixed(0)}MB</p>
-                <p className="text-xs text-slate-500 mt-2">Current usage</p>
-                <div className="mt-4 h-1 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${
-                      memoryUsage > 2000 ? 'bg-red-500' : memoryUsage > 1500 ? 'bg-amber-500' : 'bg-green-500'
-                    }`}
-                    style={{ width: `${Math.min(memoryUsage / 3000, 1) * 100}%` }}
-                  />
-                </div>
-              </div>
-            </Card>
-
-            {/* Active Executions */}
-            <Card>
-              <div className="p-6">
-                <p className="text-sm font-medium text-slate-500">Active Executions</p>
-                <p className="text-3xl font-bold text-slate-900 mt-2">{activeExecutions.toFixed(0)}</p>
-                <p className="text-xs text-slate-500 mt-2">Currently running</p>
-                <div className="mt-4 h-1 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500"
-                    style={{ width: `${Math.min(activeExecutions / 100, 1) * 100}%` }}
-                  />
-                </div>
-              </div>
-            </Card>
+        {/* ── Queue & Worker Health ── */}
+        {opsLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[...Array(2)].map((_, i) => (
+              <Skeleton key={i} className="h-32 rounded-lg" />
+            ))}
           </div>
-
-          {/* ══════════════════════════════════════════════════════════════════
-              RECENT ACTIVITY
-              ══════════════════════════════════════════════════════════════════ */}
-
-          <Card>
-            <div className="p-8">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold text-slate-900">Recent Activity</h2>
-                <button
-                  onClick={() => router.push('/audit')}
-                  className="text-sm text-slate-600 hover:text-slate-900 font-semibold flex items-center gap-1"
-                >
-                  View All <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-3">
-                {alerts?.alerts?.slice(0, 5).map((alert: any, idx: number) => (
-                  <div key={idx} className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
-                    <div
-                      className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
-                        alert.severity === 'critical' ? 'bg-red-500' : alert.severity === 'warning' ? 'bg-amber-500' : 'bg-blue-500'
-                      }`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-900">{alert.title || alert.name || 'Alert'}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">{alert.description || 'No description'}</p>
+        ) : queueHealth || workerHealth ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Queue Health */}
+            {queueHealth && (
+              <Card className="p-5">
+                <h3 className="text-sm font-semibold text-slate-300 mb-4">Queue Health</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="text-xs text-slate-400">Depth</span>
+                      <span className="text-sm font-semibold text-slate-200">{queueHealth.depth}</span>
                     </div>
-                    <Badge variant={alert.severity === 'critical' ? 'danger' : alert.severity === 'warning' ? 'warning' : 'info'} size="sm">
-                      {alert.severity}
-                    </Badge>
+                    <MiniBar value={queueHealth.depth} max={100} color={queueHealth.health_score > 75 ? '#10b981' : queueHealth.health_score > 50 ? '#f59e0b' : '#ef4444'} />
                   </div>
-                ))}
-                {(!alerts?.alerts || alerts.alerts.length === 0) && (
-                  <p className="text-sm text-slate-500 text-center py-6">No recent alerts</p>
-                )}
-              </div>
+                  <div>
+                    <span className="text-xs text-slate-400">Health Score: </span>
+                    <span className={cn('text-sm font-semibold', queueHealth.status === 'healthy' ? 'text-emerald-400' : queueHealth.status === 'warning' ? 'text-amber-400' : 'text-red-400')}>
+                      {queueHealth.health_score} {queueHealth.status}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-500">Completion: {(queueHealth.completion_rate ?? 0).toFixed(1)}/s</div>
+                </div>
+              </Card>
+            )}
+
+            {/* Worker Health */}
+            {workerHealth && (
+              <Card className="p-5">
+                <h3 className="text-sm font-semibold text-slate-300 mb-4">Worker Health</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="text-xs text-slate-400">Workers</span>
+                      <span className="text-sm font-semibold text-slate-200">{workerHealth.healthy_workers}/{workerHealth.total_workers}</span>
+                    </div>
+                    <MiniBar value={workerHealth.healthy_workers} max={workerHealth.total_workers} color={workerHealth.health_score > 75 ? '#10b981' : '#f59e0b'} />
+                  </div>
+                  <div>
+                    <span className="text-xs text-slate-400">Utilization: </span>
+                    <span className="text-sm font-semibold text-slate-200">{Math.round(workerHealth.avg_utilization)}%</span>
+                  </div>
+                  <div className="text-xs text-slate-500">{workerHealth.unhealthy_workers} unhealthy</div>
+                </div>
+              </Card>
+            )}
+          </div>
+        ) : null}
+
+        {/* ── Execution Status Distribution ── */}
+        {opsLoading ? (
+          <Skeleton className="h-24 rounded-lg" />
+        ) : executionStatus ? (
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-slate-300 mb-4">Execution Status</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+              {[
+                { label: 'Queued', value: executionStatus.queued, color: '#3b82f6' },
+                { label: 'Running', value: executionStatus.running, color: '#10b981' },
+                { label: 'Completed', value: executionStatus.completed, color: '#6366f1' },
+                { label: 'Failed', value: executionStatus.failed, color: '#ef4444' },
+                { label: 'Cancelled', value: executionStatus.cancelled, color: '#f59e0b' },
+                { label: 'Paused', value: executionStatus.paused, color: '#8b5cf6' },
+                { label: 'Timed Out', value: executionStatus.timed_out, color: '#ec4899' },
+              ].map(status => (
+                <div key={status.label} className="text-center">
+                  <div className="text-2xl font-bold text-slate-100 mb-1">{status.value}</div>
+                  <div className="text-xs text-slate-500">{status.label}</div>
+                </div>
+              ))}
             </div>
           </Card>
+        ) : null}
+
+        {/* ── Bottom grid: alerts + recent audit ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          {/* Active alerts */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-slate-300">Active Alerts</h2>
+              <button
+                onClick={() => router.push('/alerts')}
+                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
+              >
+                {totalAlerts > 0 && <span className="tabular-nums">{totalAlerts}</span>}
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {alertsLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full rounded" count={3} />
+              </div>
+            ) : activeAlerts.length === 0 ? (
+              <EmptyState
+                icon={<AlertCircle className="w-5 h-5" />}
+                title="No active alerts"
+                description="All systems are running normally."
+              />
+            ) : (
+              <div className="space-y-2">
+                {activeAlerts.slice(0, 5).map((alert: any, i: number) => (
+                  <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg hover:bg-white/[0.03] transition-colors">
+                    <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${
+                      alert.severity === 'critical' ? 'bg-red-400' :
+                      alert.severity === 'high'     ? 'bg-orange-400' :
+                      alert.severity === 'warning'  ? 'bg-amber-400' : 'bg-blue-400'
+                    }`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-slate-300 truncate">{alert.message ?? 'Alert'}</p>
+                      <p className="text-[11px] text-slate-600 mt-0.5">{alert.type}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Recent audit */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-slate-300">Recent Activity</h2>
+              <button
+                onClick={() => router.push('/audit')}
+                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {!recentAudit ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full rounded" count={3} />
+              </div>
+            ) : recentAudit.events.length === 0 ? (
+              <EmptyState icon={<Activity className="w-5 h-5" />} title="No recent activity" />
+            ) : (
+              <div className="space-y-1">
+                {recentAudit.events.slice(0, 5).map((e: any, i: number) => (
+                  <div key={i} className="flex items-center gap-2.5 py-2 border-b border-white/[0.04] last:border-0">
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      e.severity === 'error' ? 'bg-red-400' :
+                      e.severity === 'warning' ? 'bg-amber-400' : 'bg-blue-400'
+                    }`} />
+                    <span className="text-xs text-slate-400 truncate flex-1">{e.action}</span>
+                    <span className="text-[10px] text-slate-700 flex-shrink-0">
+                      {new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
+
+      </div>
       </div>
     </ErrorBoundary>
+  )
+}
+
+export default function DashboardPage() {
+  return (
+    <ProtectedRoute>
+      <DashboardContent />
+    </ProtectedRoute>
   )
 }

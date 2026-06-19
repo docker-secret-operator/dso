@@ -120,7 +120,10 @@ func NewAgentCmd() *cobra.Command {
 			}()
 
 			// Initialize Trigger Engine
-			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			if err != nil {
+				logger.Fatal("Failed to initialize rotation lock manager", zap.Error(err))
+			}
 
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, err := agent.StartSocketServer(socketPath, cache, storeManager, logger, cfg)

@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Save, Mail, User, Shield, Clock, AlertCircle, CheckCircle } from 'lucide-react'
-import { useAuth } from '@/lib/auth-context'
+import { Save, User, Shield, Clock, AlertCircle, CheckCircle } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface UserProfile {
   id: string
@@ -24,6 +24,13 @@ interface ProfileFormData {
   avatar_url: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token
+    ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+    : { 'Content-Type': 'application/json' }
+}
+
 export default function ProfilePage() {
   const { user: authUser } = useAuth()
   const [profile, setProfile] = useState<UserProfile | null>(null)
@@ -42,29 +49,26 @@ export default function ProfilePage() {
     const fetchProfile = async () => {
       try {
         setLoading(true)
-        const response = await fetch('/api/user/profile')
+        const response = await fetch('/api/user/profile', {
+          headers: getAuthHeaders(),
+        })
 
         if (!response.ok) {
-          // Fallback to mock data for development
-          const mockProfile: UserProfile = {
-            id: authUser?.id || 'user-123',
-            username: authUser?.username || 'johndoe',
-            email: authUser?.username ? `${authUser.username}@example.com` : 'john@example.com',
-            full_name: authUser?.display_name || 'John Doe',
-            avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${authUser?.username || 'johndoe'}`,
+          // Fallback to auth context data when profile endpoint unavailable
+          const fallback: UserProfile = {
+            id: authUser?.id || '',
+            username: authUser?.username || '',
+            email: '',
+            full_name: authUser?.display_name || authUser?.username || '',
             role: authUser?.role || 'user',
             status: 'active',
-            created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
-            last_login: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+            created_at: new Date().toISOString(),
+            last_login: new Date().toISOString(),
             mfa_enabled: false,
-            password_changed_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+            password_changed_at: new Date().toISOString(),
           }
-          setProfile(mockProfile)
-          setFormData({
-            full_name: mockProfile.full_name,
-            email: mockProfile.email,
-            avatar_url: mockProfile.avatar_url || '',
-          })
+          setProfile(fallback)
+          setFormData({ full_name: fallback.full_name, email: fallback.email, avatar_url: '' })
           return
         }
 
@@ -88,10 +92,7 @@ export default function ProfilePage() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
-    setFormData(prev => ({
-      ...prev,
-      [name]: value,
-    }))
+    setFormData(prev => ({ ...prev, [name]: value }))
   }
 
   const handleSaveProfile = async () => {
@@ -101,9 +102,7 @@ export default function ProfilePage() {
 
       const response = await fetch('/api/user/profile', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify(formData),
       })
 
@@ -115,7 +114,6 @@ export default function ProfilePage() {
       setProfile(updatedProfile)
       setSuccess(true)
       setEditMode(false)
-
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save profile')
@@ -125,87 +123,102 @@ export default function ProfilePage() {
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+    if (!dateString) return '—'
+    try {
+      return new Date(dateString).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    } catch {
+      return '—'
+    }
   }
 
   if (loading) {
-    return <div className="p-8">Loading profile...</div>
+    return <div className="p-8 text-slate-200">Loading profile…</div>
   }
 
+  const initials = (profile?.full_name || profile?.username || 'U')
+    .split(' ')
+    .map(n => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+
   return (
-    <div className="space-y-8 p-8">
+    <div className="space-y-6 p-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">My Profile</h1>
-        <p className="mt-2 text-gray-600">Manage your account information and settings</p>
+        <h1 className="text-2xl font-semibold text-slate-100">My Profile</h1>
+        <p className="mt-1 text-sm text-slate-400">Manage your account information and settings</p>
       </div>
 
       {/* Messages */}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800 flex items-center gap-3">
-          <AlertCircle className="h-5 w-5" />
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300 flex items-center gap-3">
+          <AlertCircle className="h-5 w-5 flex-shrink-0" />
           {error}
         </div>
       )}
 
       {success && (
-        <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-green-800 flex items-center gap-3">
-          <CheckCircle className="h-5 w-5" />
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-300 flex items-center gap-3">
+          <CheckCircle className="h-5 w-5 flex-shrink-0" />
           Profile updated successfully
         </div>
       )}
 
-      {/* Main Profile Card */}
       {profile && (
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Avatar and Status */}
           <div className="lg:col-span-1">
-            <div className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-6 space-y-4">
               {/* Avatar */}
               <div className="flex justify-center">
-                <div className="h-32 w-32 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-4xl font-bold">
-                  {profile.full_name?.charAt(0).toUpperCase() || profile.username?.charAt(0).toUpperCase()}
+                <div className="h-24 w-24 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
+                  {initials}
                 </div>
               </div>
 
               {/* Basic Info */}
               <div className="text-center">
-                <h2 className="text-2xl font-bold text-gray-900">{profile.full_name || profile.username}</h2>
-                <p className="mt-1 text-sm text-gray-600">{profile.email}</p>
+                <h2 className="text-lg font-semibold text-slate-100">{profile.full_name || profile.username}</h2>
+                {profile.email && <p className="mt-0.5 text-sm text-slate-400">{profile.email}</p>}
               </div>
 
               {/* Role Badge */}
               <div className="flex justify-center">
-                <span className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-sm font-medium text-blue-800">
-                  <Shield className="h-4 w-4 mr-1" />
+                <span className="inline-flex items-center rounded-full bg-indigo-500/15 px-3 py-1 text-sm font-medium text-indigo-400">
+                  <Shield className="h-3.5 w-3.5 mr-1.5" />
                   {profile.role.charAt(0).toUpperCase() + profile.role.slice(1)}
                 </span>
               </div>
 
               {/* Status */}
-              <div className="pt-4 border-t border-gray-200">
+              <div className="pt-4 border-t border-white/[0.06]">
                 <div className="flex items-center justify-center gap-2">
-                  <div className={`h-3 w-3 rounded-full ${
-                    profile.status === 'active' ? 'bg-green-500' : 'bg-gray-400'
-                  }`} />
-                  <span className="text-sm font-medium text-gray-700">
+                  <div className={`h-2 w-2 rounded-full ${profile.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  <span className="text-sm text-slate-400">
                     {profile.status === 'active' ? 'Active' : 'Inactive'}
                   </span>
                 </div>
               </div>
 
               {/* Account Links */}
-              <div className="pt-4 border-t border-gray-200 space-y-2">
-                <a href="/settings/password" className="block w-full rounded-lg bg-gray-100 px-4 py-2 text-center text-sm font-medium text-gray-700 hover:bg-gray-200">
+              <div className="pt-4 border-t border-white/[0.06] space-y-2">
+                <a
+                  href="/settings/password"
+                  className="block w-full rounded-lg border border-white/[0.09] px-4 py-2 text-center text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
+                >
                   Change Password
                 </a>
-                <a href="/settings/sessions" className="block w-full rounded-lg bg-gray-100 px-4 py-2 text-center text-sm font-medium text-gray-700 hover:bg-gray-200">
+                <a
+                  href="/settings/sessions"
+                  className="block w-full rounded-lg border border-white/[0.09] px-4 py-2 text-center text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
+                >
                   Manage Sessions
                 </a>
               </div>
@@ -213,23 +226,22 @@ export default function ProfilePage() {
           </div>
 
           {/* Profile Information */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-2 space-y-5">
             {/* Edit Profile Section */}
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-gray-900">Profile Information</h3>
+            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-sm font-semibold text-slate-300">Profile Information</h3>
                 <button
                   onClick={() => setEditMode(!editMode)}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="rounded-lg border border-white/[0.09] px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                 >
                   {editMode ? 'Cancel' : 'Edit'}
                 </button>
               </div>
 
               <div className="space-y-4">
-                {/* Full Name */}
                 <div>
-                  <label htmlFor="full_name" className="block text-sm font-medium text-gray-700 mb-2">
+                  <label htmlFor="full_name" className="block text-sm font-medium text-slate-400 mb-1.5">
                     Full Name
                   </label>
                   <input
@@ -239,14 +251,13 @@ export default function ProfilePage() {
                     value={formData.full_name}
                     onChange={handleInputChange}
                     disabled={!editMode}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 disabled:bg-gray-50 disabled:text-gray-500"
+                    className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 disabled:opacity-50 disabled:text-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all"
                     placeholder="Enter your full name"
                   />
                 </div>
 
-                {/* Email */}
                 <div>
-                  <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+                  <label htmlFor="email" className="block text-sm font-medium text-slate-400 mb-1.5">
                     Email Address
                   </label>
                   <input
@@ -256,37 +267,19 @@ export default function ProfilePage() {
                     value={formData.email}
                     onChange={handleInputChange}
                     disabled={!editMode}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 disabled:bg-gray-50 disabled:text-gray-500"
+                    className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 disabled:opacity-50 disabled:text-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all"
                     placeholder="Enter your email"
                   />
                 </div>
 
-                {/* Avatar URL */}
-                <div>
-                  <label htmlFor="avatar_url" className="block text-sm font-medium text-gray-700 mb-2">
-                    Avatar URL
-                  </label>
-                  <input
-                    type="url"
-                    id="avatar_url"
-                    name="avatar_url"
-                    value={formData.avatar_url}
-                    onChange={handleInputChange}
-                    disabled={!editMode}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 disabled:bg-gray-50 disabled:text-gray-500"
-                    placeholder="https://example.com/avatar.jpg"
-                  />
-                </div>
-
-                {/* Save Button */}
                 {editMode && (
                   <button
                     onClick={handleSaveProfile}
                     disabled={saving}
-                    className="w-full rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
+                    className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
                   >
                     <Save className="h-4 w-4" />
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving ? 'Saving…' : 'Save Changes'}
                   </button>
                 )}
               </div>
@@ -294,94 +287,85 @@ export default function ProfilePage() {
 
             {/* Security & Activity */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Security Status */}
-              <div className="rounded-lg border border-gray-200 bg-white p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                  <Shield className="h-5 w-5" />
+              <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+                <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-slate-500" />
                   Security
                 </h3>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-gray-600">Two-Factor Auth</span>
+                    <span className="text-sm text-slate-400">Two-Factor Auth</span>
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
                       profile.mfa_enabled
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-gray-100 text-gray-800'
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'bg-slate-700/30 text-slate-500'
                     }`}>
                       {profile.mfa_enabled ? 'Enabled' : 'Disabled'}
                     </span>
                   </div>
-                  <button className="w-full rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200">
+                  <button
+                    disabled
+                    className="w-full rounded-lg border border-white/[0.09] px-4 py-2 text-sm text-slate-500 cursor-not-allowed opacity-50"
+                    title="MFA configuration coming soon"
+                  >
                     Manage 2FA
                   </button>
                 </div>
               </div>
 
-              {/* Account Activity */}
-              <div className="rounded-lg border border-gray-200 bg-white p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                  <Clock className="h-5 w-5" />
+              <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+                <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-slate-500" />
                   Activity
                 </h3>
                 <div className="space-y-3 text-sm">
                   <div>
-                    <p className="text-gray-600">Last Login</p>
-                    <p className="text-gray-900 font-medium">{formatDate(profile.last_login)}</p>
+                    <p className="text-slate-500 text-xs mb-0.5">Last Login</p>
+                    <p className="text-slate-300 font-medium text-xs">{formatDate(profile.last_login)}</p>
                   </div>
                   <div>
-                    <p className="text-gray-600">Account Created</p>
-                    <p className="text-gray-900 font-medium">{formatDate(profile.created_at)}</p>
+                    <p className="text-slate-500 text-xs mb-0.5">Account Created</p>
+                    <p className="text-slate-300 font-medium text-xs">{formatDate(profile.created_at)}</p>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* Account Metadata */}
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Account Information</h3>
+            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+              <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
+                <User className="h-4 w-4 text-slate-500" />
+                Account Information
+              </h3>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p className="text-gray-600">User ID</p>
-                  <p className="font-mono text-gray-900 break-all">{profile.id}</p>
+                  <p className="text-slate-500 text-xs mb-0.5">User ID</p>
+                  <p className="font-mono text-slate-300 text-xs break-all">{profile.id || '—'}</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Username</p>
-                  <p className="text-gray-900">{profile.username}</p>
+                  <p className="text-slate-500 text-xs mb-0.5">Username</p>
+                  <p className="text-slate-300 font-mono text-xs">{profile.username}</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Role</p>
-                  <p className="text-gray-900 capitalize">{profile.role}</p>
+                  <p className="text-slate-500 text-xs mb-0.5">Role</p>
+                  <p className="text-slate-300 capitalize text-xs">{profile.role}</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Status</p>
-                  <p className="text-gray-900 capitalize">{profile.status}</p>
+                  <p className="text-slate-500 text-xs mb-0.5">Status</p>
+                  <p className="text-slate-300 capitalize text-xs">{profile.status}</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Password Changed</p>
-                  <p className="text-gray-900">{formatDate(profile.password_changed_at)}</p>
+                  <p className="text-slate-500 text-xs mb-0.5">Password Changed</p>
+                  <p className="text-slate-300 text-xs">{formatDate(profile.password_changed_at)}</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Account Age</p>
-                  <p className="text-gray-900">
-                    {Math.floor((Date.now() - new Date(profile.created_at).getTime()) / (1000 * 60 * 60 * 24))} days
+                  <p className="text-slate-500 text-xs mb-0.5">Account Age</p>
+                  <p className="text-slate-300 text-xs">
+                    {profile.created_at
+                      ? `${Math.floor((Date.now() - new Date(profile.created_at).getTime()) / (1000 * 60 * 60 * 24))} days`
+                      : '—'}
                   </p>
                 </div>
-              </div>
-            </div>
-
-            {/* Account Actions */}
-            <div className="rounded-lg border border-red-200 bg-red-50 p-6">
-              <h3 className="text-lg font-semibold text-red-900 mb-4">Account Actions</h3>
-              <p className="text-sm text-red-800 mb-4">
-                Manage your account security and deletion.
-              </p>
-              <div className="flex gap-3">
-                <button className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700">
-                  Sign Out All Devices
-                </button>
-                <button className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50">
-                  Deactivate Account
-                </button>
               </div>
             </div>
           </div>

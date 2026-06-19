@@ -64,7 +64,7 @@ func ProcessEvent(msg events.Message, debug bool) {
 
 	if val, exists := recentDSOActions.Load(msg.Actor.ID); exists {
 		if time.Since(val.(time.Time)) < 15*time.Second {
-			fmt.Printf("\033[1;33m[DSO WATCH]\033[0m Ignoring self-triggered event → %s\n", msg.Actor.ID[:12])
+			fmt.Printf("\033[1;33m[DSO WATCH]\033[0m Ignoring self-triggered event → %s\n", shortID(msg.Actor.ID))
 			return
 		}
 	}
@@ -83,14 +83,14 @@ func ProcessEvent(msg events.Message, debug bool) {
 	event := strings.ToUpper(string(msg.Action))
 	name := msg.Actor.Attributes["name"]
 	if name == "" {
-		name = msg.Actor.ID[:12]
+		name = shortID(msg.Actor.ID)
 	}
 
 	// Output format: [DSO WATCH] [TIMESTAMP] EVENT → container_name
 	fmt.Printf("\033[1;36m[DSO WATCH]\033[0m [%s] \033[1;1m%s\033[0m → %s\n", timestamp, event, name)
 
 	if debug {
-		fmt.Printf("   [DEBUG] ID: %s, Image: %s, Action: %v\n", msg.Actor.ID[:12], msg.Actor.Attributes["image"], msg.Action)
+		fmt.Printf("   [DEBUG] ID: %s, Image: %s, Action: %v\n", shortID(msg.Actor.ID), msg.Actor.Attributes["image"], msg.Action)
 		for k, v := range msg.Actor.Attributes {
 			if k != "name" {
 				fmt.Printf("           %s: %s\n", k, v)

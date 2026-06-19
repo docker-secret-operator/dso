@@ -1,0 +1,470 @@
+user@devops:/data/umair_atr1123/All_Data/Antigravity_Work/dso$ sudo ./dso agent
+[sudo] password for user: 
+[DSO] config: v2 decode of secret mapping failed (will attempt legacy fallback): yaml: unmarshal errors:
+  line 17: cannot unmarshal !!str `env` into config.InjectionConfig
+  line 18: cannot unmarshal !!bool `true` into config.RotationConfigV2
+2026/06/15 12:15:44 Migration 001 already applied, skipping
+2026/06/15 12:15:44 Migration 0010 already applied, skipping
+2026/06/15 12:15:44 Migration 0011 already applied, skipping
+2026/06/15 12:15:44 Migration 0012 already applied, skipping
+2026/06/15 12:15:44 Migration 0013 already applied, skipping
+2026/06/15 12:15:44 Migration 0014 already applied, skipping
+2026/06/15 12:15:44 Migration 0015 already applied, skipping
+2026/06/15 12:15:44 Migration 0016 already applied, skipping
+2026/06/15 12:15:44 Migration 0017 already applied, skipping
+2026/06/15 12:15:44 Migration 0018 already applied, skipping
+2026/06/15 12:15:44 Migration 0019 already applied, skipping
+2026/06/15 12:15:44 Migration 0020 already applied, skipping
+2026/06/15 12:15:44 Migration 0021 already applied, skipping
+2026/06/15 12:15:44 Migration 0022 already applied, skipping
+2026/06/15 12:15:44 Migration 0023 already applied, skipping
+2026/06/15 12:15:44 Migration 0024 already applied, skipping
+2026/06/15 12:15:44 Migration 0025 already applied, skipping
+2026/06/15 12:15:44 Migration 0026 already applied, skipping
+2026/06/15 12:15:44 Migration 0027 already applied, skipping
+2026/06/15 12:15:44 Migration 0028 already applied, skipping
+2026-06-15T12:15:44.746+0530	INFO	agent/server.go:183	Starting local Unix socket	{"path": "/run/dso/dso.sock"}
+2026-06-15T12:15:44.747+0530	WARN	agent/server.go:199	dso group not found; socket access restricted to root. Add users to 'dso' group for non-root access.
+github.com/docker-secret-operator/dso/internal/agent.StartSocketServer
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/server.go:199
+github.com/docker-secret-operator/dso/internal/cli.NewAgentCmd.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/agent.go:126
+github.com/spf13/cobra.(*Command).execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1019
+github.com/spf13/cobra.(*Command).ExecuteC
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1148
+github.com/spf13/cobra.(*Command).Execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071
+github.com/docker-secret-operator/dso/internal/cli.Execute
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/root.go:98
+main.main
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/cmd/dso/main.go:6
+runtime.main
+	/usr/local/go/src/runtime/proc.go:285
+2026-06-15T12:15:44.747+0530	INFO	agent/server.go:294	Starting Docker Secret Driver socket	{"path": "/run/docker/plugins/dso.sock"}
+2026-06-15T12:15:44.747+0530	INFO	server/hub.go:42	Starting WebSocket Hub
+2026-06-15T12:15:44.748+0530	WARN	server/rest.go:980	[BOOTSTRAP] Using default admin password. Set DSO_ADMIN_PASSWORD environment variable for production.
+github.com/docker-secret-operator/dso/internal/server.StartRESTServer
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/server/rest.go:980
+github.com/docker-secret-operator/dso/internal/cli.NewAgentCmd.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/agent.go:145
+github.com/spf13/cobra.(*Command).execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1019
+github.com/spf13/cobra.(*Command).ExecuteC
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1148
+github.com/spf13/cobra.(*Command).Execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071
+github.com/docker-secret-operator/dso/internal/cli.Execute
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/root.go:98
+main.main
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/cmd/dso/main.go:6
+runtime.main
+	/usr/local/go/src/runtime/proc.go:285
+2026-06-15T12:15:44.748+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "webhook-plugin"}
+2026-06-15T12:15:44.748+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "slack-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "teams-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "email-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "pagerduty-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "jira-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	plugins/integration_manager.go:117	Registered integration plugin	{"plugin_id": "servicenow-plugin"}
+2026-06-15T12:15:44.749+0530	INFO	server/rest.go:1108	Starting secure REST API server	{"addr": "127.0.0.1:8471", "read_timeout": "15s", "write_timeout": "30s"}
+2026-06-15T12:15:44.752+0530	INFO	services/alert_service.go:433	Seeded builtin alert rules	{"count": 6}
+2026-06-15T12:15:44.752+0530	INFO	services/alert_service.go:53	Alert service started
+2026-06-15T12:15:44.752+0530	INFO	services/backup_service.go:68	Backup service started
+2026-06-15T12:15:44.752+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "alert-plugin", "name": "Alert Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.753+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "analytics-plugin", "name": "Analytics Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.753+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "backup-plugin", "name": "Backup Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.754+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "export-plugin", "name": "Export Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.754+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "metrics-plugin", "name": "Metrics Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.754+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "notification-plugin", "name": "Notification Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.754+0530	INFO	plugins/manager.go:147	Plugin initialized	{"plugin_id": "security-plugin", "name": "Security Plugin", "version": "1.0.0"}
+2026-06-15T12:15:44.755+0530	INFO	plugins/integration_manager.go:286	Subscribed to EventBus events
+2026-06-15T12:15:44.755+0530	INFO	plugins/integration_manager.go:78	Integration manager initialized
+2026-06-15T12:15:44.755+0530	INFO	watcher/controller.go:79	Starting Docker Events loop for ReloaderController
+2026-06-15T12:15:44.758+0530	INFO	watcher/controller.go:527	Initial container population complete	{"count": 0}
+2026-06-15T12:15:44.759+0530	INFO	watcher/controller.go:116	Docker event stream connected	{"reconnectDelay": "1s"}
+2026-06-15T12:15:44.760+0530	INFO	watcher/controller.go:121	Performing immediate reconciliation after daemon reconnect
+2026-06-15T12:15:44.760+0530	INFO	watcher/controller.go:185	Starting periodic runtime reconciliation
+2026-06-15T12:15:44.761+0530	INFO	watcher/controller.go:280	Runtime reconciliation complete	{"total_targets": 0, "orphaned": 0, "re_added": 0, "active": 0}
+2026-06-15T12:15:44.761+0530	INFO	agent/recovery.go:268	Orphan cleanup completed	{"containers_removed": 0}
+2026-06-15T12:15:44.761+0530	INFO	agent/trigger.go:205	Starting trigger engine for provider	{"provider": "aws"}
+2026-06-15T12:15:44.761+0530	INFO	agent/trigger.go:355	Initializing secret polling	{"secret": "my-database-secret", "provider": "aws", "interval": "5m0s"}
+2026-06-15T12:15:44.761+0530	INFO	cli/agent.go:31	Running preflight checks...
+2026-06-15T12:15:44.761+0530	INFO	cli/agent.go:38	✓ Cache is operational
+2026-06-15T12:15:44.761+0530	INFO	cli/agent.go:45	✓ Store manager is operational
+2026-06-15T12:15:44.761+0530	INFO	cli/agent.go:55	✓ All preflight checks passed
+2026-06-15T12:15:44.761+0530	INFO	cli/agent.go:164	DSO Agent is now running	{"version": "v3.5.20", "ipc_socket": "/run/dso/dso.sock", "driver_socket": "/run/docker/plugins/dso.sock", "api_addr": "127.0.0.1:8471"}
+2026-06-15T12:15:44.761+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:15:44.761+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.064s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:15:46.827+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.084s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:15:50.911+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:15:55.912+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:15:55.912+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.053s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:15:57.966+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.042s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:02.009+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:16:07.010+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:16:07.010+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.048s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:09.059+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.083s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:13.144+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:16:18.146+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:16:18.147+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.013s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:20.160+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.057s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:22.677+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 1}
+2026-06-15T12:16:22.698+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 2}
+2026-06-15T12:16:22.700+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 1}
+2026-06-15T12:16:23.700+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 2}
+2026-06-15T12:16:24.218+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:16:29.220+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:16:29.221+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.061s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:31.282+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.016s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:35.299+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:16:40.300+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:16:40.300+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.027s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:42.328+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.096s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:46.425+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:16:51.426+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:16:51.426+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.053s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:53.480+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.061s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:16:55.257+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 3}
+2026-06-15T12:16:55.261+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 2}
+2026-06-15T12:16:55.275+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 3}
+2026-06-15T12:16:56.259+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 4}
+2026-06-15T12:16:56.946+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 3}
+2026-06-15T12:16:57.542+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:02.542+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:02.543+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.068s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:04.612+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.075s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:08.688+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:13.689+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:13.689+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.075s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:15.765+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.032s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:19.798+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:24.798+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:24.798+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.061s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:25.438+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 4}
+2026-06-15T12:17:25.441+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 3}
+2026-06-15T12:17:25.453+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 4}
+2026-06-15T12:17:26.457+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 5}
+2026-06-15T12:17:26.860+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.062s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:27.893+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 4}
+2026-06-15T12:17:30.923+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:35.923+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:35.924+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.057s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:36.712+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 3}
+2026-06-15T12:17:37.981+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.052s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:42.035+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:47.036+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:47.036+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.081s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:49.118+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.009s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:17:50.178+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 2}
+2026-06-15T12:17:50.178+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 1}
+2026-06-15T12:17:50.178+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 0}
+2026-06-15T12:17:50.516+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 1}
+2026-06-15T12:17:50.523+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 0}
+2026-06-15T12:17:50.537+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 1}
+2026-06-15T12:17:51.523+0530	INFO	server/hub.go:49	Client connected to WS Hub. Total connections active	{"count": 2}
+2026-06-15T12:17:53.129+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:17:58.129+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:17:58.129+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.081s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:00.210+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.038s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:04.249+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:18:09.251+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:18:09.251+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.079s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:11.331+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.06s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:15.392+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:18:20.393+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:18:20.393+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.031s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:22.425+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.046s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:26.472+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:18:31.472+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:18:31.472+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.069s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:33.542+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.083s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:37.627+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:18:42.628+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:18:42.628+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.028s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:44.657+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.06s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:48.721+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:18:53.723+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:18:53.723+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.015s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:55.739+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.052s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:18:59.792+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:19:04.793+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:19:04.793+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.008s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:06.802+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.099s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:10.901+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:19:15.902+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:19:15.902+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.088s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:17.991+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.028s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:22.020+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:19:27.020+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:19:27.020+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.093s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:29.114+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.094s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:33.209+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:19:38.210+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:19:38.210+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.009s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:40.220+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.027s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:44.250+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+2026-06-15T12:19:49.252+0530	INFO	providers/store.go:63	Initializing new persistent provider connection	{"provider": "aws", "type": "aws"}
+2026-06-15T12:19:49.252+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 1, "retry_in": "2.059s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:51.312+0530	WARN	providers/store.go:110	Failed to initialize provider, applying backoff	{"provider": "aws", "type": "aws", "error": "provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor", "attempt": 2, "retry_in": "4.007s"}
+github.com/docker-secret-operator/dso/internal/providers.(*SecretStoreManager).GetProvider
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/providers/store.go:110
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:389
+2026-06-15T12:19:52.699+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 1}
+2026-06-15T12:19:52.699+0530	INFO	server/hub.go:56	Client disconnected from WS Hub. Remaining	{"count": 0}
+2026-06-15T12:19:55.320+0530	ERROR	agent/trigger.go:391	Provider unavailable, retrying	{"provider": "aws", "error": "provider aws initialization exhausted 3 retries: provider plugin 'aws' is not installed.\n  Expected: /usr/local/lib/dso/plugins/dso-provider-aws\n  Fix: sudo docker dso system setup --providers aws\n  Run: docker dso system doctor"}
+github.com/docker-secret-operator/dso/internal/agent.(*TriggerEngine).StartPolling.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/agent/trigger.go:391
+^C2026-06-15T12:19:55.842+0530	INFO	cli/agent.go:171	Shutting down DSO Agent gracefully...
+2026-06-15T12:19:55.842+0530	INFO	services/alert_service.go:69	Alert service stopped
+2026-06-15T12:19:55.842+0530	INFO	cli/agent.go:175	Stopping trigger engine...
+2026-06-15T12:19:55.842+0530	INFO	services/backup_service.go:84	Backup service stopped
+2026-06-15T12:19:55.842+0530	INFO	watcher/controller.go:128	Shutting down ReloaderController event loop
+2026-06-15T12:19:55.842+0530	INFO	agent/trigger.go:188	Trigger engine stopped
+2026-06-15T12:19:55.842+0530	INFO	cli/agent.go:183	Waiting for in-flight operations to complete	{"timeout": "30s"}
+^C^C^C^C^C^C2026-06-15T12:20:25.847+0530	WARN	cli/agent.go:189	Shutdown timeout exceeded, forcing cleanup	{"timeout": "30s"}
+github.com/docker-secret-operator/dso/internal/cli.NewAgentCmd.func1
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/agent.go:189
+github.com/spf13/cobra.(*Command).execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1019
+github.com/spf13/cobra.(*Command).ExecuteC
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1148
+github.com/spf13/cobra.(*Command).Execute
+	/home/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071
+github.com/docker-secret-operator/dso/internal/cli.Execute
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/internal/cli/root.go:98
+main.main
+	/data/umair_atr1123/All_Data/Antigravity_Work/dso/cmd/dso/main.go:6
+runtime.main
+	/usr/local/go/src/runtime/proc.go:285
+2026-06-15T12:20:25.847+0530	INFO	cli/agent.go:194	Closing resources...
+2026-06-15T12:20:25.847+0530	INFO	proxy/server.go:120	proxy: listeners closed — draining in-flight connections	{"timeout": "10s"}
+2026-06-15T12:20:25.847+0530	INFO	proxy/server.go:131	proxy: all connections drained
+2026-06-15T12:20:25.847+0530	INFO	cli/agent.go:205	Cleaning up sockets...
+2026-06-15T12:20:25.847+0530	INFO	cli/agent.go:217	DSO Agent shutdown completed
+DSO Agent stopped.

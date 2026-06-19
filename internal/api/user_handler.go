@@ -442,6 +442,21 @@ func (h *UserManagementHandler) revokeSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Non-admins may only revoke their own sessions.
+	if actor.Role != "admin" {
+		session, err := h.sessionStore.GetByID(r.Context(), id)
+		if err != nil || session == nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "session not found"})
+			return
+		}
+		if session.UserID != actor.ID {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+	}
+
 	if err := h.authService.RevokeSession(r.Context(), id); err != nil {
 		h.internalError(w, "failed to revoke session", err)
 		return

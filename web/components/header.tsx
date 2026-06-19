@@ -6,7 +6,7 @@ import { GlobalSearch } from './global-search'
 import { Badge } from '@/components/ui/badge'
 import { AlertCircle, CheckCircle, Loader2, LogOut, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAuth } from '@/lib/auth-context'
+import { useAuth } from '@/contexts/AuthContext'
 import { useWebSocketContext } from '@/contexts/websocket-context'
 import { NotificationCenter } from '@/components/notification-center'
 
@@ -54,7 +54,7 @@ export function Header() {
     refetchInterval: 5000,
   })
 
-  const { user, role, loading: userLoading, logout } = useAuth()
+  const { user, role, isLoading: userLoading, logout } = useAuth()
 
   const isHealthy = health?.status === 'up'
 

@@ -2,66 +2,206 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   DSO Design System — Dark-first premium theme
+   ============================================================================ */
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.6%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.6%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.6%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --accent: 0 0% 9.0%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --primary: 222.2 47.6% 11.5%;
+    /* shadcn/ui tokens — mapped to dark surface hierarchy */
+    --background:        220 13% 5%;      /* surface-0: #0a0b0f */
+    --foreground:        214 32% 91%;     /* slate-200 */
+    --card:              222 15% 8%;      /* surface-1: #111318 */
+    --card-foreground:   214 32% 91%;
+    --popover:           222 15% 8%;
+    --popover-foreground: 214 32% 91%;
+    --primary:           239 84% 67%;     /* indigo-500 */
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222.2 47.6% 11.5%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --secondary:         222 19% 13%;     /* surface-2: #1a1d24 */
+    --secondary-foreground: 215 20% 65%;
+    --muted:             222 19% 13%;
+    --muted-foreground:  215 16% 47%;     /* slate-500 */
+    --accent:            222 24% 16%;     /* surface-3: #21262e */
+    --accent-foreground: 214 32% 91%;
+    --destructive:       0 72% 51%;       /* red-600 */
+    --destructive-foreground: 0 0% 100%;
+    --border:            222 15% 12%;     /* subtle border */
+    --input:             222 19% 13%;
+    --ring:              239 84% 67%;
+    --radius:            0.5rem;
   }
 
+  /* Keep dark class for shadcn compatibility — same values */
   .dark {
-    --background: 0 0% 3.6%;
-    --foreground: 0 0% 98.2%;
-    --card: 0 0% 3.6%;
-    --card-foreground: 0 0% 98.2%;
-    --popover: 0 0% 3.6%;
-    --popover-foreground: 0 0% 98.2%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 98.2%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 9%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --primary: 0 0% 98.2%;
-    --primary-foreground: 222.2 47.6% 11.5%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 0 0% 98.2%;
-    --ring: 212.7 26.8% 83.9%;
+    --background:        220 13% 5%;
+    --foreground:        214 32% 91%;
+    --card:              222 15% 8%;
+    --card-foreground:   214 32% 91%;
+    --popover:           222 15% 8%;
+    --popover-foreground: 214 32% 91%;
+    --primary:           239 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary:         222 19% 13%;
+    --secondary-foreground: 215 20% 65%;
+    --muted:             222 19% 13%;
+    --muted-foreground:  215 16% 47%;
+    --accent:            222 24% 16%;
+    --accent-foreground: 214 32% 91%;
+    --destructive:       0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border:            222 15% 12%;
+    --input:             222 19% 13%;
+    --ring:              239 84% 67%;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+    box-sizing: border-box;
   }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
     @apply bg-background text-foreground;
+    background-color: #0a0b0f;
+    color: #e2e8f0;
+  }
+
+  /* Scrollbar styling for dark theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.20);
+  }
+
+  /* Focus ring */
+  :focus-visible {
+    @apply outline-none ring-2 ring-indigo-500 ring-offset-2 ring-offset-[#0a0b0f];
+  }
+
+  /* Selection */
+  ::selection {
+    background: rgba(99, 102, 241, 0.3);
+    color: #f1f5f9;
   }
 }
 
-html {
-  scroll-behavior: smooth;
+/* ============================================================================
+   DSO Component Utilities
+   ============================================================================ */
+
+@layer utilities {
+  /* Surface layers */
+  .bg-surface-0 { background-color: #0a0b0f; }
+  .bg-surface-1 { background-color: #111318; }
+  .bg-surface-2 { background-color: #1a1d24; }
+  .bg-surface-3 { background-color: #21262e; }
+  .bg-surface-4 { background-color: #2a2f3a; }
+
+  /* Borders */
+  .border-subtle  { border-color: rgba(255,255,255,0.05); }
+  .border-default { border-color: rgba(255,255,255,0.09); }
+  .border-strong  { border-color: rgba(255,255,255,0.15); }
+
+  /* Text hierarchy */
+  .text-primary-content   { color: #f1f5f9; }
+  .text-secondary-content { color: #94a3b8; }
+  .text-tertiary-content  { color: #64748b; }
+
+  /* Status dots with glow */
+  .status-dot-healthy  { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.6); }
+  .status-dot-warning  { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.6); }
+  .status-dot-critical { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
+  .status-dot-info     { background: #3b82f6; box-shadow: 0 0 6px rgba(59,130,246,0.6); }
+  .status-dot-offline  { background: #64748b; }
+
+  /* Card base */
+  .dso-card {
+    background-color: #111318;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .dso-card:hover {
+    border-color: rgba(255,255,255,0.12);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+
+  /* Animated gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, #6366f1, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Indigo glow for active states */
+  .glow-indigo {
+    box-shadow: 0 0 0 1px rgba(99,102,241,0.4), 0 0 16px rgba(99,102,241,0.15);
+  }
+
+  /* Transition preset */
+  .transition-dso {
+    transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Glassmorphism Panel */
+  .glass-panel {
+    background: rgba(17, 19, 24, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.36);
+  }
+  
+  /* Animated Mesh Background */
+  .bg-mesh {
+    background: radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.15), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(16, 185, 129, 0.15), transparent 25%);
+    background-size: 200% 200%;
+  }
+
+  /* Dashboard background glow orbs */
+  .bg-dashboard-orbs {
+    background: 
+      radial-gradient(circle at 0% 0%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+      radial-gradient(circle at 100% 100%, rgba(16, 185, 129, 0.05) 0%, transparent 40%),
+      radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.03) 0%, transparent 50%);
+  }
 }
 
-body {
-  position: relative;
+/* ============================================================================
+   Skeleton animation
+   ============================================================================ */
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.04) 25%,
+    rgba(255,255,255,0.09) 50%,
+    rgba(255,255,255,0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
 }

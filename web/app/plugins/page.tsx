@@ -36,6 +36,11 @@ interface PluginStatus {
   timestamp: string;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function PluginsPage() {
   const router = useRouter();
   const [plugins, setPlugins] = useState<Plugin[]>([]);
@@ -46,9 +51,10 @@ export default function PluginsPage() {
 
   const fetchData = async () => {
     try {
+      const headers = getAuthHeaders();
       const [pluginsRes, statusRes] = await Promise.all([
-        fetch('/api/plugins'),
-        fetch('/api/plugins/status'),
+        fetch('/api/plugins', { headers }),
+        fetch('/api/plugins/status', { headers }),
       ]);
 
       if (!pluginsRes.ok) {
@@ -80,7 +86,7 @@ export default function PluginsPage() {
 
   const handleEnable = async (pluginId: string) => {
     try {
-      const res = await fetch(`/api/plugins/${pluginId}/enable`, { method: 'POST' });
+      const res = await fetch(`/api/plugins/${pluginId}/enable`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         await fetchData();
       } else {
@@ -93,7 +99,7 @@ export default function PluginsPage() {
 
   const handleDisable = async (pluginId: string) => {
     try {
-      const res = await fetch(`/api/plugins/${pluginId}/disable`, { method: 'POST' });
+      const res = await fetch(`/api/plugins/${pluginId}/disable`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         await fetchData();
       } else {
@@ -107,28 +113,28 @@ export default function PluginsPage() {
   const getHealthColor = (health: string) => {
     switch (health) {
       case 'healthy':
-        return 'bg-green-100 text-green-800';
+        return 'bg-emerald-500/15 text-emerald-300';
       case 'degraded':
-        return 'bg-yellow-100 text-yellow-800';
+        return 'bg-amber-500/15 text-amber-300';
       case 'failed':
-        return 'bg-red-100 text-red-800';
+        return 'bg-red-500/15 text-red-300';
       case 'disabled':
-        return 'bg-gray-100 text-gray-800';
+        return 'bg-slate-700/30 text-slate-400';
       default:
-        return 'bg-gray-100 text-gray-800';
+        return 'bg-slate-700/30 text-slate-400';
     }
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'enabled':
-        return 'text-green-600';
+        return 'text-emerald-400';
       case 'disabled':
-        return 'text-gray-600';
+        return 'text-slate-500';
       case 'failed':
-        return 'text-red-600';
+        return 'text-red-400';
       default:
-        return 'text-gray-600';
+        return 'text-slate-500';
     }
   };
 
@@ -147,97 +153,81 @@ export default function PluginsPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen">
-        <div className="text-gray-500">Loading plugins...</div>
+        <div className="text-slate-400">Loading plugins...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
+    <div className="min-h-screen p-6">
       <div className="max-w-7xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Plugins</h1>
-          <p className="text-gray-600">Manage and monitor system plugins</p>
+          <h1 className="text-3xl font-bold text-slate-100 mb-2">Plugins</h1>
+          <p className="text-slate-400">Manage and monitor system plugins</p>
         </div>
 
         {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+          <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-300">
             {error}
           </div>
         )}
 
         {status && (
           <div className="grid grid-cols-4 gap-4 mb-6">
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-gray-600 text-sm">Total Plugins</div>
-              <div className="text-2xl font-bold text-gray-900">{status.total_plugins}</div>
+            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+              <div className="text-slate-400 text-sm">Total Plugins</div>
+              <div className="text-2xl font-bold text-slate-100">{status.total_plugins}</div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-gray-600 text-sm">Healthy</div>
-              <div className="text-2xl font-bold text-green-600">{status.healthy}</div>
+            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+              <div className="text-slate-400 text-sm">Healthy</div>
+              <div className="text-2xl font-bold text-emerald-400">{status.healthy}</div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-gray-600 text-sm">Degraded</div>
-              <div className="text-2xl font-bold text-yellow-600">{status.degraded}</div>
+            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+              <div className="text-slate-400 text-sm">Degraded</div>
+              <div className="text-2xl font-bold text-amber-400">{status.degraded}</div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-gray-600 text-sm">Failed</div>
-              <div className="text-2xl font-bold text-red-600">{status.failed}</div>
+            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+              <div className="text-slate-400 text-sm">Failed</div>
+              <div className="text-2xl font-bold text-red-400">{status.failed}</div>
             </div>
           </div>
         )}
 
         {plugins.length === 0 ? (
-          <div className="bg-white rounded-lg shadow p-8 text-center">
-            <p className="text-gray-500">No plugins available</p>
+          <div className="bg-[#111318] border border-slate-700/50 rounded-lg p-8 text-center">
+            <p className="text-slate-500">No plugins available</p>
           </div>
         ) : (
-          <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="bg-[#111318] border border-slate-700/50 rounded-lg overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-[#0f1015] border-b border-slate-700/50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Name
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Version
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Health
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Uptime
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Events
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Actions
-                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Name</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Version</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Status</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Health</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Uptime</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Events</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200">
+                <tbody className="divide-y divide-slate-700/30">
                   {plugins.map((plugin) => (
-                    <tr key={plugin.id} className="hover:bg-gray-50">
+                    <tr key={plugin.id} className="hover:bg-slate-800/50/[0.02]">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div>
-                          <div className="font-medium text-gray-900">{plugin.name}</div>
-                          <div className="text-sm text-gray-500">{plugin.id}</div>
+                          <div className="font-medium text-slate-200">{plugin.name}</div>
+                          <div className="text-sm text-slate-500">{plugin.id}</div>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded">
+                        <span className="px-2 py-1 text-xs font-medium bg-blue-500/15 text-blue-300 rounded">
                           {plugin.type}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
                         {plugin.version}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -250,14 +240,14 @@ export default function PluginsPage() {
                           {plugin.health}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
                         {formatUptime(plugin.uptime_ms)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm text-gray-700">{plugin.event_count}</span>
+                          <span className="text-sm text-slate-400">{plugin.event_count}</span>
                           {plugin.error_count > 0 && (
-                            <span className="text-xs px-2 py-1 bg-red-50 text-red-700 rounded">
+                            <span className="text-xs px-2 py-1 bg-red-500/15 text-red-300 rounded">
                               {plugin.error_count} errors
                             </span>
                           )}
@@ -267,21 +257,21 @@ export default function PluginsPage() {
                         {plugin.enabled ? (
                           <button
                             onClick={() => handleDisable(plugin.id)}
-                            className="text-red-600 hover:text-red-900 font-medium"
+                            className="text-red-400 hover:text-red-300 font-medium"
                           >
                             Disable
                           </button>
                         ) : (
                           <button
                             onClick={() => handleEnable(plugin.id)}
-                            className="text-green-600 hover:text-green-900 font-medium"
+                            className="text-emerald-400 hover:text-emerald-300 font-medium"
                           >
                             Enable
                           </button>
                         )}
                         <button
                           onClick={() => setSelectedPlugin(selectedPlugin === plugin.id ? null : plugin.id)}
-                          className="text-blue-600 hover:text-blue-900 font-medium"
+                          className="text-blue-400 hover:text-blue-300 font-medium"
                         >
                           Details
                         </button>
@@ -295,31 +285,27 @@ export default function PluginsPage() {
         )}
 
         {selectedPlugin && (
-          <div className="mt-6 bg-white rounded-lg shadow p-6">
+          <div className="mt-6 bg-[#111318] border border-slate-700/50 rounded-lg p-6">
             {plugins.find((p) => p.id === selectedPlugin) && (
               <div>
-                <h3 className="text-lg font-bold text-gray-900 mb-4">Plugin Details</h3>
+                <h3 className="text-lg font-bold text-slate-100 mb-4">Plugin Details</h3>
                 <div className="grid grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Description
-                    </label>
-                    <p className="text-gray-700">
+                    <label className="block text-sm font-medium text-slate-300 mb-1">Description</label>
+                    <p className="text-slate-400">
                       {plugins.find((p) => p.id === selectedPlugin)?.description}
                     </p>
                   </div>
                   {plugins.find((p) => p.id === selectedPlugin)?.capabilities.length! > 0 && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Capabilities
-                      </label>
+                      <label className="block text-sm font-medium text-slate-300 mb-1">Capabilities</label>
                       <div className="flex flex-wrap gap-2">
                         {plugins
                           .find((p) => p.id === selectedPlugin)
                           ?.capabilities.map((cap) => (
                             <span
                               key={cap}
-                              className="px-2 py-1 text-xs font-medium bg-green-50 text-green-700 rounded"
+                              className="px-2 py-1 text-xs font-medium bg-emerald-500/15 text-emerald-300 rounded"
                             >
                               {cap}
                             </span>
@@ -329,10 +315,8 @@ export default function PluginsPage() {
                   )}
                   {plugins.find((p) => p.id === selectedPlugin)?.error_message && (
                     <div className="col-span-2">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Error Message
-                      </label>
-                      <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                      <label className="block text-sm font-medium text-slate-300 mb-1">Error Message</label>
+                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded text-sm text-red-300">
                         {plugins.find((p) => p.id === selectedPlugin)?.error_message}
                       </div>
                     </div>

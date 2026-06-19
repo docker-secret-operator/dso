@@ -2,20 +2,22 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Database } from 'lucide-react'
+import { Shield, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import packageJson from '../../package.json'
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [expiredNotice, setExpiredNotice] = useState(false)
+  const [username, setUsername]   = useState('')
+  const [password, setPassword]   = useState('')
+  const [showPass, setShowPass]   = useState(false)
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState('')
+  const [expired, setExpired]     = useState(false)
   const router = useRouter()
 
   useEffect(() => {
     if (sessionStorage.getItem('session_expired') === '1') {
       sessionStorage.removeItem('session_expired')
-      setExpiredNotice(true)
+      setExpired(true)
     }
   }, [])
 
@@ -23,96 +25,138 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
     setLoading(true)
-
     try {
-      const res = await fetch('/api/auth/login', {
+      const res  = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       })
-
       const data = await res.json().catch(() => ({}))
-
       if (!res.ok) {
-        setError(data.error || 'Invalid credentials')
+        setError(data.error || 'Invalid credentials. Please try again.')
         return
       }
-
+      // Store all auth data returned from login
       localStorage.setItem('dso_api_token', data.token)
+      if (data.user) {
+        localStorage.setItem('dso_user', JSON.stringify(data.user))
+      }
+      if (data.session) {
+        localStorage.setItem('dso_session', JSON.stringify(data.session))
+      }
       router.replace('/dashboard')
     } catch {
-      setError('Unable to connect to the API server. Is the DSO agent running?')
+      setError('Unable to reach the API server. Is the DSO agent running?')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="w-full max-w-md space-y-8 rounded-lg border border-border bg-card p-8 shadow-sm">
-        <div className="text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Database className="h-6 w-6" />
+    <div className="min-h-screen bg-[#0a0b0f] flex items-center justify-center px-4">
+      {/* Subtle background glow */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-indigo-600/[0.06] rounded-full blur-3xl" />
+      </div>
+
+      <div className="relative w-full max-w-sm">
+        {/* Logo */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-12 h-12 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-600/30 mb-4">
+            <Shield className="w-6 h-6 text-white" />
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-foreground">DSO Dashboard</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Docker Secret Operator</p>
+          <h1 className="text-xl font-semibold text-slate-100">DSO</h1>
+          <p className="text-sm text-slate-500 mt-1">Docker Secret Operator</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {expiredNotice && (
-            <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
-              Session expired. Please log in again.
+        {/* Card */}
+        <div className="bg-[#111318] border border-white/[0.09] rounded-2xl p-8 shadow-xl">
+          <h2 className="text-base font-semibold text-slate-200 mb-6">Sign in to your account</h2>
+
+          {/* Notices */}
+          {expired && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-400 mb-4">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              Your session expired. Please sign in again.
             </div>
           )}
-
           {error && (
-            <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+            <div className="flex items-start gap-2.5 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400 mb-4">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               {error}
             </div>
           )}
 
-          <div className="space-y-1">
-            <label htmlFor="username" className="block text-sm font-medium text-foreground">
-              Username
-            </label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              autoFocus
-              autoComplete="username"
-              disabled={loading}
-              placeholder="admin"
-              className="block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-            />
-          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Username */}
+            <div className="space-y-1.5">
+              <label htmlFor="username" className="block text-sm font-medium text-slate-400">
+                Username
+              </label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                required
+                autoFocus
+                autoComplete="username"
+                disabled={loading}
+                placeholder="admin"
+                className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-700 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50 transition-all"
+              />
+            </div>
 
-          <div className="space-y-1">
-            <label htmlFor="password" className="block text-sm font-medium text-foreground">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              autoComplete="current-password"
-              disabled={loading}
-              className="block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-            />
-          </div>
+            {/* Password */}
+            <div className="space-y-1.5">
+              <label htmlFor="password" className="block text-sm font-medium text-slate-400">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  id="password"
+                  type={showPass ? 'text' : 'password'}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  disabled={loading}
+                  className="w-full rounded-lg border border-white/[0.09] bg-[#1a1d24] px-3 py-2.5 pr-10 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50 transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPass(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors"
+                  aria-label={showPass ? 'Hide password' : 'Show password'}
+                  tabIndex={-1}
+                >
+                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading || !username || !password}
-            className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={loading || !username || !password}
+              className="w-full mt-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-[#111318] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-100"
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Signing in…
+                </span>
+              ) : 'Sign in'}
+            </button>
+          </form>
+        </div>
+
+        <p className="text-center text-xs text-slate-700 mt-6">
+          DSO v{packageJson.version} — Enterprise Docker Operations Platform
+        </p>
       </div>
     </div>
   )

@@ -1,17 +1,17 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useAuth } from '@/lib/auth-context'
+import { useAuth } from '@/contexts/AuthContext'
 import {
   LayoutDashboard,
   AlertCircle,
   AlertTriangle,
   Clock,
-  LogOut,
   ChevronDown,
-  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   BarChart3,
   Lightbulb,
   Zap,
@@ -24,247 +24,284 @@ import {
   Users,
   Plug,
   Cable,
-  Inbox,
-  Eye,
   ServerCog,
   Workflow,
-  CheckCircle2,
-  Home,
-  MoreVertical,
+  Activity,
+  FolderSearch,
+  ShieldAlert,
+  LineChart,
 } from 'lucide-react'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type NavItem = {
   label: string
   href: string
   icon: React.ReactNode
-  subsystem?: string
+  accent?: string
 }
 
 type NavGroup = {
   name: string
   items: NavItem[]
-  collapsible?: boolean
   defaultOpen?: boolean
 }
+
+// ── Navigation structure ──────────────────────────────────────────────────────
 
 const navGroups: NavGroup[] = [
   {
     name: '',
     items: [
-      { label: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard className="w-5 h-5" />, subsystem: 'dashboard' },
+      { label: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard className="w-4 h-4" />, accent: 'indigo' },
     ],
   },
   {
     name: 'Operations',
-    items: [
-      { label: 'Alerts', href: '/alerts', icon: <AlertCircle className="w-5 h-5" />, subsystem: 'alerts' },
-      { label: 'Incidents', href: '/incidents', icon: <AlertTriangle className="w-5 h-5" />, subsystem: 'incidents' },
-      { label: 'Scheduler', href: '/scheduler', icon: <Clock className="w-5 h-5" />, subsystem: 'operations' },
-    ],
-    collapsible: true,
     defaultOpen: true,
+    items: [
+      { label: 'Secrets',    href: '/secrets',    icon: <Shield className="w-4 h-4" />,        accent: 'blue' },
+      { label: 'Discovery',  href: '/discovery',  icon: <FolderSearch className="w-4 h-4" />,  accent: 'sky' },
+      { label: 'Events',     href: '/events',     icon: <Zap className="w-4 h-4" />,            accent: 'violet' },
+      { label: 'Alerts',     href: '/alerts',     icon: <AlertCircle className="w-4 h-4" />,   accent: 'red' },
+      { label: 'Incidents',  href: '/incidents',  icon: <AlertTriangle className="w-4 h-4" />, accent: 'orange' },
+    ],
   },
   {
     name: 'Intelligence',
-    items: [
-      { label: 'Drift Detection', href: '/drift', icon: <GitBranch className="w-5 h-5" />, subsystem: 'drift' },
-      { label: 'Recommendations', href: '/recommendations', icon: <Lightbulb className="w-5 h-5" />, subsystem: 'recommendations' },
-      { label: 'Forecasts', href: '/forecasts', icon: <BarChart3 className="w-5 h-5" />, subsystem: 'forecasts' },
-      { label: 'Autonomy', href: '/autonomy', icon: <Bot className="w-5 h-5" />, subsystem: 'autonomy' },
-      { label: 'Dependency Graph', href: '/graph', icon: <Workflow className="w-5 h-5" />, subsystem: 'operations' },
-    ],
-    collapsible: true,
     defaultOpen: true,
-  },
-  {
-    name: 'Core',
     items: [
-      { label: 'Secrets', href: '/secrets', icon: <Shield className="w-5 h-5" />, subsystem: 'security' },
-      { label: 'Discovery', href: '/discovery', icon: <Eye className="w-5 h-5" />, subsystem: 'operations' },
-      { label: 'Events', href: '/events', icon: <Zap className="w-5 h-5" />, subsystem: 'operations' },
-      { label: 'Audit Logs', href: '/audit', icon: <FileText className="w-5 h-5" />, subsystem: 'security' },
+      { label: 'Drift',           href: '/drift',            icon: <GitBranch className="w-4 h-4" />, accent: 'amber' },
+      { label: 'Recommendations', href: '/recommendations',  icon: <Lightbulb className="w-4 h-4" />, accent: 'purple' },
+      { label: 'Forecasts',       href: '/forecasts',        icon: <LineChart className="w-4 h-4" />,  accent: 'cyan' },
+      { label: 'Autonomy',        href: '/autonomy',         icon: <Bot className="w-4 h-4" />,        accent: 'emerald' },
     ],
-    collapsible: true,
-    defaultOpen: true,
   },
   {
     name: 'Governance',
+    defaultOpen: false,
     items: [
-      { label: 'Policies', href: '/policies', icon: <Lock className="w-5 h-5" />, subsystem: 'policies' },
-      { label: 'Configuration', href: '/configuration', icon: <ServerCog className="w-5 h-5" />, subsystem: 'operations' },
+      { label: 'Audit Logs',    href: '/audit',         icon: <FileText className="w-4 h-4" />, accent: 'slate' },
+      { label: 'Policies',      href: '/policies',      icon: <Lock className="w-4 h-4" />,     accent: 'indigo' },
+      { label: 'Scheduler',     href: '/scheduler',     icon: <Clock className="w-4 h-4" />,    accent: 'slate' },
+      { label: 'Dep. Graph',    href: '/graph',         icon: <Workflow className="w-4 h-4" />, accent: 'slate' },
     ],
-    collapsible: true,
-    defaultOpen: true,
   },
   {
-    name: 'Administration',
-    items: [
-      { label: 'Users', href: '/users', icon: <Users className="w-5 h-5" />, subsystem: 'security' },
-      { label: 'Plugins', href: '/plugins', icon: <Plug className="w-5 h-5" />, subsystem: 'plugins' },
-      { label: 'Integrations', href: '/integrations', icon: <Cable className="w-5 h-5" />, subsystem: 'operations' },
-    ],
-    collapsible: true,
+    name: 'Security',
     defaultOpen: false,
+    items: [
+      { label: 'Overview',          href: '/security',            icon: <ShieldAlert className="w-4 h-4" />, accent: 'blue' },
+      { label: 'Sessions',          href: '/security/sessions',   icon: <Activity className="w-4 h-4" />,    accent: 'slate' },
+      { label: 'Suspicious',        href: '/security/suspicious', icon: <AlertTriangle className="w-4 h-4" />, accent: 'red' },
+    ],
   },
   {
-    name: 'Analytics',
-    items: [
-      { label: 'Analytics', href: '/analytics', icon: <BarChart3 className="w-5 h-5" />, subsystem: 'forecasts' },
-      { label: 'Timeline', href: '/timeline', icon: <Inbox className="w-5 h-5" />, subsystem: 'operations' },
-    ],
-    collapsible: true,
+    name: 'Admin',
     defaultOpen: false,
+    items: [
+      { label: 'Users',        href: '/users',        icon: <Users className="w-4 h-4" />,   accent: 'slate' },
+      { label: 'Configuration',href: '/configuration',icon: <ServerCog className="w-4 h-4" />,accent: 'slate' },
+      { label: 'Analytics',   href: '/analytics',    icon: <BarChart3 className="w-4 h-4" />, accent: 'slate' },
+      { label: 'Plugins',     href: '/plugins',      icon: <Plug className="w-4 h-4" />,      accent: 'slate' },
+      { label: 'Integrations',href: '/integrations', icon: <Cable className="w-4 h-4" />,     accent: 'slate' },
+    ],
   },
 ]
 
+// ── Accent color map ──────────────────────────────────────────────────────────
+
+const accentBg: Record<string, string> = {
+  indigo:  'bg-indigo-500/15 text-indigo-400',
+  blue:    'bg-blue-500/15   text-blue-400',
+  sky:     'bg-sky-500/15    text-sky-400',
+  violet:  'bg-violet-500/15 text-violet-400',
+  red:     'bg-red-500/15    text-red-400',
+  orange:  'bg-orange-500/15 text-orange-400',
+  amber:   'bg-amber-500/15  text-amber-400',
+  purple:  'bg-purple-500/15 text-purple-400',
+  cyan:    'bg-cyan-500/15   text-cyan-400',
+  emerald: 'bg-emerald-500/15 text-emerald-400',
+  slate:   'bg-slate-500/15  text-slate-400',
+}
+
+// ── CSS variable for sidebar width (so topbar and content can respond) ────────
+
+const SIDEBAR_W_EXPANDED = 220
+const SIDEBAR_W_COLLAPSED = 56
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export function SidebarPremium() {
   const pathname = usePathname() || ''
-  const { user, logout } = useAuth()
-  const [isOpen, setIsOpen] = useState(true)
-  const [isIconOnly, setIsIconOnly] = useState(false)
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
-    Operations: true,
-    Intelligence: true,
-    Core: true,
-    Governance: true,
-  })
+  const { role } = useAuth()
+  const [collapsed, setCollapsed] = useState(false)
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(navGroups.filter(g => g.name && g.defaultOpen).map(g => [g.name, true]))
+  )
 
-  const toggleGroup = (groupName: string) => {
-    setExpandedGroups(prev => ({
-      ...prev,
-      [groupName]: !prev[groupName],
-    }))
-  }
+  // Roles that may access the Admin nav group
+  const isAdmin = role === 'admin'
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(href + '/')
+  // Sync CSS variable so layout.tsx offset tracks correctly
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--sidebar-width',
+      `${collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED}px`
+    )
+  }, [collapsed])
 
-  const subsystemGradients: Record<string, string> = {
-    incidents: 'from-orange-500 to-orange-600',
-    recommendations: 'from-purple-500 to-purple-600',
-    forecasts: 'from-cyan-500 to-cyan-600',
-    drift: 'from-amber-500 to-amber-600',
-    autonomy: 'from-emerald-500 to-emerald-600',
-    security: 'from-blue-500 to-blue-600',
-    policies: 'from-indigo-500 to-indigo-600',
-    plugins: 'from-slate-500 to-slate-600',
-    alerts: 'from-red-500 to-red-600',
-    operations: 'from-slate-600 to-slate-700',
-    dashboard: 'from-indigo-500 to-indigo-600',
-  }
+  const toggleGroup = (name: string) =>
+    setOpenGroups(prev => ({ ...prev, [name]: !prev[name] }))
+
+  const isActive = (href: string) =>
+    pathname === href || (href !== '/' && pathname.startsWith(href + '/'))
 
   return (
-    <div
-      className={`fixed left-0 top-0 h-screen bg-slate-900 transition-all duration-300 z-50 flex flex-col border-r border-slate-800 ${
-        isOpen ? 'w-56' : 'w-20'
-      }`}
+    <aside
+      className="fixed left-0 top-0 h-screen flex flex-col bg-[#111318] border-r border-white/[0.07] z-40 transition-all duration-200 ease-spring"
+      style={{ width: collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED }}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-800">
-        {isOpen && <h1 className="text-lg font-bold text-white">DSO</h1>}
-        <button
-          onClick={() => setIsIconOnly(!isIconOnly)}
-          className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors"
-          title={isIconOnly ? 'Expand' : 'Collapse'}
-        >
-          <Menu className="w-5 h-5" />
-        </button>
+      {/* ── Logo / collapse toggle ── */}
+      <div className="flex items-center justify-between h-12 px-3 border-b border-white/[0.07] flex-shrink-0">
+        {!collapsed && (
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-indigo-600 flex items-center justify-center flex-shrink-0">
+              <Shield className="w-3.5 h-3.5 text-white" />
+            </div>
+            <span className="text-sm font-semibold text-slate-100 tracking-tight">DSO</span>
+          </div>
+        )}
+        {collapsed && (
+          <div className="w-6 h-6 rounded bg-indigo-600 flex items-center justify-center mx-auto">
+            <Shield className="w-3.5 h-3.5 text-white" />
+          </div>
+        )}
+        {!collapsed && (
+          <button
+            onClick={() => setCollapsed(true)}
+            className="p-1.5 rounded-md text-slate-600 hover:text-slate-300 hover:bg-white/5 transition-colors"
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
-      {/* Navigation Groups */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-        {navGroups.map((group, groupIdx) => (
-          <div key={groupIdx} className="mb-4">
-            {/* Group Header */}
-            {group.name && (
-              <div
-                className={`flex items-center justify-between ${isOpen ? 'px-2' : 'px-1'} py-2 cursor-pointer hover:bg-slate-800 rounded transition-colors`}
-                onClick={() => group.collapsible && toggleGroup(group.name)}
-              >
-                {isOpen && (
-                  <>
-                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{group.name}</span>
-                    {group.collapsible && (
-                      <ChevronDown
-                        className={`w-4 h-4 text-slate-500 transition-transform ${
-                          expandedGroups[group.name] ? 'rotate-0' : '-rotate-90'
-                        }`}
-                      />
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+      {/* ── Expand button when collapsed ── */}
+      {collapsed && (
+        <button
+          onClick={() => setCollapsed(false)}
+          className="mx-auto mt-2 p-1.5 rounded-md text-slate-600 hover:text-slate-300 hover:bg-white/5 transition-colors"
+          aria-label="Expand sidebar"
+        >
+          <PanelLeftOpen className="w-4 h-4" />
+        </button>
+      )}
 
-            {/* Group Items */}
-            {(!group.collapsible || expandedGroups[group.name]) && (
-              <div className="space-y-1">
-                {group.items.map((item, itemIdx) => {
-                  const active = isActive(item.href)
-                  const gradient = subsystemGradients[item.subsystem || 'operations']
+      {/* ── Navigation ── */}
+      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0.5" aria-label="Main navigation">
+        {navGroups.map((group, gi) => {
+          // Gate Admin section to admin role only
+          if (group.name === 'Admin' && !isAdmin) return null
 
-                  return (
-                    <Link key={itemIdx} href={item.href}>
-                      <button
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all relative overflow-hidden group ${
-                          active
-                            ? `bg-gradient-to-r ${gradient} text-white shadow-lg`
-                            : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                        }`}
-                        title={isIconOnly ? item.label : undefined}
+          const groupOpen = !group.name || openGroups[group.name] !== false
+          const isCollapsible = !!group.name
+
+          return (
+            <div key={gi} className="mb-1">
+              {/* Group header */}
+              {group.name && !collapsed && (
+                <button
+                  onClick={() => isCollapsible && toggleGroup(group.name)}
+                  className="flex items-center justify-between w-full px-2 py-1.5 mb-0.5 group"
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-600 group-hover:text-slate-500 transition-colors">
+                    {group.name}
+                  </span>
+                  {isCollapsible && (
+                    <ChevronDown
+                      className={`w-3 h-3 text-slate-600 transition-transform duration-150 ${groupOpen ? '' : '-rotate-90'}`}
+                    />
+                  )}
+                </button>
+              )}
+
+              {/* Separator for collapsed groups */}
+              {group.name && collapsed && (
+                <div className="my-2 mx-3 h-px bg-white/[0.06]" />
+              )}
+
+              {/* Items */}
+              {groupOpen && (
+                <div className="space-y-0.5">
+                  {group.items.map((item, ii) => {
+                    const active = isActive(item.href)
+                    const accent = item.accent ?? 'indigo'
+                    const accentClass = accentBg[accent]
+
+                    return (
+                      <Link
+                        key={ii}
+                        href={item.href}
+                        className={`
+                          flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-100 relative group
+                          ${active
+                            ? `${accentClass} font-medium`
+                            : 'text-slate-500 hover:text-slate-200 hover:bg-white/5 font-normal'
+                          }
+                          ${collapsed ? 'justify-center px-0 mx-1.5' : ''}
+                        `}
+                        title={collapsed ? item.label : undefined}
+                        aria-current={active ? 'page' : undefined}
                       >
-                        {/* Active pill glow effect */}
-                        {active && (
-                          <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                        {/* Active left bar */}
+                        {active && !collapsed && (
+                          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-current opacity-60" />
                         )}
 
-                        {/* Icon */}
-                        <div className="flex-shrink-0 relative z-10">{item.icon}</div>
+                        <span className="flex-shrink-0">{item.icon}</span>
 
-                        {/* Label */}
-                        {isOpen && (
-                          <span className="text-sm font-medium whitespace-nowrap flex-1 text-left z-10">
+                        {!collapsed && (
+                          <span className="truncate">{item.label}</span>
+                        )}
+
+                        {/* Tooltip on collapsed */}
+                        {collapsed && (
+                          <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1d24] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
                             {item.label}
                           </span>
                         )}
-
-                        {/* Active indicator dot */}
-                        {active && !isOpen && (
-                          <div className="absolute right-2 w-2 h-2 rounded-full bg-white" />
-                        )}
-                      </button>
-                    </Link>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        ))}
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </nav>
 
-      {/* Footer - User & Logout */}
-      <div className="border-t border-slate-800 p-3 space-y-2">
-        {isOpen && user && (
-          <div className="px-2 py-2">
-            <p className="text-xs font-medium text-slate-300">{user.display_name}</p>
-            <p className="text-xs text-slate-500">{user.username}</p>
-          </div>
-        )}
-
-        <Link href="/profile">
-          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors text-sm">
-            <Settings className="w-5 h-5 flex-shrink-0" />
-            {isOpen && <span className="font-medium flex-1 text-left">Settings</span>}
-          </button>
-        </Link>
-
-        <button
-          onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-red-400 hover:bg-red-900/20 hover:text-red-300 transition-colors text-sm"
+      {/* ── Footer ── */}
+      <div className="flex-shrink-0 border-t border-white/[0.07] p-2 space-y-0.5">
+        <Link
+          href="/settings"
+          className={`
+            relative group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors
+            ${isActive('/settings') ? 'bg-white/8 text-slate-200' : 'text-slate-500 hover:text-slate-200 hover:bg-white/5'}
+            ${collapsed ? 'justify-center px-0 mx-1.5' : ''}
+          `}
+          title={collapsed ? 'Settings' : undefined}
         >
-          <LogOut className="w-5 h-5 flex-shrink-0" />
-          {isOpen && <span className="font-medium flex-1 text-left">Sign Out</span>}
-        </button>
+          <Settings className="w-4 h-4 flex-shrink-0" />
+          {!collapsed && <span>Settings</span>}
+          {collapsed && (
+            <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1d24] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
+              Settings
+            </span>
+          )}
+        </Link>
       </div>
-    </div>
+    </aside>
   )
 }

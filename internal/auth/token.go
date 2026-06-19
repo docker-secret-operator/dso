@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 )
@@ -28,7 +29,8 @@ func HashToken(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// VerifyToken compares a token with its hash
+// VerifyToken compares a token with its hash using constant-time comparison
+// to prevent timing-based token enumeration attacks.
 func VerifyToken(token, hash string) bool {
-	return hash == HashToken(token)
+	return subtle.ConstantTimeCompare([]byte(hash), []byte(HashToken(token))) == 1
 }

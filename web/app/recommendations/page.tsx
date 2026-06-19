@@ -27,6 +27,11 @@ interface RecommendationMetrics {
   last_updated: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export default function RecommendationsPage() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   const [metrics, setMetrics] = useState<RecommendationMetrics | null>(null)
@@ -38,9 +43,10 @@ export default function RecommendationsPage() {
     const fetchData = async () => {
       try {
         setLoading(true)
+        const headers = getAuthHeaders()
         const [recsRes, metricsRes] = await Promise.all([
-          fetch(`/api/recommendations?status=${filter}`),
-          fetch('/api/recommendations/metrics'),
+          fetch(`/api/recommendations?status=${filter}`, { headers }),
+          fetch('/api/recommendations/metrics', { headers }),
         ])
 
         if (!recsRes.ok || !metricsRes.ok) {
@@ -67,7 +73,7 @@ export default function RecommendationsPage() {
 
   const handleAcknowledge = async (recId: string) => {
     try {
-      const res = await fetch(`/api/recommendations/${recId}/acknowledge`, { method: 'POST' })
+      const res = await fetch(`/api/recommendations/${recId}/acknowledge`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setRecommendations(recommendations.map(r => r.id === recId ? { ...r, status: 'acknowledged' } : r))
       }
@@ -78,7 +84,7 @@ export default function RecommendationsPage() {
 
   const handleImplement = async (recId: string) => {
     try {
-      const res = await fetch(`/api/recommendations/${recId}/implement`, { method: 'POST' })
+      const res = await fetch(`/api/recommendations/${recId}/implement`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setRecommendations(recommendations.filter(r => r.id !== recId))
       }
@@ -89,7 +95,7 @@ export default function RecommendationsPage() {
 
   const handleDismiss = async (recId: string) => {
     try {
-      const res = await fetch(`/api/recommendations/${recId}/dismiss`, { method: 'POST' })
+      const res = await fetch(`/api/recommendations/${recId}/dismiss`, { method: 'POST', headers: getAuthHeaders() })
       if (res.ok) {
         setRecommendations(recommendations.filter(r => r.id !== recId))
       }
@@ -99,14 +105,14 @@ export default function RecommendationsPage() {
   }
 
   if (loading && !metrics) {
-    return <div className="p-8">Loading...</div>
+    return <div className="p-8 text-slate-200">Loading...</div>
   }
 
   const priorityColors: Record<string, string> = {
-    critical: 'bg-red-100 text-red-800 border-red-300',
-    high: 'bg-orange-100 text-orange-800 border-orange-300',
-    medium: 'bg-yellow-100 text-yellow-800 border-yellow-300',
-    low: 'bg-blue-100 text-blue-800 border-blue-300',
+    critical: 'bg-red-500/15 text-red-300 border-red-500/40',
+    high: 'bg-orange-500/15 text-orange-300 border-orange-500/40',
+    medium: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+    low: 'bg-blue-500/15 text-blue-300 border-blue-500/40',
   }
 
   const priorityIcons: Record<string, React.ReactNode> = {
@@ -117,27 +123,27 @@ export default function RecommendationsPage() {
   }
 
   const categoryColors: Record<string, string> = {
-    backup: 'bg-purple-100 text-purple-800',
-    security: 'bg-red-100 text-red-800',
-    plugin: 'bg-indigo-100 text-indigo-800',
-    integration: 'bg-green-100 text-green-800',
-    scheduler: 'bg-blue-100 text-blue-800',
-    policy: 'bg-yellow-100 text-yellow-800',
-    drift: 'bg-orange-100 text-orange-800',
-    performance: 'bg-cyan-100 text-cyan-800',
+    backup: 'bg-purple-500/15 text-purple-300',
+    security: 'bg-red-500/15 text-red-300',
+    plugin: 'bg-indigo-500/15 text-indigo-300',
+    integration: 'bg-emerald-500/15 text-emerald-300',
+    scheduler: 'bg-blue-500/15 text-blue-300',
+    policy: 'bg-amber-500/15 text-amber-300',
+    drift: 'bg-orange-500/15 text-orange-300',
+    performance: 'bg-cyan-500/15 text-cyan-300',
   }
 
   return (
     <div className="space-y-8 p-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Recommendations</h1>
-          <p className="mt-2 text-gray-600">Operational advisory layer for DSO</p>
+          <h1 className="text-3xl font-bold text-slate-100">Recommendations</h1>
+          <p className="mt-2 text-slate-400">Operational advisory layer for DSO</p>
         </div>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           {error}
         </div>
       )}
@@ -176,13 +182,13 @@ export default function RecommendationsPage() {
       )}
 
       {/* Filter Tabs */}
-      <div className="flex gap-2 border-b border-gray-200">
+      <div className="flex gap-2 border-b border-slate-700/50">
         <button
           onClick={() => setFilter('open')}
           className={`px-4 py-2 font-medium border-b-2 ${
             filter === 'open'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-600 hover:text-gray-900'
+              ? 'border-indigo-400 text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
           Open ({metrics?.open_recommendations || 0})
@@ -191,8 +197,8 @@ export default function RecommendationsPage() {
           onClick={() => setFilter('implemented')}
           className={`px-4 py-2 font-medium border-b-2 ${
             filter === 'implemented'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-600 hover:text-gray-900'
+              ? 'border-indigo-400 text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
           Implemented ({metrics?.implemented_recommendations || 0})
@@ -201,8 +207,8 @@ export default function RecommendationsPage() {
           onClick={() => setFilter('dismissed')}
           className={`px-4 py-2 font-medium border-b-2 ${
             filter === 'dismissed'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-600 hover:text-gray-900'
+              ? 'border-indigo-400 text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
           Dismissed ({metrics?.dismissed_recommendations || 0})
@@ -212,14 +218,14 @@ export default function RecommendationsPage() {
       {/* Recommendations List */}
       <div className="space-y-4">
         {recommendations.length === 0 ? (
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-8 text-center text-gray-500">
+          <div className="rounded-lg border border-slate-700/50 bg-[#0f1015] p-8 text-center text-slate-500">
             No {filter} recommendations
           </div>
         ) : (
           recommendations.map(rec => (
             <div
               key={rec.id}
-              className="rounded-lg border border-gray-200 bg-white p-6 hover:shadow-lg transition-shadow"
+              className="rounded-lg border border-slate-700/50 bg-[#111318] p-6 hover:border-slate-600/70 transition-colors"
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1">
@@ -235,39 +241,39 @@ export default function RecommendationsPage() {
                     </span>
                   </div>
 
-                  <h3 className="mt-2 text-lg font-semibold text-gray-900">{rec.title}</h3>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-100">{rec.title}</h3>
 
                   {rec.description && (
-                    <p className="mt-2 text-sm text-gray-600">{rec.description}</p>
+                    <p className="mt-2 text-sm text-slate-400">{rec.description}</p>
                   )}
 
-                  <p className="mt-3 text-sm text-gray-700">
+                  <p className="mt-3 text-sm text-slate-300">
                     <span className="font-medium">Action:</span> {rec.suggested_action}
                   </p>
 
                   <div className="mt-4 grid grid-cols-3 gap-4 md:grid-cols-4">
                     <div>
-                      <p className="text-xs text-gray-600">Confidence</p>
+                      <p className="text-xs text-slate-400">Confidence</p>
                       <div className="mt-1 flex items-center gap-1">
-                        <div className="flex-1 h-2 bg-gray-200 rounded">
+                        <div className="flex-1 h-2 bg-slate-700 rounded">
                           <div
-                            className="h-2 bg-blue-600 rounded"
+                            className="h-2 bg-indigo-500 rounded"
                             style={{ width: `${rec.confidence * 100}%` }}
                           />
                         </div>
-                        <span className="text-sm font-semibold text-gray-900">
+                        <span className="text-sm font-semibold text-slate-200">
                           {(rec.confidence * 100).toFixed(0)}%
                         </span>
                       </div>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-600">Status</p>
-                      <p className="mt-1 text-sm font-medium text-gray-900 capitalize">{rec.status}</p>
+                      <p className="text-xs text-slate-400">Status</p>
+                      <p className="mt-1 text-sm font-medium text-slate-200 capitalize">{rec.status}</p>
                     </div>
                     {rec.incident_id && (
                       <div>
-                        <p className="text-xs text-gray-600">Incident</p>
-                        <p className="mt-1 text-xs font-mono text-gray-600 truncate">{rec.incident_id.slice(0, 8)}</p>
+                        <p className="text-xs text-slate-400">Incident</p>
+                        <p className="mt-1 text-xs font-mono text-slate-400 truncate">{rec.incident_id.slice(0, 8)}</p>
                       </div>
                     )}
                   </div>
@@ -314,12 +320,12 @@ interface MetricCardProps {
   valueClass?: string
 }
 
-function MetricCard({ label, value, icon, valueClass = 'text-gray-900' }: MetricCardProps) {
+function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-600">{label}</span>
-        {icon && <div className="text-gray-400">{icon}</div>}
+        <span className="text-sm text-slate-400">{label}</span>
+        {icon && <div className="text-slate-500">{icon}</div>}
       </div>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>

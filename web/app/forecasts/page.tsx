@@ -27,6 +27,11 @@ interface ForecastMetrics {
   last_updated: string
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export default function ForecastsPage() {
   const [forecasts, setForecasts] = useState<Forecast[]>([])
   const [metrics, setMetrics] = useState<ForecastMetrics | null>(null)
@@ -37,9 +42,10 @@ export default function ForecastsPage() {
     const fetchData = async () => {
       try {
         setLoading(true)
+        const headers = getAuthHeaders()
         const [forecastsRes, metricsRes] = await Promise.all([
-          fetch('/api/forecasts'),
-          fetch('/api/forecasts/metrics'),
+          fetch('/api/forecasts', { headers }),
+          fetch('/api/forecasts/metrics', { headers }),
         ])
 
         if (!forecastsRes.ok || !metricsRes.ok) {
@@ -66,11 +72,12 @@ export default function ForecastsPage() {
 
   const handleRunForecasts = async () => {
     try {
-      const res = await fetch('/api/forecasts/run', { method: 'POST' })
+      const headers = getAuthHeaders()
+      const res = await fetch('/api/forecasts/run', { method: 'POST', headers })
       if (res.ok) {
         // Refresh data
-        const forecastsRes = await fetch('/api/forecasts')
-        const metricsRes = await fetch('/api/forecasts/metrics')
+        const forecastsRes = await fetch('/api/forecasts', { headers })
+        const metricsRes = await fetch('/api/forecasts/metrics', { headers })
         if (forecastsRes.ok && metricsRes.ok) {
           const forecastsData = await forecastsRes.json()
           const metricsData = await metricsRes.json()
@@ -84,25 +91,25 @@ export default function ForecastsPage() {
   }
 
   if (loading && !metrics) {
-    return <div className="p-8">Loading...</div>
+    return <div className="p-8 text-slate-200">Loading...</div>
   }
 
   const severityColors: Record<string, string> = {
-    critical: 'bg-red-100 text-red-800',
-    high: 'bg-orange-100 text-orange-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    low: 'bg-blue-100 text-blue-800',
-    info: 'bg-gray-100 text-gray-800',
+    critical: 'bg-red-500/15 text-red-300',
+    high: 'bg-orange-500/15 text-orange-300',
+    medium: 'bg-amber-500/15 text-amber-300',
+    low: 'bg-blue-500/15 text-blue-300',
+    info: 'bg-slate-700/30 text-slate-300',
   }
 
   const trendIcon = (trend: string) => {
     switch (trend) {
       case 'increasing':
-        return <TrendingUp className="h-4 w-4 text-red-600" />
+        return <TrendingUp className="h-4 w-4 text-red-400" />
       case 'decreasing':
-        return <TrendingDown className="h-4 w-4 text-green-600" />
+        return <TrendingDown className="h-4 w-4 text-emerald-400" />
       default:
-        return <Activity className="h-4 w-4 text-blue-600" />
+        return <Activity className="h-4 w-4 text-blue-400" />
     }
   }
 
@@ -110,8 +117,8 @@ export default function ForecastsPage() {
     <div className="space-y-8 p-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Forecasts</h1>
-          <p className="mt-2 text-gray-600">Predict future operational conditions and capacity risks</p>
+          <h1 className="text-3xl font-bold text-slate-100">Forecasts</h1>
+          <p className="mt-2 text-slate-400">Predict future operational conditions and capacity risks</p>
         </div>
         <button
           onClick={handleRunForecasts}
@@ -122,7 +129,7 @@ export default function ForecastsPage() {
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           {error}
         </div>
       )}
@@ -138,18 +145,18 @@ export default function ForecastsPage() {
           <MetricCard
             label="Critical"
             value={metrics.critical_forecasts}
-            valueClass="text-red-600"
+            valueClass="text-red-400"
             icon={<Zap className="h-5 w-5" />}
           />
           <MetricCard
             label="Avg Confidence"
             value={(metrics.average_confidence * 100).toFixed(0) + '%'}
-            valueClass="text-blue-600"
+            valueClass="text-blue-400"
           />
           <MetricCard
             label="Accuracy"
             value={(metrics.prediction_accuracy * 100).toFixed(0) + '%'}
-            valueClass="text-green-600"
+            valueClass="text-emerald-400"
           />
           <MetricCard
             label="Runs"
@@ -159,57 +166,57 @@ export default function ForecastsPage() {
       )}
 
       {/* Forecasts Table */}
-      <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
-        <div className="border-b border-gray-200 px-6 py-4">
-          <h2 className="font-semibold text-gray-900">Active Forecasts ({forecasts.length})</h2>
+      <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 overflow-hidden">
+        <div className="border-b border-slate-700/50 px-6 py-4">
+          <h2 className="font-semibold text-slate-100">Active Forecasts ({forecasts.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-gray-200 bg-gray-50">
+            <thead className="border-b border-slate-700/50 bg-slate-900/50">
               <tr>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Resource</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Metric</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Current</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Predicted</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Growth</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Confidence</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Severity</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Trend</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Resource</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Metric</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Current</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Predicted</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Growth</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Confidence</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Severity</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Trend</th>
               </tr>
             </thead>
             <tbody>
               {forecasts.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={8} className="px-6 py-8 text-center text-slate-400">
                     No forecasts available
                   </td>
                 </tr>
               ) : (
                 forecasts.slice(0, 50).map(forecast => (
-                  <tr key={forecast.id} className="border-b border-gray-200 hover:bg-gray-50">
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">{forecast.resource_type}</td>
-                    <td className="px-6 py-4 text-sm text-gray-600">{forecast.metric}</td>
-                    <td className="px-6 py-4 text-sm text-gray-900">
+                  <tr key={forecast.id} className="border-b border-slate-700/50 hover:bg-slate-900/50">
+                    <td className="px-6 py-4 text-sm font-medium text-slate-100">{forecast.resource_type}</td>
+                    <td className="px-6 py-4 text-sm text-slate-400">{forecast.metric}</td>
+                    <td className="px-6 py-4 text-sm text-slate-100">
                       {typeof forecast.current_value === 'number' ? forecast.current_value.toFixed(2) : '—'}
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-900">
+                    <td className="px-6 py-4 text-sm text-slate-100">
                       {typeof forecast.predicted_value === 'number' ? forecast.predicted_value.toFixed(2) : '—'}
                     </td>
                     <td className="px-6 py-4 text-sm">
-                      <span className={forecast.growth_rate > 0 ? 'text-red-600' : 'text-green-600'}>
+                      <span className={forecast.growth_rate > 0 ? 'text-red-400' : 'text-emerald-400'}>
                         {(forecast.growth_rate * 100).toFixed(1)}%
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm">
                       <div className="flex items-center gap-1">
-                        <div className="flex-1 h-2 bg-gray-200 rounded w-12">
+                        <div className="flex-1 h-2 bg-slate-700/50 rounded w-12">
                           <div
                             className="h-2 bg-blue-600 rounded"
                             style={{ width: `${forecast.confidence * 100}%` }}
                           />
                         </div>
-                        <span className="text-xs text-gray-600">{(forecast.confidence * 100).toFixed(0)}%</span>
+                        <span className="text-xs text-slate-400">{(forecast.confidence * 100).toFixed(0)}%</span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
@@ -220,7 +227,7 @@ export default function ForecastsPage() {
                     <td className="px-6 py-4 text-sm">
                       <div className="flex items-center gap-1">
                         {trendIcon(forecast.trend)}
-                        <span className="text-xs text-gray-600 capitalize">{forecast.trend}</span>
+                        <span className="text-xs text-slate-400 capitalize">{forecast.trend}</span>
                       </div>
                     </td>
                   </tr>
@@ -231,7 +238,7 @@ export default function ForecastsPage() {
         </div>
 
         {forecasts.length > 50 && (
-          <div className="border-t border-gray-200 px-6 py-4 text-sm text-gray-600">
+          <div className="border-t border-slate-700/50 px-6 py-4 text-sm text-slate-400">
             Showing 50 of {forecasts.length} forecasts
           </div>
         )}
@@ -284,12 +291,12 @@ interface MetricCardProps {
   valueClass?: string
 }
 
-function MetricCard({ label, value, icon, valueClass = 'text-gray-900' }: MetricCardProps) {
+function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-600">{label}</span>
-        {icon && <div className="text-gray-400">{icon}</div>}
+        <span className="text-sm text-slate-400">{label}</span>
+        {icon && <div className="text-slate-500">{icon}</div>}
       </div>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>
@@ -306,33 +313,33 @@ function ForecastPanel({ title, description, forecasts }: ForecastPanelProps) {
   const latestForecast = forecasts[0]
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-6">
-      <h3 className="font-semibold text-gray-900">{title}</h3>
-      <p className="mt-1 text-sm text-gray-600">{description}</p>
+    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-6">
+      <h3 className="font-semibold text-slate-100">{title}</h3>
+      <p className="mt-1 text-sm text-slate-400">{description}</p>
 
       {latestForecast ? (
         <div className="mt-4 space-y-2 text-sm">
           <div className="flex justify-between">
-            <span className="text-gray-600">Current</span>
-            <span className="font-medium text-gray-900">{latestForecast.current_value.toFixed(2)}</span>
+            <span className="text-slate-400">Current</span>
+            <span className="font-medium text-slate-100">{latestForecast.current_value.toFixed(2)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Predicted</span>
-            <span className="font-medium text-gray-900">{latestForecast.predicted_value.toFixed(2)}</span>
+            <span className="text-slate-400">Predicted</span>
+            <span className="font-medium text-slate-100">{latestForecast.predicted_value.toFixed(2)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Growth</span>
-            <span className={`font-medium ${latestForecast.growth_rate > 0 ? 'text-red-600' : 'text-green-600'}`}>
+            <span className="text-slate-400">Growth</span>
+            <span className={`font-medium ${latestForecast.growth_rate > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
               {(latestForecast.growth_rate * 100).toFixed(1)}%
             </span>
           </div>
-          <div className="flex justify-between pt-2 border-t border-gray-200">
-            <span className="text-gray-600">Confidence</span>
-            <span className="font-medium text-blue-600">{(latestForecast.confidence * 100).toFixed(0)}%</span>
+          <div className="flex justify-between pt-2 border-t border-slate-700/50">
+            <span className="text-slate-400">Confidence</span>
+            <span className="font-medium text-blue-400">{(latestForecast.confidence * 100).toFixed(0)}%</span>
           </div>
         </div>
       ) : (
-        <div className="mt-4 text-sm text-gray-500">No forecasts available</div>
+        <div className="mt-4 text-sm text-slate-400">No forecasts available</div>
       )}
     </div>
   )

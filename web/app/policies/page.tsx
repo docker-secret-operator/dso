@@ -25,17 +25,22 @@ interface RuleMetrics {
 }
 
 const severityColor: Record<string, string> = {
-  info: 'bg-blue-50 text-blue-800 border-blue-200',
-  low: 'bg-green-50 text-green-800 border-green-200',
-  medium: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-  high: 'bg-orange-50 text-orange-800 border-orange-200',
-  critical: 'bg-red-50 text-red-800 border-red-200',
+  info: 'bg-blue-500/15 text-blue-300 border-blue-500/30',
+  low: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  medium: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  high: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
+  critical: 'bg-red-500/15 text-red-300 border-red-500/30',
 }
 
 const triggerColor: Record<string, string> = {
-  scheduled: 'bg-purple-100 text-purple-800',
-  event: 'bg-blue-100 text-blue-800',
-  manual: 'bg-gray-100 text-gray-800',
+  scheduled: 'bg-purple-500/15 text-purple-300',
+  event: 'bg-blue-500/15 text-blue-300',
+  manual: 'bg-slate-700/30 text-slate-400',
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export default function PoliciesPage() {
@@ -43,14 +48,16 @@ export default function PoliciesPage() {
   const [metrics, setMetrics] = useState<RuleMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true)
+        const headers = getAuthHeaders()
         const [rulesRes, metricsRes] = await Promise.all([
-          fetch('/api/policies'),
-          fetch('/api/policies/metrics'),
+          fetch('/api/policies', { headers }),
+          fetch('/api/policies/metrics', { headers }),
         ])
 
         if (!rulesRes.ok || !metricsRes.ok) {
@@ -77,12 +84,9 @@ export default function PoliciesPage() {
 
   const handleRun = async (ruleId: string) => {
     try {
-      const res = await fetch(`/api/policies/${ruleId}/run`, {
-        method: 'POST',
-      })
+      const res = await fetch(`/api/policies/${ruleId}/run`, { method: 'POST', headers: getAuthHeaders() })
       if (!res.ok) throw new Error('Failed to run policy')
-      // Refresh data
-      const rulesRes = await fetch('/api/policies')
+      const rulesRes = await fetch('/api/policies', { headers: getAuthHeaders() })
       const rulesData = await rulesRes.json()
       setRules(rulesData.rules || [])
     } catch (err) {
@@ -92,11 +96,9 @@ export default function PoliciesPage() {
 
   const handleEnable = async (ruleId: string) => {
     try {
-      const res = await fetch(`/api/policies/${ruleId}/enable`, {
-        method: 'POST',
-      })
+      const res = await fetch(`/api/policies/${ruleId}/enable`, { method: 'POST', headers: getAuthHeaders() })
       if (!res.ok) throw new Error('Failed to enable policy')
-      const rulesRes = await fetch('/api/policies')
+      const rulesRes = await fetch('/api/policies', { headers: getAuthHeaders() })
       const rulesData = await rulesRes.json()
       setRules(rulesData.rules || [])
     } catch (err) {
@@ -106,11 +108,9 @@ export default function PoliciesPage() {
 
   const handleDisable = async (ruleId: string) => {
     try {
-      const res = await fetch(`/api/policies/${ruleId}/disable`, {
-        method: 'POST',
-      })
+      const res = await fetch(`/api/policies/${ruleId}/disable`, { method: 'POST', headers: getAuthHeaders() })
       if (!res.ok) throw new Error('Failed to disable policy')
-      const rulesRes = await fetch('/api/policies')
+      const rulesRes = await fetch('/api/policies', { headers: getAuthHeaders() })
       const rulesData = await rulesRes.json()
       setRules(rulesData.rules || [])
     } catch (err) {
@@ -119,11 +119,8 @@ export default function PoliciesPage() {
   }
 
   const handleDelete = async (ruleId: string) => {
-    if (!confirm(`Delete policy ${ruleId}?`)) return
     try {
-      const res = await fetch(`/api/policies/${ruleId}`, {
-        method: 'DELETE',
-      })
+      const res = await fetch(`/api/policies/${ruleId}`, { method: 'DELETE', headers: getAuthHeaders() })
       if (!res.ok) throw new Error('Failed to delete policy')
       setRules(rules.filter(r => r.id !== ruleId))
     } catch (err) {
@@ -139,21 +136,31 @@ export default function PoliciesPage() {
   const criticalCount = rules.filter(r => r.severity === 'critical' && r.enabled).length
 
   if (loading && !metrics) {
-    return <div className="p-8">Loading...</div>
+    return <div className="p-8 text-slate-200">Loading...</div>
   }
 
   return (
     <div className="space-y-8 p-8">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Policies</h1>
-        <p className="mt-2 text-gray-600">Manage decision rules and automated actions</p>
+        <h1 className="text-3xl font-bold text-slate-100">Policies</h1>
+        <p className="mt-2 text-slate-400">Manage decision rules and automated actions</p>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           <div className="flex items-center gap-2">
             <AlertCircle className="h-4 w-4" />
             <span>{error}</span>
+          </div>
+        </div>
+      )}
+
+      {confirmDeletePolicy && (
+        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 flex items-center justify-between gap-4">
+          <p className="text-sm text-red-300">Delete this policy? This action cannot be undone.</p>
+          <div className="flex gap-2 flex-shrink-0">
+            <button onClick={() => setConfirmDeletePolicy(null)} className="px-3 py-1.5 text-xs rounded-lg border border-white/[0.09] text-slate-300 hover:bg-white/5 transition-colors">Cancel</button>
+            <button onClick={() => { const id = confirmDeletePolicy; setConfirmDeletePolicy(null); handleDelete(id) }} className="px-3 py-1.5 text-xs rounded-lg bg-red-600 text-white hover:bg-red-500 transition-colors">Delete</button>
           </div>
         </div>
       )}
@@ -184,61 +191,49 @@ export default function PoliciesPage() {
           <MetricCard
             label="Critical"
             value={criticalCount}
-            valueClass={criticalCount > 0 ? 'text-red-600' : 'text-gray-600'}
+            valueClass={criticalCount > 0 ? 'text-red-600' : 'text-slate-400'}
           />
         </div>
       )}
 
       {/* Policies Table */}
-      <div className="rounded-lg border border-gray-200 bg-white">
-        <div className="border-b border-gray-200 px-6 py-4">
-          <h2 className="font-semibold text-gray-900">Policies ({rules.length})</h2>
+      <div className="rounded-lg border border-slate-700/50 bg-[#111318]">
+        <div className="border-b border-slate-700/50 px-6 py-4">
+          <h2 className="font-semibold text-slate-200">Policies ({rules.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-gray-200 bg-gray-50">
+            <thead className="border-b border-slate-700/50 bg-[#0f1015]">
               <tr>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">
-                  Name
-                </th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">
-                  Severity
-                </th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">
-                  Trigger
-                </th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">
-                  Last Run
-                </th>
-                <th className="px-6 py-3 text-right text-sm font-medium text-gray-700">
-                  Actions
-                </th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Name</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Severity</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Trigger</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Status</th>
+                <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Last Run</th>
+                <th className="px-6 py-3 text-right text-sm font-medium text-slate-400">Actions</th>
               </tr>
             </thead>
             <tbody>
               {rules.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                     No policies configured
                   </td>
                 </tr>
               ) : (
                 rules.map(rule => (
-                  <tr key={rule.id} className="border-b border-gray-200 hover:bg-gray-50">
+                  <tr key={rule.id} className="border-b border-slate-700/30 hover:bg-slate-800/50/[0.02]">
                     <td className="px-6 py-4">
                       <div>
-                        <div className="font-medium text-gray-900">{rule.name}</div>
-                        <div className="text-xs text-gray-500">{rule.id}</div>
+                        <div className="font-medium text-slate-200">{rule.name}</div>
+                        <div className="text-xs text-slate-500">{rule.id}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <span
                         className={`rounded border px-2 py-1 text-xs font-medium ${
-                          severityColor[rule.severity] || 'bg-gray-50 text-gray-800'
+                          severityColor[rule.severity] || 'bg-slate-900/50 text-slate-200'
                         }`}
                       >
                         {rule.severity}
@@ -247,7 +242,7 @@ export default function PoliciesPage() {
                     <td className="px-6 py-4">
                       <span
                         className={`rounded px-2 py-1 text-xs font-medium ${
-                          triggerColor[rule.trigger] || 'bg-gray-100 text-gray-800'
+                          triggerColor[rule.trigger] || 'bg-slate-700/30 text-slate-200'
                         }`}
                       >
                         {rule.trigger}
@@ -257,48 +252,48 @@ export default function PoliciesPage() {
                       <span
                         className={`rounded px-2 py-1 text-xs font-medium ${
                           rule.enabled
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-gray-100 text-gray-800'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'bg-slate-700/30 text-slate-400'
                         }`}
                       >
                         {rule.enabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
+                    <td className="px-6 py-4 text-sm text-slate-400">
                       {formatTime(rule.last_run)}
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex justify-end gap-2">
                         <button
                           onClick={() => handleRun(rule.id)}
-                          className="p-1 hover:bg-gray-200 rounded"
+                          className="p-1 hover:bg-slate-800/50/[0.05] rounded"
                           title="Run now"
                         >
-                          <Play className="h-4 w-4 text-blue-600" />
+                          <Play className="h-4 w-4 text-blue-400" />
                         </button>
                         {rule.enabled ? (
                           <button
                             onClick={() => handleDisable(rule.id)}
-                            className="p-1 hover:bg-gray-200 rounded"
+                            className="p-1 hover:bg-slate-800/50/[0.05] rounded"
                             title="Disable"
                           >
-                            <RotateCw className="h-4 w-4 text-yellow-600" />
+                            <RotateCw className="h-4 w-4 text-amber-400" />
                           </button>
                         ) : (
                           <button
                             onClick={() => handleEnable(rule.id)}
-                            className="p-1 hover:bg-gray-200 rounded"
+                            className="p-1 hover:bg-slate-800/50/[0.05] rounded"
                             title="Enable"
                           >
-                            <RotateCw className="h-4 w-4 text-green-600" />
+                            <RotateCw className="h-4 w-4 text-emerald-400" />
                           </button>
                         )}
                         <button
                           onClick={() => handleDelete(rule.id)}
-                          className="p-1 hover:bg-gray-200 rounded"
+                          className="p-1 hover:bg-slate-800/50/[0.05] rounded"
                           title="Delete"
                         >
-                          <Trash2 className="h-4 w-4 text-red-600" />
+                          <Trash2 className="h-4 w-4 text-red-400" />
                         </button>
                       </div>
                     </td>
@@ -312,20 +307,20 @@ export default function PoliciesPage() {
 
       {/* Execution Stats */}
       {metrics && (
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <h3 className="font-semibold text-gray-900">Execution Stats</h3>
+        <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-6">
+          <h3 className="font-semibold text-slate-100">Execution Stats</h3>
           <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
             <div>
-              <div className="text-sm text-gray-600">Total Executions</div>
-              <div className="mt-1 text-2xl font-bold text-gray-900">{metrics.executions}</div>
+              <div className="text-sm text-slate-400">Total Executions</div>
+              <div className="mt-1 text-2xl font-bold text-slate-100">{metrics.executions}</div>
             </div>
             <div>
-              <div className="text-sm text-gray-600">Failures</div>
-              <div className="mt-1 text-2xl font-bold text-red-600">{metrics.failures}</div>
+              <div className="text-sm text-slate-400">Failures</div>
+              <div className="mt-1 text-2xl font-bold text-red-400">{metrics.failures}</div>
             </div>
             <div>
-              <div className="text-sm text-gray-600">Success Rate</div>
-              <div className="mt-1 text-2xl font-bold text-green-600">
+              <div className="text-sm text-slate-400">Success Rate</div>
+              <div className="mt-1 text-2xl font-bold text-emerald-400">
                 {metrics.executions > 0
                   ? (((metrics.executions - metrics.failures) / metrics.executions) * 100).toFixed(1)
                   : '0'}
@@ -333,8 +328,8 @@ export default function PoliciesPage() {
               </div>
             </div>
             <div>
-              <div className="text-sm text-gray-600">Avg Duration</div>
-              <div className="mt-1 text-2xl font-bold text-gray-900">
+              <div className="text-sm text-slate-400">Avg Duration</div>
+              <div className="mt-1 text-2xl font-bold text-slate-100">
                 {metrics.average_duration.toFixed(0)}ms
               </div>
             </div>
@@ -352,12 +347,12 @@ interface MetricCardProps {
   valueClass?: string
 }
 
-function MetricCard({ label, value, icon, valueClass = 'text-gray-900' }: MetricCardProps) {
+function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-600">{label}</span>
-        {icon && <div className="text-gray-400">{icon}</div>}
+        <span className="text-sm text-slate-400">{label}</span>
+        {icon && <div className="text-slate-500">{icon}</div>}
       </div>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>

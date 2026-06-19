@@ -35,22 +35,29 @@ const SEVERITIES = ['low', 'medium', 'high', 'critical']
 
 function getSeverityColor(severity: string) {
   const colors = {
-    low: 'bg-blue-100 text-blue-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    high: 'bg-orange-100 text-orange-800',
-    critical: 'bg-red-100 text-red-800',
+    low: 'bg-blue-500/15 text-blue-300',
+    medium: 'bg-amber-500/15 text-amber-300',
+    high: 'bg-orange-500/15 text-orange-300',
+    critical: 'bg-red-500/15 text-red-300',
   }
-  return colors[severity as keyof typeof colors] || 'bg-gray-100 text-gray-800'
+  return colors[severity as keyof typeof colors] || 'bg-slate-700/30 text-slate-400'
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export default function AlertRulesPage() {
   const [rules, setRules] = useState<AlertRule[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(10)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [confirmDeleteRule, setConfirmDeleteRule] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -72,7 +79,7 @@ export default function AlertRulesPage() {
     setLoading(true)
     try {
       const offset = (page - 1) * pageSize
-      const response = await fetch(`/api/alerts/rules?limit=${pageSize}&offset=${offset}`)
+      const response = await fetch(`/api/alerts/rules?limit=${pageSize}&offset=${offset}`, { headers: getAuthHeaders() })
       if (!response.ok) {
         if (response.status === 403) {
           router.push('/login')
@@ -91,12 +98,13 @@ export default function AlertRulesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setFormError(null)
     try {
       const method = editingId ? 'PUT' : 'POST'
       const path = editingId ? `/api/alerts/rules/${editingId}` : '/api/alerts/rules'
       const response = await fetch(path, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(formData),
       })
       if (!response.ok) {
@@ -117,18 +125,17 @@ export default function AlertRulesPage() {
       })
       fetchRules()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to save rule')
+      setFormError(err instanceof Error ? err.message : 'Failed to save rule')
     }
   }
 
   const handleDelete = async (ruleId: string) => {
-    if (!confirm('Delete this rule?')) return
     try {
-      const response = await fetch(`/api/alerts/rules/${ruleId}`, { method: 'DELETE' })
+      const response = await fetch(`/api/alerts/rules/${ruleId}`, { method: 'DELETE', headers: getAuthHeaders() })
       if (!response.ok) throw new Error('Failed to delete rule')
       fetchRules()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to delete rule')
+      setError(err instanceof Error ? err.message : 'Failed to delete rule')
     }
   }
 
@@ -148,136 +155,81 @@ export default function AlertRulesPage() {
     setShowForm(true)
   }
 
+  const inputCls = 'w-full px-3 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-200 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30'
+  const labelCls = 'block text-sm font-medium text-slate-300 mb-1.5'
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Alert Rules Management</h1>
+        <h1 className="text-2xl font-semibold text-slate-100">Alert Rules</h1>
         <div className="flex gap-2">
           <button
-            onClick={() => {
-              setShowForm(!showForm)
-              if (showForm) setEditingId(null)
-            }}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm flex items-center gap-2"
+            onClick={() => { setShowForm(!showForm); if (showForm) setEditingId(null) }}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 text-sm flex items-center gap-2 transition-colors"
           >
             <Plus className="w-4 h-4" />
             {showForm ? 'Cancel' : 'New Rule'}
           </button>
-          <Link href="/alerts" className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 text-sm">
+          <Link href="/alerts" className="px-4 py-2 border border-white/[0.09] text-slate-300 rounded-lg hover:bg-white/5 text-sm transition-colors">
             View Alerts
           </Link>
         </div>
       </div>
 
       {showForm && (
-        <form onSubmit={handleSubmit} className="bg-white border border-gray-200 rounded-lg p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="rounded-xl border border-white/[0.07] bg-[#111318] p-6 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Name</label>
-              <input
-                type="text"
-                required
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              />
+              <label className={labelCls}>Name</label>
+              <input type="text" required value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className={inputCls} />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Severity</label>
-              <select
-                value={formData.severity}
-                onChange={(e) => setFormData({ ...formData, severity: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              >
-                {SEVERITIES.map((s) => (
-                  <option key={s} value={s}>
-                    {s.charAt(0).toUpperCase() + s.slice(1)}
-                  </option>
-                ))}
+              <label className={labelCls}>Severity</label>
+              <select value={formData.severity} onChange={(e) => setFormData({ ...formData, severity: e.target.value })} className={inputCls}>
+                {SEVERITIES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Metric</label>
-              <select
-                value={formData.metric}
-                onChange={(e) => setFormData({ ...formData, metric: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              >
-                {METRICS.map((m) => (
-                  <option key={m} value={m}>
-                    {m.replace(/_/g, ' ')}
-                  </option>
-                ))}
+              <label className={labelCls}>Metric</label>
+              <select value={formData.metric} onChange={(e) => setFormData({ ...formData, metric: e.target.value })} className={inputCls}>
+                {METRICS.map((m) => <option key={m} value={m}>{m.replace(/_/g, ' ')}</option>)}
               </select>
             </div>
             <div className="flex gap-2">
               <div className="flex-1">
-                <label className="block text-sm font-medium mb-1">Operator</label>
-                <select
-                  value={formData.operator}
-                  onChange={(e) => setFormData({ ...formData, operator: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  {OPERATORS.map((op) => (
-                    <option key={op} value={op}>
-                      {op}
-                    </option>
-                  ))}
+                <label className={labelCls}>Operator</label>
+                <select value={formData.operator} onChange={(e) => setFormData({ ...formData, operator: e.target.value })} className={inputCls}>
+                  {OPERATORS.map((op) => <option key={op} value={op}>{op}</option>)}
                 </select>
               </div>
               <div className="flex-1">
-                <label className="block text-sm font-medium mb-1">Threshold</label>
-                <input
-                  type="number"
-                  required
-                  value={formData.threshold}
-                  onChange={(e) => setFormData({ ...formData, threshold: parseFloat(e.target.value) })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                />
+                <label className={labelCls}>Threshold</label>
+                <input type="number" required value={formData.threshold} onChange={(e) => setFormData({ ...formData, threshold: parseFloat(e.target.value) })} className={inputCls} />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Duration (seconds)</label>
-              <input
-                type="number"
-                required
-                value={formData.duration_seconds}
-                onChange={(e) => setFormData({ ...formData, duration_seconds: parseInt(e.target.value) })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              />
+              <label className={labelCls}>Duration (seconds)</label>
+              <input type="number" required value={formData.duration_seconds} onChange={(e) => setFormData({ ...formData, duration_seconds: parseInt(e.target.value) })} className={inputCls} />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Cooldown (seconds)</label>
-              <input
-                type="number"
-                required
-                value={formData.cooldown_seconds}
-                onChange={(e) => setFormData({ ...formData, cooldown_seconds: parseInt(e.target.value) })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-              />
+              <label className={labelCls}>Cooldown (seconds)</label>
+              <input type="number" required value={formData.cooldown_seconds} onChange={(e) => setFormData({ ...formData, cooldown_seconds: parseInt(e.target.value) })} className={inputCls} />
             </div>
             <div className="md:col-span-2">
-              <label className="block text-sm font-medium mb-1">Description</label>
-              <textarea
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                rows={2}
-              />
+              <label className={labelCls}>Description</label>
+              <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className={inputCls} rows={2} />
             </div>
+            {formError && (
+              <div className="md:col-span-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {formError}
+              </div>
+            )}
             <div className="md:col-span-2 flex gap-2">
-              <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+              <button type="submit" className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors">
                 {editingId ? 'Update Rule' : 'Create Rule'}
               </button>
               {editingId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowForm(false)
-                    setEditingId(null)
-                  }}
-                  className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300"
-                >
+                <button type="button" onClick={() => { setShowForm(false); setEditingId(null) }} className="px-4 py-2 text-sm border border-white/[0.09] text-slate-300 rounded-lg hover:bg-white/5 transition-colors">
                   Cancel
                 </button>
               )}
@@ -287,58 +239,63 @@ export default function AlertRulesPage() {
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300 text-sm">{error}</div>
       )}
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {/* Inline delete confirm */}
+      {confirmDeleteRule && (
+        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 flex items-center justify-between gap-4">
+          <p className="text-sm text-red-300">Delete this alert rule? This action cannot be undone.</p>
+          <div className="flex gap-2 flex-shrink-0">
+            <button onClick={() => setConfirmDeleteRule(null)} className="px-3 py-1.5 text-xs rounded-lg border border-white/[0.09] text-slate-300 hover:bg-white/5 transition-colors">Cancel</button>
+            <button onClick={() => { const id = confirmDeleteRule; setConfirmDeleteRule(null); handleDelete(id) }} className="px-3 py-1.5 text-xs rounded-lg bg-red-600 text-white hover:bg-red-500 transition-colors">Delete</button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-white/[0.07] bg-[#111318] overflow-hidden">
         {loading ? (
-          <div className="p-8 text-center text-gray-500">Loading rules...</div>
+          <div className="p-8 text-center text-slate-400">Loading rules…</div>
         ) : rules.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No rules configured</div>
+          <div className="p-8 text-center text-slate-500">No rules configured</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
+              <thead className="bg-[#0f1015] border-b border-white/[0.07]">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Severity</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Metric</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Condition</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Actions</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Severity</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Metric</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Condition</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-white/[0.05]">
                 {rules.map((rule) => (
-                  <tr key={rule.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">{rule.name}</td>
+                  <tr key={rule.id} className="hover:bg-white/[0.03] transition-colors">
+                    <td className="px-6 py-4 text-sm font-medium text-slate-100">{rule.name}</td>
                     <td className="px-6 py-4 text-sm">
-                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getSeverityColor(rule.severity)}`}>
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${getSeverityColor(rule.severity)}`}>
                         {rule.severity}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-700">{rule.metric.replace(/_/g, ' ')}</td>
-                    <td className="px-6 py-4 text-sm font-mono text-gray-700">
+                    <td className="px-6 py-4 text-sm text-slate-400">{rule.metric.replace(/_/g, ' ')}</td>
+                    <td className="px-6 py-4 text-sm font-mono text-slate-300">
                       {rule.operator} {rule.threshold}
                     </td>
                     <td className="px-6 py-4 text-sm">
-                      {rule.is_builtin && <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">builtin</span>}
-                      <span className={`ml-2 inline-block text-xs ${rule.enabled ? 'text-green-600' : 'text-gray-400'}`}>
+                      {rule.is_builtin && <span className="text-xs bg-slate-700/30 text-slate-400 px-2 py-0.5 rounded">builtin</span>}
+                      <span className={`ml-2 inline-block text-xs ${rule.enabled ? 'text-emerald-400' : 'text-slate-600'}`}>
                         {rule.enabled ? '● enabled' : '● disabled'}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm flex gap-2">
-                      <button
-                        onClick={() => handleEdit(rule)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
+                      <button onClick={() => handleEdit(rule)} className="text-slate-500 hover:text-blue-400 transition-colors" title="Edit">
                         <Edit className="w-4 h-4" />
                       </button>
                       {!rule.is_builtin && (
-                        <button
-                          onClick={() => handleDelete(rule.id)}
-                          className="text-red-600 hover:text-red-800"
-                        >
+                        <button onClick={() => setConfirmDeleteRule(rule.id)} className="text-slate-500 hover:text-red-400 transition-colors" title="Delete">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}
@@ -350,23 +307,13 @@ export default function AlertRulesPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-between px-6 py-4 bg-gray-50 border-t border-gray-200">
-          <div className="text-sm text-gray-600">
-            Page <span className="font-medium">{page}</span>
-          </div>
+        <div className="flex items-center justify-between px-6 py-4 bg-[#0f1015] border-t border-white/[0.07]">
+          <div className="text-sm text-slate-500">Page <span className="font-medium text-slate-300">{page}</span></div>
           <div className="flex gap-2">
-            <button
-              onClick={() => setPage(Math.max(1, page - 1))}
-              disabled={page === 1}
-              className="p-2 hover:bg-gray-200 rounded disabled:opacity-50"
-            >
+            <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} className="p-2 hover:bg-white/5 rounded-lg disabled:opacity-50 text-slate-400 transition-colors">
               <ChevronLeft className="w-5 h-5" />
             </button>
-            <button
-              onClick={() => setPage(page + 1)}
-              disabled={rules.length < pageSize}
-              className="p-2 hover:bg-gray-200 rounded disabled:opacity-50"
-            >
+            <button onClick={() => setPage(page + 1)} disabled={rules.length < pageSize} className="p-2 hover:bg-white/5 rounded-lg disabled:opacity-50 text-slate-400 transition-colors">
               <ChevronRight className="w-5 h-5" />
             </button>
           </div>
