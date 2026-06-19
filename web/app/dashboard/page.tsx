@@ -165,7 +165,7 @@ function DashboardContent() {
 
   const { data: opsData, isLoading: opsLoading } = useQuery({
     queryKey: ['operations-dashboard'],
-    queryFn: () => operationsApi.getDashboard(),
+    queryFn: () => operationsApi.getOperationsDashboard(),
     refetchInterval: 30000,
   })
 

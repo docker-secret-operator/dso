@@ -549,6 +549,166 @@ export interface ListRecoveryEventsResponse {
 }
 
 // ============================================================================
+// Operations Console API Types (Phase 5C)
+// ============================================================================
+
+export interface OperationsDashboard {
+  timestamp: string
+  overview_kpis: OverviewKPIs
+  queue_health: QueueHealth
+  worker_health: WorkerHealth
+  execution_status: ExecutionStatusDist
+  recovery_stats: RecoveryStats
+  dlq_stats: DLQStats
+  recent_failures: FailureEvent[]
+  system_health: SystemHealth
+}
+
+export interface Execution {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'timed_out'
+  created_at: string
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
+  correlation_id: string
+}
+
+export interface ExecutionList {
+  executions: Execution[]
+  count: number
+  limit?: number
+  offset?: number
+  timestamp: string
+}
+
+export interface ExecutionStep {
+  sequence: number
+  name: string
+  description: string
+  action: string
+  estimated_time_seconds: number
+  risk_level: 'low' | 'medium' | 'high' | 'critical'
+  rollback_available: boolean
+}
+
+export interface ExecutionPlan {
+  plan_id: string
+  execution_id: string
+  status: string
+  total_steps: number
+  estimated_duration_seconds: number
+  risk_score: number
+  affected_resources: string[]
+  rollback_available: boolean
+  steps: ExecutionStep[]
+  timestamp: string
+}
+
+export interface ExecutionValidation {
+  ready: boolean
+  score: number
+  approval_valid: boolean
+  governance_valid: boolean
+  version_valid: boolean
+  safety_valid: boolean
+  messages: string[]
+  timestamp: string
+}
+
+export interface TraceEvent {
+  sequence: number
+  event_type: string
+  description: string
+  status: string
+  timestamp: string
+  correlation_id?: string
+}
+
+export interface ExecutionTrace {
+  execution_id: string
+  correlation_id: string
+  execution: Execution
+  plan?: ExecutionPlan
+  events: TraceEvent[]
+  timestamp: string
+}
+
+export interface JourneyEvent {
+  step: string
+  action: string
+  status: string
+  actor: string
+  actor_id: string
+  correlation_id: string
+  details: string
+  timestamp: string
+}
+
+export interface ExecutionJourney {
+  execution_id: string
+  correlation_id: string
+  total_steps: number
+  duration_ms: number
+  events: JourneyEvent[]
+  timestamp: string
+}
+
+export interface Alert {
+  id: string
+  type: string
+  severity: 'info' | 'warning' | 'error' | 'critical'
+  message: string
+  value: number
+  threshold: number
+  timestamp: string
+  dismissed: boolean
+}
+
+export interface RecoveryEvent {
+  id: string
+  type: string
+  execution_id: string
+  correlation_id: string
+  worker_id: string
+  details: Record<string, unknown>
+  timestamp: string
+}
+
+export interface MetricsHistory {
+  period: string
+  granularity: string
+  count: number
+  data: DataPoint[]
+  trends?: Record<string, unknown>
+  forecast?: Record<string, unknown>
+  anomalies?: Array<Record<string, unknown>>
+  timestamp: string
+}
+
+export interface DataPoint {
+  timestamp: number
+  success_rate: number
+  failure_rate: number
+  throughput: number
+  queue_depth: number
+  worker_utilization: number
+  avg_execution_time_ms?: number
+}
+
+export interface Worker {
+  id: string
+  state: string
+  healthy: boolean
+  capacity: number
+  running: number
+  utilization: number
+  completed_count: number
+  failed_count: number
+  last_heartbeat: string
+}
+
+// ============================================================================
 // Metrics Types
 // ============================================================================
 
