@@ -4,7 +4,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios'
 // The dashboard server (default :8472) proxies /api/* to the REST API (:8471)
 const API_BASE_URL = typeof window !== 'undefined'
   ? window.location.origin  // Use same origin for proxied API calls
-  : 'http://127.0.0.1:8472' // Default to dashboard server for SSR
+  : (process.env.DSO_API_URL || 'http://localhost:8471') // SSR: configurable via env var
 
 // ============================================================================
 // Type Definitions
@@ -14,7 +14,12 @@ export interface Health {
   status: 'up' | 'down'
   version?: string
   uptime?: number
+  uptime_seconds?: number
   timestamp?: string
+  goroutines?: number
+  memory_mb?: number
+  memory_sys_mb?: number
+  num_gc?: number
 }
 
 export interface Secret {
@@ -218,7 +223,7 @@ export interface MetricsHistoryResponse {
 // ============================================================================
 
 class APIClient {
-  private client: AxiosInstance
+  public client: AxiosInstance
 
   constructor(baseURL: string = API_BASE_URL) {
     this.client = axios.create({
