@@ -54,3 +54,7 @@ global.IntersectionObserver = class IntersectionObserver {
   }
   unobserve(_target: Element) {}
 } as unknown as typeof IntersectionObserver;
+
+// Mock URL.createObjectURL and URL.revokeObjectURL
+global.URL.createObjectURL = vi.fn((blob: Blob) => 'blob:mock-url-' + Math.random());
+global.URL.revokeObjectURL = vi.fn();
