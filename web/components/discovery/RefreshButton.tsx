@@ -20,7 +20,9 @@ export function RefreshButton({ isRefreshing, onRefresh }: RefreshButtonProps) {
       const now = Date.now()
       const secondsAgo = Math.floor((now - lastRefreshTimestamp) / 1000)
 
-      if (secondsAgo < 60) {
+      if (secondsAgo === 0) {
+        setRelativeTime('just now')
+      } else if (secondsAgo < 60) {
         setRelativeTime(`${secondsAgo}s ago`)
       } else if (secondsAgo < 3600) {
         const minutesAgo = Math.floor(secondsAgo / 60)
@@ -35,8 +37,12 @@ export function RefreshButton({ isRefreshing, onRefresh }: RefreshButtonProps) {
   }, [lastRefreshTimestamp])
 
   const handleRefresh = useCallback(async () => {
-    await onRefresh()
-    setLastRefreshTimestamp(Date.now())
+    try {
+      await onRefresh()
+      setLastRefreshTimestamp(Date.now())
+    } catch (error) {
+      console.error('Refresh failed:', error)
+    }
   }, [onRefresh])
 
   return (
@@ -44,6 +50,8 @@ export function RefreshButton({ isRefreshing, onRefresh }: RefreshButtonProps) {
       <button
         onClick={handleRefresh}
         disabled={isRefreshing}
+        aria-label="Refresh discovery data"
+        aria-busy={isRefreshing}
         className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-white/10 text-slate-300 hover:text-slate-100 hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <RotateCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
