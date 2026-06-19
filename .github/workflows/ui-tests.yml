@@ -1,0 +1,288 @@
+name: UI Tests
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+    paths:
+      - 'web/**'
+      - '.github/workflows/ui-tests.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'web/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  # ── Lint & Type Check ─────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run TypeScript compiler
+        working-directory: web
+        run: npx tsc --noEmit
+        continue-on-error: false
+
+      - name: Run ESLint
+        working-directory: web
+        run: npm run lint
+        continue-on-error: false
+
+  # ── Unit Tests (Phase 1) ───────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run unit tests
+        working-directory: web
+        run: npm run test:coverage -- --run --include='tests/unit/**/*.test.{ts,tsx}'
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-unit-tests
+          path: web/coverage/
+          retention-days: 7
+
+  # ── Component Tests (Phase 2) ──────────────────────────────────────────────
+  component-tests:
+    name: Component Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run component tests
+        working-directory: web
+        run: npm run test -- --run --include='tests/component/**/*.test.{ts,tsx}'
+
+  # ── Integration Tests (Phase 3) ────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run integration tests
+        working-directory: web
+        run: npm run test -- --run --include='tests/integration/**/*.test.{ts,tsx}'
+
+  # ── E2E Tests (Phase 4) ────────────────────────────────────────────────────
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        working-directory: web
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
+  # ── Accessibility Tests (Phase 5) ──────────────────────────────────────────
+  accessibility-tests:
+    name: Accessibility Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run accessibility tests
+        working-directory: web
+        run: npm run test -- --run --include='tests/accessibility/**/*.test.{ts,tsx}'
+
+  # ── Error Handling Tests (Phase 6) ─────────────────────────────────────────
+  error-handling-tests:
+    name: Error Handling Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run error handling tests
+        working-directory: web
+        run: npm run test -- --run --include='tests/error-handling/**/*.test.{ts,tsx}'
+
+  # ── Performance Tests (Phase 7) ────────────────────────────────────────────
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run performance tests
+        working-directory: web
+        run: npm run test -- --run --include='tests/performance/**/*.test.{ts,tsx}'
+
+      - name: Upload performance metrics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-metrics
+          path: web/coverage/
+          retention-days: 7
+
+  # ── Test Summary Report ────────────────────────────────────────────────────
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests, component-tests, integration-tests, e2e-tests, accessibility-tests, error-handling-tests, performance-tests]
+    if: always()
+    steps:
+      - name: Check all tests passed
+        run: |
+          if [ "${{ needs.unit-tests.result }}" == "failure" ] || \
+             [ "${{ needs.component-tests.result }}" == "failure" ] || \
+             [ "${{ needs.integration-tests.result }}" == "failure" ] || \
+             [ "${{ needs.e2e-tests.result }}" == "failure" ] || \
+             [ "${{ needs.accessibility-tests.result }}" == "failure" ] || \
+             [ "${{ needs.error-handling-tests.result }}" == "failure" ] || \
+             [ "${{ needs.performance-tests.result }}" == "failure" ]; then
+            echo "❌ One or more test suites failed!"
+            exit 1
+          fi
+          echo "✅ All test suites passed!"
+
+      - name: Comment PR with test results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ✅ UI Test Suite Results\n\n| Phase | Status |\n|-------|--------|\n| Phase 1: Unit Tests | ${{ needs.unit-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 2: Component Tests | ${{ needs.component-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 3: Integration Tests | ${{ needs.integration-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 4: E2E Tests | ${{ needs.e2e-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 5: Accessibility Tests | ${{ needs.accessibility-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 6: Error Handling Tests | ${{ needs.error-handling-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n| Phase 7: Performance Tests | ${{ needs.performance-tests.result === 'success' && '✅ Passed' || '❌ Failed' }} |\n\nArtifacts:\n- Coverage reports: [unit-tests](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\n- E2E report: [playwright-report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+            })
