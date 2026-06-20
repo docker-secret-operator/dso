@@ -73,7 +73,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       disabled={disabled || isLoading}
       className={cn(
         'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-100',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B1020]',
+        'focus:outline-none focus:shadow-[0_0_0_3px_rgba(59,130,246,0.1),_0_0_0_1px_rgba(59,130,246,0.5)]',
         'disabled:opacity-50 disabled:cursor-not-allowed',
 
         // Sizes
@@ -202,10 +202,10 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
             'w-full rounded-lg border text-sm transition-all duration-100',
             'bg-[#1a1f2e] text-slate-200 placeholder:text-slate-600',
             'border-white/10 hover:border-white/16',
-            'focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30',
+            'focus:outline-none focus:border-indigo-500/60 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.1),_0_0_0_1px_rgba(59,130,246,0.5)]',
             'disabled:opacity-50 disabled:cursor-not-allowed',
             startIcon ? 'pl-9 pr-3 py-2' : 'px-3 py-2',
-            error && 'border-red-500/60 focus:border-red-500 focus:ring-red-500/20',
+            error && 'border-red-500/60 focus:border-red-500 focus:shadow-[0_0_0_3px_rgba(239,68,68,0.1),_0_0_0_1px_rgba(239,68,68,0.5)]',
             className
           )}
           {...props}
@@ -242,7 +242,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           'w-full rounded-lg border text-sm transition-all duration-100',
           'bg-[#1a1d24] text-slate-200',
           'border-white/10 hover:border-white/16',
-          'focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30',
+          'focus:outline-none focus:border-indigo-500/60 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.1),_0_0_0_1px_rgba(59,130,246,0.5)]',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           'px-3 py-2',
           error && 'border-red-500/60',
