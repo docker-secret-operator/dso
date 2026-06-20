@@ -148,9 +148,9 @@ function DiscoveryContent() {
 
   // Container counts for filter display
   const containerCounts = {
-    managed: discoveryData?.managed ?? 0,
-    partial: discoveryData?.partial ?? 0,
-    unmanaged: discoveryData?.unmanaged ?? 0,
+    managed: discoveryData?.managed_count ?? 0,
+    partial: discoveryData?.partial_count ?? 0,
+    unmanaged: discoveryData?.unmanaged_count ?? 0,
   }
 
   return (

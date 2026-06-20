@@ -15,19 +15,19 @@ const API_BASE = '/api/discovery'
 
 /**
  * List all containers with DSO metadata (cached, 30s TTL)
- * GET /api/discovery/containers
+ * GET /api/discovery/docker
  */
 export async function getContainers(): Promise<DiscoveryResponse> {
-  const response = await apiClient.client.get<DiscoveryResponse>(`${API_BASE}/containers`)
+  const response = await apiClient.client.get<DiscoveryResponse>(`${API_BASE}/docker`)
   return response.data
 }
 
 /**
  * Suggest secret mappings based on container env analysis (cached)
- * GET /api/discovery/mappings
+ * GET /api/discovery/docker/mappings
  */
 export async function getMappings(): Promise<MappingResponse> {
-  const response = await apiClient.client.get<MappingResponse>(`${API_BASE}/mappings`)
+  const response = await apiClient.client.get<MappingResponse>(`${API_BASE}/docker/mappings`)
   return response.data
 }
 
@@ -60,9 +60,9 @@ export async function getDiscoverySummary(): Promise<{
 }> {
   const data = await getContainers()
   return {
-    total: data.total,
-    managed: data.managed,
-    unmanaged: data.unmanaged,
-    partial: data.partial,
+    total: data.total_count,
+    managed: data.managed_count,
+    unmanaged: data.unmanaged_count,
+    partial: data.partial_count,
   }
 }

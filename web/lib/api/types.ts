@@ -295,10 +295,10 @@ export interface ContainerMetadata {
 
 export interface DiscoveryResponse {
   containers: ContainerMetadata[]
-  total: number
-  managed: number
-  unmanaged: number
-  partial: number
+  total_count: number
+  managed_count: number
+  unmanaged_count: number
+  partial_count: number
   timestamp: string
 }
 
