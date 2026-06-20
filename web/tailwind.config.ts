@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss"
+import { colors, spacing, borderRadius, shadows } from "./lib/design-system"
 
 const config = {
   darkMode: ["class"],
@@ -58,6 +59,17 @@ const config = {
           DEFAULT: "rgba(255,255,255,0.09)",
           strong: "rgba(255,255,255,0.15)",
         },
+        // Design system colors (from design-system.ts)
+        "ds-primary": colors.primary,
+        "ds-secondary": colors.secondary,
+        "ds-success": colors.success,
+        "ds-warning": colors.warning,
+        "ds-danger": colors.danger,
+        "ds-info": colors.info,
+        "ds-background": colors.background,
+        "ds-card": colors.card,
+        "ds-border": colors.border,
+        "ds-text": colors.text,
         // Status colors
         status: {
           healthy: "#10b981",
@@ -67,7 +79,9 @@ const config = {
           offline: "#64748b",
         },
       },
+      spacing: spacing,
       borderRadius: {
+        ...borderRadius,
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
@@ -120,6 +134,13 @@ const config = {
         spring: "cubic-bezier(0.16,1,0.3,1)",
       },
       boxShadow: {
+        "xs": shadows.xs,
+        "sm": shadows.sm,
+        "md": shadows.md,
+        "lg": shadows.lg,
+        "xl": shadows.xl,
+        "2xl": shadows["2xl"],
+        "inner": shadows.inner,
         "card": "0 1px 3px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)",
         "card-hover": "0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.10)",
         "glow-indigo": "0 0 20px rgba(99,102,241,0.25)",
