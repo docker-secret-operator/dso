@@ -12,26 +12,47 @@ import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 // ============================================================================
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
-  variant?: 'default' | 'elevated' | 'ghost' | 'glass'
-  interactive?: boolean
+  variant?: 'default' | 'interactive' | 'elevated'
 }
 
 export const Card = React.forwardRef<HTMLDivElement, CardProps>(
-  ({ className, variant = 'glass', interactive = false, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn(
-        'rounded-xl border transition-all duration-150',
-        variant === 'default'  && 'bg-[#111318] border-white/[0.07]',
-        variant === 'elevated' && 'bg-[#1a1d24] border-white/[0.10]',
-        variant === 'ghost'    && 'bg-transparent border-transparent',
-        variant === 'glass'    && 'glass-panel',
-        interactive && 'cursor-pointer hover:border-white/[0.14] hover:bg-[#1a1d24] hover:-translate-y-0.5 hover:shadow-card-hover',
-        className
-      )}
-      {...props}
-    />
-  )
+  ({ className, variant = 'default', ...props }, ref) => {
+    const variants = {
+      default: cn(
+        'bg-[#111827]',
+        'border border-[rgba(255,255,255,0.08)]',
+        'rounded-[12px]',
+        'p-[20px]',
+        'shadow-[0_0_0_1px_rgba(255,255,255,0.03),_0_8px_24px_rgba(0,0,0,0.3)]'
+      ),
+      interactive: cn(
+        'bg-[#111827]',
+        'border border-[rgba(255,255,255,0.08)]',
+        'rounded-[12px]',
+        'p-[20px]',
+        'shadow-[0_0_0_1px_rgba(255,255,255,0.03),_0_8px_24px_rgba(0,0,0,0.3)]',
+        'hover:border-[rgba(255,255,255,0.12)]',
+        'hover:shadow-[0_0_0_1px_rgba(255,255,255,0.08),_0_4px_12px_rgba(0,0,0,0.2)]',
+        'transition-all duration-200',
+        'cursor-pointer'
+      ),
+      elevated: cn(
+        'bg-[#1A2235]',
+        'border border-[rgba(255,255,255,0.12)]',
+        'rounded-[12px]',
+        'p-[20px]',
+        'shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),_0_4px_6px_-2px_rgba(0,0,0,0.05)]'
+      ),
+    }
+
+    return (
+      <div
+        ref={ref}
+        className={cn(variants[variant], className)}
+        {...props}
+      />
+    )
+  }
 )
 Card.displayName = 'Card'
 
