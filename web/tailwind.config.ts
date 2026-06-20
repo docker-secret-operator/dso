@@ -133,9 +133,19 @@ const config = {
       transitionTimingFunction: {
         spring: "cubic-bezier(0.16,1,0.3,1)",
       },
+      fontSize: {
+        xs: '12px',
+        sm: '13px',
+        base: '14px',
+        lg: '16px',
+        xl: '18px',
+        '2xl': '22px',
+        '3xl': '28px',
+      },
       boxShadow: {
         "xs": shadows.xs,
         "sm": shadows.sm,
+        "base": shadows.sm,
         "md": shadows.md,
         "lg": shadows.lg,
         "xl": shadows.xl,
@@ -143,6 +153,8 @@ const config = {
         "inner": shadows.inner,
         "card": "0 1px 3px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)",
         "card-hover": "0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.10)",
+        "interactive": shadows.lg,
+        "focus": shadows.xl,
         "glow-indigo": "0 0 20px rgba(99,102,241,0.25)",
         "glow-red": "0 0 20px rgba(239,68,68,0.20)",
       },
