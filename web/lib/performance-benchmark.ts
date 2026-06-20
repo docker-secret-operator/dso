@@ -24,6 +24,35 @@ export interface BenchmarkResult {
   memoryExternalMb: number
 }
 
+export interface BenchmarkContainer {
+  id: string
+  name: string
+  image: string
+  status: 'running' | 'stopped'
+  environment_variable_names: string[]
+  dso_awareness: {
+    status: 'managed' | 'unmanaged'
+    managed_secrets: string[]
+  }
+}
+
+export interface BenchmarkSecret {
+  id: string
+  name: string
+  provider: string
+  status: 'error' | 'active'
+  last_rotated: string
+  next_rotation: string
+}
+
+export interface BenchmarkEvent {
+  id: string
+  timestamp: string
+  action: string
+  severity: 'info' | 'warning' | 'error'
+  message: string
+}
+
 // Synthetic environment generators
 export const SCENARIOS: BenchmarkScenario[] = [
   { name: 'Small', containers: 100, secrets: 50, events: 100 },
@@ -31,7 +60,7 @@ export const SCENARIOS: BenchmarkScenario[] = [
   { name: 'Large', containers: 1000, secrets: 500, events: 1000 },
 ]
 
-export function generateContainers(count: number): any[] {
+export function generateContainers(count: number): BenchmarkContainer[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `container-${i}`,
     name: `app-${i % 10}-${Math.floor(i / 10)}`,
@@ -54,7 +83,7 @@ export function generateContainers(count: number): any[] {
   }))
 }
 
-export function generateSecrets(count: number): any[] {
+export function generateSecrets(count: number): BenchmarkSecret[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `secret-${i}`,
     name: `secret-${i}`,
@@ -65,7 +94,7 @@ export function generateSecrets(count: number): any[] {
   }))
 }
 
-export function generateEvents(count: number): any[] {
+export function generateEvents(count: number): BenchmarkEvent[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `event-${i}`,
     timestamp: new Date(Date.now() - (count - i) * 60 * 1000).toISOString(),
@@ -100,7 +129,7 @@ export function measureTime<T>(
   const durationMs = endTime - startTime
   const memoryHeap = (endMem - startMem) / 1024 / 1024 // Convert to MB
 
-  if (label) {
+  if (label && process.env.NODE_ENV === 'development') {
     console.log(`${label}: ${durationMs.toFixed(2)}ms (Heap: ${memoryHeap.toFixed(2)}MB)`)
   }
 
@@ -114,10 +143,10 @@ export function measureTime<T>(
 import { detectDriftIssues } from './drift-detection'
 
 export function benchmarkDriftDetection(
-  containers: any[],
-  secrets: any[],
+  containers: BenchmarkContainer[],
+  secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>,
-  events: any[]
+  events: BenchmarkEvent[]
 ) {
   return measureTime(
     () => detectDriftIssues(containers, secrets, mappings, events),
@@ -132,9 +161,9 @@ export function benchmarkDriftDetection(
 import { generateRemediationPlans } from './remediation-planner'
 
 export function benchmarkRemediationPlanning(
-  driftIssues: any[],
-  containers: any[],
-  secrets: any[],
+  driftIssues: Array<Record<string, unknown>>,
+  containers: BenchmarkContainer[],
+  secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
 ) {
   return measureTime(
@@ -150,9 +179,9 @@ export function benchmarkRemediationPlanning(
 import { generateChangeSets } from './change-set'
 
 export function benchmarkChangeSetGeneration(
-  remediationPlans: any[],
-  containers: any[],
-  secrets: any[],
+  remediationPlans: Array<Record<string, unknown>>,
+  containers: BenchmarkContainer[],
+  secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
 ) {
   return measureTime(
@@ -172,8 +201,8 @@ import {
 import { createWorkspace } from './workspace'
 
 export function benchmarkWorkspaceValidation(
-  containers: any[],
-  secrets: any[],
+  containers: BenchmarkContainer[],
+  secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
 ) {
   const workspace = createWorkspace()
@@ -205,10 +234,10 @@ import {
 } from './review-workflow'
 
 export function benchmarkReviewWorkflow(
-  workspace: any,
-  validationResults: any[],
-  containers: any[],
-  secrets: any[],
+  workspace: Record<string, unknown>,
+  validationResults: Array<Record<string, unknown>>,
+  containers: BenchmarkContainer[],
+  secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
 ) {
   const checklistResult = measureTime(
@@ -258,10 +287,12 @@ export interface ComprehensiveBenchmarkResults {
 }
 
 export function runComprehensiveBenchmark(scenario: BenchmarkScenario): ComprehensiveBenchmarkResults {
-  console.log(`\n${'='.repeat(80)}`)
-  console.log(`BENCHMARK: ${scenario.name} Environment`)
-  console.log(`Containers: ${scenario.containers}, Secrets: ${scenario.secrets}, Events: ${scenario.events}`)
-  console.log(`${'='.repeat(80)}\n`)
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\n${'='.repeat(80)}`)
+    console.log(`BENCHMARK: ${scenario.name} Environment`)
+    console.log(`Containers: ${scenario.containers}, Secrets: ${scenario.secrets}, Events: ${scenario.events}`)
+    console.log(`${'='.repeat(80)}\n`)
+  }
 
   // Generate synthetic data
   const containers = generateContainers(scenario.containers)
@@ -309,8 +340,10 @@ export function runComprehensiveBenchmark(scenario: BenchmarkScenario): Comprehe
   const endMem = process.memoryUsage().heapUsed
   const memoryPeak = (endMem - startMem) / 1024 / 1024
 
-  console.log(`\nPeak Memory Delta: ${memoryPeak.toFixed(2)}MB`)
-  console.log(`${'='.repeat(80)}\n`)
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\nPeak Memory Delta: ${memoryPeak.toFixed(2)}MB`)
+    console.log(`${'='.repeat(80)}\n`)
+  }
 
   return {
     scenario: scenario.name,

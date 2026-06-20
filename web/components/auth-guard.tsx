@@ -13,19 +13,48 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const isLoginPage = pathname === '/login'
 
   useEffect(() => {
-    const token = localStorage.getItem('dso_api_token')
+    const validateAuth = async () => {
+      const token = localStorage.getItem('dso_api_token')
 
-    if (!token && !isLoginPage) {
-      router.replace('/login')
-      return
+      if (!token && !isLoginPage) {
+        router.replace('/login')
+        setReady(true)
+        return
+      }
+
+      if (token && !isLoginPage) {
+        // Validate token with backend to ensure it's still valid
+        try {
+          const response = await fetch('/api/auth/validate', {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          })
+
+          if (!response.ok) {
+            // Token is invalid
+            localStorage.removeItem('dso_api_token')
+            router.replace('/login')
+            setReady(true)
+            return
+          }
+        } catch (error) {
+          // On network errors, assume token might be valid and continue
+          // The interceptor will handle actual auth failures
+        }
+      }
+
+      if (token && isLoginPage) {
+        router.replace('/dashboard')
+        setReady(true)
+        return
+      }
+
+      setReady(true)
     }
 
-    if (token && isLoginPage) {
-      router.replace('/dashboard')
-      return
-    }
-
-    setReady(true)
+    validateAuth()
   }, [isLoginPage, router])
 
   if (!ready) {

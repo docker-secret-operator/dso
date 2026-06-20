@@ -13,24 +13,30 @@ export function SessionTimeoutWarning() {
   const [showModal, setShowModal] = useState(false)
   const [extending, setExtending] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const mountedRef = useRef(true)
 
   // Fetch session info and update expiry
   const fetchExpiry = useCallback(async () => {
+    if (!mountedRef.current) return
     try {
       const s = await apiClient.getSessionInfo()
-      setExpiresAt(new Date(s.expires_at).getTime())
+      if (mountedRef.current) {
+        setExpiresAt(new Date(s.expires_at).getTime())
+      }
     } catch {
       // session gone — the 401 interceptor will redirect
     }
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
     fetchExpiry()
     timerRef.current = setInterval(fetchExpiry, POLL_INTERVAL_MS)
     return () => {
+      mountedRef.current = false
       if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [fetchExpiry])
+  }, [])
 
   // Determine whether to show the warning
   useEffect(() => {

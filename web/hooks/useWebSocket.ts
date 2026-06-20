@@ -7,6 +7,7 @@ export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected'
 
 // Fixed backoff sequence: 1s, 2s, 5s, 10s, 30s (stays at 30s afterward)
 const BACKOFF_DELAYS = [1000, 2000, 5000, 10000, 30000]
+const MAX_RECONNECT_ATTEMPTS = 20
 
 interface UseWebSocketOptions {
   path?: string
@@ -38,15 +39,28 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
     if (typeof window === 'undefined' || !mountedRef.current) return
 
     try {
+      // Check max reconnection attempts
+      if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        const error = new Error('WebSocket: Max reconnection attempts reached')
+        onError?.(error)
+        return
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
-      const wsUrl = `${protocol}//${host}${path}`
+
+      // Include authentication token in URL
+      let wsUrl = `${protocol}//${host}${path}`
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+      if (token) {
+        wsUrl += `?token=${encodeURIComponent(token)}`
+      }
 
       const ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
         if (!mountedRef.current) { ws.close(); return }
-        console.log('[WebSocket] Connected')
+        if (process.env.NODE_ENV === 'development') console.log('[WebSocket] Connected')
         setConnectionState('connected')
         const wasReconnect = !isFirstConnectRef.current
         isFirstConnectRef.current = false
@@ -66,26 +80,33 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
             return updated.slice(0, maxMessageHistory)
           })
         } catch (err) {
-          console.error('[WebSocket] Failed to parse message:', err)
+          if (process.env.NODE_ENV === 'development') console.error('[WebSocket] Failed to parse message:', err)
         }
       }
 
       ws.onerror = (err) => {
-        console.error('[WebSocket] Error:', err)
+        if (process.env.NODE_ENV === 'development') console.error('[WebSocket] Error:', err)
         onError?.(new Error('WebSocket error'))
       }
 
       ws.onclose = () => {
         if (!mountedRef.current) return
-        console.log('[WebSocket] Disconnected')
+        if (process.env.NODE_ENV === 'development') console.log('[WebSocket] Disconnected')
         setConnectionState('reconnecting')
         onDisconnect?.()
 
-        // Always reconnect — no attempt limit; progress through fixed delay sequence
+        // Check if we've exceeded max reconnection attempts
+        if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          const error = new Error('WebSocket: Max reconnection attempts reached')
+          onError?.(error)
+          return
+        }
+
+        // Progress through fixed delay sequence
         const idx = Math.min(reconnectAttemptsRef.current, BACKOFF_DELAYS.length - 1)
         const delay = BACKOFF_DELAYS[idx]
         reconnectAttemptsRef.current += 1
-        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+        if (process.env.NODE_ENV === 'development') console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
         reconnectTimeoutRef.current = setTimeout(connect, delay)
       }
 

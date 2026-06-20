@@ -4,6 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { getQueryClient } from '@/lib/query-client'
 import { ToastProvider } from './toast-context'
 import { ToastContainer } from './toast-container'
+import { CsrfProvider } from './csrf-provider'
 import { ReactNode } from 'react'
 
 export function Providers({ children }: { children: ReactNode }) {
@@ -11,6 +12,7 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <CsrfProvider />
       <ToastProvider>
         {children}
         <ToastContainer />

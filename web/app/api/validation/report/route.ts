@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
 
 export const runtime = 'nodejs'
 
 export async function GET(request: NextRequest) {
   try {
+    const cookieStore = await cookies()
+    const token = cookieStore.get('dso_api_token')?.value
+
+    if (!token) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const baseUrl = process.env.DSO_API_URL || 'http://localhost:8471'
     const [containersRes, secretsRes, eventsRes] = await Promise.all([
       fetch(`${baseUrl}/api/discovery/docker`, { cache: 'no-store' }),
@@ -63,7 +71,9 @@ export async function GET(request: NextRequest) {
       },
     })
   } catch (error) {
-    console.error('Failed to generate validation report:', error)
+    if (process.env.NODE_ENV === 'development') {
+      console.error('Failed to generate validation report:', error)
+    }
     return NextResponse.json(
       { error: 'Failed to generate validation report' },
       { status: 500 }

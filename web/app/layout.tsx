@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="_csrf_token" content="" />
         {/* Google Fonts — set NEXT_PUBLIC_DISABLE_EXTERNAL_FONTS=true for air-gapped deployments */}
         {process.env.NEXT_PUBLIC_DISABLE_EXTERNAL_FONTS !== 'true' && (
           <>

@@ -33,7 +33,7 @@ export function WorkspacePageClient() {
   const [hasMergedDraft, setHasMergedDraft] = useState(false)
 
   const { data: containers = [] } = useQuery({
-    queryKey: ['containers'],
+    queryKey: ['workspace', 'containers'],
     queryFn: async () => {
       try {
         const response = await fetch('/api/discovery/docker')
@@ -44,10 +44,13 @@ export function WorkspacePageClient() {
         return []
       }
     },
+    refetchInterval: 30000,
+    staleTime: 25000,
+    retry: 2,
   })
 
   const { data: secrets = [] } = useQuery({
-    queryKey: ['secrets'],
+    queryKey: ['workspace', 'secrets'],
     queryFn: async () => {
       try {
         const response = await fetch('/api/secrets')
@@ -58,6 +61,9 @@ export function WorkspacePageClient() {
         return []
       }
     },
+    refetchInterval: 30000,
+    staleTime: 25000,
+    retry: 2,
   })
 
   const mappings = useMemo(() => {

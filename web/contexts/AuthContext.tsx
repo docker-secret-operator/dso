@@ -50,7 +50,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (error) {
-        console.error('Failed to initialize auth:', error)
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Failed to initialize auth:', error)
+        }
         setUser(null)
         setIsAuthenticated(false)
       } finally {
@@ -93,7 +95,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.location.href = '/login'
       }
     } catch (error) {
-      console.error('Logout error:', error)
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Logout error:', error)
+      }
       // Always clear auth state and redirect even if logout fails
       setUser(null)
       setIsAuthenticated(false)
@@ -122,7 +126,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false
       }
     } catch (error) {
-      console.error('Session refresh error:', error)
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Session refresh error:', error)
+      }
       setUser(null)
       setIsAuthenticated(false)
       return false

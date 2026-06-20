@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios'
+import { getCsrfHeaders } from './csrf'
 
 // API Base URL - use relative path to proxy through dashboard server
 // The dashboard server (default :8472) proxies /api/* to the REST API (:8471)
@@ -234,12 +235,19 @@ class APIClient {
       },
     })
 
-    // Add token to requests if available
+    // Add token to requests if available, and CSRF headers for state-changing requests
     this.client.interceptors.request.use((config) => {
       if (typeof window !== 'undefined') {
+        // Add authentication token
         const token = localStorage.getItem('dso_api_token')
         if (token) {
           config.headers.Authorization = `Bearer ${token}`
+        }
+
+        // Add CSRF token for state-changing requests
+        if (config.method && ['post', 'put', 'delete', 'patch'].includes(config.method.toLowerCase())) {
+          const csrfHeaders = getCsrfHeaders()
+          Object.assign(config.headers, csrfHeaders)
         }
       }
       return config
@@ -279,7 +287,10 @@ class APIClient {
     if (Array.isArray(data?.active_secrets)) {
       return data.active_secrets
     }
-    return Array.isArray(response.data) ? (response.data as Secret[]) : []
+    if (Array.isArray(response.data)) {
+      return response.data as Secret[]
+    }
+    throw new Error('Invalid response format: expected array or { active_secrets: [] }')
   }
 
   async getSecret(name: string): Promise<Secret | null> {

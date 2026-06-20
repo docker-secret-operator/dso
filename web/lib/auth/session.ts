@@ -45,9 +45,18 @@ export async function initializeSession(): Promise<storage.StoredUser | null> {
 /**
  * Refresh access token
  * Called when receiving 401 response
+ * Prevents concurrent refresh attempts with atomic flag
  */
 export async function refreshAccessToken(): Promise<boolean> {
   try {
+    // Prevent concurrent refresh attempts
+    const isRefreshing = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('_auth_refreshing') === '1'
+    if (isRefreshing) {
+      // Wait briefly for concurrent refresh to complete
+      await new Promise(resolve => setTimeout(resolve, 100))
+      return isSessionValid()
+    }
+
     const refreshTokenValue = storage.getRefreshToken()
     if (!refreshTokenValue) {
       // No refresh token available
@@ -55,21 +64,33 @@ export async function refreshAccessToken(): Promise<boolean> {
       return false
     }
 
-    // Call refresh endpoint
-    const response = await refreshToken()
-
-    // Store new expiry
-    if (response.expires_at) {
-      const session = storage.getStoredSession()
-      if (session) {
-        storage.setStoredSession({
-          ...session,
-          expires_at: response.expires_at,
-        })
-      }
+    // Set atomic flag to prevent concurrent refreshes
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('_auth_refreshing', '1')
     }
 
-    return true
+    try {
+      // Call refresh endpoint
+      const response = await refreshToken()
+
+      // Store new expiry
+      if (response.expires_at) {
+        const session = storage.getStoredSession()
+        if (session) {
+          storage.setStoredSession({
+            ...session,
+            expires_at: response.expires_at,
+          })
+        }
+      }
+
+      return true
+    } finally {
+      // Always clear the refresh flag
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('_auth_refreshing')
+      }
+    }
   } catch (error) {
     // Refresh failed, clear session
     storage.clearAllAuthData()

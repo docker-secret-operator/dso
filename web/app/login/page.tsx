@@ -24,12 +24,30 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
+
+    // Validate inputs
+    const trimmedUsername = username.trim()
+    if (!trimmedUsername) {
+      setError('Username is required')
+      return
+    }
+
+    if (!password) {
+      setError('Password is required')
+      return
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+
     setLoading(true)
     try {
       const res  = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: trimmedUsername, password }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {

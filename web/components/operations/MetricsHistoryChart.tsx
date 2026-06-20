@@ -1,159 +1,287 @@
-import { Card } from '@/components/ui-modern'
+'use client'
+
+import { Card, Button } from '@/components/ui-modern'
 import { BarChart3 } from 'lucide-react'
-import type { MetricsHistory } from '@/lib/api/types'
+import { useMemo, useState } from 'react'
+import type { MetricsHistory, DataPoint } from '@/lib/api/types'
 
 interface MetricsHistoryChartProps {
   data?: MetricsHistory
+  isLoading?: boolean
+  error?: string
 }
 
+type TimeRange = '1h' | '6h' | '24h' | '7d'
+
 /**
- * Chart displaying metrics history trends
- * Shows success rate, failure rate, throughput, and queue depth over time
+ * 4-line chart displaying metrics history
+ * Task 8: Shows throughput, queue depth, worker utilization, and success rate
+ * with client-side time range filtering
  */
-export function MetricsHistoryChart({ data }: MetricsHistoryChartProps) {
-  if (!data || !data.data || data.data.length === 0) {
+export function MetricsHistoryChart({ data, isLoading, error }: MetricsHistoryChartProps) {
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
+
+  // Filter data based on time range (client-side)
+  const filteredData = useMemo(() => {
+    if (!data?.data || data.data.length === 0) return []
+
+    const now = Date.now() / 1000
+    const ranges: Record<TimeRange, number> = {
+      '1h': 3600,
+      '6h': 21600,
+      '24h': 86400,
+      '7d': 604800,
+    }
+
+    const cutoffTime = now - ranges[timeRange]
+    return data.data.filter(
+      (point) => point.timestamp >= cutoffTime
+    )
+  }, [data?.data, timeRange])
+
+  // Calculate min/max for each metric
+  const metrics = useMemo(() => {
+    if (filteredData.length === 0) {
+      return {
+        throughput: { min: 0, max: 10 },
+        queueDepth: { min: 0, max: 100 },
+        utilization: { min: 0, max: 100 },
+        successRate: { min: 0, max: 100 },
+      }
+    }
+
+    const throughputs = filteredData.map((d) => d.throughput)
+    const depths = filteredData.map((d) => d.queue_depth)
+    const utils = filteredData.map((d) => d.worker_utilization)
+    const rates = filteredData.map((d) => d.success_rate)
+
+    return {
+      throughput: {
+        min: Math.min(...throughputs),
+        max: Math.max(...throughputs, 10),
+      },
+      queueDepth: {
+        min: Math.min(...depths),
+        max: Math.max(...depths, 100),
+      },
+      utilization: {
+        min: Math.min(...utils),
+        max: Math.max(...utils, 100),
+      },
+      successRate: {
+        min: Math.min(...rates),
+        max: Math.max(...rates, 100),
+      },
+    }
+  }, [filteredData])
+
+  const buildPath = (points: number[], metric: { min: number; max: number }) => {
+    if (points.length === 0) return ''
+    const width = 800
+    const height = 160
+    const padding = 40
+    const graphWidth = width - padding * 2
+    const graphHeight = height - padding * 2
+    const range = metric.max - metric.min || 1
+
+    return points
+      .map((val, i) => {
+        const x = padding + (i / Math.max(points.length - 1, 1)) * graphWidth
+        const normalized = (val - metric.min) / range
+        const y = padding + graphHeight - normalized * graphHeight
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+      })
+      .join(' ')
+  }
+
+  if (isLoading) {
+    return (
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <BarChart3 className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-sm font-semibold text-slate-300">Metrics History</h3>
+          </div>
+        </div>
+        <div className="h-64 bg-white/[0.02] rounded-lg animate-pulse" />
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card className="p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <BarChart3 className="w-5 h-5 text-red-400" />
+          <h3 className="text-sm font-semibold text-slate-300">Metrics History</h3>
+        </div>
+        <div className="text-red-400 text-xs">{error}</div>
+      </Card>
+    )
+  }
+
+  if (!filteredData || filteredData.length === 0) {
     return (
       <Card className="p-6">
         <div className="flex items-center gap-3 mb-4">
           <BarChart3 className="w-5 h-5 text-indigo-400" />
           <h3 className="text-sm font-semibold text-slate-300">Metrics History</h3>
         </div>
-        <div className="text-slate-400 text-sm">No metrics data available</div>
+        <div className="py-16 text-center">
+          <p className="text-slate-500 text-sm">No metrics data for selected period</p>
+        </div>
       </Card>
     )
   }
 
-  const dataPoints = data.data
-  const maxDepth = Math.max(...dataPoints.map((d) => d.queue_depth), 100)
-  const maxThroughput = Math.max(...dataPoints.map((d) => d.throughput), 10)
-
-  // Simple SVG sparkline visualization
   const width = 800
-  const height = 200
+  const height = 160
   const padding = 40
 
-  // Calculate graph area
-  const graphWidth = width - padding * 2
-  const graphHeight = height - padding * 2
-
-  // Build path points for throughput line
-  const throughputPoints = dataPoints.map((d, i) => {
-    const x = padding + (i / (dataPoints.length - 1)) * graphWidth
-    const y = padding + graphHeight - (d.throughput / maxThroughput) * graphHeight
-    return `${x},${y}`
-  })
-
-  // Build path for queue depth
-  const queuePoints = dataPoints.map((d, i) => {
-    const x = padding + (i / (dataPoints.length - 1)) * graphWidth
-    const y = padding + graphHeight - (d.queue_depth / maxDepth) * graphHeight
-    return `${x},${y}`
-  })
+  const throughputPath = buildPath(
+    filteredData.map((d) => d.throughput),
+    metrics.throughput
+  )
+  const queuePath = buildPath(
+    filteredData.map((d) => d.queue_depth),
+    metrics.queueDepth
+  )
+  const utilizationPath = buildPath(
+    filteredData.map((d) => d.worker_utilization),
+    metrics.utilization
+  )
+  const successPath = buildPath(
+    filteredData.map((d) => d.success_rate),
+    metrics.successRate
+  )
 
   return (
     <Card className="p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <BarChart3 className="w-5 h-5 text-indigo-400" />
-        <div>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <BarChart3 className="w-5 h-5 text-indigo-400" />
           <h3 className="text-sm font-semibold text-slate-300">Metrics History</h3>
-          <p className="text-xs text-slate-500">
-            {data.period} • {data.granularity} granularity
-          </p>
+        </div>
+        <div className="flex gap-2">
+          {(['1h', '6h', '24h', '7d'] as const).map((range) => (
+            <Button
+              key={range}
+              variant={timeRange === range ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => setTimeRange(range)}
+            >
+              {range}
+            </Button>
+          ))}
         </div>
       </div>
 
       <div className="space-y-6">
-        {/* SVG Chart */}
+        {/* Chart */}
         <div className="overflow-x-auto">
           <svg
             viewBox={`0 0 ${width} ${height}`}
             className="w-full h-auto min-w-full"
-            style={{ minHeight: '200px' }}
+            style={{ minHeight: '160px' }}
           >
             {/* Grid lines */}
-            {Array.from({ length: 5 }).map((_, i) => (
+            {Array.from({ length: 4 }).map((_, i) => (
               <line
                 key={`grid-${i}`}
                 x1={padding}
-                y1={padding + (i * graphHeight) / 4}
+                y1={padding + (i * (height - padding * 2)) / 3}
                 x2={width - padding}
-                y2={padding + (i * graphHeight) / 4}
+                y2={padding + (i * (height - padding * 2)) / 3}
                 stroke="rgba(255, 255, 255, 0.05)"
                 strokeWidth="1"
               />
             ))}
 
             {/* Axes */}
-            <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="rgba(255, 255, 255, 0.2)" strokeWidth="1" />
-            <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="rgba(255, 255, 255, 0.2)" strokeWidth="1" />
-
-            {/* Throughput line */}
-            <polyline
-              points={throughputPoints.join(' ')}
-              fill="none"
-              stroke="#3b82f6"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            <line
+              x1={padding}
+              y1={padding}
+              x2={padding}
+              y2={height - padding}
+              stroke="rgba(255, 255, 255, 0.15)"
+              strokeWidth="1"
+            />
+            <line
+              x1={padding}
+              y1={height - padding}
+              x2={width - padding}
+              y2={height - padding}
+              stroke="rgba(255, 255, 255, 0.15)"
+              strokeWidth="1"
             />
 
-            {/* Queue depth line */}
-            <polyline
-              points={queuePoints.join(' ')}
-              fill="none"
-              stroke="#f59e0b"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            {/* Throughput (blue) */}
+            {throughputPath && (
+              <path
+                d={throughputPath}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
 
-            {/* Y-axis labels */}
-            <text x="15" y={padding + 5} fontSize="12" fill="rgba(255, 255, 255, 0.5)" textAnchor="end">
-              {maxThroughput.toFixed(1)}
-            </text>
-            <text x="15" y={height - padding + 5} fontSize="12" fill="rgba(255, 255, 255, 0.5)" textAnchor="end">
-              0
-            </text>
+            {/* Queue depth (purple) */}
+            {queuePath && (
+              <path
+                d={queuePath}
+                fill="none"
+                stroke="#a855f7"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+
+            {/* Worker utilization (orange) */}
+            {utilizationPath && (
+              <path
+                d={utilizationPath}
+                fill="none"
+                stroke="#f97316"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+
+            {/* Success rate (emerald) */}
+            {successPath && (
+              <path
+                d={successPath}
+                fill="none"
+                stroke="#10b981"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
           </svg>
         </div>
 
-        {/* Legend and stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-xs text-slate-400">Avg Success Rate</p>
-            <p className="text-lg font-semibold text-emerald-400">
-              {(
-                dataPoints.reduce((sum, d) => sum + d.success_rate, 0) / dataPoints.length
-              ).toFixed(1)}%
-            </p>
-          </div>
-          <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-xs text-slate-400">Avg Failure Rate</p>
-            <p className="text-lg font-semibold text-red-400">
-              {(
-                dataPoints.reduce((sum, d) => sum + d.failure_rate, 0) / dataPoints.length
-              ).toFixed(1)}%
-            </p>
-          </div>
-          <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-xs text-slate-400">Peak Throughput</p>
-            <p className="text-lg font-semibold text-blue-400">{maxThroughput.toFixed(2)}/s</p>
-          </div>
-          <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-xs text-slate-400">Max Queue Depth</p>
-            <p className="text-lg font-semibold text-amber-400">{Math.ceil(maxDepth)}</p>
-          </div>
-        </div>
-
         {/* Legend */}
-        <div className="flex gap-6 pt-4 border-t border-white/10">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t border-white/10">
           <div className="flex items-center gap-2">
-            <div className="w-3 h-0.5 bg-blue-500" />
+            <div className="w-2 h-2 rounded-full bg-blue-500" />
             <span className="text-xs text-slate-400">Throughput (exec/s)</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-0.5 bg-amber-500" />
+            <div className="w-2 h-2 rounded-full bg-purple-500" />
             <span className="text-xs text-slate-400">Queue Depth</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-orange-500" />
+            <span className="text-xs text-slate-400">Utilization (%)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="text-xs text-slate-400">Success Rate (%)</span>
           </div>
         </div>
       </div>

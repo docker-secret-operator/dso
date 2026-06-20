@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { PageHeader, Card, Button } from '@/components/ui-modern'
 import { Search, X } from 'lucide-react'
 import * as auditApi from '@/lib/api/audit'
@@ -185,7 +186,9 @@ function AuditContent() {
 export default function AuditPage() {
   return (
     <ProtectedRoute>
-      <AuditContent />
+      <ErrorBoundary>
+        <AuditContent />
+      </ErrorBoundary>
     </ProtectedRoute>
   )
 }

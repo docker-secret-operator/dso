@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { PageHeader, Card } from '@/components/ui-modern'
 import { Search, X } from 'lucide-react'
 import * as discoveryApi from '@/lib/api/discovery'
@@ -208,32 +209,58 @@ function DiscoveryContent() {
       />
 
       {/* Search & Filters */}
-      <div className="flex flex-col md:flex-row gap-3">
-        <div className="relative flex-1 max-w-lg">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600" />
+      <div className="space-y-3">
+        {/* Search Bar */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
           <input
-            className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1d24] text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20"
+            className="w-full pl-10 pr-10 py-2.5 text-sm rounded-lg border border-white/[0.09] bg-white/[0.03] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-colors"
             placeholder="Search by container name, image, or status…"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
+            aria-label="Search containers"
           />
           {searchTerm && (
             <button
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-400 transition-colors"
               onClick={() => setSearchTerm('')}
+              aria-label="Clear search"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-4 h-4" />
             </button>
           )}
         </div>
 
-        <Card className="p-3">
+        {/* Filters Panel */}
+        <Card className="p-4 border-white/[0.06]">
           <DiscoveryFilters
             filters={filters}
             onFilterChange={setFilters}
             containerCount={containerCounts}
+            totalCount={discoveryData?.containers?.length || 0}
           />
         </Card>
+
+        {/* Filter Results Summary */}
+        {(filters.classification.length > 0 || filters.status.length > 0 || searchTerm) && (
+          <div className="flex items-center justify-between px-3 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg">
+            <span className="text-sm text-slate-300">
+              <span className="font-medium text-indigo-400">{filteredContainers.length}</span>
+              {' '}of{' '}
+              <span className="font-medium">{discoveryData?.containers?.length || 0}</span>
+              {' '}containers
+            </span>
+            <button
+              onClick={() => {
+                setFilters({ classification: [], status: [] })
+                setSearchTerm('')
+              }}
+              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              Reset all
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Coverage Metrics */}
@@ -304,7 +331,9 @@ function DiscoveryContent() {
 export default function DiscoveryPage() {
   return (
     <ProtectedRoute>
-      <DiscoveryContent />
+      <ErrorBoundary>
+        <DiscoveryContent />
+      </ErrorBoundary>
     </ProtectedRoute>
   )
 }
