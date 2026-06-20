@@ -67,10 +67,10 @@ function DashboardHero({ health, version }: { health: any, version: string }) {
       <div className="absolute inset-0 bg-mesh opacity-40 animate-mesh-gradient"></div>
       <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight mb-2">
+          <h1 className="text-[28px] font-semibold text-[#F9FAFB] tracking-tight mb-2">
             Operations <span className="gradient-text">Command Center</span>
           </h1>
-          <p className="text-slate-400 text-sm max-w-xl">
+          <p className="text-[14px] font-normal text-[#9CA3AF] max-w-xl">
             Real-time overview of system health, secrets, and autonomous operational status.
           </p>
         </div>
@@ -102,8 +102,8 @@ function AgentUtilizationPanel({ goroutines, memoryMB, activeExec }: { goroutine
           <Cpu className="w-6 h-6" />
         </div>
         <div>
-          <h2 className="text-sm font-semibold text-slate-300">DSO Agent Load</h2>
-          <p className="text-xs text-slate-500">Real-time utilization</p>
+          <h2 className="text-[14px] font-semibold text-[#F3F4F6]">DSO Agent Load</h2>
+          <p className="text-[12px] font-normal text-[#9CA3AF]">Real-time utilization</p>
         </div>
       </div>
 
@@ -111,8 +111,8 @@ function AgentUtilizationPanel({ goroutines, memoryMB, activeExec }: { goroutine
         {/* Load (Goroutines proxy) */}
         <div className="flex flex-col">
           <div className="flex justify-between items-end mb-2">
-            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Agent Load</span>
-            <span className={cn("text-lg font-bold tabular-nums", loadPct > 85 ? "text-red-400" : loadPct > 60 ? "text-amber-400" : "text-emerald-400")}>
+            <span className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider">Agent Load</span>
+            <span className={cn("text-[18px] font-semibold tabular-nums", loadPct > 85 ? "text-red-400" : loadPct > 60 ? "text-amber-400" : "text-emerald-400")}>
               {loadPct}%
             </span>
           </div>
@@ -127,8 +127,8 @@ function AgentUtilizationPanel({ goroutines, memoryMB, activeExec }: { goroutine
         {/* Memory */}
         <div className="flex flex-col">
           <div className="flex justify-between items-end mb-2">
-            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Memory</span>
-            <span className={cn("text-lg font-bold tabular-nums", memoryMB > 1500 ? "text-red-400" : memoryMB > 1000 ? "text-amber-400" : "text-blue-400")}>
+            <span className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider">Memory</span>
+            <span className={cn("text-[18px] font-semibold tabular-nums", memoryMB > 1500 ? "text-red-400" : memoryMB > 1000 ? "text-amber-400" : "text-blue-400")}>
               {Math.round(memoryMB)} MB
             </span>
           </div>
@@ -142,8 +142,8 @@ function AgentUtilizationPanel({ goroutines, memoryMB, activeExec }: { goroutine
 
         {/* Active Goroutines */}
         <div className="col-span-2 md:col-span-1 flex flex-col md:items-end justify-center">
-           <span className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Active Routines</span>
-           <span className="text-2xl font-bold text-slate-100 tabular-nums">{goroutines}</span>
+           <span className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider mb-1">Active Routines</span>
+           <span className="text-[28px] font-semibold text-[#F9FAFB] tabular-nums">{goroutines}</span>
         </div>
       </div>
     </div>
@@ -237,23 +237,23 @@ function DashboardContent() {
         <Card className="p-4">
           <div className="flex items-center gap-6 flex-wrap">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">System</span>
-              <span className="text-xs text-slate-600">{health?.status === 'up' ? 'Operational' : 'Degraded'}</span>
+              <span className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider">System</span>
+              <span className="text-[12px] font-normal text-[#9CA3AF]">{health?.status === 'up' ? 'Operational' : 'Degraded'}</span>
             </div>
             {health?.persistence && (
               <>
                 <div className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                  <span className="text-xs text-slate-400">Database: {health.persistence.driver}</span>
+                  <span className="text-[12px] font-normal text-[#9CA3AF]">Database: {health.persistence.driver}</span>
                 </div>
                 {health.persistence.wal_mode && (
-                  <div className="text-xs text-slate-600">WAL Enabled</div>
+                  <div className="text-[12px] font-normal text-[#9CA3AF]">WAL Enabled</div>
                 )}
-                <div className="text-xs text-slate-600">Migration: v{health.persistence.migration_version}</div>
+                <div className="text-[12px] font-normal text-[#9CA3AF]">Migration: v{health.persistence.migration_version}</div>
               </>
             )}
             {health?.uptime != null && (
-              <div className="ml-auto text-xs text-slate-600">
+              <div className="ml-auto text-[12px] font-normal text-[#9CA3AF]">
                 Uptime: {Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m
               </div>
             )}
@@ -312,22 +312,22 @@ function DashboardContent() {
             {/* Queue Health */}
             {queueHealth && (
               <Card className="p-5">
-                <h3 className="text-sm font-semibold text-slate-300 mb-4">Queue Health</h3>
+                <h3 className="text-[18px] font-semibold text-[#F3F4F6] mb-4">Queue Health</h3>
                 <div className="space-y-3">
                   <div>
                     <div className="flex justify-between mb-1">
-                      <span className="text-xs text-slate-400">Depth</span>
-                      <span className="text-sm font-semibold text-slate-200">{queueHealth.depth}</span>
+                      <span className="text-[12px] font-normal text-[#9CA3AF]">Depth</span>
+                      <span className="text-[14px] font-semibold text-[#F9FAFB]">{queueHealth.depth}</span>
                     </div>
                     <MiniBar value={queueHealth.depth} max={100} color={queueHealth.health_score > 75 ? '#10b981' : queueHealth.health_score > 50 ? '#f59e0b' : '#ef4444'} />
                   </div>
                   <div>
-                    <span className="text-xs text-slate-400">Health Score: </span>
-                    <span className={cn('text-sm font-semibold', queueHealth.status === 'healthy' ? 'text-emerald-400' : queueHealth.status === 'warning' ? 'text-amber-400' : 'text-red-400')}>
+                    <span className="text-[12px] font-normal text-[#9CA3AF]">Health Score: </span>
+                    <span className={cn('text-[12px] font-semibold', queueHealth.status === 'healthy' ? 'text-emerald-400' : queueHealth.status === 'warning' ? 'text-amber-400' : 'text-red-400')}>
                       {queueHealth.health_score} {queueHealth.status}
                     </span>
                   </div>
-                  <div className="text-xs text-slate-500">Completion: {(queueHealth.completion_rate ?? 0).toFixed(1)}/s</div>
+                  <div className="text-[12px] font-normal text-[#9CA3AF]">Completion: {(queueHealth.completion_rate ?? 0).toFixed(1)}/s</div>
                 </div>
               </Card>
             )}
@@ -335,20 +335,20 @@ function DashboardContent() {
             {/* Worker Health */}
             {workerHealth && (
               <Card className="p-5">
-                <h3 className="text-sm font-semibold text-slate-300 mb-4">Worker Health</h3>
+                <h3 className="text-[18px] font-semibold text-[#F3F4F6] mb-4">Worker Health</h3>
                 <div className="space-y-3">
                   <div>
                     <div className="flex justify-between mb-1">
-                      <span className="text-xs text-slate-400">Workers</span>
-                      <span className="text-sm font-semibold text-slate-200">{workerHealth.healthy_workers}/{workerHealth.total_workers}</span>
+                      <span className="text-[12px] font-normal text-[#9CA3AF]">Workers</span>
+                      <span className="text-[14px] font-semibold text-[#F9FAFB]">{workerHealth.healthy_workers}/{workerHealth.total_workers}</span>
                     </div>
                     <MiniBar value={workerHealth.healthy_workers} max={workerHealth.total_workers} color={workerHealth.health_score > 75 ? '#10b981' : '#f59e0b'} />
                   </div>
                   <div>
-                    <span className="text-xs text-slate-400">Utilization: </span>
-                    <span className="text-sm font-semibold text-slate-200">{Math.round(workerHealth.avg_utilization)}%</span>
+                    <span className="text-[12px] font-normal text-[#9CA3AF]">Utilization: </span>
+                    <span className="text-[14px] font-semibold text-[#F9FAFB]">{Math.round(workerHealth.avg_utilization)}%</span>
                   </div>
-                  <div className="text-xs text-slate-500">{workerHealth.unhealthy_workers} unhealthy</div>
+                  <div className="text-[12px] font-normal text-[#9CA3AF]">{workerHealth.unhealthy_workers} unhealthy</div>
                 </div>
               </Card>
             )}
@@ -360,7 +360,7 @@ function DashboardContent() {
           <Skeleton className="h-24 rounded-lg" />
         ) : executionStatus ? (
           <Card className="p-5">
-            <h3 className="text-sm font-semibold text-slate-300 mb-4">Execution Status</h3>
+            <h3 className="text-[18px] font-semibold text-[#F3F4F6] mb-4">Execution Status</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
               {[
                 { label: 'Queued', value: executionStatus.queued, color: '#3b82f6' },
@@ -372,8 +372,8 @@ function DashboardContent() {
                 { label: 'Timed Out', value: executionStatus.timed_out, color: '#ec4899' },
               ].map(status => (
                 <div key={status.label} className="text-center">
-                  <div className="text-2xl font-bold text-slate-100 mb-1">{status.value}</div>
-                  <div className="text-xs text-slate-500">{status.label}</div>
+                  <div className="text-[22px] font-semibold text-[#F9FAFB] mb-1">{status.value}</div>
+                  <div className="text-[11px] font-normal text-[#9CA3AF]">{status.label}</div>
                 </div>
               ))}
             </div>
@@ -386,10 +386,10 @@ function DashboardContent() {
           {/* Active alerts */}
           <Card className="p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-slate-300">Active Alerts</h2>
+              <h2 className="text-[18px] font-semibold text-[#F3F4F6]">Active Alerts</h2>
               <button
                 onClick={() => router.push('/alerts')}
-                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
+                className="text-[12px] font-normal text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
               >
                 {totalAlerts > 0 && <span className="tabular-nums">{totalAlerts}</span>}
                 <ChevronRight className="w-3.5 h-3.5" />
@@ -416,8 +416,8 @@ function DashboardContent() {
                       alert.severity === 'warning'  ? 'bg-amber-400' : 'bg-blue-400'
                     }`} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-slate-300 truncate">{alert.message ?? 'Alert'}</p>
-                      <p className="text-[11px] text-slate-600 mt-0.5">{alert.type}</p>
+                      <p className="text-[13px] font-medium text-[#F3F4F6] truncate">{alert.message ?? 'Alert'}</p>
+                      <p className="text-[11px] font-normal text-[#9CA3AF] mt-0.5">{alert.type}</p>
                     </div>
                   </div>
                 ))}
@@ -428,10 +428,10 @@ function DashboardContent() {
           {/* Recent audit */}
           <Card className="p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-slate-300">Recent Activity</h2>
+              <h2 className="text-[18px] font-semibold text-[#F3F4F6]">Recent Activity</h2>
               <button
                 onClick={() => router.push('/audit')}
-                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                className="text-[12px] font-normal text-indigo-400 hover:text-indigo-300 transition-colors"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
@@ -451,8 +451,8 @@ function DashboardContent() {
                       e.severity === 'error' ? 'bg-red-400' :
                       e.severity === 'warning' ? 'bg-amber-400' : 'bg-blue-400'
                     }`} />
-                    <span className="text-xs text-slate-400 truncate flex-1">{e.action}</span>
-                    <span className="text-[10px] text-slate-700 flex-shrink-0">
+                    <span className="text-[12px] font-normal text-[#9CA3AF] truncate flex-1">{e.action}</span>
+                    <span className="text-[11px] font-normal text-[#6B7280] flex-shrink-0">
                       {new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>

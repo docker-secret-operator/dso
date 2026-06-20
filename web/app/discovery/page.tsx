@@ -244,10 +244,10 @@ function DiscoveryContent() {
         {/* Filter Results Summary */}
         {(filters.classification.length > 0 || filters.status.length > 0 || searchTerm) && (
           <div className="flex items-center justify-between px-3 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg">
-            <span className="text-sm text-slate-300">
-              <span className="font-medium text-indigo-400">{filteredContainers.length}</span>
+            <span className="text-[13px] font-normal text-[#F3F4F6]">
+              <span className="font-semibold text-indigo-400">{filteredContainers.length}</span>
               {' '}of{' '}
-              <span className="font-medium">{discoveryData?.containers?.length || 0}</span>
+              <span className="font-semibold">{discoveryData?.containers?.length || 0}</span>
               {' '}containers
             </span>
             <button
@@ -255,7 +255,7 @@ function DiscoveryContent() {
                 setFilters({ classification: [], status: [] })
                 setSearchTerm('')
               }}
-              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+              className="text-[11px] font-normal text-indigo-400 hover:text-indigo-300 transition-colors"
             >
               Reset all
             </button>
@@ -273,12 +273,12 @@ function DiscoveryContent() {
       {containersError && (
         <Card className="p-4 border-red-500/30 bg-red-500/10">
           <div className="flex items-center justify-between">
-            <p className="text-sm text-red-400">Unable to load discovered containers</p>
+            <p className="text-[13px] font-normal text-red-400">Unable to load discovered containers</p>
             <button
               onClick={() =>
                 queryClient.invalidateQueries({ queryKey: ['discovery', 'containers'] })
               }
-              className="text-sm text-red-400 hover:text-red-300 underline"
+              className="text-[13px] font-normal text-red-400 hover:text-red-300 underline"
             >
               Retry
             </button>
@@ -299,10 +299,10 @@ function DiscoveryContent() {
 
       {/* Secret Mappings */}
       <div>
-        <h2 className="text-lg font-semibold text-slate-200 mb-3">Secret Mapping Suggestions</h2>
+        <h2 className="text-[18px] font-semibold text-[#F3F4F6] mb-3">Secret Mapping Suggestions</h2>
         {mappingsError ? (
           <Card className="p-4 border-amber-500/30 bg-amber-500/10">
-            <p className="text-sm text-amber-400">Unable to load secret suggestions</p>
+            <p className="text-[13px] font-normal text-amber-400">Unable to load secret suggestions</p>
           </Card>
         ) : (
           <SecretMappingsTable
@@ -315,7 +315,7 @@ function DiscoveryContent() {
 
       {/* Discovery Metrics */}
       <div>
-        <h2 className="text-lg font-semibold text-slate-200 mb-3">Cache Health</h2>
+        <h2 className="text-[18px] font-semibold text-[#F3F4F6] mb-3">Cache Health</h2>
         <DiscoveryMetricsSection metrics={metricsData} isLoading={metricsLoading} />
       </div>
 

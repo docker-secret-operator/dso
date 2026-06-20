@@ -26,7 +26,7 @@ export function ContainerTable({
     return (
       <Card className="overflow-hidden">
         <div className="px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.01]">
-          <div className={`grid ${hasSelection ? 'grid-cols-7' : 'grid-cols-6'} gap-3 text-xs font-semibold text-slate-500`}>
+          <div className={`grid ${hasSelection ? 'grid-cols-7' : 'grid-cols-6'} gap-3 text-[11px] font-semibold text-[#6B7280] uppercase tracking-wide`}>
             {hasSelection && <span>Select</span>}
             <span>Name</span>
             <span>Image</span>
@@ -56,7 +56,7 @@ export function ContainerTable({
   return (
     <Card className="overflow-hidden">
       <div className="px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.01]">
-        <div className={`grid ${hasSelection ? 'grid-cols-7' : 'grid-cols-6'} gap-3 text-xs font-semibold text-slate-500`}>
+        <div className={`grid ${hasSelection ? 'grid-cols-7' : 'grid-cols-6'} gap-3 text-[11px] font-semibold text-[#6B7280] uppercase tracking-wide`}>
           {hasSelection && <span>Select</span>}
           <span>Name</span>
           <span>Image</span>

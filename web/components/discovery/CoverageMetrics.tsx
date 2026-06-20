@@ -66,10 +66,10 @@ export function CoverageMetrics({ containers, isLoading }: CoverageMetricsProps)
       {metrics.map(metric => (
         <Card key={metric.label} className="p-4">
           <div className="space-y-2">
-            <p className="text-xs text-slate-500 font-medium">{metric.label}</p>
+            <p className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wide">{metric.label}</p>
             <div className="flex items-baseline justify-between">
-              <p className={`text-2xl font-bold ${colorClasses[metric.color]}`}>{metric.value}</p>
-              <p className="text-xs text-slate-400">{metric.percentage}%</p>
+              <p className={`text-[28px] font-semibold ${colorClasses[metric.color]}`}>{metric.value}</p>
+              <p className="text-[11px] font-normal text-[#9CA3AF]">{metric.percentage}%</p>
             </div>
           </div>
         </Card>

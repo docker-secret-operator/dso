@@ -88,7 +88,7 @@ function AuditContent() {
         <div className="relative flex-1 max-w-lg">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600" />
           <input
-            className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-white/[0.09] bg-[#1a1f2e] text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20"
+            className="w-full pl-9 pr-4 py-2 text-[13px] font-normal rounded-lg border border-white/[0.09] bg-[#1a1f2e] text-[#F3F4F6] placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20"
             placeholder="Search actions, actors, resources, IDs…"
             value={search}
             onChange={e => setSearch(e.target.value)}
@@ -118,12 +118,12 @@ function AuditContent() {
       <Card className="overflow-hidden">
         {/* Summary bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.01]">
-          <span className="text-xs text-slate-600">
+          <span className="text-[11px] font-normal text-[#9CA3AF]">
             {isFetching ? 'Refreshing…' : `${visible.length}${search ? ' filtered' : ''} of ${events.length} loaded`}
           </span>
           <button
             onClick={() => refetch()}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+            className="text-[11px] font-normal text-indigo-400 hover:text-indigo-300 transition-colors"
           >
             Refresh
           </button>
@@ -150,7 +150,7 @@ function AuditContent() {
             >
               Previous
             </Button>
-            <span className="text-xs text-slate-600 tabular-nums">
+            <span className="text-[11px] font-normal text-[#9CA3AF] tabular-nums">
               {(filters.offset ?? 0) + 1}–{Math.min((filters.offset ?? 0) + (filters.limit ?? 50), total)} of {total.toLocaleString()}
             </span>
             <Button

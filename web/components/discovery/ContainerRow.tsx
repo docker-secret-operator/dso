@@ -48,10 +48,10 @@ export function ContainerRow({ container, onSelect, onToggleSelect, isSelected }
           </div>
         )}
         <div className="col-span-1 truncate">
-          <p className="text-sm font-medium text-slate-200 truncate">{container.container_name}</p>
+          <p className="text-[13px] font-semibold text-[#F3F4F6] truncate">{container.container_name}</p>
         </div>
         <div className="col-span-1 truncate">
-          <p className="text-xs text-slate-400 truncate">{container.image}</p>
+          <p className="text-[11px] font-normal text-[#9CA3AF] truncate">{container.image}</p>
         </div>
         <div className="col-span-1">
           <Badge variant="outline" size="sm" className={statusColor[status]}>
@@ -64,12 +64,12 @@ export function ContainerRow({ container, onSelect, onToggleSelect, isSelected }
           </Badge>
         </div>
         <div className="col-span-1">
-          <p className="text-sm text-slate-400 text-center">
+          <p className="text-[13px] font-semibold text-[#F3F4F6] text-center">
             {container.dso_awareness?.managed_secrets?.length ?? 0}
           </p>
         </div>
         <div className="col-span-1 flex items-center justify-between">
-          <p className="text-sm text-slate-400 text-center">
+          <p className="text-[13px] font-semibold text-[#F3F4F6] text-center">
             {container.dso_awareness?.missing_mappings?.length ?? 0}
           </p>
           <ChevronRight className="w-4 h-4 text-slate-600" />

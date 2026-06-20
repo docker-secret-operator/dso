@@ -29,7 +29,7 @@ function EventRow({ e, onCorrelation, onActor }: {
 
       <div className="flex-1 min-w-0 space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-slate-200">{e.action}</span>
+          <span className="text-[13px] font-semibold text-[#F3F4F6]">{e.action}</span>
           <StatusBadge status={e.status} />
           {e.resource_type && (
             <Badge variant="outline" size="sm">{e.resource_type}</Badge>
@@ -37,10 +37,10 @@ function EventRow({ e, onCorrelation, onActor }: {
         </div>
 
         {e.details && (
-          <p className="text-xs text-slate-500 truncate max-w-2xl">{e.details}</p>
+          <p className="text-[12px] font-normal text-[#9CA3AF] truncate max-w-2xl">{e.details}</p>
         )}
 
-        <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+        <div className="flex flex-wrap items-center gap-3 text-[11px] font-normal text-[#9CA3AF]">
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />{relTime(e.timestamp)}
           </span>
