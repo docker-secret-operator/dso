@@ -159,7 +159,7 @@ export function SidebarPremium() {
 
   return (
     <aside
-      className="fixed left-0 top-0 h-screen flex flex-col bg-[#111318] border-r border-white/[0.07] z-40 transition-all duration-200 ease-spring"
+      className="fixed left-0 top-0 h-screen flex flex-col bg-[#111827] border-r border-white/[0.07] z-40 transition-all duration-200 ease-spring"
       style={{ width: collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED }}
     >
       {/* ── Logo / collapse toggle ── */}
@@ -268,7 +268,7 @@ export function SidebarPremium() {
 
                         {/* Tooltip on collapsed */}
                         {collapsed && (
-                          <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1d24] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
+                          <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1f2e] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
                             {item.label}
                           </span>
                         )}
@@ -296,7 +296,7 @@ export function SidebarPremium() {
           <Settings className="w-4 h-4 flex-shrink-0" />
           {!collapsed && <span>Settings</span>}
           {collapsed && (
-            <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1d24] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
+            <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded-md bg-[#1a1f2e] border border-white/10 text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-50">
               Settings
             </span>
           )}

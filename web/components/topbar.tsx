@@ -104,7 +104,7 @@ function UserMenu() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-56 bg-[#1a1d24] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden animate-fade-in">
+        <div className="absolute right-0 top-full mt-1.5 w-56 bg-[#1a1f2e] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden animate-fade-in">
           <div className="px-4 py-3 border-b border-white/07">
             <p className="text-sm font-semibold text-slate-200 truncate">{user?.display_name || user?.username}</p>
             <p className="text-xs text-slate-500 truncate mt-0.5 capitalize">{user?.role}</p>
@@ -220,7 +220,7 @@ export function Topbar() {
   const crumbs = useBreadcrumbs()
 
   return (
-    <header className="flex-shrink-0 flex items-center justify-between h-12 px-4 border-b border-white/[0.07] bg-[#0a0b0f]/80 backdrop-blur-sm sticky top-0 z-30">
+    <header className="flex-shrink-0 flex items-center justify-between h-12 px-4 border-b border-white/[0.07] bg-[#0B1020]/80 backdrop-blur-sm sticky top-0 z-30">
       {/* Left — breadcrumbs */}
       <nav className="flex items-center gap-1 min-w-0" aria-label="Breadcrumb">
         {crumbs.map((crumb, i) => (

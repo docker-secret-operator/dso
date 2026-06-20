@@ -64,7 +64,7 @@ export function SessionTimeoutWarning() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-[#111318] rounded-xl border border-white/[0.09] shadow-2xl p-6 w-full max-w-sm space-y-4">
+      <div className="bg-[#111827] rounded-xl border border-white/[0.09] shadow-2xl p-6 w-full max-w-sm space-y-4">
         <h2 className="text-base font-semibold text-slate-100">Session Expiring Soon</h2>
         <p className="text-sm text-slate-400">
           Your session expires in approximately {minsLeft} minute{minsLeft !== 1 ? 's' : ''}.

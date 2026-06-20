@@ -16,7 +16,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0a0b0f]">
+    <div className="flex h-screen overflow-hidden bg-[#0B1020]">
       <SidebarPremium />
 
       {/* Content area — left offset tracks sidebar CSS variable set by the sidebar */}

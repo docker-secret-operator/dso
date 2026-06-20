@@ -73,7 +73,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       disabled={disabled || isLoading}
       className={cn(
         'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-100',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0b0f]',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B1020]',
         'disabled:opacity-50 disabled:cursor-not-allowed',
 
         // Sizes
@@ -200,7 +200,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           className={cn(
             'w-full rounded-lg border text-sm transition-all duration-100',
-            'bg-[#1a1d24] text-slate-200 placeholder:text-slate-600',
+            'bg-[#1a1f2e] text-slate-200 placeholder:text-slate-600',
             'border-white/10 hover:border-white/16',
             'focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30',
             'disabled:opacity-50 disabled:cursor-not-allowed',
@@ -251,7 +251,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         {...props}
       >
         {options.map(o => (
-          <option key={o.value} value={o.value} className="bg-[#1a1d24]">{o.label}</option>
+          <option key={o.value} value={o.value} className="bg-[#1a1f2e]">{o.label}</option>
         ))}
       </select>
       {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
@@ -290,7 +290,7 @@ export function MetricCard({ label, value, change, trend = 'neutral', icon, load
 
   if (loading) {
     return (
-      <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5 space-y-3">
+      <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-5 space-y-3">
         <div className="skeleton h-3.5 w-20 rounded" />
         <div className="skeleton h-8 w-16 rounded" />
         <div className="skeleton h-3 w-24 rounded" />

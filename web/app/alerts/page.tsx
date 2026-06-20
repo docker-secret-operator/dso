@@ -204,7 +204,7 @@ export default function AlertsPage() {
 
       {/* Summary strip */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+        <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-4 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center">
             <AlertTriangle className="w-4 h-4 text-red-400" />
           </div>
@@ -213,7 +213,7 @@ export default function AlertsPage() {
             <p className="text-[11px] text-slate-600">Critical active{!statsFromServer ? ' (this page)' : ''}</p>
           </div>
         </div>
-        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+        <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-4 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-orange-500/15 flex items-center justify-center">
             <AlertTriangle className="w-4 h-4 text-orange-400" />
           </div>
@@ -222,7 +222,7 @@ export default function AlertsPage() {
             <p className="text-[11px] text-slate-600">High active{!statsFromServer ? ' (this page)' : ''}</p>
           </div>
         </div>
-        <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-4 flex items-center gap-3">
+        <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-4 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center">
             <Clock className="w-4 h-4 text-amber-400" />
           </div>

@@ -62,7 +62,7 @@ export default function LoginPage() {
       if (data.session) {
         localStorage.setItem('dso_session', JSON.stringify(data.session))
       }
-      router.replace('/dashboard')
+      router.replace('/discovery')
     } catch {
       setError('Unable to reach the API server. Is the DSO agent running?')
     } finally {
@@ -71,7 +71,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0b0f] flex items-center justify-center px-4">
+    <div className="min-h-screen bg-[#0B1020] flex items-center justify-center px-4">
       {/* Subtle background glow */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-indigo-600/[0.06] rounded-full blur-3xl" />
@@ -88,7 +88,7 @@ export default function LoginPage() {
         </div>
 
         {/* Card */}
-        <div className="bg-[#111318] border border-white/[0.09] rounded-2xl p-8 shadow-xl">
+        <div className="bg-[#111827] border border-white/[0.09] rounded-2xl p-8 shadow-xl">
           <h2 className="text-base font-semibold text-slate-200 mb-6">Sign in to your account</h2>
 
           {/* Notices */}
@@ -157,7 +157,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading || !username || !password}
-              className="w-full mt-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-[#111318] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-100"
+              className="w-full mt-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-[#111827] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-100"
             >
               {loading ? (
                 <span className="flex items-center justify-center gap-2">

@@ -48,7 +48,7 @@ function StatCard({
         rounded-xl border transition-all duration-150 p-5
         ${urgent && value > 0
           ? 'bg-red-500/5 border-red-500/20 hover:border-red-500/30'
-          : 'bg-[#111318] border-white/[0.07] hover:border-white/[0.14] hover:bg-[#1a1d24]'
+          : 'bg-[#111827] border-white/[0.07] hover:border-white/[0.14] hover:bg-[#1a1d24]'
         }
       `}>
         <div className="flex items-start justify-between mb-3">
@@ -101,7 +101,7 @@ export default function SecurityPage() {
       {isLoading ? (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="rounded-xl border border-white/[0.07] bg-[#111318] p-5 space-y-3">
+            <div key={i} className="rounded-xl border border-white/[0.07] bg-[#111827] p-5 space-y-3">
               <Skeleton className="h-4 w-20 rounded" />
               <Skeleton className="h-8 w-12 rounded" />
             </div>

@@ -202,7 +202,7 @@ export default function IncidentsPage() {
       {/* Incidents List */}
       <div className="space-y-4">
         {incidents.length === 0 ? (
-          <div className="rounded-lg border border-slate-700/50 bg-[#0f1015] p-8 text-center text-slate-500">
+          <div className="rounded-lg border border-slate-700/50 bg-[#0B1020] p-8 text-center text-slate-500">
             No {filter} incidents
           </div>
         ) : (
@@ -315,7 +315,7 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-4">
       <div className="flex items-center justify-between">
         <span className="text-sm text-slate-400">{label}</span>
         {icon && <div className="text-slate-500">{icon}</div>}

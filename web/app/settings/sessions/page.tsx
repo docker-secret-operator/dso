@@ -108,7 +108,7 @@ export default function SessionsPage() {
       ) : (
         <div className="rounded-lg border border-white/[0.07] overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-[#0f1015] border-b border-white/[0.07]">
+            <thead className="bg-[#0B1020] border-b border-white/[0.07]">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Device / Browser</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">IP Address</th>

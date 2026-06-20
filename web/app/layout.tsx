@@ -29,7 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </>
         )}
       </head>
-      <body className="bg-[#0a0b0f] text-slate-200 antialiased font-sans">
+      <body className="bg-[#0B1020] text-slate-200 antialiased font-sans">
         <Providers>
           <AuthGuard>
             <AppShell>

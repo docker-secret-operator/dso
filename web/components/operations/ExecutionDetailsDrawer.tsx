@@ -124,12 +124,12 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
       {/* Drawer */}
       <div
         className={cn(
-          'fixed right-0 top-0 h-full w-full max-w-2xl bg-[#111318] border-l border-white/10 shadow-xl z-50 transition-transform duration-300 flex flex-col',
+          'fixed right-0 top-0 h-full w-full max-w-2xl bg-[#111827] border-l border-white/10 shadow-xl z-50 transition-transform duration-300 flex flex-col',
           isOpen ? 'translate-x-0' : 'translate-x-full'
         )}
       >
         {/* Header */}
-        <div className="sticky top-0 bg-[#111318] border-b border-white/10 p-6 flex items-center justify-between">
+        <div className="sticky top-0 bg-[#111827] border-b border-white/10 p-6 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Execution Details</h2>
             <code className="text-xs text-slate-500 mt-1">{execution.id.substring(0, 16)}…</code>

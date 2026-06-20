@@ -174,19 +174,19 @@ export default function PluginsPage() {
 
         {status && (
           <div className="grid grid-cols-4 gap-4 mb-6">
-            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
               <div className="text-slate-400 text-sm">Total Plugins</div>
               <div className="text-2xl font-bold text-slate-100">{status.total_plugins}</div>
             </div>
-            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
               <div className="text-slate-400 text-sm">Healthy</div>
               <div className="text-2xl font-bold text-emerald-400">{status.healthy}</div>
             </div>
-            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
               <div className="text-slate-400 text-sm">Degraded</div>
               <div className="text-2xl font-bold text-amber-400">{status.degraded}</div>
             </div>
-            <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+            <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
               <div className="text-slate-400 text-sm">Failed</div>
               <div className="text-2xl font-bold text-red-400">{status.failed}</div>
             </div>
@@ -194,14 +194,14 @@ export default function PluginsPage() {
         )}
 
         {plugins.length === 0 ? (
-          <div className="bg-[#111318] border border-slate-700/50 rounded-lg p-8 text-center">
+          <div className="bg-[#111827] border border-slate-700/50 rounded-lg p-8 text-center">
             <p className="text-slate-500">No plugins available</p>
           </div>
         ) : (
-          <div className="bg-[#111318] border border-slate-700/50 rounded-lg overflow-hidden">
+          <div className="bg-[#111827] border border-slate-700/50 rounded-lg overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-[#0f1015] border-b border-slate-700/50">
+                <thead className="bg-[#0B1020] border-b border-slate-700/50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Name</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Type</th>
@@ -285,7 +285,7 @@ export default function PluginsPage() {
         )}
 
         {selectedPlugin && (
-          <div className="mt-6 bg-[#111318] border border-slate-700/50 rounded-lg p-6">
+          <div className="mt-6 bg-[#111827] border border-slate-700/50 rounded-lg p-6">
             {plugins.find((p) => p.id === selectedPlugin) && (
               <div>
                 <h3 className="text-lg font-bold text-slate-100 mb-4">Plugin Details</h3>

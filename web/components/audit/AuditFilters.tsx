@@ -60,7 +60,7 @@ export function AuditFilters({
               <div key={key} className="space-y-1">
                 <label className="text-[11px] text-slate-500 font-medium">{label}</label>
                 <input
-                  className="w-full rounded-md border border-white/[0.09] bg-[#1a1d24] px-2.5 py-1.5 text-sm text-slate-300 placeholder:text-slate-700 focus:outline-none focus:border-indigo-500/50"
+                  className="w-full rounded-md border border-white/[0.09] bg-[#1a1f2e] px-2.5 py-1.5 text-sm text-slate-300 placeholder:text-slate-700 focus:outline-none focus:border-indigo-500/50"
                   value={(filters as any)[key] ?? ''}
                   onChange={e => onFilterChange(key as keyof AuditFiltersType, e.target.value)}
                   placeholder={key.includes('time') ? '2025-01-01T00:00:00Z' : ''}

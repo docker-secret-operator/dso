@@ -175,7 +175,7 @@ export default function ProfilePage() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Avatar and Status */}
           <div className="lg:col-span-1">
-            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-6 space-y-4">
+            <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-6 space-y-4">
               {/* Avatar */}
               <div className="flex justify-center">
                 <div className="h-24 w-24 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
@@ -228,7 +228,7 @@ export default function ProfilePage() {
           {/* Profile Information */}
           <div className="lg:col-span-2 space-y-5">
             {/* Edit Profile Section */}
-            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-6">
+            <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-6">
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-sm font-semibold text-slate-300">Profile Information</h3>
                 <button
@@ -287,7 +287,7 @@ export default function ProfilePage() {
 
             {/* Security & Activity */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+              <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-5">
                 <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
                   <Shield className="h-4 w-4 text-slate-500" />
                   Security
@@ -313,7 +313,7 @@ export default function ProfilePage() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+              <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-5">
                 <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
                   <Clock className="h-4 w-4 text-slate-500" />
                   Activity
@@ -332,7 +332,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Account Metadata */}
-            <div className="rounded-xl border border-white/[0.07] bg-[#111318] p-5">
+            <div className="rounded-xl border border-white/[0.07] bg-[#111827] p-5">
               <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
                 <User className="h-4 w-4 text-slate-500" />
                 Account Information

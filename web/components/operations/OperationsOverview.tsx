@@ -17,7 +17,7 @@ export function OperationsOverview({ data, isLoading, error }: OperationsOvervie
     return (
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="rounded-xl border border-white/[0.07] bg-[#111318] p-5 space-y-3">
+          <div key={i} className="rounded-xl border border-white/[0.07] bg-[#111827] p-5 space-y-3">
             <Skeleton className="h-3.5 w-20 rounded" />
             <Skeleton className="h-8 w-16 rounded" />
             <Skeleton className="h-3 w-24 rounded" />

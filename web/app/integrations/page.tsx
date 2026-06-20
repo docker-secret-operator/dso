@@ -169,19 +169,19 @@ export default function IntegrationsPage() {
 
         {/* Summary Cards */}
         <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+          <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
             <div className="text-slate-400 text-sm">Total Integrations</div>
             <div className="text-2xl font-bold text-slate-100">{integrations.length}</div>
           </div>
-          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+          <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
             <div className="text-slate-400 text-sm">Healthy</div>
             <div className="text-2xl font-bold text-emerald-400">{healthyCount}</div>
           </div>
-          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+          <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
             <div className="text-slate-400 text-sm">Degraded</div>
             <div className="text-2xl font-bold text-amber-400">{failedCount}</div>
           </div>
-          <div className="bg-[#111318] border border-slate-700/50 p-4 rounded-lg">
+          <div className="bg-[#111827] border border-slate-700/50 p-4 rounded-lg">
             <div className="text-slate-400 text-sm">Pending Queue</div>
             <div className="text-2xl font-bold text-blue-400">{queueStats?.pending || 0}</div>
           </div>
@@ -189,13 +189,13 @@ export default function IntegrationsPage() {
 
         {/* Integrations Table */}
         {integrations.length === 0 ? (
-          <div className="bg-[#111318] border border-slate-700/50 rounded-lg p-8 text-center">
+          <div className="bg-[#111827] border border-slate-700/50 rounded-lg p-8 text-center">
             <p className="text-slate-500">No integrations configured</p>
           </div>
         ) : (
-          <div className="bg-[#111318] border border-slate-700/50 rounded-lg overflow-hidden">
+          <div className="bg-[#111827] border border-slate-700/50 rounded-lg overflow-hidden">
             <table className="w-full">
-              <thead className="bg-[#0f1015] border-b border-slate-700/50">
+              <thead className="bg-[#0B1020] border-b border-slate-700/50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Plugin</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase">Health</th>

@@ -150,14 +150,14 @@ export default function AutonomyPage() {
       )}
 
       {/* Actions Table */}
-      <div className="rounded-lg border border-slate-700/50 bg-[#111318] overflow-hidden">
+      <div className="rounded-lg border border-slate-700/50 bg-[#111827] overflow-hidden">
         <div className="border-b border-slate-700/50 px-6 py-4">
           <h2 className="font-semibold text-slate-200">Autonomous Actions ({actions.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-slate-700/50 bg-[#0f1015]">
+            <thead className="border-b border-slate-700/50 bg-[#0B1020]">
               <tr>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Action</th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Resource</th>
@@ -258,7 +258,7 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-4">
       <span className="text-sm text-slate-400">{label}</span>
       <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
     </div>

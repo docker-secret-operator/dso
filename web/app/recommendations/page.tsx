@@ -218,14 +218,14 @@ export default function RecommendationsPage() {
       {/* Recommendations List */}
       <div className="space-y-4">
         {recommendations.length === 0 ? (
-          <div className="rounded-lg border border-slate-700/50 bg-[#0f1015] p-8 text-center text-slate-500">
+          <div className="rounded-lg border border-slate-700/50 bg-[#0B1020] p-8 text-center text-slate-500">
             No {filter} recommendations
           </div>
         ) : (
           recommendations.map(rec => (
             <div
               key={rec.id}
-              className="rounded-lg border border-slate-700/50 bg-[#111318] p-6 hover:border-slate-600/70 transition-colors"
+              className="rounded-lg border border-slate-700/50 bg-[#111827] p-6 hover:border-slate-600/70 transition-colors"
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1">
@@ -322,7 +322,7 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-4">
       <div className="flex items-center justify-between">
         <span className="text-sm text-slate-400">{label}</span>
         {icon && <div className="text-slate-500">{icon}</div>}

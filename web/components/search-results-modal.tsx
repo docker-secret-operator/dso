@@ -96,7 +96,7 @@ export function SearchResultsModal({
 
       {/* Modal */}
       <div className="fixed left-1/2 top-[20%] -translate-x-1/2 w-full max-w-xl z-50 animate-fade-in px-4">
-        <div className="bg-[#111318] border border-white/[0.12] rounded-2xl shadow-2xl overflow-hidden">
+        <div className="bg-[#111827] border border-white/[0.12] rounded-2xl shadow-2xl overflow-hidden">
 
           {/* Search input */}
           <div className="flex items-center gap-3 px-4 border-b border-white/[0.07]">

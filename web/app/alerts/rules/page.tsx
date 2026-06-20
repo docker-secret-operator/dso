@@ -177,7 +177,7 @@ export default function AlertRulesPage() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleSubmit} className="rounded-xl border border-white/[0.07] bg-[#111318] p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="rounded-xl border border-white/[0.07] bg-[#111827] p-6 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>Name</label>
@@ -253,7 +253,7 @@ export default function AlertRulesPage() {
         </div>
       )}
 
-      <div className="rounded-xl border border-white/[0.07] bg-[#111318] overflow-hidden">
+      <div className="rounded-xl border border-white/[0.07] bg-[#111827] overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-slate-400">Loading rules…</div>
         ) : rules.length === 0 ? (
@@ -261,7 +261,7 @@ export default function AlertRulesPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-[#0f1015] border-b border-white/[0.07]">
+              <thead className="bg-[#0B1020] border-b border-white/[0.07]">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Severity</th>
@@ -307,7 +307,7 @@ export default function AlertRulesPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-between px-6 py-4 bg-[#0f1015] border-t border-white/[0.07]">
+        <div className="flex items-center justify-between px-6 py-4 bg-[#0B1020] border-t border-white/[0.07]">
           <div className="text-sm text-slate-500">Page <span className="font-medium text-slate-300">{page}</span></div>
           <div className="flex gap-2">
             <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} className="p-2 hover:bg-white/5 rounded-lg disabled:opacity-50 text-slate-400 transition-colors">

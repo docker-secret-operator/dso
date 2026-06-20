@@ -197,14 +197,14 @@ export default function PoliciesPage() {
       )}
 
       {/* Policies Table */}
-      <div className="rounded-lg border border-slate-700/50 bg-[#111318]">
+      <div className="rounded-lg border border-slate-700/50 bg-[#111827]">
         <div className="border-b border-slate-700/50 px-6 py-4">
           <h2 className="font-semibold text-slate-200">Policies ({rules.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-slate-700/50 bg-[#0f1015]">
+            <thead className="border-b border-slate-700/50 bg-[#0B1020]">
               <tr>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Name</th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Severity</th>

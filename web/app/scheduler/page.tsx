@@ -183,14 +183,14 @@ export default function SchedulerPage() {
       )}
 
       {/* Jobs Table */}
-      <div className="rounded-lg border border-slate-700/50 bg-[#111318]">
+      <div className="rounded-lg border border-slate-700/50 bg-[#111827]">
         <div className="border-b border-slate-700/50 px-6 py-4">
           <h2 className="font-semibold text-slate-200">Jobs ({jobs.length})</h2>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-slate-700/50 bg-[#0f1015]">
+            <thead className="border-b border-slate-700/50 bg-[#0B1020]">
               <tr>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Name</th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Type</th>
@@ -283,7 +283,7 @@ export default function SchedulerPage() {
       {/* Worker Pool Stats */}
       {metrics && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-6">
+          <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-6">
             <h3 className="font-semibold text-slate-200">Worker Pool</h3>
             <div className="mt-4 space-y-2">
               <div className="flex justify-between text-sm">
@@ -301,7 +301,7 @@ export default function SchedulerPage() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-6">
+          <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-6">
             <h3 className="font-semibold text-slate-200">Execution Stats</h3>
             <div className="mt-4 space-y-2">
               <div className="flex justify-between text-sm">
@@ -340,7 +340,7 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
   return (
-    <div className="rounded-lg border border-slate-700/50 bg-[#111318] p-4">
+    <div className="rounded-lg border border-slate-700/50 bg-[#111827] p-4">
       <div className="flex items-center justify-between">
         <span className="text-sm text-slate-400">{label}</span>
         {icon && <div className="text-slate-500">{icon}</div>}

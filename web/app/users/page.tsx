@@ -202,7 +202,7 @@ export default function UsersPage() {
       ) : (
         <div className="rounded-lg border border-white/[0.07] overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-[#0f1015] border-b border-white/[0.07]">
+            <thead className="bg-[#0B1020] border-b border-white/[0.07]">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Username</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Display Name</th>
@@ -297,7 +297,7 @@ export default function UsersPage() {
       {/* Create / Edit modal */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[#111318] rounded-xl border border-white/[0.09] shadow-2xl p-6 w-full max-w-md space-y-4">
+          <div className="bg-[#111827] rounded-xl border border-white/[0.09] shadow-2xl p-6 w-full max-w-md space-y-4">
             <h2 className="text-base font-semibold text-slate-100">{editUser ? 'Edit User' : 'Create User'}</h2>
 
             {formError && (
