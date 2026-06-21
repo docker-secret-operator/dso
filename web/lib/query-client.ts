@@ -6,12 +6,14 @@ export function createQueryClient() {
       queries: {
         staleTime: 1000 * 60, // 1 minute
         gcTime: 1000 * 60 * 5, // 5 minutes (formerly cacheTime)
-        retry: 2,
-        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+        retry: 1, // Reduce retries for faster failure
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000), // Cap at 10s
+        throwOnError: false, // Don't throw - let components handle gracefully
       },
       mutations: {
-        retry: 3,
-        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+        retry: 2,
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
+        throwOnError: false,
       },
     },
   })
