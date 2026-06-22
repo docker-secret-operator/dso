@@ -18,6 +18,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/api"
+	"github.com/docker-secret-operator/dso/internal/apply"
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/autonomy"
 	"github.com/docker-secret-operator/dso/internal/correlation"
@@ -113,6 +114,7 @@ type RESTServer struct {
 	Hub           *Hub
 	EventStore    *EventStore
 	ConfigAPI     *api.ConfigAPI
+	ConfigEditor  *api.ConfigEditor
 	DiscoveryAPI  *api.DiscoveryAPI
 	// Phase 4 handlers
 	DashboardHandler     *api.DashboardHandler
@@ -198,10 +200,36 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
 		}
 	case r.URL.Path == "/api/config/raw" && r.Method == "GET":
-		if s.ConfigAPI != nil {
+		if s.ConfigEditor != nil {
+			s.ConfigEditor.HandleGetRaw(w, r)
+		} else if s.ConfigAPI != nil {
 			s.ConfigAPI.HandleGetRawConfig(w, r)
 		} else {
 			http.Error(w, "Configuration API not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/validate" && r.Method == "POST":
+		if s.ConfigEditor != nil {
+			s.ConfigEditor.HandleValidate(w, r)
+		} else {
+			http.Error(w, "Configuration editor not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/apply" && r.Method == "POST":
+		if s.ConfigEditor != nil {
+			s.ConfigEditor.HandleApply(w, r)
+		} else {
+			http.Error(w, "Configuration editor not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/backups" && r.Method == "GET":
+		if s.ConfigEditor != nil {
+			s.ConfigEditor.HandleBackups(w, r)
+		} else {
+			http.Error(w, "Configuration editor not initialized", http.StatusInternalServerError)
+		}
+	case r.URL.Path == "/api/config/rollback" && r.Method == "POST":
+		if s.ConfigEditor != nil {
+			s.ConfigEditor.HandleRollback(w, r)
+		} else {
+			http.Error(w, "Configuration editor not initialized", http.StatusInternalServerError)
 		}
 	case r.URL.Path == "/api/config/providers" && r.Method == "GET":
 		if s.ConfigAPI != nil {
@@ -1276,6 +1304,7 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Hub:                     hub,
 		EventStore:              eventStore,
 		ConfigAPI:               api.NewConfigAPI(logger),
+		ConfigEditor:            api.NewConfigEditor(logger, &engineReconciler{engine: triggerEngine}, auditService),
 		DiscoveryAPI:            api.NewDiscoveryAPI(logger, dockerCli, cfg),
 		DashboardHandler:        dashboardHandler,
 		ExecutionHandler:        executionHandler,
@@ -1451,6 +1480,35 @@ func (a *eventPersisterAdapter) LogExecutionEvent(event execution.OrchestrationA
 	}
 
 	return a.auditService.LogEventWithDetails(context.Background(), auditEvent)
+}
+
+// engineReconciler implements apply.Reconciler using the in-process agent
+// trigger engine. It re-injects each configured secret (best effort) by
+// reusing the same HandleWebhook path the webhook endpoint uses.
+type engineReconciler struct {
+	engine *agent.TriggerEngine
+}
+
+func (e *engineReconciler) Reconcile(ctx context.Context, cfg *config.Config, plan *apply.ApplyPlan) error {
+	if e.engine == nil || cfg == nil {
+		return nil
+	}
+	ts := time.Now().UTC().Format(time.RFC3339)
+	var failed []string
+	for _, secret := range cfg.Secrets {
+		pCfg, ok := cfg.Providers[secret.Provider]
+		if !ok {
+			failed = append(failed, secret.Name)
+			continue
+		}
+		if err := e.engine.HandleWebhook(secret.Provider, pCfg, secret, ts); err != nil {
+			failed = append(failed, secret.Name)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("reconcile failed for %d secret(s): %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // getHTTPTimeoutFromEnv reads HTTP timeout configuration from environment variables

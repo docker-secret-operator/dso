@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/apply"
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker/docker/client"
@@ -79,12 +81,9 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 		fmt.Printf("[DSO] ✓ Provider '%s' is reachable\n", provName)
 	}
 
-	// 3. Compute the plan
+	// 3. Compute the plan (shared with the API; no prior state to diff against)
 	fmt.Println("\n[DSO] Computing changes...")
-	plan, err := computeApplyPlan(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to compute plan: %w", err)
-	}
+	plan := apply.ComputePlan(nil, cfg)
 
 	// 4. Display the plan
 	displayApplyPlan(plan)
@@ -104,15 +103,16 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// 7. Apply the changes
+	// 7. Apply the changes via the shared executor + a socket-based reconciler
 	fmt.Println("\n[DSO] Applying changes...")
-	result, err := executeApplyPlan(cfg, plan)
+	start := time.Now()
+	result, err := apply.Execute(context.Background(), cfg, plan, &socketReconciler{timeout: applyOpts.Timeout})
 	if err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 
 	// 8. Display results
-	displayApplyResult(result)
+	displayApplyResult(result, plan, time.Since(start))
 
 	return nil
 }
@@ -134,157 +134,101 @@ func verifyProviderConnectivity(cfg *config.Config, provName string) error {
 	}
 }
 
-// ApplyPlan represents the changes to be made
-type ApplyPlan struct {
-	TotalSecrets       int
-	SecretsToUpdate    []string
-	ContainersAffected int
-	EstimatedDuration  time.Duration
-}
-
-// computeApplyPlan determines what changes need to be made
-func computeApplyPlan(cfg *config.Config) (*ApplyPlan, error) {
-	// Connect to Docker to get running containers
-	dockerClient, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Docker: %w", err)
-	}
-	defer dockerClient.Close()
-
-	// For now, return a simple plan that will update all secrets
-	// In a full implementation, this would compare current state vs desired state
-	plan := &ApplyPlan{
-		TotalSecrets:       len(cfg.Secrets),
-		SecretsToUpdate:    make([]string, 0),
-		ContainersAffected: 0,
-		EstimatedDuration:  5 * time.Second,
-	}
-
-	// All secrets in config will be checked for updates
-	for _, secret := range cfg.Secrets {
-		plan.SecretsToUpdate = append(plan.SecretsToUpdate, secret.Name)
-	}
-
-	// Rough estimate of containers affected
-	plan.ContainersAffected = len(cfg.Secrets)
-
-	return plan, nil
-}
-
 // displayApplyPlan shows what changes will be made
-func displayApplyPlan(plan *ApplyPlan) {
+func displayApplyPlan(plan *apply.ApplyPlan) {
 	fmt.Println("\n╭─ CHANGES TO BE APPLIED ─────────────────────────────────╮")
 	fmt.Printf("│ Total Secrets: %d\n", plan.TotalSecrets)
-	fmt.Printf("│ Secrets to update: %d\n", len(plan.SecretsToUpdate))
+	fmt.Printf("│ Secrets to update: %d\n", plan.SecretsToUpdate)
 	fmt.Printf("│ Affected containers: %d\n", plan.ContainersAffected)
-	fmt.Printf("│ Estimated time: ~%s\n", plan.EstimatedDuration)
 	fmt.Println("╰──────────────────────────────────────────────────────────╯")
 
-	if len(plan.SecretsToUpdate) > 0 {
-		fmt.Println("\nSecrets to update:")
-		for _, secret := range plan.SecretsToUpdate {
-			fmt.Printf("  + %s\n", secret)
+	if len(plan.Changes) > 0 {
+		fmt.Println("\nChanges:")
+		for _, c := range plan.Changes {
+			sym := map[string]string{"create": "+", "update": "~", "remove": "-"}[c.Op]
+			fmt.Printf("  %s %s %s\n", sym, c.Kind, c.Name)
 		}
 	}
 }
 
-// ApplyResult holds the results of applying changes
-type ApplyResult struct {
-	SecretsUpdated     int
-	ContainersInjected int
-	Duration           time.Duration
-	Succeeded          bool
-	FailedSecrets      []string
-	ErrorMessage       string
+// displayApplyResult shows the results of the apply operation
+func displayApplyResult(result *apply.ApplyResult, plan *apply.ApplyPlan, dur time.Duration) {
+	fmt.Println("\n╭─ APPLY RESULTS ─────────────────────────────────────────╮")
+	if result.Success {
+		fmt.Printf("│ Status: ✓ SUCCESS\n")
+	} else {
+		fmt.Printf("│ Status: ✗ FAILED\n")
+	}
+	fmt.Printf("│ Secrets updated: %d\n", plan.SecretsToUpdate)
+	fmt.Printf("│ Containers affected: %d\n", plan.ContainersAffected)
+	fmt.Printf("│ Duration: %v\n", dur)
+	if result.Error != "" {
+		fmt.Printf("│ Error: %s\n", result.Error)
+	}
+	fmt.Println("╰──────────────────────────────────────────────────────────╯")
 }
 
-// executeApplyPlan applies the planned changes
-func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error) {
-	startTime := time.Now()
+// socketReconciler reconciles via the agent unix socket, falling back to direct
+// provider fetches. Implements apply.Reconciler for the CLI.
+type socketReconciler struct {
+	timeout time.Duration
+}
 
-	// Create logger for the operation
+func (s *socketReconciler) Reconcile(ctx context.Context, cfg *config.Config, plan *apply.ApplyPlan) error {
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
 
-	// Try to connect to the running agent to trigger reconciliation
 	socketPath := "/run/dso/dso.sock"
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
 	}
 
-	// Try agent communication first
-	result := &ApplyResult{
-		Duration:      0,
-		Succeeded:     false,
-		FailedSecrets: make([]string, 0),
-	}
-
-	// Attempt to trigger sync via agent
-	if err := triggerAgentSync(socketPath, applyOpts.Timeout); err == nil {
-		// Agent sync succeeded
-		result.SecretsUpdated = len(plan.SecretsToUpdate)
-		result.ContainersInjected = plan.ContainersAffected
-		result.Succeeded = true
+	// Try agent sync first.
+	if err := triggerAgentSync(socketPath, s.timeout); err == nil {
+		return nil
 	} else {
-		// Agent not available, try direct reconciliation
 		fmt.Printf("[DSO] Agent not available, attempting direct reconciliation (%v)\n", err)
-
-		// Create Docker client
-		dockerClient, err := client.NewClientWithOpts(
-			client.FromEnv,
-			client.WithAPIVersionNegotiation(),
-		)
-		if err != nil {
-			result.ErrorMessage = fmt.Sprintf("Failed to connect to Docker: %v", err)
-			return result, fmt.Errorf("docker connection failed: %w", err)
-		}
-		defer dockerClient.Close()
-
-		// Create agent client
-		agentClient, err := injector.NewAgentClient(socketPath)
-		if err != nil {
-			result.ErrorMessage = fmt.Sprintf("Failed to connect to agent: %v", err)
-			return result, fmt.Errorf("agent connection failed: %w", err)
-		}
-
-		// Execute injection for each secret
-		successCount := 0
-		for _, secret := range cfg.Secrets {
-			provider, exists := cfg.Providers[secret.Provider]
-			if !exists {
-				result.FailedSecrets = append(result.FailedSecrets, secret.Name)
-				logger.Warn("provider not found for secret",
-					zap.String("secret", secret.Name),
-					zap.String("provider", secret.Provider))
-				continue
-			}
-
-			// Fetch secret from provider
-			data, err := agentClient.FetchSecret(secret.Provider, provider.Config, secret.Name)
-			if err != nil {
-				result.FailedSecrets = append(result.FailedSecrets, secret.Name)
-				logger.Error("failed to fetch secret",
-					zap.String("secret", secret.Name),
-					zap.Error(err))
-				continue
-			}
-
-			successCount++
-			logger.Info("secret fetched successfully",
-				zap.String("secret", secret.Name),
-				zap.Int("fields", len(data)))
-		}
-
-		result.SecretsUpdated = successCount
-		result.ContainersInjected = successCount
-		result.Succeeded = len(result.FailedSecrets) == 0
 	}
 
-	result.Duration = time.Since(startTime)
-	return result, nil
+	// Fallback: direct reconciliation via the agent client.
+	dockerClient, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return fmt.Errorf("docker connection failed: %w", err)
+	}
+	defer dockerClient.Close()
+
+	agentClient, err := injector.NewAgentClient(socketPath)
+	if err != nil {
+		return fmt.Errorf("agent connection failed: %w", err)
+	}
+
+	var failed []string
+	for _, secret := range cfg.Secrets {
+		provider, exists := cfg.Providers[secret.Provider]
+		if !exists {
+			failed = append(failed, secret.Name)
+			logger.Warn("provider not found for secret",
+				zap.String("secret", secret.Name),
+				zap.String("provider", secret.Provider))
+			continue
+		}
+		if _, err := agentClient.FetchSecret(secret.Provider, provider.Config, secret.Name); err != nil {
+			failed = append(failed, secret.Name)
+			logger.Error("failed to fetch secret",
+				zap.String("secret", secret.Name),
+				zap.Error(err))
+			continue
+		}
+		logger.Info("secret fetched successfully", zap.String("secret", secret.Name))
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("%d secret(s) failed: %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // triggerAgentSync triggers reconciliation via the agent socket
@@ -298,30 +242,6 @@ func triggerAgentSync(socketPath string, timeout time.Duration) error {
 	// Send simple sync request
 	_, err = conn.Write([]byte("SYNC\n"))
 	return err
-}
-
-// displayApplyResult shows the results of the apply operation
-func displayApplyResult(result *ApplyResult) {
-	fmt.Println("\n╭─ APPLY RESULTS ─────────────────────────────────────────╮")
-	if result.Succeeded {
-		fmt.Printf("│ Status: ✓ SUCCESS\n")
-	} else {
-		fmt.Printf("│ Status: ✗ FAILED\n")
-	}
-	fmt.Printf("│ Secrets updated: %d\n", result.SecretsUpdated)
-	fmt.Printf("│ Containers injected: %d\n", result.ContainersInjected)
-	fmt.Printf("│ Duration: %v\n", result.Duration)
-	if result.ErrorMessage != "" {
-		fmt.Printf("│ Error: %s\n", result.ErrorMessage)
-	}
-	fmt.Println("╰──────────────────────────────────────────────────────────╯")
-
-	if len(result.FailedSecrets) > 0 {
-		fmt.Println("\nFailed secrets:")
-		for _, secret := range result.FailedSecrets {
-			fmt.Printf("  - %s\n", secret)
-		}
-	}
 }
 
 // promptForApproval asks the user for confirmation

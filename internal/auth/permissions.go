@@ -53,6 +53,10 @@ func NewPermissionMatrix() *PermissionMatrix {
 			"/api/config":           {RoleAdmin},
 			"/api/config/raw":       {RoleAdmin},
 			"/api/config/providers": {RoleAdmin},
+			"/api/config/validate":  {RoleAdmin},
+			"/api/config/apply":     {RoleAdmin},
+			"/api/config/backups":   {RoleAdmin},
+			"/api/config/rollback":  {RoleAdmin},
 
 			// Discovery endpoints (requires admin)
 			"/api/discovery":                 {RoleAdmin},

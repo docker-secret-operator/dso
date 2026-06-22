@@ -350,6 +350,11 @@ func (ca *ConfigAPI) HandleTestProvider(w http.ResponseWriter, r *http.Request, 
 // resolveConfig returns the active configuration file path
 // This mirrors the CLI's ResolveConfig() logic
 func resolveConfig() string {
+	// Explicit override (used by deployments and tests)
+	if p := os.Getenv("DSO_CONFIG_PATH"); p != "" {
+		return p
+	}
+
 	// Check /etc/dso/dso.yaml first (system-wide)
 	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
 		return "/etc/dso/dso.yaml"
