@@ -67,11 +67,16 @@ func NewAuthenticationService(userStore storage.UserStore, sessionStore storage.
 }
 
 // SetAuditLogger sets an optional audit logger for security events.
+// If not set, audit events will be silently ignored. Callers must ensure
+// an audit logger is configured for compliance and security monitoring.
 func (as *AuthenticationService) SetAuditLogger(l AuditLogger) {
 	as.auditLogger = l
 }
 
 func (as *AuthenticationService) logAudit(ctx context.Context, actorID, actorName, action, resource, resourceID, resourceType string) {
+	// Audit logger is optional. If not configured, events are not persisted.
+	// This should be treated as a configuration issue in production environments
+	// that require audit trails for compliance.
 	if as.auditLogger != nil {
 		_ = as.auditLogger.LogEvent(ctx, actorID, actorName, action, resource, resourceID, resourceType)
 	}

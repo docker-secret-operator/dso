@@ -5,6 +5,24 @@ import { Event } from '@/lib/api-client'
 
 export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected'
 
+// Runtime validation for Event schema
+function isValidEvent(data: unknown): data is Event {
+  if (typeof data !== 'object' || data === null) {
+    return false
+  }
+
+  const obj = data as Record<string, unknown>
+
+  // Required fields for Event
+  return (
+    typeof obj.timestamp === 'string' &&
+    typeof obj.action === 'string' &&
+    typeof obj.severity === 'string' &&
+    typeof obj.message === 'string' &&
+    ['info', 'warning', 'error'].includes(obj.severity as string)
+  )
+}
+
 // Fixed backoff sequence: 1s, 2s, 5s, 10s, 30s (stays at 30s afterward)
 const BACKOFF_DELAYS = [1000, 2000, 5000, 10000, 30000]
 const MAX_RECONNECT_ATTEMPTS = 20
@@ -74,12 +92,22 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as Event
+          const data = JSON.parse(event.data)
+
+          // Validate message schema - must have required Event fields
+          if (!isValidEvent(data)) {
+            if (process.env.NODE_ENV === 'development') {
+              console.error('[WebSocket] Invalid event schema:', data)
+            }
+            return
+          }
+
+          const validEvent = data as Event
           setEvents((prev) => {
             // Add new event and maintain bounded history
             // Slice first to avoid unbounded growth during state updates
             const bounded = prev.slice(0, maxMessageHistory - 1)
-            return [data, ...bounded]
+            return [validEvent, ...bounded]
           })
         } catch (err) {
           if (process.env.NODE_ENV === 'development') {

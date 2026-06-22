@@ -2,11 +2,27 @@ import axios, { AxiosInstance, AxiosError } from 'axios'
 import { getCsrfHeaders } from './csrf'
 import { handleApiError } from './handle-api-error'
 
-// API Base URL - use relative path to proxy through dashboard server
+// Get API Base URL - validate during server-side rendering
 // The dashboard server (default :8472) proxies /api/* to the REST API (:8471)
-const API_BASE_URL = typeof window !== 'undefined'
-  ? window.location.origin  // Use same origin for proxied API calls
-  : (process.env.DSO_API_URL || 'http://localhost:8471') // SSR: configurable via env var
+const getApiBaseUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    // Client-side: use same origin for proxied API calls
+    return window.location.origin
+  }
+
+  // Server-side: DSO_API_URL environment variable is required
+  const envUrl = process.env.DSO_API_URL
+  if (!envUrl) {
+    throw new Error(
+      'Environment variable DSO_API_URL is required for server-side rendering. ' +
+      'Set it to the URL of the DSO API server (e.g., http://localhost:8471)'
+    )
+  }
+
+  return envUrl
+}
+
+const API_BASE_URL = getApiBaseUrl()
 
 // ============================================================================
 // Type Definitions
