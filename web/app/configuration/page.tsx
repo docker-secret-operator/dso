@@ -9,10 +9,12 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { AlertCircle, CheckCircle2, RefreshCw, Server } from 'lucide-react'
+import { ConfigEditorPanel } from '@/components/config/config-editor-panel'
 
 export default function ConfigurationPage() {
   const { config, providers, loading, error, testingProvider, testResults, refresh, testProvider } =
     useConfiguration()
+  const { role } = useAuth()
   const [expandedSection, setExpandedSection] = useState<string | null>(null)
 
   if (loading) {
@@ -42,6 +44,9 @@ export default function ConfigurationPage() {
           Refresh
         </Button>
       </div>
+
+      {/* Admin-only: edit, validate, apply, and roll back the config */}
+      {role === 'admin' && <ConfigEditorPanel />}
 
       {/* Error Alert */}
       {error && (

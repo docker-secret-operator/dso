@@ -18,6 +18,7 @@
     "test:a11y": "axe-core --verbose"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-query": "^5.36.0",
@@ -28,6 +29,7 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.4.0",
     "lucide-react": "^0.408.0",
+    "monaco-editor": "^0.52.2",
     "next": "^14.2.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
