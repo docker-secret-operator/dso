@@ -130,6 +130,22 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
     }
   }, [path, maxMessageHistory, onConnect, onReconnect, onDisconnect, onError])
 
+  // Safe send wrapper that validates connection state before sending
+  const send = useCallback((message: string) => {
+    if (connectionState !== 'connected' || !wsRef.current) {
+      const error = new Error('WebSocket not connected')
+      onError?.(error)
+      throw error
+    }
+    try {
+      wsRef.current.send(message)
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Failed to send message')
+      onError?.(error)
+      throw error
+    }
+  }, [connectionState, onError])
+
   useEffect(() => {
     mountedRef.current = true
     connect()
@@ -146,5 +162,6 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
     isConnected: connectionState === 'connected',
     connectionState,
     ws: wsRef.current,
+    send, // Safe send wrapper
   }
 }
