@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react'
 import * as storage from '@/lib/auth/storage'
 import * as session from '@/lib/auth/session'
 import { login as apiLogin, currentUser as apiCurrentUser } from '@/lib/api/auth'
@@ -23,6 +23,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+
+  // Track in-flight refresh request to prevent concurrent refreshes (race condition fix)
+  const refreshPromiseRef = useRef<Promise<boolean> | null>(null)
 
   // Initialize session on mount
   useEffect(() => {
@@ -110,29 +113,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshSession = useCallback(async (): Promise<boolean> => {
-    try {
-      const success = await session.refreshAccessToken()
+    // Return existing promise if refresh is already in flight (prevents race condition)
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current
+    }
 
-      if (success) {
-        // Update user data if needed
-        const userData = await apiCurrentUser()
-        storage.setStoredUser(userData)
-        setUser(userData)
-        return true
-      } else {
-        // Refresh failed, clear auth
+    // Create new refresh promise
+    refreshPromiseRef.current = (async () => {
+      try {
+        const success = await session.refreshAccessToken()
+
+        if (success) {
+          // Update user data if needed
+          const userData = await apiCurrentUser()
+          storage.setStoredUser(userData)
+          setUser(userData)
+          return true
+        } else {
+          // Refresh failed, clear auth
+          setUser(null)
+          setIsAuthenticated(false)
+          return false
+        }
+      } catch (error) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Session refresh error:', error)
+        }
         setUser(null)
         setIsAuthenticated(false)
         return false
+      } finally {
+        // Clear in-flight promise ref when done
+        refreshPromiseRef.current = null
       }
-    } catch (error) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Session refresh error:', error)
-      }
-      setUser(null)
-      setIsAuthenticated(false)
-      return false
-    }
+    })()
+
+    return refreshPromiseRef.current
   }, [])
 
   const value: AuthContextValue = {

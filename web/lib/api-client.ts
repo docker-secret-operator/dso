@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios'
 import { getCsrfHeaders } from './csrf'
+import { handleApiError } from './handle-api-error'
 
 // API Base URL - use relative path to proxy through dashboard server
 // The dashboard server (default :8472) proxies /api/* to the REST API (:8471)
@@ -238,8 +239,8 @@ class APIClient {
     // Add token to requests if available, and CSRF headers for state-changing requests
     this.client.interceptors.request.use((config) => {
       if (typeof window !== 'undefined') {
-        // Add authentication token
-        const token = localStorage.getItem('dso_api_token')
+        // Add authentication token from sessionStorage (secure storage)
+        const token = sessionStorage.getItem('dso_api_token')
         if (token) {
           config.headers.Authorization = `Bearer ${token}`
         }
@@ -253,18 +254,15 @@ class APIClient {
       return config
     })
 
-    // Handle errors
+    // Handle errors with proper type narrowing
     this.client.interceptors.response.use(
       (response) => response,
-      (error: AxiosError) => {
-        if (error.response?.status === 401) {
-          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-            sessionStorage.setItem('session_expired', '1')
-            localStorage.removeItem('dso_api_token')
-            window.location.href = '/login'
-          }
+      (error: unknown) => {
+        try {
+          handleApiError(error)
+        } catch (typedError) {
+          return Promise.reject(typedError)
         }
-        return Promise.reject(error)
       }
     )
   }

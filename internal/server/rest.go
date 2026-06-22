@@ -558,11 +558,22 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50
 	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 10000 {
 			limit = l
 		}
 	}
+
 	severity := r.URL.Query().Get("severity")
+	validSeverities := map[string]bool{
+		"info":     true,
+		"warning":  true,
+		"error":    true,
+		"critical": true,
+	}
+	if severity != "" && !validSeverities[severity] {
+		http.Error(w, "Invalid severity value", http.StatusBadRequest)
+		return
+	}
 
 	initialEvents := s.EventStore.GetLast(limit, severity)
 	for _, ev := range initialEvents {
@@ -1228,9 +1239,9 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		IntegrationManager:      integrationManager,
 		SchedulerHandler:        schedulerHandler,
 		Scheduler:               sch,
-		RecommendationHandler:   nil, // TODO: Initialize with actual engines
-		DriftHandler:            nil,
-		ForecastHandler:         nil,
+		RecommendationHandler:   api.NewStubRecommendationHandler(),
+		DriftHandler:            api.NewStubDriftHandler(),
+		ForecastHandler:         api.NewStubForecastHandler(),
 	}
 
 	mux := http.NewServeMux()
