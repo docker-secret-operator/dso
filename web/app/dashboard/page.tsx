@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { Logo } from '@/components/Logo'
 import { cn } from '@/lib/utils'
 import { ErrorBoundary } from '@/components/error-boundary'
 import {
@@ -66,13 +67,16 @@ function DashboardHero({ health, version }: { health: any, version: string }) {
     <div className="relative overflow-hidden rounded-2xl glass-panel p-8 mb-6 border border-indigo-500/20 shadow-glow-indigo">
       <div className="absolute inset-0 bg-mesh opacity-40 animate-mesh-gradient"></div>
       <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h1 className="text-[28px] font-semibold text-[#F9FAFB] tracking-tight mb-2">
-            Operations <span className="gradient-text">Command Center</span>
-          </h1>
-          <p className="text-[14px] font-normal text-[#9CA3AF] max-w-xl">
-            Real-time overview of system health, secrets, and autonomous operational status.
-          </p>
+        <div className="flex items-start gap-4">
+          <Logo href="/" size="lg" showText={false} className="flex-shrink-0 mt-1" />
+          <div>
+            <h1 className="text-[28px] font-semibold text-[#F9FAFB] tracking-tight mb-2">
+              Operations <span className="gradient-text">Command Center</span>
+            </h1>
+            <p className="text-[14px] font-normal text-[#9CA3AF] max-w-xl">
+              Real-time overview of system health, secrets, and autonomous operational status.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-black/40 border border-white/10 backdrop-blur-md">

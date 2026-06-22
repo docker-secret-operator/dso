@@ -1,0 +1,40 @@
+<svg viewBox="0 0 200 50" xmlns="http://www.w3.org/2000/svg" width="200" height="50">
+  <!-- DSO Logo - Tech Noir adapted (navbar version) -->
+  <defs>
+    <linearGradient id="dsoDropGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0EA5E9;stop-opacity:1" />
+    </linearGradient>
+    <filter id="dsoGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="0" stdDeviation="1.5" flood-color="#22D3EE" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <!-- Icon - Container frame -->
+  <g transform="translate(5, 5)">
+    <!-- Container corners (subtle cyan) -->
+    <g fill="none" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" opacity="0.8">
+      <path d="M 12 2 L 2 2 L 2 12" />
+      <path d="M 28 2 L 38 2 L 38 12" />
+      <path d="M 38 28 L 38 38 L 28 38" />
+      <path d="M 2 28 L 2 38 L 12 38" />
+    </g>
+
+    <!-- Drop (cyan gradient with glow) -->
+    <g filter="url(#dsoGlow)">
+      <ellipse cx="20" cy="12" rx="5" ry="7" fill="url(#dsoDropGradient)" />
+      <path d="M 20 19 Q 17 24 20 28 Q 23 24 20 19" fill="#22D3EE" />
+    </g>
+
+    <!-- Arrow (subtle, pointing down) -->
+    <g stroke="#22D3EE" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.7">
+      <line x1="20" y1="30" x2="20" y2="35" />
+      <polyline points="17 33 20 35 23 33" />
+    </g>
+  </g>
+
+  <!-- Text: DSO -->
+  <g transform="translate(55, 14)">
+    <text x="0" y="0" font-family="Inter, Roboto, system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" fill="#F9FAFB" letter-spacing="-0.3">DSO</text>
+  </g>
+</svg>
