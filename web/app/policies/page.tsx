@@ -330,7 +330,7 @@ export default function PoliciesPage() {
             <div>
               <div className="text-sm text-slate-400">Avg Duration</div>
               <div className="mt-1 text-2xl font-bold text-slate-100">
-                {metrics.average_duration.toFixed(0)}ms
+                {(metrics.average_duration ?? 0).toFixed(0)}ms
               </div>
             </div>
           </div>

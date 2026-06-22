@@ -145,7 +145,7 @@ export default function AutonomyPage() {
           <MetricCard label="Failed" value={metrics.failed_actions} valueClass="text-red-600" />
           <MetricCard label="Rollbacks" value={metrics.rollback_count} />
           <MetricCard label="Automatic" value={metrics.automatic_actions} />
-          <MetricCard label="Success Rate" value={(metrics.success_rate * 100).toFixed(0) + '%'} valueClass="text-blue-600" />
+          <MetricCard label="Success Rate" value={((metrics.success_rate ?? 0) * 100).toFixed(0) + '%'} valueClass="text-blue-600" />
         </div>
       )}
 

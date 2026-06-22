@@ -1173,10 +1173,28 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		autonomyStore = autonomy.NewInMemoryStore()
 		correlationStore = correlation.NewInMemoryStore()
 	}
-	recommendationHandler := api.NewRecommendationHandler(recommendation.NewEngine(logger, recommendationStore))
-	forecastHandler := api.NewForecastHandler(forecast.NewEngine(logger, forecastStore))
-	autonomyHandler := api.NewAutonomyHandler(autonomy.NewEngine(logger, autonomyStore))
-	correlationHandler := api.NewCorrelationHandler(correlation.NewEngine(logger, correlationStore))
+	// These engines must be Initialize()'d to become active (e.g. forecast's
+	// GenerateForecasts rejects calls on an inactive engine).
+	recommendationEngine := recommendation.NewEngine(logger, recommendationStore)
+	if err := recommendationEngine.Initialize(); err != nil {
+		logger.Warn("recommendation engine initialize failed", zap.Error(err))
+	}
+	forecastEngine := forecast.NewEngine(logger, forecastStore)
+	if err := forecastEngine.Initialize(); err != nil {
+		logger.Warn("forecast engine initialize failed", zap.Error(err))
+	}
+	autonomyEngine := autonomy.NewEngine(logger, autonomyStore)
+	if err := autonomyEngine.Initialize(); err != nil {
+		logger.Warn("autonomy engine initialize failed", zap.Error(err))
+	}
+	correlationEngine := correlation.NewEngine(logger, correlationStore)
+	if err := correlationEngine.Initialize(); err != nil {
+		logger.Warn("correlation engine initialize failed", zap.Error(err))
+	}
+	recommendationHandler := api.NewRecommendationHandler(recommendationEngine)
+	forecastHandler := api.NewForecastHandler(forecastEngine)
+	autonomyHandler := api.NewAutonomyHandler(autonomyEngine)
+	correlationHandler := api.NewCorrelationHandler(correlationEngine)
 	// drift and policy have no SQLite store yet — back them with in-memory stores.
 	driftHandler := api.NewDriftHandler(drift.NewEngine(drift.NewInMemoryStore(), logger))
 	policyHandler := api.NewPolicyHandler(policy.NewEngine(policy.NewInMemoryStore(), logger))

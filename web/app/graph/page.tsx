@@ -119,7 +119,7 @@ export default function GraphPage() {
             <MetricCard label="Edges" value={metrics.total_edges} />
             <MetricCard
               label="Avg Degree"
-              value={metrics.average_degree.toFixed(2)}
+              value={(metrics.average_degree ?? 0).toFixed(2)}
               valueClass="text-blue-400"
             />
             <MetricCard
@@ -147,7 +147,7 @@ export default function GraphPage() {
             <MetricCard label="Max Depth" value={metrics.max_depth} />
             <MetricCard
               label="Avg Path Length"
-              value={metrics.average_path_length.toFixed(2)}
+              value={(metrics.average_path_length ?? 0).toFixed(2)}
               valueClass="text-indigo-400"
             />
           </div>

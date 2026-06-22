@@ -150,12 +150,12 @@ export default function ForecastsPage() {
           />
           <MetricCard
             label="Avg Confidence"
-            value={(metrics.average_confidence * 100).toFixed(0) + '%'}
+            value={((metrics.average_confidence ?? 0) * 100).toFixed(0) + '%'}
             valueClass="text-blue-400"
           />
           <MetricCard
             label="Accuracy"
-            value={(metrics.prediction_accuracy * 100).toFixed(0) + '%'}
+            value={((metrics.prediction_accuracy ?? 0) * 100).toFixed(0) + '%'}
             valueClass="text-emerald-400"
           />
           <MetricCard

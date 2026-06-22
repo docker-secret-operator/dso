@@ -307,7 +307,7 @@ export default function SchedulerPage() {
               <div className="flex justify-between text-sm">
                 <span className="text-slate-400">Avg Duration</span>
                 <span className="font-medium text-slate-200">
-                  {metrics.average_duration.toFixed(2)}ms
+                  {(metrics.average_duration ?? 0).toFixed(2)}ms
                 </span>
               </div>
               <div className="flex justify-between text-sm">

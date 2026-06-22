@@ -175,7 +175,7 @@ export default function RecommendationsPage() {
           />
           <MetricCard
             label="Avg Confidence"
-            value={(metrics.average_confidence * 100).toFixed(0) + '%'}
+            value={((metrics.average_confidence ?? 0) * 100).toFixed(0) + '%'}
             valueClass="text-blue-600"
           />
         </div>
@@ -258,11 +258,11 @@ export default function RecommendationsPage() {
                         <div className="flex-1 h-2 bg-slate-700 rounded">
                           <div
                             className="h-2 bg-indigo-500 rounded"
-                            style={{ width: `${rec.confidence * 100}%` }}
+                            style={{ width: `${(rec.confidence ?? 0) * 100}%` }}
                           />
                         </div>
                         <span className="text-sm font-semibold text-slate-200">
-                          {(rec.confidence * 100).toFixed(0)}%
+                          {((rec.confidence ?? 0) * 100).toFixed(0)}%
                         </span>
                       </div>
                     </div>

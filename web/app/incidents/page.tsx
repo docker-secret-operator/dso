@@ -169,7 +169,7 @@ export default function IncidentsPage() {
           />
           <MetricCard
             label="Avg Score"
-            value={metrics.average_correlation_score.toFixed(1)}
+            value={(metrics.average_correlation_score ?? 0).toFixed(1)}
             valueClass="text-blue-600"
           />
         </div>
@@ -235,7 +235,7 @@ export default function IncidentsPage() {
                     <div>
                       <p className="text-xs text-slate-400">Correlation Score</p>
                       <p className="mt-1 text-lg font-semibold text-slate-100">
-                        {incident.correlation_score.toFixed(1)}
+                        {(incident.correlation_score ?? 0).toFixed(1)}
                       </p>
                     </div>
                     <div>

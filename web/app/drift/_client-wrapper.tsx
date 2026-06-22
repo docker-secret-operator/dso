@@ -202,7 +202,7 @@ export function DriftDashboardClient() {
           />
           <MetricCard
             label="Avg Duration"
-            value={`${metrics.average_duration.toFixed(0)}ms`}
+            value={`${(metrics.average_duration ?? 0).toFixed(0)}ms`}
             valueClass="text-gray-600"
           />
         </div>
