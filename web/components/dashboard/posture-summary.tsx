@@ -43,9 +43,9 @@ function Stat({
 }) {
   return (
     <div className="rounded-xl border border-white/[0.07] bg-[#111827] px-5 py-4">
-      <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">{label}</p>
       <p className={cn('mt-1.5 font-mono text-[26px] leading-none font-semibold tabular-nums', tone)}>{value}</p>
-      <p className="mt-2 text-xs text-slate-600 h-4">{sublabel ?? ''}</p>
+      <p className="mt-2 text-xs text-slate-400 h-4">{sublabel ?? ''}</p>
     </div>
   )
 }
@@ -66,7 +66,7 @@ export function PostureSummary(props: PostureSummaryProps) {
         </span>
         <div>
           <p className={cn('text-[15px] font-semibold', meta.tone)}>{meta.label}</p>
-          <p className="flex items-center gap-1.5 text-xs text-slate-500">
+          <p className="flex items-center gap-1.5 text-xs text-slate-400">
             {loading
               ? 'Loading secret estate…'
               : attentionCount > 0

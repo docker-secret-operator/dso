@@ -51,7 +51,7 @@ export function RotationHealthStrip({ posture }: RotationHealthStripProps) {
           return (
             <div key={seg.key} className="flex items-center gap-2">
               <span className={cn('w-2 h-2 rounded-sm flex-shrink-0', seg.fill)} />
-              <span className="text-xs text-slate-500">{seg.label}</span>
+              <span className="text-xs text-slate-400">{seg.label}</span>
               <span className="ml-auto font-mono text-xs tabular-nums text-slate-300">{count}</span>
             </div>
           )

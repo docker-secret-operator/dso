@@ -24,12 +24,12 @@ export function Section({ title, meta, href, className, children }: SectionProps
       <header className="flex items-center justify-between gap-3 px-5 h-11 border-b border-white/[0.06]">
         <div className="flex items-baseline gap-2 min-w-0">
           <h2 className="text-[13px] font-semibold text-slate-200 truncate">{title}</h2>
-          {meta && <span className="text-xs text-slate-500 truncate">{meta}</span>}
+          {meta && <span className="text-xs text-slate-400 truncate">{meta}</span>}
         </div>
         {href && (
           <Link
             href={href}
-            className="flex items-center gap-0.5 text-xs text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
+            className="flex items-center gap-0.5 h-full px-2 -mr-2 text-xs text-slate-400 hover:text-slate-200 transition-colors flex-shrink-0"
           >
             View all
             <ChevronRight className="w-3.5 h-3.5" />

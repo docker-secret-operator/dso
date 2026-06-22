@@ -217,3 +217,17 @@
   animation: shimmer 1.5s infinite;
   border-radius: 6px;
 }
+
+/* ============================================================================
+   Reduced motion — respect the user's OS setting (WCAG 2.3.3 / prefers-reduced-motion)
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

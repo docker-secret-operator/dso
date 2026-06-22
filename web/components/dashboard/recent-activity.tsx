@@ -7,6 +7,7 @@ import { Activity } from 'lucide-react'
 
 interface RecentActivityProps {
   events: AuditEvent[]
+  loading?: boolean
 }
 
 /** Map an audit event's status/severity to a result label + tone. */
@@ -36,7 +37,16 @@ function formatAction(action: string): string {
   return leaf.replace(/[_-]/g, ' ').toUpperCase()
 }
 
-export function RecentActivity({ events }: RecentActivityProps) {
+export function RecentActivity({ events, loading }: RecentActivityProps) {
+  if (loading && (!Array.isArray(events) || events.length === 0)) {
+    return (
+      <div className="space-y-2 py-1" aria-busy="true" aria-label="Loading recent activity">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-4 rounded bg-white/[0.06] animate-pulse" />
+        ))}
+      </div>
+    )
+  }
   if (!Array.isArray(events) || events.length === 0) {
     return <EmptyState icon={<Activity className="w-5 h-5" />} title="No recent activity" />
   }
@@ -51,7 +61,7 @@ export function RecentActivity({ events }: RecentActivityProps) {
             key={event.id}
             className="flex items-center gap-3 py-1.5 border-b border-white/[0.05] last:border-0"
           >
-            <span className="text-slate-600 tabular-nums flex-shrink-0">{formatTime(event.timestamp)}</span>
+            <span className="text-slate-400 tabular-nums flex-shrink-0">{formatTime(event.timestamp)}</span>
             <span className="text-slate-300 w-20 flex-shrink-0 truncate" title={event.action}>
               {formatAction(event.action)}
             </span>

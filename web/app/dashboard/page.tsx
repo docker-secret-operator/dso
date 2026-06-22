@@ -102,19 +102,19 @@ function DashboardContent() {
     refetchInterval: 60000,
   })
 
-  const { data: opsData } = useQuery({
+  const { data: opsData, isLoading: opsLoading } = useQuery({
     queryKey: ['operations-dashboard'],
     queryFn: () => operationsApi.getOperationsDashboard(),
     refetchInterval: 30000,
   })
 
-  const { data: alerts } = useQuery({
+  const { data: alerts, isLoading: alertsLoading } = useQuery({
     queryKey: ['alerts-dashboard'],
     queryFn: () => operationsApi.getAlerts({ limit: 20 }),
     refetchInterval: 30000,
   })
 
-  const { data: recentAudit } = useQuery({
+  const { data: recentAudit, isLoading: auditLoading } = useQuery({
     queryKey: ['audit-recent'],
     queryFn: () => auditApi.getAuditEvents({ limit: 8 }),
     refetchInterval: 30000,
@@ -175,19 +175,22 @@ function DashboardContent() {
             title="Needs attention"
             meta={attentionItems.length > 0 ? `${attentionItems.length} item${attentionItems.length === 1 ? '' : 's'}` : undefined}
           >
-            <NeedsAttention items={attentionItems} />
+            <NeedsAttention
+              items={attentionItems}
+              loading={secretsLoading || opsLoading || alertsLoading}
+            />
           </Section>
 
           {/* 4 + 5 — Operational health & recent activity */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
             <div className="lg:col-span-3">
               <Section title="Operational health" href="/operations" className="h-full">
-                <OperationalHealth data={opsData} />
+                <OperationalHealth data={opsData} loading={opsLoading} />
               </Section>
             </div>
             <div className="lg:col-span-2">
               <Section title="Recent activity" href="/audit" className="h-full">
-                <RecentActivity events={recentAudit?.events ?? []} />
+                <RecentActivity events={recentAudit?.events ?? []} loading={auditLoading} />
               </Section>
             </div>
           </div>

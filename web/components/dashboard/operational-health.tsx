@@ -6,6 +6,7 @@ import { Users, ListChecks, Activity, CheckCheck, Timer } from 'lucide-react'
 
 interface OperationalHealthProps {
   data?: OperationsDashboard
+  loading?: boolean
 }
 
 type Tone = 'healthy' | 'warning' | 'critical' | 'neutral'
@@ -40,11 +41,11 @@ function Metric({
         <Icon className="w-4 h-4" />
       </span>
       <div className="min-w-0">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">{label}</p>
+        <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">{label}</p>
         <p className={cn('mt-0.5 font-mono text-lg leading-tight font-semibold tabular-nums', toneClass[tone])}>
           {value}
         </p>
-        {sublabel && <p className="text-xs text-slate-600 truncate">{sublabel}</p>}
+        {sublabel && <p className="text-xs text-slate-400 truncate">{sublabel}</p>}
       </div>
     </div>
   )
@@ -54,7 +55,23 @@ function Metric({
  * Operational health in operator language — no goroutines, no "agent load".
  * Everything below maps to real OperationsDashboard fields.
  */
-export function OperationalHealth({ data }: OperationalHealthProps) {
+export function OperationalHealth({ data, loading }: OperationalHealthProps) {
+  if (loading && !data) {
+    return (
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-5" aria-busy="true" aria-label="Loading operational health">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="flex items-start gap-3">
+            <div className="mt-0.5 w-8 h-8 rounded-lg bg-white/[0.06] animate-pulse flex-shrink-0" />
+            <div className="flex-1 space-y-1.5 pt-0.5">
+              <div className="h-2.5 w-16 rounded bg-white/[0.06] animate-pulse" />
+              <div className="h-4 w-12 rounded bg-white/[0.06] animate-pulse" />
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   const kpis = data?.overview_kpis
   const queue = data?.queue_health
   const workers = data?.worker_health
