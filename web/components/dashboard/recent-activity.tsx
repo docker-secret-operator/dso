@@ -37,7 +37,7 @@ function formatAction(action: string): string {
 }
 
 export function RecentActivity({ events }: RecentActivityProps) {
-  if (!events || events.length === 0) {
+  if (!Array.isArray(events) || events.length === 0) {
     return <EmptyState icon={<Activity className="w-5 h-5" />} title="No recent activity" />
   }
 

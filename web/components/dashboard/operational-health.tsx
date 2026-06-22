@@ -60,48 +60,51 @@ export function OperationalHealth({ data }: OperationalHealthProps) {
   const workers = data?.worker_health
   const exec = data?.execution_status
 
-  const successRate = kpis ? Math.round(kpis.success_rate) : null
-  const latencyMs = kpis ? Math.round(kpis.avg_execution_time_seconds * 1000) : null
+  // Coerce possibly-missing numeric fields — the backend can omit any of these.
+  const n = (v: number | undefined | null): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+  const successRate = kpis ? Math.round(n(kpis.success_rate)) : null
+  const latencyMs = kpis ? Math.round(n(kpis.avg_execution_time_seconds) * 1000) : null
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-5">
       <Metric
         icon={Users}
         label="Workers active"
-        value={workers ? `${workers.healthy_workers}/${workers.total_workers}` : '—'}
-        sublabel={workers ? `${Math.round(workers.avg_utilization)}% utilized` : undefined}
+        value={workers ? `${n(workers.healthy_workers)}/${n(workers.total_workers)}` : '—'}
+        sublabel={workers ? `${Math.round(n(workers.avg_utilization))}% utilized` : undefined}
         tone={statusTone(workers?.status)}
       />
       <Metric
         icon={ListChecks}
         label="Queue status"
-        value={queue ? `${queue.depth} queued` : '—'}
-        sublabel={queue ? `${queue.status} · ${queue.incoming_rate.toFixed(1)}/s in` : undefined}
+        value={queue ? `${n(queue.depth)} queued` : '—'}
+        sublabel={queue ? `${queue.status ?? 'unknown'} · ${n(queue.incoming_rate).toFixed(1)}/s in` : undefined}
         tone={statusTone(queue?.status)}
       />
       <Metric
         icon={Activity}
         label="Tasks executing"
-        value={exec ? exec.running : '—'}
-        sublabel={exec ? `${exec.queued} queued · ${exec.completed} done` : undefined}
+        value={exec ? n(exec.running) : '—'}
+        sublabel={exec ? `${n(exec.queued)} queued · ${n(exec.completed)} done` : undefined}
       />
       <Metric
         icon={CheckCheck}
         label="Success rate"
         value={successRate === null ? '—' : `${successRate}%`}
-        sublabel={kpis ? `${kpis.totals.failed} failed of ${kpis.totals.executed}` : undefined}
+        sublabel={kpis ? `${n(kpis.totals?.failed)} failed of ${n(kpis.totals?.executed)}` : undefined}
         tone={successRate === null ? 'neutral' : successRate >= 95 ? 'healthy' : successRate >= 80 ? 'warning' : 'critical'}
       />
       <Metric
         icon={Timer}
         label="Processing latency"
         value={latencyMs === null ? '—' : latencyMs >= 1000 ? `${(latencyMs / 1000).toFixed(1)}s` : `${latencyMs}ms`}
-        sublabel={queue ? `${Math.round(queue.avg_wait_time_seconds)}s avg wait` : undefined}
+        sublabel={queue ? `${Math.round(n(queue.avg_wait_time_seconds))}s avg wait` : undefined}
       />
       <Metric
         icon={Activity}
         label="Throughput"
-        value={kpis ? `${kpis.throughput_per_second.toFixed(1)}/s` : '—'}
+        value={kpis ? `${n(kpis.throughput_per_second).toFixed(1)}/s` : '—'}
         sublabel="executions per second"
       />
     </div>

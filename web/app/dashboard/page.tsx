@@ -43,6 +43,8 @@ function buildAttentionItems(
   alerts: Array<{ id: string; type: string; severity: string; message: string }> | undefined
 ): AttentionItem[] {
   const items: AttentionItem[] = []
+  const failures = Array.isArray(recentFailures) ? recentFailures : []
+  const alertList = Array.isArray(alerts) ? alerts : []
 
   for (const s of secrets) {
     const bucket = classifySecret(s)
@@ -67,7 +69,7 @@ function buildAttentionItems(
     }
   }
 
-  for (const f of recentFailures ?? []) {
+  for (const f of failures) {
     items.push({
       id: `fail-${f.id}`,
       kind: 'failed-sync',
@@ -78,7 +80,7 @@ function buildAttentionItems(
     })
   }
 
-  for (const a of alerts ?? []) {
+  for (const a of alertList) {
     if (!a.type?.toLowerCase().includes('provider')) continue
     items.push({
       id: `provider-${a.id}`,
@@ -130,7 +132,7 @@ function DashboardContent() {
     refetchInterval: 30000,
   })
 
-  const secretList = useMemo(() => secrets ?? [], [secrets])
+  const secretList = useMemo(() => (Array.isArray(secrets) ? secrets : []), [secrets])
   const posture = useMemo(() => deriveRotationPosture(secretList), [secretList])
 
   const attentionItems = useMemo(
