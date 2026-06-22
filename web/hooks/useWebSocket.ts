@@ -49,9 +49,9 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
 
-      // Include authentication token in URL
+      // Include authentication token in URL (from secure sessionStorage)
       let wsUrl = `${protocol}//${host}${path}`
-      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('dso_api_token') : null
+      const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('dso_api_token') : null
       if (token) {
         wsUrl += `?token=${encodeURIComponent(token)}`
       }
@@ -106,8 +106,18 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
         const idx = Math.min(reconnectAttemptsRef.current, BACKOFF_DELAYS.length - 1)
         const delay = BACKOFF_DELAYS[idx]
         reconnectAttemptsRef.current += 1
-        if (process.env.NODE_ENV === 'development') console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
-        reconnectTimeoutRef.current = setTimeout(connect, delay)
+        if (process.env.NODE_ENV === 'development') {
+          console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+        }
+        // Schedule reconnection with error handling
+        reconnectTimeoutRef.current = setTimeout(() => {
+          try {
+            connect()
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error('Reconnection failed')
+            onError?.(error)
+          }
+        }, delay)
       }
 
       wsRef.current = ws

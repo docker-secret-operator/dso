@@ -17,14 +17,32 @@ const (
 	activityThrottleDuration = 60 * time.Second
 )
 
-// ErrRateLimited is returned when the rate limiter rejects a login attempt.
-var ErrRateLimited = errors.New("too many failed attempts")
+// Typed authentication errors for error.Is() checking and recovery strategies
+var (
+	// ErrRateLimited is returned when the rate limiter rejects a login attempt
+	ErrRateLimited = errors.New("too many failed attempts")
 
-// ErrAccountLocked is returned when the user account is locked.
-var ErrAccountLocked = errors.New("account is locked due to too many failed attempts")
+	// ErrAccountLocked is returned when the user account is locked
+	ErrAccountLocked = errors.New("account is locked due to too many failed attempts")
 
-// ErrMustChangePassword is returned when the user must change their password.
-var ErrMustChangePassword = errors.New("password change required")
+	// ErrMustChangePassword is returned when the user must change their password
+	ErrMustChangePassword = errors.New("password change required")
+
+	// ErrInvalidCredentials is returned for invalid username or password
+	ErrInvalidCredentials = errors.New("invalid username or password")
+
+	// ErrUserDisabled is returned when the user account is disabled
+	ErrUserDisabled = errors.New("user account is disabled")
+
+	// ErrUserNotFound is returned when a user does not exist
+	ErrUserNotFound = errors.New("user not found")
+
+	// ErrSessionExpired is returned when a session has expired
+	ErrSessionExpired = errors.New("session expired")
+
+	// ErrSessionNotFound is returned when a session does not exist
+	ErrSessionNotFound = errors.New("session not found")
+)
 
 // AuthenticationService handles user authentication and session management
 type AuthenticationService struct {
@@ -93,7 +111,8 @@ func (as *AuthenticationService) Authenticate(ctx context.Context, username, pas
 		// Record failure for IP only (don't reveal whether username exists)
 		as.rateLimiter.RecordFailure(ipKey)
 		as.logAudit(ctx, "system", "system", "auth.login_failure", "user", username, "authentication")
-		return nil, fmt.Errorf("invalid credentials")
+		// Return generic error to prevent user enumeration, but use typed error for logging
+		return nil, ErrInvalidCredentials
 	}
 
 	// Check disabled

@@ -70,20 +70,23 @@ func checkWebSocketOrigin(r *http.Request) bool {
 }
 
 // isLoopbackHost checks if a host is a loopback address (localhost, 127.0.0.1, ::1)
+// Properly handles IPv6 addresses with ports like [::1]:8471
 func isLoopbackHost(host string) bool {
-	// Remove port
-	h := host
-	if idx := strings.LastIndex(h, ":"); idx != -1 {
-		h = h[:idx]
+	// Use net.SplitHostPort for proper host:port splitting (handles IPv6 correctly)
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port, use full host
+		h = host
 	}
 
-	// Check for IPv6
-	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
-		h = h[1 : len(h)-1]
+	// Try to parse as IP address
+	ip := net.ParseIP(strings.TrimPrefix(strings.TrimSuffix(h, "]"), "["))
+	if ip != nil {
+		return ip.IsLoopback()
 	}
 
-	// Check common loopback patterns
-	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+	// Fall back to hostname checks
+	return h == "localhost" || h == "" // Empty host is invalid
 }
 
 type WebhookPayload struct {
@@ -1274,7 +1277,10 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	}
 
 	// Start session cleanup manager
-	sessionCleanupManager.Start()
+	if err := sessionCleanupManager.Start(); err != nil {
+		logger.Error("failed to start session cleanup manager", zap.Error(err))
+		return err
+	}
 
 	// Start alert service background worker
 	if err := alertService.Start(ctx); err != nil {
