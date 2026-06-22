@@ -24,7 +24,7 @@ func (h *AutonomyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	user := auth.CurrentUser(r.Context())
-	if user == nil || user.Role != "admin" {
+	if user == nil || (r.Method != http.MethodGet && user.Role != "admin") {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "admin access required"})
 		return
