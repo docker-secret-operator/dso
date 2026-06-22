@@ -76,11 +76,15 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
         try {
           const data = JSON.parse(event.data) as Event
           setEvents((prev) => {
-            const updated = [data, ...prev]
-            return updated.slice(0, maxMessageHistory)
+            // Add new event and maintain bounded history
+            // Slice first to avoid unbounded growth during state updates
+            const bounded = prev.slice(0, maxMessageHistory - 1)
+            return [data, ...bounded]
           })
         } catch (err) {
-          if (process.env.NODE_ENV === 'development') console.error('[WebSocket] Failed to parse message:', err)
+          if (process.env.NODE_ENV === 'development') {
+            console.error('[WebSocket] Failed to parse message:', err)
+          }
         }
       }
 

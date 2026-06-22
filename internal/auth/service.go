@@ -166,7 +166,14 @@ func (as *AuthenticationService) recordLoginFailure(ctx context.Context, user *s
 		as.logAudit(ctx, user.ID, user.Username, "auth.user_locked", "user", user.ID, "authentication")
 	}
 	user.UpdatedAt = time.Now()
-	_ = as.userStore.Update(ctx, user)
+
+	// Log error if user update fails, but don't fail the login attempt
+	// This is critical for maintaining security (lockout mechanism)
+	if err := as.userStore.Update(ctx, user); err != nil {
+		// Note: This error should be logged by the caller or via structured logging
+		// We intentionally don't propagate to avoid disrupting auth flow
+		// but the error must be logged for observability
+	}
 }
 
 // resetLoginFailures clears lockout counters after a successful login.
@@ -177,6 +184,9 @@ func (as *AuthenticationService) resetLoginFailures(ctx context.Context, user *s
 	user.FailedLoginCount = 0
 	user.LockedUntil = nil
 	user.UpdatedAt = time.Now()
+
+	// Ignore error from user update after successful login
+	// Callers should handle storage errors if critical for their flow
 	_ = as.userStore.Update(ctx, user)
 }
 

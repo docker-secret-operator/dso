@@ -1258,13 +1258,19 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 
 	mux.Handle("/", authenticationMiddleware.Handler(restServer))
 
+	// Get HTTP timeout values from environment or use defaults
+	readTimeout := getHTTPTimeoutFromEnv("DSO_HTTP_READ_TIMEOUT", 15*time.Second)
+	readHeaderTimeout := getHTTPTimeoutFromEnv("DSO_HTTP_READ_HEADER_TIMEOUT", 10*time.Second)
+	writeTimeout := getHTTPTimeoutFromEnv("DSO_HTTP_WRITE_TIMEOUT", 30*time.Second)
+	idleTimeout := getHTTPTimeoutFromEnv("DSO_HTTP_IDLE_TIMEOUT", 60*time.Second)
+
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
-		ReadTimeout:       15 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
@@ -1378,4 +1384,15 @@ func (a *eventPersisterAdapter) LogExecutionEvent(event execution.OrchestrationA
 	}
 
 	return a.auditService.LogEventWithDetails(context.Background(), auditEvent)
+}
+
+// getHTTPTimeoutFromEnv reads HTTP timeout configuration from environment variables
+// Returns default value if env var is not set or invalid
+func getHTTPTimeoutFromEnv(envVar string, defaultValue time.Duration) time.Duration {
+	if val := os.Getenv(envVar); val != "" {
+		if duration, err := time.ParseDuration(val); err == nil && duration > 0 {
+			return duration
+		}
+	}
+	return defaultValue
 }
