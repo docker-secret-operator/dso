@@ -45,10 +45,10 @@ function DiscoveryContent() {
       if (demoMode) {
         return {
           containers: mockContainers,
-          total: mockContainers.length,
-          managed: mockContainers.filter(c => c.dso_awareness?.status === 'managed').length,
-          partial: mockContainers.filter(c => c.dso_awareness?.status === 'partial').length,
-          unmanaged: mockContainers.filter(c => c.dso_awareness?.status === 'unmanaged').length,
+          total_count: mockContainers.length,
+          managed_count: mockContainers.filter(c => c.dso_awareness?.status === 'managed').length,
+          partial_count: mockContainers.filter(c => c.dso_awareness?.status === 'partial').length,
+          unmanaged_count: mockContainers.filter(c => c.dso_awareness?.status === 'unmanaged').length,
           timestamp: new Date().toISOString(),
         }
       }
