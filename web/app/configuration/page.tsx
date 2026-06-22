@@ -37,7 +37,7 @@ export default function ConfigurationPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Configuration</h1>
-          <p className="text-gray-600 mt-1">View and manage DSO configuration</p>
+          <p className="text-slate-400 mt-1">View and manage DSO configuration</p>
         </div>
         <Button onClick={refresh} variant="outline" size="sm">
           <RefreshCw className="w-4 h-4 mr-2" />
@@ -50,9 +50,9 @@ export default function ConfigurationPage() {
 
       {/* Error Alert */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-red-800">{error}</div>
+        <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-red-300">{error}</div>
         </div>
       )}
 
@@ -67,11 +67,11 @@ export default function ConfigurationPage() {
             {/* Config Path */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <p className="text-sm text-gray-600 font-medium">Configuration File</p>
-                <p className="text-sm font-mono bg-gray-50 p-2 rounded mt-1 break-all">{config.path}</p>
+                <p className="text-sm text-slate-400 font-medium">Configuration File</p>
+                <p className="text-sm font-mono bg-white/[0.04] p-2 rounded mt-1 break-all">{config.path}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-600 font-medium">Last Modified</p>
+                <p className="text-sm text-slate-400 font-medium">Last Modified</p>
                 <p className="text-sm mt-1">
                   {new Date(config.last_modified).toLocaleString()}
                 </p>
@@ -81,9 +81,9 @@ export default function ConfigurationPage() {
             {/* Validation Status */}
             <div className="pt-2 border-t">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-gray-600 font-medium">Validation Status</p>
+                <p className="text-sm text-slate-400 font-medium">Validation Status</p>
                 {config.valid ? (
-                  <Badge className="bg-green-100 text-green-800 flex items-center gap-1">
+                  <Badge className="bg-emerald-500/15 text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" />
                     Valid
                   </Badge>
@@ -97,7 +97,7 @@ export default function ConfigurationPage() {
               {config.validation_errors && config.validation_errors.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {config.validation_errors.map((err, i) => (
-                    <p key={i} className="text-xs text-red-600">
+                    <p key={i} className="text-xs text-red-400">
                       • {err}
                     </p>
                   ))}
@@ -108,18 +108,18 @@ export default function ConfigurationPage() {
             {/* Quick Stats */}
             <div className="pt-2 border-t grid grid-cols-3 gap-4">
               <div>
-                <p className="text-xs text-gray-600 uppercase font-semibold">Secrets Configured</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{config.secret_count}</p>
+                <p className="text-xs text-slate-400 uppercase font-semibold">Secrets Configured</p>
+                <p className="text-2xl font-bold text-slate-100 mt-1">{config.secret_count}</p>
               </div>
               <div>
-                <p className="text-xs text-gray-600 uppercase font-semibold">Providers Active</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
+                <p className="text-xs text-slate-400 uppercase font-semibold">Providers Active</p>
+                <p className="text-2xl font-bold text-slate-100 mt-1">
                   {config.providers ? Object.keys(config.providers).length : 0}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-gray-600 uppercase font-semibold">Status</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1 capitalize">{config.status}</p>
+                <p className="text-xs text-slate-400 uppercase font-semibold">Status</p>
+                <p className="text-2xl font-bold text-slate-100 mt-1 capitalize">{config.status}</p>
               </div>
             </div>
           </CardContent>
@@ -137,23 +137,23 @@ export default function ConfigurationPage() {
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-gray-600">Cache Enabled</p>
-                  <Badge className="mt-1 bg-blue-100 text-blue-800">
+                  <p className="text-sm text-slate-400">Cache Enabled</p>
+                  <Badge className="mt-1 bg-blue-500/15 text-blue-400">
                     {config.agent_configuration.cache_enabled ? 'Enabled' : 'Disabled'}
                   </Badge>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-600">Auto-Sync</p>
-                  <Badge className="mt-1 bg-blue-100 text-blue-800">
+                  <p className="text-sm text-slate-400">Auto-Sync</p>
+                  <Badge className="mt-1 bg-blue-500/15 text-blue-400">
                     {config.agent_configuration.auto_sync_enabled ? 'Enabled' : 'Disabled'}
                   </Badge>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-600">Refresh Interval</p>
+                  <p className="text-sm text-slate-400">Refresh Interval</p>
                   <p className="text-sm font-mono mt-1">{config.agent_configuration.refresh_interval || 'Not set'}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-600">Watch Mode</p>
+                  <p className="text-sm text-slate-400">Watch Mode</p>
                   <p className="text-sm font-mono mt-1 uppercase">
                     {config.agent_configuration.watch_mode || 'Not set'}
                   </p>
@@ -162,11 +162,11 @@ export default function ConfigurationPage() {
 
               {config.agent_configuration.rotation_enabled && (
                 <div className="pt-3 border-t">
-                  <p className="text-sm font-medium text-gray-900">Rotation</p>
+                  <p className="text-sm font-medium text-slate-100">Rotation</p>
                   <div className="grid grid-cols-2 gap-4 mt-2">
                     <div>
-                      <p className="text-xs text-gray-600">Strategy</p>
-                      <Badge className="mt-1 bg-purple-100 text-purple-800">
+                      <p className="text-xs text-slate-400">Strategy</p>
+                      <Badge className="mt-1 bg-purple-500/15 text-purple-400">
                         {config.agent_configuration.rotation_strategy}
                       </Badge>
                     </div>
@@ -190,7 +190,7 @@ export default function ConfigurationPage() {
           </CardHeader>
           <CardContent>
             {Object.keys(providers.active || {}).length === 0 ? (
-              <p className="text-sm text-gray-600 py-4">No providers configured</p>
+              <p className="text-sm text-slate-400 py-4">No providers configured</p>
             ) : (
               <div className="space-y-3">
                 {Object.entries(providers.active || {}).map(([name, provider]) => {
@@ -198,10 +198,10 @@ export default function ConfigurationPage() {
                   const isTesting = testingProvider === name
 
                   return (
-                    <div key={name} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div key={name} className="flex items-center justify-between p-3 bg-white/[0.04] rounded-lg">
                       <div className="flex-1">
                         <p className="font-medium text-sm">{name}</p>
-                        <p className="text-xs text-gray-600 capitalize">{provider.type}</p>
+                        <p className="text-xs text-slate-400 capitalize">{provider.type}</p>
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -209,7 +209,7 @@ export default function ConfigurationPage() {
                         {testResult && (
                           <div className="text-right">
                             {testResult.success ? (
-                              <Badge className="bg-green-100 text-green-800 flex items-center gap-1">
+                              <Badge className="bg-emerald-500/15 text-emerald-400 flex items-center gap-1">
                                 <CheckCircle2 className="w-3 h-3" />
                                 Connected
                               </Badge>
@@ -220,7 +220,7 @@ export default function ConfigurationPage() {
                               </Badge>
                             )}
                             {testResult.latency_ms && (
-                              <p className="text-xs text-gray-600 mt-1">{testResult.latency_ms}ms</p>
+                              <p className="text-xs text-slate-400 mt-1">{testResult.latency_ms}ms</p>
                             )}
                           </div>
                         )}
@@ -266,12 +266,12 @@ export default function ConfigurationPage() {
       </AdminOnly>
 
       {/* Info Banner */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+      <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4">
         <p className="text-sm text-blue-900">
           <strong>Read-Only View:</strong> This is a read-only view of your configuration. To edit your
           configuration, use the CLI command{' '}
-          <code className="bg-blue-100 px-2 py-1 rounded text-xs font-mono">dso config edit</code> or edit the
-          file directly at <code className="bg-blue-100 px-2 py-1 rounded text-xs font-mono">/etc/dso/dso.yaml</code>.
+          <code className="bg-blue-500/15 text-blue-300 px-2 py-1 rounded text-xs font-mono">dso config edit</code> or edit the
+          file directly at <code className="bg-blue-500/15 text-blue-300 px-2 py-1 rounded text-xs font-mono">/etc/dso/dso.yaml</code>.
         </p>
       </div>
     </div>
@@ -312,13 +312,13 @@ function RawYAMLViewer() {
   }, [])
 
   if (loadingYaml) {
-    return <p className="text-sm text-gray-600">Loading...</p>
+    return <p className="text-sm text-slate-400">Loading...</p>
   }
 
   return (
     <div className="space-y-3">
       <div className="relative">
-        <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono whitespace-pre-wrap break-words">
+        <pre className="bg-[#0B1020] text-slate-200 border border-white/[0.08] p-4 rounded-lg overflow-x-auto text-sm font-mono whitespace-pre-wrap break-words">
           {yaml}
         </pre>
       </div>
