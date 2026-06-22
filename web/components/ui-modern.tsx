@@ -301,8 +301,8 @@ export function MetricCard({ label, value, change, trend = 'neutral', icon, load
   return (
     <div
       className={cn(
-        'rounded-xl border border-white/[0.07] glass-panel p-5 transition-all duration-300',
-        onClick && 'cursor-pointer hover:border-white/[0.14] hover:-translate-y-1 hover:shadow-glow-indigo'
+        'rounded-xl border border-white/[0.07] bg-[#111827] p-5 transition-colors duration-150',
+        onClick && 'cursor-pointer hover:border-white/[0.14]'
       )}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
