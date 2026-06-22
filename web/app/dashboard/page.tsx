@@ -6,8 +6,7 @@ import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { ErrorBoundary } from '@/components/error-boundary'
 
 import { Section } from '@/components/dashboard/section'
-import { PostureSummary } from '@/components/dashboard/posture-summary'
-import { RotationHealthStrip } from '@/components/dashboard/rotation-health-strip'
+import { EstateHero } from '@/components/dashboard/estate-hero'
 import {
   NeedsAttention,
   sortAttentionItems,
@@ -15,7 +14,6 @@ import {
 } from '@/components/dashboard/needs-attention'
 import { OperationalHealth } from '@/components/dashboard/operational-health'
 import { RecentActivity } from '@/components/dashboard/recent-activity'
-import { Skeleton } from '@/components/ui-modern'
 
 import { deriveRotationPosture, classifySecret } from '@/lib/dashboard/rotation'
 import { apiClient, type Secret } from '@/lib/api-client'
@@ -149,28 +147,15 @@ function DashboardContent() {
     <ErrorBoundary>
       <div className="min-h-[calc(100vh-3rem)] bg-[#0B1020]">
         <div className="mx-auto max-w-[1400px] p-6 space-y-5">
-          {/* 1 — Posture summary */}
-          <PostureSummary
-            managedSecrets={posture.total}
-            needRotation={posture.needRotation}
-            overdue={posture.overdue}
-            aging={posture.aging}
-            drifted={posture.drifted}
+          {/* 1 — Secret estate hero (signature: posture + rotation band fused) */}
+          <EstateHero
+            posture={posture}
             coverage={coverage}
             lastSyncLabel={lastSync}
             loading={secretsLoading}
           />
 
-          {/* 2 — Rotation health strip (signature) */}
-          <Section title="Rotation health" meta={`${posture.total.toLocaleString()} secrets`} href="/secrets">
-            {secretsLoading ? (
-              <Skeleton className="h-16 w-full rounded" />
-            ) : (
-              <RotationHealthStrip posture={posture} />
-            )}
-          </Section>
-
-          {/* 3 — Needs attention */}
+          {/* 2 — Needs attention */}
           <Section
             title="Needs attention"
             meta={attentionItems.length > 0 ? `${attentionItems.length} item${attentionItems.length === 1 ? '' : 's'}` : undefined}
@@ -181,7 +166,7 @@ function DashboardContent() {
             />
           </Section>
 
-          {/* 4 + 5 — Operational health & recent activity */}
+          {/* 3 + 4 — Operational health & recent activity */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
             <div className="lg:col-span-3">
               <Section title="Operational health" href="/operations" className="h-full">
