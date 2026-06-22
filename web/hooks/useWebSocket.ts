@@ -67,9 +67,9 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
 
-      // Include authentication token in URL (from secure sessionStorage)
+      // Include authentication token in URL (localStorage — consistent app-wide)
       let wsUrl = `${protocol}//${host}${path}`
-      const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('dso_api_token') : null
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('dso_api_token') : null
       if (token) {
         wsUrl += `?token=${encodeURIComponent(token)}`
       }

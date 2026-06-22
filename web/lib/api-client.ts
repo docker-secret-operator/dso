@@ -255,8 +255,8 @@ class APIClient {
     // Add token to requests if available, and CSRF headers for state-changing requests
     this.client.interceptors.request.use((config) => {
       if (typeof window !== 'undefined') {
-        // Add authentication token from sessionStorage (secure storage)
-        const token = sessionStorage.getItem('dso_api_token')
+        // Token lives in localStorage (consistent with login flow + all pages).
+        const token = localStorage.getItem('dso_api_token')
         if (token) {
           config.headers.Authorization = `Bearer ${token}`
         }

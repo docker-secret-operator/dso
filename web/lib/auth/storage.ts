@@ -2,14 +2,15 @@
  * Secure token storage management
  * Handles persistence of auth tokens and user data
  *
- * SECURITY NOTE: Tokens are stored in sessionStorage (cleared on tab close)
- * instead of localStorage to minimize XSS attack surface. sessionStorage
- * is cleared when the browser tab is closed, preventing token theft if
- * the browser is compromised. This aligns with OWASP recommendations
- * for handling sensitive authentication tokens.
- *
- * Session data (user info, session metadata) is also stored in sessionStorage
- * to ensure consistency and security.
+ * SECURITY NOTE: tokens are stored in localStorage to stay consistent with the
+ * rest of the app (the login flow, route guards, and ~20 pages all read
+ * `dso_api_token` from localStorage). sessionStorage is NOT a meaningful XSS
+ * mitigation — script running in the page can read either store. The genuine
+ * hardening is httpOnly + Secure + SameSite cookies issued by the backend
+ * (so JS never touches the token); that is tracked as backend work. Do not
+ * switch only the client to sessionStorage — it splits the token store and
+ * breaks auth (see incident: login wrote localStorage while api-client read
+ * sessionStorage → every request was unauthenticated).
  */
 
 const TOKEN_KEY = 'dso_api_token'
@@ -38,7 +39,7 @@ export interface StoredSession {
  */
 export function getAccessToken(): string | null {
   if (typeof window === 'undefined') return null
-  return sessionStorage.getItem(TOKEN_KEY)
+  return localStorage.getItem(TOKEN_KEY)
 }
 
 /**
@@ -46,7 +47,7 @@ export function getAccessToken(): string | null {
  */
 export function setAccessToken(token: string): void {
   if (typeof window === 'undefined') return
-  sessionStorage.setItem(TOKEN_KEY, token)
+  localStorage.setItem(TOKEN_KEY, token)
 }
 
 /**
@@ -54,7 +55,7 @@ export function setAccessToken(token: string): void {
  */
 export function getRefreshToken(): string | null {
   if (typeof window === 'undefined') return null
-  return sessionStorage.getItem(REFRESH_TOKEN_KEY)
+  return localStorage.getItem(REFRESH_TOKEN_KEY)
 }
 
 /**
@@ -62,7 +63,7 @@ export function getRefreshToken(): string | null {
  */
 export function setRefreshToken(token: string): void {
   if (typeof window === 'undefined') return
-  sessionStorage.setItem(REFRESH_TOKEN_KEY, token)
+  localStorage.setItem(REFRESH_TOKEN_KEY, token)
 }
 
 /**
@@ -70,7 +71,7 @@ export function setRefreshToken(token: string): void {
  */
 export function getStoredUser(): StoredUser | null {
   if (typeof window === 'undefined') return null
-  const data = sessionStorage.getItem(USER_KEY)
+  const data = localStorage.getItem(USER_KEY)
   if (!data) return null
   try {
     return JSON.parse(data)
@@ -84,7 +85,7 @@ export function getStoredUser(): StoredUser | null {
  */
 export function setStoredUser(user: StoredUser): void {
   if (typeof window === 'undefined') return
-  sessionStorage.setItem(USER_KEY, JSON.stringify(user))
+  localStorage.setItem(USER_KEY, JSON.stringify(user))
 }
 
 /**
@@ -92,7 +93,7 @@ export function setStoredUser(user: StoredUser): void {
  */
 export function getStoredSession(): StoredSession | null {
   if (typeof window === 'undefined') return null
-  const data = sessionStorage.getItem(SESSION_KEY)
+  const data = localStorage.getItem(SESSION_KEY)
   if (!data) return null
   try {
     return JSON.parse(data)
@@ -106,7 +107,7 @@ export function getStoredSession(): StoredSession | null {
  */
 export function setStoredSession(session: StoredSession): void {
   if (typeof window === 'undefined') return
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
 }
 
 /**
@@ -114,10 +115,11 @@ export function setStoredSession(session: StoredSession): void {
  */
 export function clearAllAuthData(): void {
   if (typeof window === 'undefined') return
-  sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(REFRESH_TOKEN_KEY)
-  sessionStorage.removeItem(USER_KEY)
-  sessionStorage.removeItem(SESSION_KEY)
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
+  localStorage.removeItem(USER_KEY)
+  localStorage.removeItem(SESSION_KEY)
+  // Transient UI flag — always lived in sessionStorage.
   sessionStorage.removeItem('session_expired')
 }
 

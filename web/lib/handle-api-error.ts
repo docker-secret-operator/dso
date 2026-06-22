@@ -121,16 +121,17 @@ export function handleApiError(error: unknown): never {
 }
 
 /**
- * Clears auth tokens when authentication fails
- * This function should clear tokens from sessionStorage and redirect to login
+ * Clears auth tokens (from localStorage, consistent with the rest of the app)
+ * and redirects to login — unless we're already on the login page, to avoid
+ * a redirect loop when an unauthenticated request fires there.
  */
 function clearAuthTokens() {
-  if (typeof window !== 'undefined') {
-    sessionStorage.removeItem('dso_api_token')
-    sessionStorage.removeItem('dso_refresh_token')
-    sessionStorage.removeItem('dso_user')
-    sessionStorage.removeItem('dso_session')
-    // Redirect to login
+  if (typeof window === 'undefined') return
+  localStorage.removeItem('dso_api_token')
+  localStorage.removeItem('dso_refresh_token')
+  localStorage.removeItem('dso_user')
+  localStorage.removeItem('dso_session')
+  if (window.location.pathname !== '/login') {
     window.location.href = '/login'
   }
 }
