@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { apiFetch } from "@/lib/api-fetch"
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -39,7 +40,7 @@ export function ChangeSetsDashboardClient() {
     queryKey: ['containers'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/discovery/docker')
+        const response = await apiFetch('/api/discovery/docker')
         if (!response.ok) return []
         const data = await response.json()
         return data.containers || []
@@ -54,7 +55,7 @@ export function ChangeSetsDashboardClient() {
     queryKey: ['secrets'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/secrets')
+        const response = await apiFetch('/api/secrets')
         if (!response.ok) return []
         const data = await response.json()
         return data.secrets || []
@@ -69,7 +70,7 @@ export function ChangeSetsDashboardClient() {
     queryKey: ['events'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/events')
+        const response = await apiFetch('/api/events')
         if (!response.ok) return []
         const data = await response.json()
         return data.events || []

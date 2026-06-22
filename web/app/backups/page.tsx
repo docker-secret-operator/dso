@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { Download, Trash2, RotateCcw, Plus, ChevronLeft, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -63,7 +64,7 @@ export default function BackupsPage() {
     setLoading(true)
     try {
       const offset = (page - 1) * pageSize
-      const response = await fetch(`/api/backups?limit=${pageSize}&offset=${offset}`, {
+      const response = await apiFetch(`/api/backups?limit=${pageSize}&offset=${offset}`, {
         headers: getAuthHeaders(),
       })
       if (!response.ok) {
@@ -86,7 +87,7 @@ export default function BackupsPage() {
     setCreatingBackup(true)
     setActionMsg(null)
     try {
-      const response = await fetch('/api/backups', { method: 'POST', headers: getAuthHeaders() })
+      const response = await apiFetch('/api/backups', { method: 'POST', headers: getAuthHeaders() })
       if (!response.ok) throw new Error('Failed to create backup')
       setActionMsg({ type: 'success', text: 'Backup creation started' })
       fetchBackups()
@@ -101,7 +102,7 @@ export default function BackupsPage() {
     setActingBackup(backupId)
     setActionMsg(null)
     try {
-      const response = await fetch(`/api/backups/${backupId}`, { method: 'DELETE', headers: getAuthHeaders() })
+      const response = await apiFetch(`/api/backups/${backupId}`, { method: 'DELETE', headers: getAuthHeaders() })
       if (!response.ok) throw new Error('Failed to delete backup')
       setActionMsg({ type: 'success', text: 'Backup deleted' })
       fetchBackups()
@@ -116,7 +117,7 @@ export default function BackupsPage() {
     setActingBackup(backupId)
     setActionMsg(null)
     try {
-      const response = await fetch(`/api/backups/${backupId}/restore`, { method: 'POST', headers: getAuthHeaders() })
+      const response = await apiFetch(`/api/backups/${backupId}/restore`, { method: 'POST', headers: getAuthHeaders() })
       if (!response.ok) throw new Error('Failed to restore backup')
       setActionMsg({ type: 'success', text: 'Database restore initiated — the system will reload shortly' })
       fetchBackups()

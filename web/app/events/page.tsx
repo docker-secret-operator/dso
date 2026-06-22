@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useWebSocket } from '@/hooks/useWebSocket'
+import { apiFetch } from '@/lib/api-fetch'
 import { PageHeader, Card, Badge, StatusIndicator, EmptyState, Button } from '@/components/ui-modern'
 import { AlertCircle, AlertTriangle, Info, Pause, Play, Trash2, ArrowDown } from 'lucide-react'
 
@@ -96,6 +97,38 @@ export default function EventsPage() {
     setDisplayed(prev => [...buffered, ...prev].slice(0, 500))
     setBuffered([])
   }, [buffered])
+
+  // HTTP fallback: seed initial events and keep polling while the WebSocket
+  // isn't delivering (e.g. under `next dev`, which can't proxy WS upgrades).
+  // In production the WebSocket connects and supersedes this.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/events')
+        if (!res.ok) return
+        const data = await res.json()
+        const list: WSEvent[] = data.events || []
+        if (cancelled || list.length === 0) return
+        setDisplayed(prev => {
+          const seen = new Set(prev.map(e => `${e.timestamp}-${e.message}`))
+          const merged = [...prev, ...list.filter(e => !seen.has(`${e.timestamp}-${e.message}`))]
+          merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          return merged.slice(0, 500)
+        })
+      } catch {
+        /* ignore — WebSocket path is primary */
+      }
+    }
+    load()
+    const id = setInterval(() => {
+      if (!isConnected && !paused) load()
+    }, 10000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [isConnected, paused])
 
   // Auto-scroll to top (newest) when not paused
   useEffect(() => {

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, Suspense } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -70,7 +71,7 @@ function SecurityEventsContent() {
         params.append('limit', pageSize.toString())
         params.append('offset', ((page - 1) * pageSize).toString())
 
-        const response = await fetch(`/api/security/events?${params}`)
+        const response = await apiFetch(`/api/security/events?${params}`)
         if (!response.ok) {
           if (response.status === 403) {
             router.push('/login')

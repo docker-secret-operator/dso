@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { AlertTriangle, Shield, Globe, Clock } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -26,7 +27,7 @@ export default function SessionSecurityPage() {
     const fetchSessions = async () => {
       setLoading(true)
       try {
-        const response = await fetch('/api/security/sessions')
+        const response = await apiFetch('/api/security/sessions')
         if (!response.ok) {
           if (response.status === 403) {
             router.push('/login')

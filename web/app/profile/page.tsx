@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { Save, User, Shield, Clock, AlertCircle, CheckCircle } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -49,7 +50,7 @@ export default function ProfilePage() {
     const fetchProfile = async () => {
       try {
         setLoading(true)
-        const response = await fetch('/api/user/profile', {
+        const response = await apiFetch('/api/user/profile', {
           headers: getAuthHeaders(),
         })
 
@@ -100,7 +101,7 @@ export default function ProfilePage() {
       setSaving(true)
       setError(null)
 
-      const response = await fetch('/api/user/profile', {
+      const response = await apiFetch('/api/user/profile', {
         method: 'PUT',
         headers: getAuthHeaders(),
         body: JSON.stringify(formData),

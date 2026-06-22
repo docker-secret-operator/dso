@@ -1,6 +1,7 @@
 'use client'
 
 import { useDiscovery, useSecretMappings, useDiscoveryMetrics } from '@/hooks/useDiscovery'
+import { apiFetch } from "@/lib/api-fetch"
 import { useToast } from '@/hooks/useToast'
 import { DiscoveryFilters, FilterType } from '@/components/discovery-filters'
 import { EmptyState } from '@/components/empty-state'
@@ -37,7 +38,7 @@ export function DiscoveryPageClient() {
     queryKey: ['secrets'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/secrets')
+        const response = await apiFetch('/api/secrets')
         if (!response.ok) return []
         const data = await response.json()
         return data.secrets || []
@@ -52,7 +53,7 @@ export function DiscoveryPageClient() {
     queryKey: ['events'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/events')
+        const response = await apiFetch('/api/events')
         if (!response.ok) return []
         const data = await response.json()
         return data.events || []

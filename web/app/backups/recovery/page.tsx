@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { AlertTriangle, CheckCircle, Clock, Database, Activity } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -56,7 +57,7 @@ export default function RecoveryDashboard() {
 
   const fetchStatus = async () => {
     try {
-      const response = await fetch('/api/backups/status')
+      const response = await apiFetch('/api/backups/status')
       if (!response.ok) {
         if (response.status === 403) {
           router.push('/login')

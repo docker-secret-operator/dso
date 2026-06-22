@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useEffect } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -32,7 +33,7 @@ export function ReviewPageClient() {
     queryKey: ['containers'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/discovery/docker')
+        const response = await apiFetch('/api/discovery/docker')
         if (!response.ok) return []
         const data = await response.json()
         return data.containers || []
@@ -46,7 +47,7 @@ export function ReviewPageClient() {
     queryKey: ['secrets'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/secrets')
+        const response = await apiFetch('/api/secrets')
         if (!response.ok) return []
         const data = await response.json()
         return data.secrets || []

@@ -1,6 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
+import { apiFetch } from "@/lib/api-fetch"
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { apiClient } from '@/lib/api-client'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -16,7 +17,7 @@ export default function TimelinePage() {
     queryKey: ['events'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/events')
+        const response = await apiFetch('/api/events')
         if (!response.ok) return []
         const data = await response.json()
         return data.events || []

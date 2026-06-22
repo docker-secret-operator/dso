@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { useConfiguration } from '@/hooks/useConfiguration'
 import { useAuth } from '@/contexts/AuthContext'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -293,7 +294,7 @@ function RawYAMLViewer() {
   const [loadingYaml, setLoadingYaml] = useState(true)
 
   React.useEffect(() => {
-    fetch('/api/config/raw')
+    apiFetch('/api/config/raw')
       .then((r) => r.json())
       .then((data) => {
         setYaml(data.content || '')

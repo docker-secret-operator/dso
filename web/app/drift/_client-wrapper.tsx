@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { AlertCircle, Play, CheckCircle2, TrendingUp } from 'lucide-react'
 
 interface Finding {
@@ -61,8 +62,8 @@ export function DriftDashboardClient() {
       try {
         setLoading(true)
         const [findingsRes, metricsRes] = await Promise.all([
-          fetch('/api/drift'),
-          fetch('/api/drift/metrics'),
+          apiFetch('/api/drift'),
+          apiFetch('/api/drift/metrics'),
         ])
 
         if (!findingsRes.ok || !metricsRes.ok) {
@@ -90,18 +91,18 @@ export function DriftDashboardClient() {
   const handleScan = async () => {
     try {
       setScanning(true)
-      const res = await fetch('/api/drift/scan', {
+      const res = await apiFetch('/api/drift/scan', {
         method: 'POST',
       })
 
       if (!res.ok) throw new Error('Scan failed')
 
       // Refresh data
-      const findingsRes = await fetch('/api/drift')
+      const findingsRes = await apiFetch('/api/drift')
       const findingsData = await findingsRes.json()
       setFindings(findingsData.findings || [])
 
-      const metricsRes = await fetch('/api/drift/metrics')
+      const metricsRes = await apiFetch('/api/drift/metrics')
       const metricsData = await metricsRes.json()
       setMetrics(metricsData)
     } catch (err) {
@@ -113,12 +114,12 @@ export function DriftDashboardClient() {
 
   const handleAcknowledge = async (findingId: string) => {
     try {
-      const res = await fetch(`/api/drift/${findingId}/acknowledge`, {
+      const res = await apiFetch(`/api/drift/${findingId}/acknowledge`, {
         method: 'POST',
       })
       if (!res.ok) throw new Error('Failed to acknowledge')
       // Refresh data
-      const findingsRes = await fetch('/api/drift')
+      const findingsRes = await apiFetch('/api/drift')
       const findingsData = await findingsRes.json()
       setFindings(findingsData.findings || [])
     } catch (err) {
@@ -128,12 +129,12 @@ export function DriftDashboardClient() {
 
   const handleResolve = async (findingId: string) => {
     try {
-      const res = await fetch(`/api/drift/${findingId}/resolve`, {
+      const res = await apiFetch(`/api/drift/${findingId}/resolve`, {
         method: 'POST',
       })
       if (!res.ok) throw new Error('Failed to resolve')
       // Refresh data
-      const findingsRes = await fetch('/api/drift')
+      const findingsRes = await apiFetch('/api/drift')
       const findingsData = await findingsRes.json()
       setFindings(findingsData.findings || [])
     } catch (err) {

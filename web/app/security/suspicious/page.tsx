@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { AlertTriangle, CheckCircle, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -49,7 +50,7 @@ export default function SuspiciousActivityPage() {
       setLoading(true)
       try {
         const offset = (page - 1) * pageSize
-        const response = await fetch(`/api/security/suspicious?limit=${pageSize}&offset=${offset}`, { headers: getAuthHeaders() })
+        const response = await apiFetch(`/api/security/suspicious?limit=${pageSize}&offset=${offset}`, { headers: getAuthHeaders() })
         if (!response.ok) {
           if (response.status === 403) {
             router.push('/login')
@@ -73,7 +74,7 @@ export default function SuspiciousActivityPage() {
     setAcknowledging(activityID)
     setActionError(null)
     try {
-      const response = await fetch(`/api/security/suspicious/${activityID}/acknowledge`, {
+      const response = await apiFetch(`/api/security/suspicious/${activityID}/acknowledge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       })

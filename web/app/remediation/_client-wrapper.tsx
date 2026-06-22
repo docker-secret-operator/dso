@@ -1,6 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
+import { apiFetch } from "@/lib/api-fetch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -37,7 +38,7 @@ export function RemediationDashboardClient() {
     queryKey: ['containers'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/discovery/docker')
+        const response = await apiFetch('/api/discovery/docker')
         if (!response.ok) return []
         const data = await response.json()
         return data.containers || []
@@ -52,7 +53,7 @@ export function RemediationDashboardClient() {
     queryKey: ['secrets'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/secrets')
+        const response = await apiFetch('/api/secrets')
         if (!response.ok) return []
         const data = await response.json()
         return data.secrets || []
@@ -67,7 +68,7 @@ export function RemediationDashboardClient() {
     queryKey: ['events'],
     queryFn: async () => {
       try {
-        const response = await fetch('/api/events')
+        const response = await apiFetch('/api/events')
         if (!response.ok) return []
         const data = await response.json()
         return data.events || []

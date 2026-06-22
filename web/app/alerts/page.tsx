@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import { apiFetch } from "@/lib/api-fetch"
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import {
@@ -173,10 +174,10 @@ export default function AlertsPage() {
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 
-  const handleAck      = (id: string) => mutate(id, () => fetch(`/api/alerts/${id}/acknowledge`, { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to acknowledge') }))
-  const handleResolve  = (id: string) => mutate(id, () => fetch(`/api/alerts/${id}/resolve`,     { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to resolve') }))
+  const handleAck      = (id: string) => mutate(id, () => apiFetch(`/api/alerts/${id}/acknowledge`, { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to acknowledge') }))
+  const handleResolve  = (id: string) => mutate(id, () => apiFetch(`/api/alerts/${id}/resolve`,     { method: 'POST', headers: authHeader() }).then(r => { if (!r.ok) throw new Error('Failed to resolve') }))
   const handleSuppress = (id: string) => mutate(id, () =>
-    fetch(`/api/alerts/${id}/suppress`, {
+    apiFetch(`/api/alerts/${id}/suppress`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify({ suppress_until: new Date(Date.now() + 86400 * 1000).toISOString() }),
