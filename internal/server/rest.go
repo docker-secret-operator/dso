@@ -19,11 +19,19 @@ import (
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/api"
 	"github.com/docker-secret-operator/dso/internal/auth"
+	"github.com/docker-secret-operator/dso/internal/autonomy"
+	"github.com/docker-secret-operator/dso/internal/correlation"
+	"github.com/docker-secret-operator/dso/internal/drift"
 	"github.com/docker-secret-operator/dso/internal/execution"
+	"github.com/docker-secret-operator/dso/internal/forecast"
+	"github.com/docker-secret-operator/dso/internal/graph"
 	"github.com/docker-secret-operator/dso/internal/plugins"
+	"github.com/docker-secret-operator/dso/internal/policy"
+	"github.com/docker-secret-operator/dso/internal/recommendation"
 	"github.com/docker-secret-operator/dso/internal/scheduler"
 	"github.com/docker-secret-operator/dso/internal/services"
 	"github.com/docker-secret-operator/dso/internal/storage"
+	"github.com/docker-secret-operator/dso/internal/storage/sqlite"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/client"
@@ -151,6 +159,10 @@ type RESTServer struct {
 	RecommendationHandler http.Handler
 	DriftHandler          http.Handler
 	ForecastHandler       http.Handler
+	AutonomyHandler       http.Handler
+	CorrelationHandler    http.Handler
+	PolicyHandler         http.Handler
+	GraphHandler          http.Handler
 	// startup time for uptime reporting
 	startTime time.Time
 }
@@ -370,6 +382,30 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.ForecastHandler.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Forecast API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/incidents"):
+		if s.CorrelationHandler != nil {
+			s.CorrelationHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Incidents API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/policies"):
+		if s.PolicyHandler != nil {
+			s.PolicyHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Policies API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/autonomy"):
+		if s.AutonomyHandler != nil {
+			s.AutonomyHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Autonomy API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/graph"):
+		if s.GraphHandler != nil {
+			s.GraphHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Graph API not initialized", http.StatusInternalServerError)
 		}
 	case strings.HasPrefix(r.URL.Path, "/api/metrics"):
 		if s.MetricsAPIHandler != nil {
@@ -1089,6 +1125,35 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		dbConn = provider.GetDB()
 	}
 
+	// Phase 6 intelligence & governance engines + handlers.
+	// Use persistent SQLite stores when a DB is available; fall back to
+	// in-memory stores otherwise so the endpoints still function.
+	var (
+		recommendationStore recommendation.Store
+		forecastStore       forecast.Store
+		autonomyStore       autonomy.Store
+		correlationStore    correlation.Store
+	)
+	if dbConn != nil {
+		recommendationStore = sqlite.NewRecommendationStore(dbConn)
+		forecastStore = sqlite.NewForecastStore(dbConn)
+		autonomyStore = sqlite.NewAutonomyStore(dbConn)
+		correlationStore = sqlite.NewCorrelationStore(dbConn)
+	} else {
+		recommendationStore = recommendation.NewInMemoryStore()
+		forecastStore = forecast.NewInMemoryStore()
+		autonomyStore = autonomy.NewInMemoryStore()
+		correlationStore = correlation.NewInMemoryStore()
+	}
+	recommendationHandler := api.NewRecommendationHandler(recommendation.NewEngine(logger, recommendationStore))
+	forecastHandler := api.NewForecastHandler(forecast.NewEngine(logger, forecastStore))
+	autonomyHandler := api.NewAutonomyHandler(autonomy.NewEngine(logger, autonomyStore))
+	correlationHandler := api.NewCorrelationHandler(correlation.NewEngine(logger, correlationStore))
+	// drift and policy have no SQLite store yet — back them with in-memory stores.
+	driftHandler := api.NewDriftHandler(drift.NewEngine(drift.NewInMemoryStore(), logger))
+	policyHandler := api.NewPolicyHandler(policy.NewEngine(policy.NewInMemoryStore(), logger))
+	graphHandler := api.NewGraphHandler(graph.NewGraph(logger))
+
 	metricsCollector := api.NewMetricsCollector(dispatcher, workerManager)
 	if dbConn != nil {
 		metricsCollector.SetDB(dbConn)
@@ -1243,9 +1308,13 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		IntegrationManager:      integrationManager,
 		SchedulerHandler:        schedulerHandler,
 		Scheduler:               sch,
-		RecommendationHandler:   api.NewStubRecommendationHandler(),
-		DriftHandler:            api.NewStubDriftHandler(),
-		ForecastHandler:         api.NewStubForecastHandler(),
+		RecommendationHandler:   recommendationHandler,
+		DriftHandler:            driftHandler,
+		ForecastHandler:         forecastHandler,
+		AutonomyHandler:         autonomyHandler,
+		CorrelationHandler:      correlationHandler,
+		PolicyHandler:           policyHandler,
+		GraphHandler:            graphHandler,
 	}
 
 	mux := http.NewServeMux()
