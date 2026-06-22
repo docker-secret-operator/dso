@@ -176,7 +176,7 @@ export default function SchedulerPage() {
           />
           <MetricCard
             label="Worker Util"
-            value={`${metrics.worker_utilization.toFixed(1)}%`}
+            value={`${(metrics.worker_utilization ?? 0).toFixed(1)}%`}
             valueClass="text-purple-600"
           />
         </div>

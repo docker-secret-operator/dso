@@ -102,7 +102,7 @@ func (ih *IntegrationHandler) ListIntegrations(w http.ResponseWriter, r *http.Re
 
 // GetIntegration handles GET /api/integrations/{id}
 func (ih *IntegrationHandler) GetIntegration(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	config, err := ih.configStore.GetConfig(r.Context(), pluginID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -131,7 +131,7 @@ func (ih *IntegrationHandler) GetIntegration(w http.ResponseWriter, r *http.Requ
 
 // UpdateConfig handles PUT /api/integrations/{id}/config
 func (ih *IntegrationHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	var req map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -175,7 +175,7 @@ func (ih *IntegrationHandler) UpdateConfig(w http.ResponseWriter, r *http.Reques
 
 // GetDeliveries handles GET /api/integrations/{id}/deliveries
 func (ih *IntegrationHandler) GetDeliveries(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	limit := 50
 
 	deliveries, err := ih.deliveryStore.GetDeliveries(r.Context(), pluginID, limit)
@@ -206,7 +206,7 @@ func (ih *IntegrationHandler) GetDeliveries(w http.ResponseWriter, r *http.Reque
 
 // TestDelivery handles POST /api/integrations/{id}/test
 func (ih *IntegrationHandler) TestDelivery(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	if err := ih.manager.TestDelivery(pluginID); err != nil {
 		ih.logger.Error("test delivery failed", zap.String("plugin_id", pluginID), zap.Error(err))
@@ -220,7 +220,7 @@ func (ih *IntegrationHandler) TestDelivery(w http.ResponseWriter, r *http.Reques
 
 // EnableIntegration handles POST /api/integrations/{id}/enable
 func (ih *IntegrationHandler) EnableIntegration(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	config, _ := ih.configStore.GetConfig(r.Context(), pluginID)
 	if config == nil {
@@ -241,7 +241,7 @@ func (ih *IntegrationHandler) EnableIntegration(w http.ResponseWriter, r *http.R
 
 // DisableIntegration handles POST /api/integrations/{id}/disable
 func (ih *IntegrationHandler) DisableIntegration(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	config, _ := ih.configStore.GetConfig(r.Context(), pluginID)
 	if config == nil {
@@ -262,7 +262,7 @@ func (ih *IntegrationHandler) DisableIntegration(w http.ResponseWriter, r *http.
 
 // GetMetrics handles GET /api/integrations/{id}/metrics
 func (ih *IntegrationHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	metrics := ih.manager.GetMetrics(pluginID)
 
 	if metrics == nil {
@@ -276,7 +276,7 @@ func (ih *IntegrationHandler) GetMetrics(w http.ResponseWriter, r *http.Request)
 
 // GetHealth handles GET /api/integrations/{id}/health
 func (ih *IntegrationHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	config, _ := ih.configStore.GetConfig(r.Context(), pluginID)
 
 	if config == nil {

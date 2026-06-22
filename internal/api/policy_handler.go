@@ -39,6 +39,9 @@ func (h *PolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.ListPolicies(w, r)
 	case path == "/api/policies" && r.Method == "POST":
 		h.CreatePolicy(w, r)
+	case path == "/api/policies/metrics" && r.Method == "GET":
+		// Must precede the generic /api/policies/{id} GET below.
+		h.GetMetrics(w, r)
 	case strings.HasPrefix(path, "/api/policies/") && strings.HasSuffix(path, "/run") && r.Method == "POST":
 		h.RunPolicy(w, r)
 	case strings.HasPrefix(path, "/api/policies/") && strings.HasSuffix(path, "/enable") && r.Method == "POST":
@@ -53,8 +56,6 @@ func (h *PolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.UpdatePolicy(w, r)
 	case strings.HasPrefix(path, "/api/policies/") && r.Method == "DELETE":
 		h.DeletePolicy(w, r)
-	case path == "/api/policies/metrics" && r.Method == "GET":
-		h.GetMetrics(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -139,7 +139,7 @@ func (ph *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 
 // GetPlugin handles GET /api/plugins/{id}
 func (ph *PluginHandler) GetPlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	meta := ph.manager.GetMetadata(pluginID)
 	if meta == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -181,7 +181,7 @@ func (ph *PluginHandler) GetPlugin(w http.ResponseWriter, r *http.Request) {
 // EnablePlugin handles POST /api/plugins/{id}/enable
 func (ph *PluginHandler) EnablePlugin(w http.ResponseWriter, r *http.Request) {
 	user := auth.CurrentUser(r.Context())
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	if err := ph.manager.EnablePlugin(r.Context(), pluginID); err != nil {
 		ph.logger.Error("failed to enable plugin", zap.String("plugin_id", pluginID), zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
@@ -206,7 +206,7 @@ func (ph *PluginHandler) EnablePlugin(w http.ResponseWriter, r *http.Request) {
 // DisablePlugin handles POST /api/plugins/{id}/disable
 func (ph *PluginHandler) DisablePlugin(w http.ResponseWriter, r *http.Request) {
 	user := auth.CurrentUser(r.Context())
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	if err := ph.manager.DisablePlugin(r.Context(), pluginID); err != nil {
 		ph.logger.Error("failed to disable plugin", zap.String("plugin_id", pluginID), zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
@@ -230,7 +230,7 @@ func (ph *PluginHandler) DisablePlugin(w http.ResponseWriter, r *http.Request) {
 
 // GetPluginEvents handles GET /api/plugins/{id}/events
 func (ph *PluginHandler) GetPluginEvents(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
 		var parsedLimit int
@@ -264,7 +264,7 @@ func (ph *PluginHandler) GetPluginEvents(w http.ResponseWriter, r *http.Request)
 
 // GetPluginConfig handles GET /api/plugins/{id}/config
 func (ph *PluginHandler) GetPluginConfig(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	config, err := ph.store.GetConfig(r.Context(), pluginID)
 	if err != nil {
 		ph.logger.Error("failed to get plugin config", zap.String("plugin_id", pluginID), zap.Error(err))
@@ -289,7 +289,7 @@ func (ph *PluginHandler) GetPluginConfig(w http.ResponseWriter, r *http.Request)
 
 // SavePluginConfig handles PUT /api/plugins/{id}/config
 func (ph *PluginHandler) SavePluginConfig(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	var configData map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&configData); err != nil {
@@ -356,7 +356,7 @@ func (ph *PluginHandler) GetPluginStatus(w http.ResponseWriter, r *http.Request)
 
 // GetPluginHealth handles GET /api/plugins/{id}/health
 func (ph *PluginHandler) GetPluginHealth(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	meta := ph.manager.GetMetadata(pluginID)
 	if meta == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -376,7 +376,7 @@ func (ph *PluginHandler) GetPluginHealth(w http.ResponseWriter, r *http.Request)
 
 // GetPluginMetrics handles GET /api/plugins/{id}/metrics
 func (ph *PluginHandler) GetPluginMetrics(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	metrics := ph.manager.GetMetrics(pluginID)
 	if metrics == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -389,7 +389,7 @@ func (ph *PluginHandler) GetPluginMetrics(w http.ResponseWriter, r *http.Request
 
 // GetPluginDependencies handles GET /api/plugins/{id}/dependencies
 func (ph *PluginHandler) GetPluginDependencies(w http.ResponseWriter, r *http.Request) {
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 	meta := ph.manager.GetMetadata(pluginID)
 	if meta == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -406,7 +406,7 @@ func (ph *PluginHandler) GetPluginDependencies(w http.ResponseWriter, r *http.Re
 // RestartPlugin handles POST /api/plugins/{id}/restart
 func (ph *PluginHandler) RestartPlugin(w http.ResponseWriter, r *http.Request) {
 	user := auth.CurrentUser(r.Context())
-	pluginID := r.PathValue("id")
+	pluginID := resourceIDFromPath(r.URL.Path)
 
 	plugin := ph.manager.GetPlugin(pluginID)
 	if plugin == nil {

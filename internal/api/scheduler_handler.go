@@ -256,8 +256,31 @@ func (h *SchedulerHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 
 // GetSystemMetrics handles GET /api/scheduler/metrics
 func (h *SchedulerHandler) GetSystemMetrics(w http.ResponseWriter, r *http.Request) {
+	jobs := h.scheduler.List()
 	allMetrics := h.scheduler.GetAllMetrics()
 
+	running := 0
+	for _, j := range jobs {
+		if j.Status == scheduler.StatusRunning {
+			running++
+		}
+	}
+	successful, failed := 0, 0
+	for _, m := range allMetrics {
+		successful += m.SuccessfulRuns
+		failed += m.FailedRuns
+	}
+	workerUtilization := 0.0
+	if len(jobs) > 0 {
+		workerUtilization = float64(running) / float64(len(jobs)) * 100
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(allMetrics)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_jobs":         len(jobs),
+		"running_jobs":       running,
+		"successful_runs":    successful,
+		"failed_runs":        failed,
+		"worker_utilization": workerUtilization,
+	})
 }
