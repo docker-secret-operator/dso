@@ -147,9 +147,10 @@ type RESTServer struct {
 	SchedulerHandler *api.SchedulerHandler
 	Scheduler        interface{} // *scheduler.Scheduler
 	// Phase 6 intelligence and governance handlers
-	RecommendationHandler *api.RecommendationHandler
-	DriftHandler          *api.DriftHandler
-	ForecastHandler       *api.ForecastHandler
+	// http.Handler so either the real *api.*Handler or a 501 stub can be wired in.
+	RecommendationHandler http.Handler
+	DriftHandler          http.Handler
+	ForecastHandler       http.Handler
 	// startup time for uptime reporting
 	startTime time.Time
 }
@@ -1282,11 +1283,8 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		logger.Warn("REST API is bound to a non-loopback address — ensure DSO_ADMIN_PASSWORD is set")
 	}
 
-	// Start session cleanup manager
-	if err := sessionCleanupManager.Start(); err != nil {
-		logger.Error("failed to start session cleanup manager", zap.Error(err))
-		return err
-	}
+	// Start session cleanup manager (launches a background ticker; no error to return)
+	sessionCleanupManager.Start()
 
 	// Start alert service background worker
 	if err := alertService.Start(ctx); err != nil {
