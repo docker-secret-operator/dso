@@ -18,14 +18,18 @@ const (
 type Category string
 
 const (
-	CategoryBackup         Category = "backup"
-	CategorySecurity       Category = "security"
-	CategoryPlugin         Category = "plugin"
-	CategoryIntegration    Category = "integration"
-	CategoryScheduler      Category = "scheduler"
-	CategoryPolicy         Category = "policy"
-	CategoryDrift          Category = "drift"
-	CategoryPerformance    Category = "performance"
+	CategoryBackup      Category = "backup"
+	CategorySecurity    Category = "security"
+	CategoryPlugin      Category = "plugin"
+	CategoryIntegration Category = "integration"
+	CategoryScheduler   Category = "scheduler"
+	CategoryPolicy      Category = "policy"
+	CategoryDrift       Category = "drift"
+	CategoryPerformance Category = "performance"
+	// P8 evidence-derived categories
+	CategoryRotation    Category = "rotation"
+	CategoryCompliance  Category = "compliance"
+	CategoryOperational Category = "operational"
 )
 
 // Status represents recommendation status
@@ -43,6 +47,8 @@ type Recommendation struct {
 	ID              string
 	Title           string
 	Description     string
+	Reason          string   // why this recommendation exists (evidence statement)
+	Resource        string   // secret/policy/rule name this applies to
 	Priority        Priority
 	Category        Category
 	Status          Status
@@ -50,11 +56,15 @@ type Recommendation struct {
 	IncidentID      string
 	SuggestedAction string
 	Confidence      float64
-	CreatedAt       time.Time
-	AcknowledgedAt  *time.Time
-	ImplementedAt   *time.Time
-	DismissedAt     *time.Time
-	Metadata        map[string]string
+	// Cross-link fields (P8)
+	DriftID  string
+	PolicyID string
+	AuditID  string
+	CreatedAt      time.Time
+	AcknowledgedAt *time.Time
+	ImplementedAt  *time.Time
+	DismissedAt    *time.Time
+	Metadata       map[string]string
 }
 
 // RecommendationMetrics tracks recommendation metrics

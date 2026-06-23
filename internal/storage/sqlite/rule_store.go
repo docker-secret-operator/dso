@@ -225,3 +225,64 @@ func (s *RuleStore) CleanupOldExecutions(ctx context.Context, olderThan time.Tim
 	_, err := s.db.ExecContext(ctx, "DELETE FROM rule_executions WHERE created_at < ?", olderThan)
 	return err
 }
+
+// ruleStoreAdapter bridges RuleStore (generic storage.RuleStore) to policy.RuleStore (typed).
+// sqlite.RuleStore uses interface{} parameters to avoid import cycles in storage/types.go;
+// this adapter converts at the boundary so the policy engine gets the typed interface it expects.
+type ruleStoreAdapter struct {
+	inner *RuleStore
+}
+
+// NewPolicyStore returns a policy.RuleStore backed by SQLite.
+func NewPolicyStore(db *sql.DB) policy.RuleStore {
+	return &ruleStoreAdapter{inner: &RuleStore{db: db}}
+}
+
+func (a *ruleStoreAdapter) CreateRule(ctx context.Context, rule *policy.Rule) error {
+	return a.inner.CreateRule(ctx, rule)
+}
+
+func (a *ruleStoreAdapter) UpdateRule(ctx context.Context, rule *policy.Rule) error {
+	return a.inner.UpdateRule(ctx, rule)
+}
+
+func (a *ruleStoreAdapter) GetRule(ctx context.Context, id string) (*policy.Rule, error) {
+	v, err := a.inner.GetRule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if r, ok := v.(*policy.Rule); ok {
+		return r, nil
+	}
+	return nil, fmt.Errorf("store returned unexpected type %T", v)
+}
+
+func (a *ruleStoreAdapter) ListRules(ctx context.Context) ([]*policy.Rule, error) {
+	vs, err := a.inner.ListRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*policy.Rule, 0, len(vs))
+	for _, v := range vs {
+		if r, ok := v.(*policy.Rule); ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (a *ruleStoreAdapter) DeleteRule(ctx context.Context, id string) error {
+	return a.inner.DeleteRule(ctx, id)
+}
+
+func (a *ruleStoreAdapter) LogExecution(ctx context.Context, execution *policy.RuleExecution) error {
+	return a.inner.LogExecution(ctx, execution)
+}
+
+func (a *ruleStoreAdapter) GetExecutions(ctx context.Context, ruleID string, limit int) ([]*policy.RuleExecution, error) {
+	return a.inner.GetExecutions(ctx, ruleID, limit)
+}
+
+func (a *ruleStoreAdapter) CleanupOldExecutions(ctx context.Context, olderThan time.Time) error {
+	return a.inner.CleanupOldExecutions(ctx, olderThan)
+}

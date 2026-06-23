@@ -811,3 +811,60 @@ export interface ListResponse<T> {
   offset?: number
   page?: number
 }
+
+// ============================================================================
+// Drift Detection (P4)
+// ============================================================================
+
+export type DriftSeverity = 'critical' | 'high' | 'medium' | 'low'
+export type DriftStatus = 'detected' | 'acknowledged' | 'resolved'
+export type DriftType = 'version_mismatch' | 'stale_secret' | 'missing_secret' | 'rotation_lag'
+
+export interface DriftFinding {
+  id: string
+  type: DriftType
+  severity: DriftSeverity
+  status: DriftStatus
+  resource: string
+  description: string
+  metadata?: Record<string, unknown>
+  secret_name?: string
+  container?: string
+  provider?: string
+  expected_version?: string
+  actual_version?: string
+  detected_at: number   // epoch ms
+  acknowledged_at?: number
+  resolved_at?: number
+}
+
+export interface DriftMetrics {
+  TotalFindings: number
+  CriticalFindings: number
+  OpenFindings: number
+  Scans: number
+  AverageDuration: number
+  LastScan?: string
+  FindingsByType: Record<DriftType, number>
+  FindingsBySeverity: Record<DriftSeverity, number>
+}
+
+export interface DriftScanRecord {
+  ID: string
+  DetectorID: string
+  FindingsCount: number
+  Duration: number
+  Success: boolean
+  Error?: string
+  CreatedAt: string
+}
+
+export interface DriftListResponse {
+  findings: DriftFinding[]
+  total: number
+}
+
+export interface DriftHistoryResponse {
+  scans: DriftScanRecord[]
+  total: number
+}

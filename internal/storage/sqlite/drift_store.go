@@ -207,3 +207,71 @@ func (s *DriftStore) CleanupOldFindings(ctx context.Context, olderThan time.Time
 	_, err := s.db.ExecContext(ctx, "DELETE FROM drift_findings WHERE detected_at < ?", olderThan)
 	return err
 }
+
+// driftStoreAdapter bridges DriftStore (generic storage.DriftStore) to drift.Store (typed).
+// sqlite.DriftStore uses interface{} parameters to avoid import cycles in storage/types.go;
+// this adapter converts at the boundary so the drift engine gets the typed interface it expects.
+type driftStoreAdapter struct {
+	inner *DriftStore
+}
+
+// NewDriftStore returns a drift.Store backed by SQLite.
+func NewDriftStore(db *sql.DB) drift.Store {
+	return &driftStoreAdapter{inner: &DriftStore{db: db}}
+}
+
+func (a *driftStoreAdapter) CreateFinding(ctx context.Context, finding drift.DriftFinding) error {
+	return a.inner.CreateFinding(ctx, finding)
+}
+
+func (a *driftStoreAdapter) UpdateFinding(ctx context.Context, finding drift.DriftFinding) error {
+	return a.inner.UpdateFinding(ctx, finding)
+}
+
+func (a *driftStoreAdapter) GetFinding(ctx context.Context, id string) (*drift.DriftFinding, error) {
+	v, err := a.inner.GetFinding(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	switch f := v.(type) {
+	case *drift.DriftFinding:
+		return f, nil
+	case drift.DriftFinding:
+		return &f, nil
+	default:
+		return nil, fmt.Errorf("store returned unexpected type %T", v)
+	}
+}
+
+func (a *driftStoreAdapter) ListFindings(ctx context.Context) ([]drift.DriftFinding, error) {
+	vs, err := a.inner.ListFindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]drift.DriftFinding, 0, len(vs))
+	for _, v := range vs {
+		switch f := v.(type) {
+		case drift.DriftFinding:
+			out = append(out, f)
+		case *drift.DriftFinding:
+			out = append(out, *f)
+		}
+	}
+	return out, nil
+}
+
+func (a *driftStoreAdapter) DeleteFinding(ctx context.Context, id string) error {
+	return a.inner.DeleteFinding(ctx, id)
+}
+
+func (a *driftStoreAdapter) LogScan(ctx context.Context, scan *drift.DriftScan) error {
+	return a.inner.LogScan(ctx, scan)
+}
+
+func (a *driftStoreAdapter) GetScans(ctx context.Context, limit int) ([]*drift.DriftScan, error) {
+	return a.inner.GetScans(ctx, limit)
+}
+
+func (a *driftStoreAdapter) CleanupOldFindings(ctx context.Context, olderThan time.Time) error {
+	return a.inner.CleanupOldFindings(ctx, olderThan)
+}

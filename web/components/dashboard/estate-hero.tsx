@@ -10,15 +10,18 @@ export interface EstateHeroProps {
   coverage: number | null
   lastSyncLabel?: string
   loading?: boolean
+  /** Open drift findings (version mismatch / stale / missing). */
+  drifted?: number
 }
 
 type Posture = 'secured' | 'attention' | 'critical' | 'unknown'
 
 // Honesty: never show a green/"secured" posture when rotation is unmeasured.
 // Any Unknown secrets (no rotation data) downgrade the posture to "unknown".
-function derivePosture(p: RotationPosture): Posture {
+// Open drift findings (version mismatch/stale/missing) force at least "attention".
+function derivePosture(p: RotationPosture, drifted = 0): Posture {
   if (p.errored > 0) return 'critical'
-  if (p.needRotation > 0) return 'attention'
+  if (p.needRotation > 0 || drifted > 0) return 'attention'
   if (p.unknown > 0) return 'unknown'
   return 'secured'
 }
@@ -40,8 +43,8 @@ const bandMeta = (k: RotationBucket) => ROTATION_BUCKET_META.find((m) => m.key =
  * the supporting numbers orbiting it. This is the page's thesis — the thing
  * unique to a secrets-management tool leads, instead of generic KPI cards.
  */
-export function EstateHero({ posture, coverage, lastSyncLabel, loading }: EstateHeroProps) {
-  const meta = postureMeta[derivePosture(posture)]
+export function EstateHero({ posture, coverage, lastSyncLabel, loading, drifted = 0 }: EstateHeroProps) {
+  const meta = postureMeta[derivePosture(posture, drifted)]
   const Icon = meta.icon
   const total = posture.total || 1
   const pct = (n: number) => Math.round((n / total) * 100)
@@ -132,7 +135,7 @@ export function EstateHero({ posture, coverage, lastSyncLabel, loading }: Estate
         })}
       </div>
 
-      {/* Footer meta: coverage + actionable rotation count */}
+      {/* Footer meta: coverage + actionable rotation count + drift */}
       <div className="mt-4 pt-4 border-t border-white/[0.06] flex items-center gap-4 text-xs text-slate-400">
         <span>
           <span className="font-mono tabular-nums text-slate-200">
@@ -147,6 +150,15 @@ export function EstateHero({ posture, coverage, lastSyncLabel, loading }: Estate
           </span>{' '}
           need rotation
         </span>
+        {drifted > 0 && (
+          <>
+            <span className="text-slate-600">·</span>
+            <span>
+              <span className="font-mono tabular-nums text-amber-400">{drifted}</span>{' '}
+              drifted
+            </span>
+          </>
+        )}
       </div>
     </section>
   )

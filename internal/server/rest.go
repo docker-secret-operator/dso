@@ -20,13 +20,16 @@ import (
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/api"
 	"github.com/docker-secret-operator/dso/internal/apply"
+	"github.com/docker-secret-operator/dso/internal/compliance"
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/autonomy"
 	"github.com/docker-secret-operator/dso/internal/correlation"
 	"github.com/docker-secret-operator/dso/internal/drift"
 	"github.com/docker-secret-operator/dso/internal/execution"
 	"github.com/docker-secret-operator/dso/internal/forecast"
+	"github.com/docker-secret-operator/dso/internal/cache"
 	"github.com/docker-secret-operator/dso/internal/graph"
+	"github.com/docker-secret-operator/dso/internal/insights"
 	"github.com/docker-secret-operator/dso/internal/plugins"
 	"github.com/docker-secret-operator/dso/internal/policy"
 	"github.com/docker-secret-operator/dso/internal/recommendation"
@@ -171,6 +174,11 @@ type RESTServer struct {
 	InjectionStore drift.InjectionStore
 	// P5 bulk operations — audit logging
 	AuditService *services.AuditService
+	// P6 secret history
+	SecretVersionStore   *sqlite.SecretVersionStore
+	SecretHistoryHandler *api.SecretHistoryHandler
+	// P7 compliance
+	ComplianceHandler *api.ComplianceHandler
 	// startup time for uptime reporting
 	startTime time.Time
 }
@@ -191,6 +199,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
+	case r.URL.Path == "/api/status" && r.Method == "GET":
+		s.handleEvalStatus(w, r)
 	// Authentication endpoints
 	case strings.HasPrefix(r.URL.Path, "/api/auth"):
 		if s.AuthHandler != nil {
@@ -280,6 +290,12 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.DiscoveryAPI.HandleGetMetrics(w, r)
 		} else {
 			http.Error(w, "Discovery API not initialized", http.StatusInternalServerError)
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/compliance"):
+		if s.ComplianceHandler != nil {
+			s.ComplianceHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Compliance API not initialized", http.StatusServiceUnavailable)
 		}
 	case strings.HasPrefix(r.URL.Path, "/api/secrets"):
 		s.handleSecrets(w, r)
@@ -412,6 +428,10 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/api/drift"):
 		if s.DriftHandler != nil {
 			s.DriftHandler.ServeHTTP(w, r)
+			// Invalidate caches on any mutating drift operation.
+			if r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodDelete || r.Method == http.MethodPut {
+				s.invalidateEvalCaches()
+			}
 		} else {
 			http.Error(w, "Drift API not initialized", http.StatusInternalServerError)
 		}
@@ -430,6 +450,12 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/api/policies"):
 		if s.PolicyHandler != nil {
 			s.PolicyHandler.ServeHTTP(w, r)
+			// Policy changes affect recommendation evaluation.
+			if r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodDelete || r.Method == http.MethodPut {
+				if rh, ok := s.RecommendationHandler.(*api.RecommendationHandler); ok {
+					rh.InvalidateCache()
+				}
+			}
 		} else {
 			http.Error(w, "Policies API not initialized", http.StatusInternalServerError)
 		}
@@ -595,6 +621,50 @@ func (s *RESTServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleEvalStatus serves GET /api/status — shows P8/P9 evaluation staleness.
+// Stale state is never hidden. If caches were never populated the timestamps are zero.
+func (s *RESTServer) handleEvalStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	type statusOut struct {
+		LastRecommendationEval string `json:"last_recommendation_eval"`
+		LastForecastEval       string `json:"last_forecast_eval"`
+		RecommendationEvalMs   int64  `json:"recommendation_eval_ms"`
+		ForecastEvalMs         int64  `json:"forecast_eval_ms"`
+		RecommendationCount    int    `json:"recommendation_count"`
+		ForecastCount          int    `json:"forecast_count"`
+		CacheTTLSeconds        int    `json:"cache_ttl_seconds"`
+	}
+
+	out := statusOut{
+		CacheTTLSeconds: int(cache.DefaultTTL.Seconds()),
+	}
+
+	if rh, ok := s.RecommendationHandler.(*api.RecommendationHandler); ok {
+		if st := rh.EvalStatus(); st != nil {
+			snap := st.Snapshot()
+			if !snap.LastRecommendationEval.IsZero() {
+				out.LastRecommendationEval = snap.LastRecommendationEval.Format(time.RFC3339)
+			}
+			out.RecommendationEvalMs = snap.RecommendationEvalMs
+			out.RecommendationCount = snap.RecommendationCount
+		}
+	}
+
+	if fh, ok := s.ForecastHandler.(*api.ForecastHandler); ok {
+		if st := fh.EvalStatus(); st != nil {
+			snap := st.Snapshot()
+			if !snap.LastForecastEval.IsZero() {
+				out.LastForecastEval = snap.LastForecastEval.Format(time.RFC3339)
+			}
+			out.ForecastEvalMs = snap.ForecastEvalMs
+			out.ForecastCount = snap.ForecastCount
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(out)
+}
+
 func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50
@@ -726,6 +796,28 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 		s.Logger.Error("Webhook execution failed", zap.Error(err), zap.String("secret", targetSecret.Name))
 		http.Error(w, "Internal rotation failure", http.StatusInternalServerError)
 		return
+	}
+
+	// Record version for provider_sync webhooks (P6).
+	if s.SecretVersionStore != nil {
+		var hash string
+		if s.Cache != nil {
+			if h, ok := s.Cache.GetHash(fmt.Sprintf("%s:%s", pName, targetSecret.Name)); ok {
+				hash = h
+			}
+		}
+		v := &sqlite.SecretVersion{
+			ID:             fmt.Sprintf("%s-%d", targetSecret.Name, time.Now().UnixNano()),
+			SecretName:     targetSecret.Name,
+			Provider:       pName,
+			Hash:           hash,
+			RotatedBy:      "provider_sync",
+			RotationSource: "provider_sync",
+			CreatedAt:      time.Now().UTC(),
+		}
+		if err2 := s.SecretVersionStore.Create(r.Context(), v); err2 != nil {
+			s.Logger.Warn("failed to record secret version (webhook)", zap.Error(err2))
+		}
 	}
 
 	w.WriteHeader(http.StatusAccepted)
@@ -908,6 +1000,14 @@ func (s *RESTServer) handleSecrets(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	case strings.HasSuffix(path, "/history") ||
+		strings.HasSuffix(path, "/timeline") ||
+		strings.HasSuffix(path, "/diff"):
+		if s.SecretHistoryHandler != nil {
+			s.SecretHistoryHandler.ServeHTTP(w, r)
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 	default:
 		if r.Method == http.MethodGet {
 			s.handleGetSecret(w, r, path)
@@ -1079,8 +1179,9 @@ func (s *RESTServer) handleGetSecret(w http.ResponseWriter, r *http.Request, nam
 
 // rotateSingle rotates one secret: triggers provider webhook and records the injection hash.
 // It does NOT trigger a drift rescan — callers decide when to rescan.
+// rotatedBy is the actor name; rotationSource is one of: manual, bulk_rotate, scheduler, provider_sync.
 // Returns (providerName, error).
-func (s *RESTServer) rotateSingle(ctx context.Context, name string) (string, error) {
+func (s *RESTServer) rotateSingle(ctx context.Context, name, rotatedBy, rotationSource string) (string, error) {
 	var targetSecret *config.SecretMapping
 	for _, sec := range s.Config.Secrets {
 		if sec.Name == name {
@@ -1106,14 +1207,54 @@ func (s *RESTServer) rotateSingle(ctx context.Context, name string) (string, err
 	if err := s.TriggerEngine.HandleWebhook(pName, pCfg, *targetSecret, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return pName, err
 	}
+
+	var hash string
 	// Record the injection hash so drift detection has baseline state.
 	if s.InjectionStore != nil && s.Cache != nil {
 		cacheKey := fmt.Sprintf("%s:%s", pName, name)
 		if h, ok := s.Cache.GetHash(cacheKey); ok {
+			hash = h
 			_ = s.InjectionStore.RecordInjection(ctx, name, h)
 		}
 	}
+
+	// Record a version entry for audit / history (P6).
+	if s.SecretVersionStore != nil {
+		if rotatedBy == "" {
+			rotatedBy = "system"
+		}
+		if rotationSource == "" {
+			rotationSource = "manual"
+		}
+		v := &sqlite.SecretVersion{
+			ID:             fmt.Sprintf("%s-%d", name, time.Now().UnixNano()),
+			SecretName:     name,
+			Provider:       pName,
+			Hash:           hash,
+			RotatedBy:      rotatedBy,
+			RotationSource: rotationSource,
+			CreatedAt:      time.Now().UTC(),
+		}
+		if err := s.SecretVersionStore.Create(ctx, v); err != nil {
+			s.Logger.Warn("failed to record secret version", zap.String("secret", name), zap.Error(err))
+		}
+	}
+
+	// Invalidate P8/P9 caches so the next request reflects the new version.
+	s.invalidateEvalCaches()
+
 	return pName, nil
+}
+
+// invalidateEvalCaches tells the recommendation and forecast handlers that their
+// cached results are stale. Safe to call on nil handlers.
+func (s *RESTServer) invalidateEvalCaches() {
+	if rh, ok := s.RecommendationHandler.(*api.RecommendationHandler); ok {
+		rh.InvalidateCache()
+	}
+	if fh, ok := s.ForecastHandler.(*api.ForecastHandler); ok {
+		fh.InvalidateCache()
+	}
 }
 
 func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, name string) {
@@ -1122,7 +1263,11 @@ func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "rotation not available", http.StatusServiceUnavailable)
 		return
 	}
-	pName, err := s.rotateSingle(r.Context(), name)
+	actor := "system"
+	if u := auth.CurrentUser(r.Context()); u != nil {
+		actor = u.Username
+	}
+	pName, err := s.rotateSingle(r.Context(), name, actor, "manual")
 	if err != nil {
 		s.Logger.Error("rotation failed", zap.String("secret", name), zap.Error(err))
 		code := http.StatusInternalServerError
@@ -1178,8 +1323,13 @@ func (s *RESTServer) handleBulkRotate(w http.ResponseWriter, r *http.Request) {
 		succeeded int
 		failures  []rotFailure
 	)
+	bulkUser := auth.CurrentUser(r.Context())
+	bulkActor := "system"
+	if bulkUser != nil {
+		bulkActor = bulkUser.Username
+	}
 	for _, name := range req.Names {
-		if _, err := s.rotateSingle(r.Context(), name); err != nil {
+		if _, err := s.rotateSingle(r.Context(), name, bulkActor, "bulk_rotate"); err != nil {
 			failures = append(failures, rotFailure{Name: name, Error: err.Error()})
 		} else {
 			succeeded++
@@ -1188,11 +1338,10 @@ func (s *RESTServer) handleBulkRotate(w http.ResponseWriter, r *http.Request) {
 
 	// Audit one event for the entire batch.
 	if s.AuditService != nil {
-		user := auth.CurrentUser(r.Context())
 		actorID, actorName := "system", "system"
-		if user != nil {
-			actorID = user.ID
-			actorName = user.Username
+		if bulkUser != nil {
+			actorID = bulkUser.ID
+			actorName = bulkUser.Username
 		}
 		_ = s.AuditService.LogEvent(r.Context(), actorID, actorName,
 			"bulk.rotate",
@@ -1429,10 +1578,12 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	var driftStore drift.Store
 	var policyStore policy.RuleStore
 	var injectionStore drift.InjectionStore
+	var secretVersionStore *sqlite.SecretVersionStore
 	if dbConn != nil {
 		driftStore = sqlite.NewDriftStore(dbConn)
 		policyStore = sqlite.NewPolicyStore(dbConn)
 		injectionStore = sqlite.NewInjectionStore(dbConn)
+		secretVersionStore = sqlite.NewSecretVersionStore(dbConn)
 	} else {
 		driftStore = drift.NewInMemoryStore()
 		policyStore = policy.NewInMemoryStore()
@@ -1615,6 +1766,32 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		PolicyHandler:           policyHandler,
 		GraphHandler:            graphHandler,
 		AuditService:            auditService,
+		SecretVersionStore:      secretVersionStore,
+		SecretHistoryHandler: api.NewSecretHistoryHandler(
+			secretVersionStore,
+			storageProvider.Audit(),
+			driftStore,
+		),
+		ComplianceHandler: api.NewComplianceHandler(
+			compliance.NewEngine(secretVersionStore, driftStore, storageProvider.Audit()),
+			compliance.NewReporter(secretVersionStore, driftStore, policyStore, storageProvider.Audit()),
+			nil,
+			cfg,
+		),
+	}
+	// Wire P9 operational forecaster into forecast handler now that stores are ready.
+	if fh, ok := restServer.ForecastHandler.(*api.ForecastHandler); ok {
+		opForecaster := insights.NewOperationalForecaster(secretVersionStore, driftStore, compliance.NewEngine(secretVersionStore, driftStore, storageProvider.Audit()))
+		fh.WithOperationalForecaster(opForecaster, cfg)
+	}
+	// Wire live P8 evaluator into recommendation handler now that stores are ready.
+	liveEvaluator := insights.NewEvaluator(
+		compliance.NewEngine(secretVersionStore, driftStore, storageProvider.Audit()),
+		driftStore,
+		policyStore,
+	)
+	if rh, ok := restServer.RecommendationHandler.(*api.RecommendationHandler); ok {
+		rh.WithEvaluator(liveEvaluator, cfg)
 	}
 
 	mux := http.NewServeMux()

@@ -1,2 +1,0 @@
-PASS
-ok  	github.com/docker-secret-operator/dso/internal/webui	0.897s

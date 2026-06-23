@@ -1,346 +1,353 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, Zap, Activity } from 'lucide-react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import {
+  TrendingUp,
+  AlertTriangle,
+  RotateCcw,
+  GitFork,
+  ShieldCheck,
+  Activity,
+  X,
+  ChevronRight,
+  Info,
+  FlaskConical,
+} from 'lucide-react'
+import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import * as forecastsApi from '@/lib/api/forecasts'
+import type { OperationalForecast, ForecastCategory, ForecastSeverity } from '@/lib/api/forecasts'
 
-interface Forecast {
-  id: string
-  resource_type: string
-  resource_id: string
-  metric: string
-  current_value: number
-  predicted_value: number
-  growth_rate: number
-  confidence: number
-  horizon: string
-  severity: string
-  trend: string
-  created_at: number
+// ── Visual constants ──────────────────────────────────────────────────────────
+
+const SEVERITY_COLOR: Record<ForecastSeverity, string> = {
+  critical: 'bg-red-500/15 text-red-300 border-red-500/40',
+  high:     'bg-orange-500/15 text-orange-300 border-orange-500/40',
+  medium:   'bg-amber-500/15 text-amber-300 border-amber-500/40',
+  low:      'bg-blue-500/15 text-blue-300 border-blue-500/40',
+  info:     'bg-slate-500/15 text-slate-300 border-slate-500/40',
 }
 
-interface ForecastMetrics {
-  total_forecasts: number
-  critical_forecasts: number
-  average_confidence: number
-  prediction_accuracy: number
-  forecast_runs: number
-  last_updated: string
+const SEVERITY_DOT: Record<ForecastSeverity, string> = {
+  critical: 'bg-red-400',
+  high:     'bg-orange-400',
+  medium:   'bg-amber-400',
+  low:      'bg-blue-400',
+  info:     'bg-slate-400',
 }
 
-function getAuthHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('dso_api_token') : null
-  return token ? { Authorization: `Bearer ${token}` } : {}
+const CATEGORY_META: Record<ForecastCategory, { label: string; Icon: React.ElementType; color: string }> = {
+  rotation:    { label: 'Rotation',    Icon: RotateCcw,   color: 'text-purple-400' },
+  drift:       { label: 'Drift',       Icon: GitFork,     color: 'text-orange-400' },
+  compliance:  { label: 'Compliance',  Icon: ShieldCheck, color: 'text-red-400'    },
+  operational: { label: 'Operational', Icon: Activity,    color: 'text-cyan-400'   },
 }
 
-export default function ForecastsPage() {
-  const [forecasts, setForecasts] = useState<Forecast[]>([])
-  const [metrics, setMetrics] = useState<ForecastMetrics | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+// ── Beta disclaimer ───────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true)
-        const headers = getAuthHeaders()
-        const [forecastsRes, metricsRes] = await Promise.all([
-          fetch('/api/forecasts', { headers }),
-          fetch('/api/forecasts/metrics', { headers }),
-        ])
+function BetaNotice() {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
+      <FlaskConical className="h-4 w-4 text-indigo-400 mt-0.5 flex-shrink-0" />
+      <p className="text-xs text-slate-400 leading-relaxed">
+        <span className="font-semibold text-indigo-300">Beta — predictions only.</span>{' '}
+        These forecasts are statistical estimates derived from rotation history, drift recurrence, and compliance evidence.
+        They are <em>not</em> measurements. Confidence scores are statistical probabilities, not guarantees.
+        Forecasts disappear automatically when the underlying evidence resolves.
+      </p>
+    </div>
+  )
+}
 
-        if (!forecastsRes.ok || !metricsRes.ok) {
-          throw new Error('Failed to fetch forecasts data')
-        }
+// ── Confidence bar ────────────────────────────────────────────────────────────
 
-        const forecastsData = await forecastsRes.json()
-        const metricsData = await metricsRes.json()
+function ConfidenceBar({ value }: { value: number }) {
+  const pct = Math.round(value * 100)
+  const color = pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-amber-500' : 'bg-slate-500'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 rounded bg-slate-700">
+        <div className={`h-1.5 rounded ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs tabular-nums text-slate-400 w-8 text-right">{pct}%</span>
+    </div>
+  )
+}
 
-        setForecasts(forecastsData.forecasts || [])
-        setMetrics(metricsData)
-        setError(null)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error')
-      } finally {
-        setLoading(false)
-      }
-    }
+// ── Detail drawer ─────────────────────────────────────────────────────────────
 
-    fetchData()
-    const interval = setInterval(fetchData, 30000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const handleRunForecasts = async () => {
-    try {
-      const headers = getAuthHeaders()
-      const res = await fetch('/api/forecasts/run', { method: 'POST', headers })
-      if (res.ok) {
-        // Refresh data
-        const forecastsRes = await fetch('/api/forecasts', { headers })
-        const metricsRes = await fetch('/api/forecasts/metrics', { headers })
-        if (forecastsRes.ok && metricsRes.ok) {
-          const forecastsData = await forecastsRes.json()
-          const metricsData = await metricsRes.json()
-          setForecasts(forecastsData.forecasts || [])
-          setMetrics(metricsData)
-        }
-      }
-    } catch (err) {
-      console.error('Failed to run forecasts:', err)
-    }
-  }
-
-  if (loading && !metrics) {
-    return <div className="p-8 text-slate-200">Loading...</div>
-  }
-
-  const severityColors: Record<string, string> = {
-    critical: 'bg-red-500/15 text-red-300',
-    high: 'bg-orange-500/15 text-orange-300',
-    medium: 'bg-amber-500/15 text-amber-300',
-    low: 'bg-blue-500/15 text-blue-300',
-    info: 'bg-slate-700/30 text-slate-300',
-  }
-
-  const trendIcon = (trend: string) => {
-    switch (trend) {
-      case 'increasing':
-        return <TrendingUp className="h-4 w-4 text-red-400" />
-      case 'decreasing':
-        return <TrendingDown className="h-4 w-4 text-emerald-400" />
-      default:
-        return <Activity className="h-4 w-4 text-blue-400" />
-    }
-  }
+function ForecastDrawer({ fc, onClose }: { fc: OperationalForecast; onClose: () => void }) {
+  const catMeta = CATEGORY_META[fc.category]
+  const CatIcon = catMeta?.Icon ?? TrendingUp
 
   return (
-    <div className="space-y-8 p-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-100">Forecasts</h1>
-          <p className="mt-2 text-slate-400">Predict future operational conditions and capacity risks</p>
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div
+        className="relative w-full max-w-md bg-[#111827] border-l border-slate-700/60 h-full overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 p-5 border-b border-slate-700/50">
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
+                <FlaskConical className="h-3 w-3" /> Beta
+              </span>
+              <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${SEVERITY_COLOR[fc.severity] ?? ''}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${SEVERITY_DOT[fc.severity] ?? 'bg-slate-400'}`} />
+                {fc.severity.toUpperCase()}
+              </span>
+              <span className={`inline-flex items-center gap-1 text-xs font-medium ${catMeta?.color ?? 'text-slate-400'}`}>
+                <CatIcon className="h-3.5 w-3.5" />
+                {catMeta?.label ?? fc.category}
+              </span>
+            </div>
+            <h2 className="mt-2 text-sm font-semibold text-slate-100 leading-snug">{fc.title}</h2>
+            {fc.resource && (
+              <p className="mt-0.5 text-xs font-mono text-slate-400 truncate">{fc.resource}</p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-200 mt-0.5">
+            <X className="h-5 w-5" />
+          </button>
         </div>
-        <button
-          onClick={handleRunForecasts}
-          className="rounded bg-blue-600 px-4 py-2 text-white font-medium hover:bg-blue-700"
-        >
-          Run Forecasts
-        </button>
+
+        <div className="p-5 space-y-5">
+          {fc.description && (
+            <p className="text-sm text-slate-400 leading-relaxed">{fc.description}</p>
+          )}
+
+          {fc.reason && (
+            <div className="rounded-md border border-slate-700/50 bg-slate-800/40 p-3">
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-1">
+                <Info className="h-3.5 w-3.5" />
+                Why this forecast was generated
+              </div>
+              <p className="text-sm text-slate-300 leading-relaxed">{fc.reason}</p>
+            </div>
+          )}
+
+          <div>
+            <p className="text-xs text-slate-400 font-medium mb-1.5">Statistical confidence</p>
+            <ConfidenceBar value={fc.confidence} />
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              Derived from evidence count and historical consistency — not an AI score.
+            </p>
+          </div>
+
+          {fc.evidence && fc.evidence.length > 0 && (
+            <div>
+              <p className="text-xs text-slate-400 font-medium mb-2">Evidence</p>
+              <ul className="space-y-1.5">
+                {fc.evidence.map((e, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                    <ChevronRight className="h-3.5 w-3.5 text-slate-500 mt-0.5 flex-shrink-0" />
+                    <span>{e}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="rounded-md border border-amber-500/15 bg-amber-500/5 px-3 py-2.5">
+            <p className="text-[11px] text-amber-300/80 leading-relaxed">
+              <strong>Prediction, not measurement.</strong> This forecast is an estimate.
+              Use it to guide investigation — not to trigger automated action.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Forecast card ─────────────────────────────────────────────────────────────
+
+function ForecastCard({ fc, onClick }: { fc: OperationalForecast; onClick: () => void }) {
+  const catMeta = CATEGORY_META[fc.category]
+  const CatIcon = catMeta?.Icon ?? TrendingUp
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left rounded-lg border border-slate-700/50 bg-[#111827] px-5 py-4 hover:border-slate-600/60 transition-colors group"
+    >
+      <div className="flex items-start gap-3">
+        <span className={`mt-1.5 h-2 w-2 flex-shrink-0 rounded-full ${SEVERITY_DOT[fc.severity] ?? 'bg-slate-400'}`} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center gap-1 text-xs font-medium ${catMeta?.color ?? 'text-slate-400'}`}>
+              <CatIcon className="h-3 w-3" />
+              {catMeta?.label ?? fc.category}
+            </span>
+            <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${SEVERITY_COLOR[fc.severity] ?? ''}`}>
+              {fc.severity}
+            </span>
+          </div>
+          <p className="mt-1 text-sm font-medium text-slate-200 leading-snug group-hover:text-white transition-colors">
+            {fc.title}
+          </p>
+          {fc.resource && (
+            <p className="mt-0.5 text-xs font-mono text-slate-400 truncate">{fc.resource}</p>
+          )}
+          <div className="mt-2 max-w-[200px]">
+            <ConfidenceBar value={fc.confidence} />
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 text-slate-500 group-hover:text-slate-300 flex-shrink-0 mt-1 transition-colors" />
+      </div>
+    </button>
+  )
+}
+
+// ── Severity summary ──────────────────────────────────────────────────────────
+
+function ForecastSummary({ forecasts }: { forecasts: OperationalForecast[] }) {
+  const bySeverity = forecasts.reduce((acc, fc) => {
+    acc[fc.severity] = (acc[fc.severity] ?? 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {(['critical', 'high', 'medium', 'low'] as ForecastSeverity[]).map((sev) => (
+        <div key={sev} className="rounded-lg border border-slate-700/50 bg-[#111827] px-4 py-3">
+          <p className="text-xs text-slate-400 capitalize">{sev}</p>
+          <p className={`mt-1 text-2xl font-bold ${
+            sev === 'critical' ? 'text-red-400' :
+            sev === 'high'     ? 'text-orange-400' :
+            sev === 'medium'   ? 'text-amber-400' :
+                                 'text-blue-400'
+          }`}>{bySeverity[sev] ?? 0}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+function ForecastsContent() {
+  const [categoryFilter, setCategoryFilter] = useState<ForecastCategory | ''>('')
+  const [severityFilter, setSeverityFilter] = useState<ForecastSeverity | ''>('')
+  const [selected, setSelected] = useState<OperationalForecast | null>(null)
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['forecasts', categoryFilter, severityFilter],
+    queryFn: () => forecastsApi.listForecasts({
+      category: categoryFilter || undefined,
+      severity: severityFilter || undefined,
+      pageSize: 100,
+    }),
+    refetchInterval: 60000,
+  })
+
+  const forecasts = data?.forecasts ?? []
+
+  return (
+    <div className="space-y-6 p-8">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-slate-100">Forecasts</h1>
+            <span className="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
+              <FlaskConical className="h-3 w-3" /> Beta
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-slate-400">Statistical risk predictions — evidence-based, never AI-generated</p>
+        </div>
+        <AlertTriangle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-1" />
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
-          {error}
-        </div>
-      )}
+      <BetaNotice />
 
-      {/* Metrics Summary */}
-      {metrics && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-          <MetricCard
-            label="Total Forecasts"
-            value={metrics.total_forecasts}
-            icon={<Activity className="h-5 w-5" />}
-          />
-          <MetricCard
-            label="Critical"
-            value={metrics.critical_forecasts}
-            valueClass="text-red-400"
-            icon={<Zap className="h-5 w-5" />}
-          />
-          <MetricCard
-            label="Avg Confidence"
-            value={((metrics.average_confidence ?? 0) * 100).toFixed(0) + '%'}
-            valueClass="text-blue-400"
-          />
-          <MetricCard
-            label="Accuracy"
-            value={((metrics.prediction_accuracy ?? 0) * 100).toFixed(0) + '%'}
-            valueClass="text-emerald-400"
-          />
-          <MetricCard
-            label="Runs"
-            value={metrics.forecast_runs}
-          />
-        </div>
-      )}
+      {!isLoading && forecasts.length > 0 && <ForecastSummary forecasts={forecasts} />}
 
-      {/* Forecasts Table */}
-      <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 overflow-hidden">
-        <div className="border-b border-slate-700/50 px-6 py-4">
-          <h2 className="font-semibold text-slate-100">Active Forecasts ({forecasts.length})</h2>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-b border-slate-700/50 bg-slate-900/50">
-              <tr>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Resource</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Metric</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Current</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Predicted</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Growth</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Confidence</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Severity</th>
-                <th className="px-6 py-3 text-left text-sm font-medium text-slate-300">Trend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {forecasts.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-slate-400">
-                    No forecasts available
-                  </td>
-                </tr>
-              ) : (
-                forecasts.slice(0, 50).map(forecast => (
-                  <tr key={forecast.id} className="border-b border-slate-700/50 hover:bg-slate-900/50">
-                    <td className="px-6 py-4 text-sm font-medium text-slate-100">{forecast.resource_type}</td>
-                    <td className="px-6 py-4 text-sm text-slate-400">{forecast.metric}</td>
-                    <td className="px-6 py-4 text-sm text-slate-100">
-                      {typeof forecast.current_value === 'number' ? forecast.current_value.toFixed(2) : '—'}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-slate-100">
-                      {typeof forecast.predicted_value === 'number' ? forecast.predicted_value.toFixed(2) : '—'}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <span className={forecast.growth_rate > 0 ? 'text-red-400' : 'text-emerald-400'}>
-                        {(forecast.growth_rate * 100).toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <div className="flex items-center gap-1">
-                        <div className="flex-1 h-2 bg-slate-700/50 rounded w-12">
-                          <div
-                            className="h-2 bg-blue-600 rounded"
-                            style={{ width: `${forecast.confidence * 100}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-slate-400">{(forecast.confidence * 100).toFixed(0)}%</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`rounded px-2 py-1 text-xs font-semibold ${severityColors[forecast.severity]}`}>
-                        {forecast.severity}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <div className="flex items-center gap-1">
-                        {trendIcon(forecast.trend)}
-                        <span className="text-xs text-slate-400 capitalize">{forecast.trend}</span>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {forecasts.length > 50 && (
-          <div className="border-t border-slate-700/50 px-6 py-4 text-sm text-slate-400">
-            Showing 50 of {forecasts.length} forecasts
-          </div>
+      <div className="flex flex-wrap gap-3 items-center">
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value as ForecastCategory | '')}
+          className="rounded bg-slate-800 border border-slate-700/50 text-slate-300 text-sm px-2 py-1.5"
+        >
+          <option value="">All categories</option>
+          <option value="rotation">Rotation</option>
+          <option value="drift">Drift</option>
+          <option value="compliance">Compliance</option>
+          <option value="operational">Operational</option>
+        </select>
+        <select
+          value={severityFilter}
+          onChange={(e) => setSeverityFilter(e.target.value as ForecastSeverity | '')}
+          className="rounded bg-slate-800 border border-slate-700/50 text-slate-300 text-sm px-2 py-1.5"
+        >
+          <option value="">All severities</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        {(categoryFilter || severityFilter) && (
+          <button
+            onClick={() => { setCategoryFilter(''); setSeverityFilter('') }}
+            className="text-xs text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            Clear
+          </button>
         )}
       </div>
 
-      {/* Forecast Categories */}
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        <ForecastPanel
-          title="Queue Saturation"
-          description="Predicts queue depth growth and worker utilization"
-          forecasts={forecasts.filter(f => f.resource_type === 'queue')}
-        />
-        <ForecastPanel
-          title="Memory Usage"
-          description="Predicts exhaustion risk based on trends"
-          forecasts={forecasts.filter(f => f.resource_type === 'memory')}
-        />
-        <ForecastPanel
-          title="Backup Storage"
-          description="Predicts filesystem usage growth"
-          forecasts={forecasts.filter(f => f.resource_type === 'backup_storage')}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        <ForecastPanel
-          title="Incident Growth"
-          description="Predicts incident count trends"
-          forecasts={forecasts.filter(f => f.resource_type === 'incident')}
-        />
-        <ForecastPanel
-          title="Alert Volume"
-          description="Predicts alert frequency patterns"
-          forecasts={forecasts.filter(f => f.resource_type === 'alert')}
-        />
-        <ForecastPanel
-          title="Scheduler Load"
-          description="Predicts job execution volume"
-          forecasts={forecasts.filter(f => f.resource_type === 'scheduler')}
-        />
-      </div>
-    </div>
-  )
-}
-
-interface MetricCardProps {
-  label: string
-  value: string | number
-  icon?: React.ReactNode
-  valueClass?: string
-}
-
-function MetricCard({ label, value, icon, valueClass = 'text-slate-100' }: MetricCardProps) {
-  return (
-    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-slate-400">{label}</span>
-        {icon && <div className="text-slate-500">{icon}</div>}
-      </div>
-      <div className={`mt-2 text-2xl font-bold ${valueClass}`}>{value}</div>
-    </div>
-  )
-}
-
-interface ForecastPanelProps {
-  title: string
-  description: string
-  forecasts: Forecast[]
-}
-
-function ForecastPanel({ title, description, forecasts }: ForecastPanelProps) {
-  const latestForecast = forecasts[0]
-
-  return (
-    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 p-6">
-      <h3 className="font-semibold text-slate-100">{title}</h3>
-      <p className="mt-1 text-sm text-slate-400">{description}</p>
-
-      {latestForecast ? (
-        <div className="mt-4 space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-slate-400">Current</span>
-            <span className="font-medium text-slate-100">{latestForecast.current_value.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Predicted</span>
-            <span className="font-medium text-slate-100">{latestForecast.predicted_value.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Growth</span>
-            <span className={`font-medium ${latestForecast.growth_rate > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-              {(latestForecast.growth_rate * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="flex justify-between pt-2 border-t border-slate-700/50">
-            <span className="text-slate-400">Confidence</span>
-            <span className="font-medium text-blue-400">{(latestForecast.confidence * 100).toFixed(0)}%</span>
-          </div>
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          {error instanceof Error ? error.message : 'Failed to load forecasts'}
         </div>
-      ) : (
-        <div className="mt-4 text-sm text-slate-400">No forecasts available</div>
       )}
+
+      {isLoading && (
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-20 rounded-lg bg-slate-800/40 animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {!isLoading && !error && forecasts.length === 0 && (
+        <div className="rounded-lg border border-slate-700/50 bg-[#0B1020] p-10 text-center">
+          <ShieldCheck className="h-8 w-8 text-emerald-400 mx-auto mb-3" />
+          <p className="text-slate-300 font-medium">No forecasts at this time</p>
+          <p className="mt-1 text-sm text-slate-500">
+            No statistical risk signals detected. Forecasts appear automatically when evidence accumulates.
+          </p>
+        </div>
+      )}
+
+      {!isLoading && forecasts.length > 0 && (
+        <div className="space-y-2">
+          {forecasts.map((fc) => (
+            <ForecastCard key={fc.id} fc={fc} onClick={() => setSelected(fc)} />
+          ))}
+        </div>
+      )}
+
+      {!isLoading && (
+        <div className="rounded-lg border border-slate-700/30 bg-slate-800/20 px-4 py-3">
+          <p className="text-xs text-slate-500 leading-relaxed">
+            <strong className="text-slate-400">How forecasts are generated:</strong>{' '}
+            Rotation — version history intervals and elapsed-cycle fraction.
+            Drift — 14-day recurrence window with count-based confidence.
+            Compliance — current status distribution across the managed estate.
+            All forecasts are computed live from current evidence; none are stored.
+          </p>
+        </div>
+      )}
+
+      {selected && <ForecastDrawer fc={selected} onClose={() => setSelected(null)} />}
     </div>
+  )
+}
+
+export default function ForecastsPage() {
+  return (
+    <ProtectedRoute>
+      <ForecastsContent />
+    </ProtectedRoute>
   )
 }

@@ -9,12 +9,13 @@ import {
   PlugZap,
   CheckCircle2,
   ChevronRight,
+  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react'
 
 export type AttentionSeverity = 'critical' | 'warning' | 'info'
 // 'error' = secret reporting an error status. NOT drift detection.
-export type AttentionKind = 'overdue' | 'error' | 'failed-sync' | 'provider'
+export type AttentionKind = 'overdue' | 'error' | 'failed-sync' | 'provider' | 'drift'
 
 export interface AttentionItem {
   id: string
@@ -32,6 +33,7 @@ const kindIcon: Record<AttentionKind, LucideIcon> = {
   error: AlertCircle,
   'failed-sync': RefreshCwOff,
   provider: PlugZap,
+  drift: AlertTriangle,
 }
 
 const severityTone: Record<AttentionSeverity, string> = {
@@ -44,9 +46,10 @@ const severityTone: Record<AttentionSeverity, string> = {
 const SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, warning: 1, info: 2 }
 const KIND_RANK: Record<AttentionKind, number> = {
   overdue: 0,
-  error: 1,
-  'failed-sync': 2,
-  provider: 3,
+  drift: 1,
+  error: 2,
+  'failed-sync': 3,
+  provider: 4,
 }
 
 /** Sort by severity, then by kind priority (overdue → error → failed sync → provider). */

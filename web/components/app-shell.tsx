@@ -12,7 +12,7 @@ const SHELL_EXCLUDED = ['/login']
 // unmistakable so an operator can't confuse them with trusted pages.
 // (Source of truth: HONESTY_AUDIT.md.)
 const EXPERIMENTAL_ROUTES = [
-  '/drift', '/policies', '/incidents', '/recommendations', '/autonomy',
+  '/incidents', '/recommendations', '/autonomy',
   '/graph', '/changesets', '/review', '/workspace', '/remediation',
 ]
 const BETA_ROUTES = ['/forecasts']

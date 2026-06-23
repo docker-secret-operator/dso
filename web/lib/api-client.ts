@@ -78,6 +78,7 @@ export interface DashboardPosture {
   aging: number
   overdue: number
   unknown: number
+  driftedCount?: number
 }
 
 export interface Event {

@@ -339,6 +339,11 @@ CREATE INDEX IF NOT EXISTS idx_execution_steps_plan_sequence ON execution_steps(
 		name:    "injection_records",
 		sql:     "", // Handled by migration0029statements
 	},
+	{
+		version: "0030",
+		name:    "secret_versions",
+		sql:     "", // Handled by migration0030statements
+	},
 }
 
 // runMigrations applies pending migrations to the database
@@ -417,6 +422,8 @@ func runMigrations(db *sql.DB) error {
 			statements = migration0028statements
 		} else if m.version == "0029" {
 			statements = migration0029statements
+		} else if m.version == "0030" {
+			statements = migration0030statements
 		}
 
 		if len(statements) > 0 {
