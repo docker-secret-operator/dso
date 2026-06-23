@@ -8,14 +8,19 @@ import (
 type DriftType string
 
 const (
-	DriftSecret       DriftType = "secret"
-	DriftPolicy       DriftType = "policy"
-	DriftPlugin       DriftType = "plugin"
-	DriftUser         DriftType = "user"
+	DriftSecret        DriftType = "secret"
+	DriftPolicy        DriftType = "policy"
+	DriftPlugin        DriftType = "plugin"
+	DriftUser          DriftType = "user"
 	DriftConfiguration DriftType = "configuration"
-	DriftBackup       DriftType = "backup"
-	DriftIntegration  DriftType = "integration"
-	DriftScheduler    DriftType = "scheduler"
+	DriftBackup        DriftType = "backup"
+	DriftIntegration   DriftType = "integration"
+	DriftScheduler     DriftType = "scheduler"
+	// Real secret-version drift types (P4)
+	DriftVersionMismatch DriftType = "version_mismatch"
+	DriftStaleSecret     DriftType = "stale_secret"
+	DriftMissingSecret   DriftType = "missing_secret"
+	DriftRotationLag     DriftType = "rotation_lag"
 )
 
 // DriftSeverity represents the severity of drift

@@ -110,6 +110,21 @@ func (c *SecretCache) Delete(key string) {
 	}
 }
 
+// GetHash returns the stored content hash for a cache key without exposing the secret data.
+// Returns ("", false) if the key is absent or expired.
+func (c *SecretCache) GetHash(key string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	item, exists := c.items[key]
+	if !exists {
+		return "", false
+	}
+	if time.Now().After(item.ExpiresAt) {
+		return "", false
+	}
+	return item.Hash, true
+}
+
 // ListKeys returns all keys currently in the cache
 func (c *SecretCache) ListKeys() []string {
 	c.mu.RLock()
