@@ -3,6 +3,7 @@ import type { Secret } from '@/lib/api-client'
 import {
   classifySecret,
   deriveRotationPosture,
+  isRotationUnavailable,
   AGING_WINDOW_DAYS,
 } from '@/lib/dashboard/rotation'
 
@@ -34,22 +35,22 @@ describe('classifySecret', () => {
     expect(classifySecret(s, NOW)).toBe('fresh')
   })
 
-  it('treats an errored secret as drifted regardless of rotation date', () => {
+  it('treats an errored secret as errored regardless of rotation date', () => {
     const s = secret({ status: 'error', next_rotation: new Date(NOW + 30 * DAY_MS).toISOString() })
-    expect(classifySecret(s, NOW)).toBe('drifted')
+    expect(classifySecret(s, NOW)).toBe('errored')
   })
 
-  it('treats a secret with no rotation schedule as fresh', () => {
-    expect(classifySecret(secret({ next_rotation: undefined }), NOW)).toBe('fresh')
+  it('treats a secret with no rotation schedule as UNKNOWN, never fresh', () => {
+    expect(classifySecret(secret({ next_rotation: undefined }), NOW)).toBe('unknown')
   })
 
-  it('treats a secret with rotation disabled as fresh even if a date exists', () => {
+  it('treats a secret with rotation disabled as unknown even if a date exists', () => {
     const s = secret({ rotation_strategy: 'none', next_rotation: new Date(NOW - DAY_MS).toISOString() })
-    expect(classifySecret(s, NOW)).toBe('fresh')
+    expect(classifySecret(s, NOW)).toBe('unknown')
   })
 
-  it('treats an unparseable next_rotation as fresh', () => {
-    expect(classifySecret(secret({ next_rotation: 'not-a-date' }), NOW)).toBe('fresh')
+  it('treats an unparseable next_rotation as unknown', () => {
+    expect(classifySecret(secret({ next_rotation: 'not-a-date' }), NOW)).toBe('unknown')
   })
 })
 
@@ -59,10 +60,11 @@ describe('deriveRotationPosture', () => {
       secret({ next_rotation: new Date(NOW - DAY_MS).toISOString() }), // overdue
       secret({ next_rotation: new Date(NOW + 2 * DAY_MS).toISOString() }), // aging
       secret({ next_rotation: new Date(NOW + 60 * DAY_MS).toISOString() }), // fresh
-      secret({ status: 'error' }), // drifted
+      secret({ status: 'error' }), // errored
+      secret({ next_rotation: undefined }), // unknown
     ]
     const p = deriveRotationPosture(secrets, NOW)
-    expect(p).toMatchObject({ overdue: 1, aging: 1, fresh: 1, drifted: 1, total: 4 })
+    expect(p).toMatchObject({ overdue: 1, aging: 1, fresh: 1, errored: 1, unknown: 1, total: 5 })
   })
 
   it('reports needRotation as overdue + aging', () => {
@@ -77,7 +79,24 @@ describe('deriveRotationPosture', () => {
 
   it('handles an empty estate', () => {
     expect(deriveRotationPosture([], NOW)).toMatchObject({
-      fresh: 0, aging: 0, overdue: 0, drifted: 0, total: 0, needRotation: 0,
+      fresh: 0, aging: 0, overdue: 0, errored: 0, unknown: 0, total: 0, needRotation: 0,
     })
+  })
+})
+
+describe('isRotationUnavailable', () => {
+  it('is true when every secret is unknown', () => {
+    const secrets: Secret[] = [secret({ next_rotation: undefined }), secret({ rotation_strategy: 'none' })]
+    expect(isRotationUnavailable(deriveRotationPosture(secrets, NOW))).toBe(true)
+  })
+  it('is false when at least one secret has rotation data', () => {
+    const secrets: Secret[] = [
+      secret({ next_rotation: undefined }),
+      secret({ next_rotation: new Date(NOW + 60 * DAY_MS).toISOString() }),
+    ]
+    expect(isRotationUnavailable(deriveRotationPosture(secrets, NOW))).toBe(false)
+  })
+  it('is false for an empty estate', () => {
+    expect(isRotationUnavailable(deriveRotationPosture([], NOW))).toBe(false)
   })
 })

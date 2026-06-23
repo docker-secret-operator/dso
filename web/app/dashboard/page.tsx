@@ -55,12 +55,12 @@ function buildAttentionItems(
         target: s.name,
         href: '/secrets',
       })
-    } else if (bucket === 'drifted') {
+    } else if (bucket === 'errored') {
       items.push({
-        id: `drift-${s.name}`,
-        kind: 'drift',
+        id: `error-${s.name}`,
+        kind: 'error',
         severity: 'warning',
-        message: 'Differs from provider',
+        message: 'Secret is reporting an error',
         target: `${s.provider}/${s.name}`,
         href: '/secrets',
       })

@@ -1,8 +1,8 @@
 'use client'
 
 import { cn } from '@/lib/utils'
-import { ShieldCheck, ShieldAlert, ShieldX, RefreshCw } from 'lucide-react'
-import { ROTATION_BUCKET_META, type RotationPosture } from '@/lib/dashboard/rotation'
+import { ShieldCheck, ShieldAlert, ShieldX, Shield, RefreshCw } from 'lucide-react'
+import { ROTATION_BUCKET_META, isRotationUnavailable, type RotationPosture, type RotationBucket } from '@/lib/dashboard/rotation'
 
 export interface EstateHeroProps {
   posture: RotationPosture
@@ -12,11 +12,14 @@ export interface EstateHeroProps {
   loading?: boolean
 }
 
-type Posture = 'secured' | 'attention' | 'critical'
+type Posture = 'secured' | 'attention' | 'critical' | 'unknown'
 
-function derivePosture(needRotation: number, drifted: number): Posture {
-  if (drifted > 0) return 'critical'
-  if (needRotation > 0) return 'attention'
+// Honesty: never show a green/"secured" posture when rotation is unmeasured.
+// Any Unknown secrets (no rotation data) downgrade the posture to "unknown".
+function derivePosture(p: RotationPosture): Posture {
+  if (p.errored > 0) return 'critical'
+  if (p.needRotation > 0) return 'attention'
+  if (p.unknown > 0) return 'unknown'
   return 'secured'
 }
 
@@ -24,10 +27,13 @@ const postureMeta: Record<Posture, { label: string; icon: typeof ShieldCheck; to
   secured: { label: 'Secrets secured', icon: ShieldCheck, tone: 'text-emerald-400', ring: 'bg-emerald-500/10' },
   attention: { label: 'Attention needed', icon: ShieldAlert, tone: 'text-amber-400', ring: 'bg-amber-500/10' },
   critical: { label: 'Action required', icon: ShieldX, tone: 'text-red-400', ring: 'bg-red-500/10' },
+  unknown: { label: 'Rotation status unknown', icon: Shield, tone: 'text-slate-300', ring: 'bg-white/[0.06]' },
 }
 
-// Best → worst, left to right, so accumulating risk reads from the right edge.
-const BAND_ORDER = [...ROTATION_BUCKET_META].reverse()
+// Health order left→right (fresh … errored), with Unknown trailing on the right
+// as a neutral, non-judgemental segment.
+const BAND_ORDER: RotationBucket[] = ['fresh', 'aging', 'overdue', 'errored', 'unknown']
+const bandMeta = (k: RotationBucket) => ROTATION_BUCKET_META.find((m) => m.key === k)!
 
 /**
  * Signature hero: the entire secret estate as one rotation-health band, with
@@ -35,10 +41,17 @@ const BAND_ORDER = [...ROTATION_BUCKET_META].reverse()
  * unique to a secrets-management tool leads, instead of generic KPI cards.
  */
 export function EstateHero({ posture, coverage, lastSyncLabel, loading }: EstateHeroProps) {
-  const meta = postureMeta[derivePosture(posture.needRotation, posture.drifted)]
+  const meta = postureMeta[derivePosture(posture)]
   const Icon = meta.icon
   const total = posture.total || 1
   const pct = (n: number) => Math.round((n / total) * 100)
+  const rotationUnavailable = isRotationUnavailable(posture)
+  // When nothing is measured, say so plainly instead of any posture claim.
+  const statusLabel = loading
+    ? 'Loading secret estate…'
+    : rotationUnavailable
+      ? 'Rotation data unavailable'
+      : meta.label
 
   return (
     <section className="rounded-xl border border-white/[0.07] bg-[#111827] p-6">
@@ -51,7 +64,7 @@ export function EstateHero({ posture, coverage, lastSyncLabel, loading }: Estate
           <div>
             <h1 className="text-[15px] font-semibold text-slate-100 leading-tight">Secret estate</h1>
             <p className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span className={meta.tone}>{loading ? 'Loading secret estate…' : meta.label}</span>
+              <span className={rotationUnavailable ? 'text-slate-300' : meta.tone}>{statusLabel}</span>
               {lastSyncLabel && (
                 <>
                   <span className="text-slate-600">·</span>
@@ -81,15 +94,16 @@ export function EstateHero({ posture, coverage, lastSyncLabel, loading }: Estate
             posture.total === 0
               ? 'No secrets to display'
               : `Rotation health across ${posture.total} secrets: ` +
-                BAND_ORDER.map((s) => `${posture[s.key]} ${s.label.toLowerCase()}`).join(', ')
+                BAND_ORDER.map((k) => `${posture[k]} ${bandMeta(k).label.toLowerCase()}`).join(', ')
           }
         >
-          {BAND_ORDER.map((seg) => {
-            const count = posture[seg.key]
+          {BAND_ORDER.map((key) => {
+            const seg = bandMeta(key)
+            const count = posture[key]
             if (count === 0) return null
             return (
               <div
-                key={seg.key}
+                key={key}
                 className={cn(seg.fill, 'h-full')}
                 style={{ width: `${(count / total) * 100}%`, minWidth: 4 }}
                 title={`${seg.label}: ${count} (${pct(count)}%)`}
@@ -100,7 +114,7 @@ export function EstateHero({ posture, coverage, lastSyncLabel, loading }: Estate
       )}
 
       {/* Legend: buckets with counts + percentages */}
-      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {ROTATION_BUCKET_META.map((seg) => {
           const count = posture[seg.key]
           return (

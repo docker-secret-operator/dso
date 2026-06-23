@@ -30,6 +30,13 @@ import {
   FolderSearch,
   ShieldAlert,
   LineChart,
+  Gauge,
+  ListChecks,
+  Archive,
+  GitPullRequest,
+  ClipboardCheck,
+  Layers,
+  Wrench,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -39,6 +46,8 @@ type NavItem = {
   href: string
   icon: React.ReactNode
   accent?: string
+  /** Marks a non-production-ready route (shows an "Experimental" badge). */
+  experimental?: boolean
 }
 
 type NavGroup = {
@@ -49,6 +58,8 @@ type NavGroup = {
 
 // ── Navigation structure ──────────────────────────────────────────────────────
 
+// Production = real, persistent, trusted (see HONESTY_AUDIT.md). Labs = not
+// production-ready; clearly separated and badged so nothing misleads operators.
 const navGroups: NavGroup[] = [
   {
     name: '',
@@ -60,51 +71,58 @@ const navGroups: NavGroup[] = [
     name: 'Operations',
     defaultOpen: true,
     items: [
-      { label: 'Secrets',    href: '/secrets',    icon: <Shield className="w-4 h-4" />,        accent: 'blue' },
-      { label: 'Discovery',  href: '/discovery',  icon: <FolderSearch className="w-4 h-4" />,  accent: 'sky' },
-      { label: 'Events',     href: '/events',     icon: <Zap className="w-4 h-4" />,            accent: 'violet' },
-      { label: 'Alerts',     href: '/alerts',     icon: <AlertCircle className="w-4 h-4" />,   accent: 'red' },
-      { label: 'Incidents',  href: '/incidents',  icon: <AlertTriangle className="w-4 h-4" />, accent: 'orange' },
-    ],
-  },
-  {
-    name: 'Intelligence',
-    defaultOpen: true,
-    items: [
-      { label: 'Drift',           href: '/drift',            icon: <GitBranch className="w-4 h-4" />, accent: 'amber' },
-      { label: 'Recommendations', href: '/recommendations',  icon: <Lightbulb className="w-4 h-4" />, accent: 'purple' },
-      { label: 'Forecasts',       href: '/forecasts',        icon: <LineChart className="w-4 h-4" />,  accent: 'cyan' },
-      { label: 'Autonomy',        href: '/autonomy',         icon: <Bot className="w-4 h-4" />,        accent: 'emerald' },
+      { label: 'Secrets',     href: '/secrets',     icon: <Shield className="w-4 h-4" />,       accent: 'blue' },
+      { label: 'Discovery',   href: '/discovery',   icon: <FolderSearch className="w-4 h-4" />, accent: 'sky' },
+      { label: 'Operations',  href: '/operations',  icon: <Gauge className="w-4 h-4" />,        accent: 'indigo' },
+      { label: 'Executions',  href: '/executions',  icon: <ListChecks className="w-4 h-4" />,   accent: 'violet' },
+      { label: 'Events',      href: '/events',      icon: <Zap className="w-4 h-4" />,          accent: 'violet' },
+      { label: 'Alerts',      href: '/alerts',      icon: <AlertCircle className="w-4 h-4" />,  accent: 'red' },
+      { label: 'Scheduler',   href: '/scheduler',   icon: <Clock className="w-4 h-4" />,        accent: 'slate' },
     ],
   },
   {
     name: 'Governance',
     defaultOpen: false,
     items: [
-      { label: 'Audit Logs',    href: '/audit',         icon: <FileText className="w-4 h-4" />, accent: 'slate' },
-      { label: 'Policies',      href: '/policies',      icon: <Lock className="w-4 h-4" />,     accent: 'indigo' },
-      { label: 'Scheduler',     href: '/scheduler',     icon: <Clock className="w-4 h-4" />,    accent: 'slate' },
-      { label: 'Dep. Graph',    href: '/graph',         icon: <Workflow className="w-4 h-4" />, accent: 'slate' },
+      { label: 'Audit Logs',    href: '/audit',         icon: <FileText className="w-4 h-4" />,  accent: 'slate' },
+      { label: 'Configuration', href: '/configuration', icon: <ServerCog className="w-4 h-4" />, accent: 'slate' },
+      { label: 'Backups',       href: '/backups',       icon: <Archive className="w-4 h-4" />,    accent: 'slate' },
     ],
   },
   {
     name: 'Security',
     defaultOpen: false,
     items: [
-      { label: 'Overview',          href: '/security',            icon: <ShieldAlert className="w-4 h-4" />, accent: 'blue' },
-      { label: 'Sessions',          href: '/security/sessions',   icon: <Activity className="w-4 h-4" />,    accent: 'slate' },
-      { label: 'Suspicious',        href: '/security/suspicious', icon: <AlertTriangle className="w-4 h-4" />, accent: 'red' },
+      { label: 'Overview',   href: '/security',            icon: <ShieldAlert className="w-4 h-4" />,  accent: 'blue' },
+      { label: 'Sessions',   href: '/security/sessions',   icon: <Activity className="w-4 h-4" />,     accent: 'slate' },
+      { label: 'Suspicious', href: '/security/suspicious', icon: <AlertTriangle className="w-4 h-4" />, accent: 'red' },
     ],
   },
   {
     name: 'Admin',
     defaultOpen: false,
     items: [
-      { label: 'Users',        href: '/users',        icon: <Users className="w-4 h-4" />,   accent: 'slate' },
-      { label: 'Configuration',href: '/configuration',icon: <ServerCog className="w-4 h-4" />,accent: 'slate' },
-      { label: 'Analytics',   href: '/analytics',    icon: <BarChart3 className="w-4 h-4" />, accent: 'slate' },
-      { label: 'Plugins',     href: '/plugins',      icon: <Plug className="w-4 h-4" />,      accent: 'slate' },
-      { label: 'Integrations',href: '/integrations', icon: <Cable className="w-4 h-4" />,     accent: 'slate' },
+      { label: 'Users',        href: '/users',        icon: <Users className="w-4 h-4" />,    accent: 'slate' },
+      { label: 'Analytics',    href: '/analytics',    icon: <BarChart3 className="w-4 h-4" />, accent: 'slate' },
+      { label: 'Plugins',      href: '/plugins',      icon: <Plug className="w-4 h-4" />,      accent: 'slate' },
+      { label: 'Integrations', href: '/integrations', icon: <Cable className="w-4 h-4" />,     accent: 'slate' },
+    ],
+  },
+  {
+    name: 'Labs',
+    defaultOpen: false,
+    items: [
+      { label: 'Incidents',       href: '/incidents',       icon: <AlertTriangle className="w-4 h-4" />, accent: 'slate', experimental: true },
+      { label: 'Drift',           href: '/drift',           icon: <GitBranch className="w-4 h-4" />,     accent: 'slate', experimental: true },
+      { label: 'Policies',        href: '/policies',        icon: <Lock className="w-4 h-4" />,          accent: 'slate', experimental: true },
+      { label: 'Recommendations', href: '/recommendations', icon: <Lightbulb className="w-4 h-4" />,     accent: 'slate', experimental: true },
+      { label: 'Forecasts',       href: '/forecasts',       icon: <LineChart className="w-4 h-4" />,     accent: 'slate', experimental: true },
+      { label: 'Autonomy',        href: '/autonomy',        icon: <Bot className="w-4 h-4" />,           accent: 'slate', experimental: true },
+      { label: 'Dep. Graph',      href: '/graph',           icon: <Workflow className="w-4 h-4" />,      accent: 'slate', experimental: true },
+      { label: 'Changesets',      href: '/changesets',      icon: <GitPullRequest className="w-4 h-4" />, accent: 'slate', experimental: true },
+      { label: 'Review',          href: '/review',          icon: <ClipboardCheck className="w-4 h-4" />, accent: 'slate', experimental: true },
+      { label: 'Workspace',       href: '/workspace',       icon: <Layers className="w-4 h-4" />,         accent: 'slate', experimental: true },
+      { label: 'Remediation',     href: '/remediation',     icon: <Wrench className="w-4 h-4" />,         accent: 'slate', experimental: true },
     ],
   },
 ]
@@ -264,6 +282,16 @@ export function SidebarPremium() {
 
                         {!collapsed && (
                           <span className="truncate">{item.label}</span>
+                        )}
+
+                        {/* Experimental badge — flags non-production routes */}
+                        {!collapsed && item.experimental && (
+                          <span
+                            className="ml-auto flex-shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-400/90"
+                            title="Experimental — not production-ready"
+                          >
+                            Exp
+                          </span>
                         )}
 
                         {/* Tooltip on collapsed */}

@@ -1,20 +1,21 @@
 /**
  * Rotation posture derivation
  *
- * Buckets the secret estate into rotation-health categories from real fields
- * on the Secret model (`next_rotation`, `status`). Used by the dashboard's
- * Posture Summary and the Rotation Health Strip signature component.
+ * Buckets the secret estate into rotation-health categories from real fields on
+ * the Secret model (`next_rotation`, `status`). Used by the dashboard's
+ * "Secret estate" hero.
  *
- * Data note: there is no dedicated drift endpoint yet — the backend
- * `/api/drift` handler is currently stubbed (501 Not Implemented). Until it
- * lands, "drifted" is derived from secrets whose `status === 'error'`, which is
- * the nearest real signal. Replace `isDrifted()` with the real drift feed once
- * the endpoint exists.
+ * HONESTY RULES (do not weaken):
+ * - A secret with no `next_rotation` (or rotation disabled) is **Unknown**, never
+ *   "Fresh". We must not present unmeasured rotation as healthy.
+ * - The "Secret errors" bucket is `status === 'error'`. This is NOT drift
+ *   detection. Do not label it "drift" anywhere — that would imply a capability
+ *   (config-vs-provider drift) that the dashboard does not have.
  */
 
 import type { Secret } from '@/lib/api-client'
 
-export type RotationBucket = 'fresh' | 'aging' | 'overdue' | 'drifted'
+export type RotationBucket = 'fresh' | 'aging' | 'overdue' | 'errored' | 'unknown'
 
 /** A secret is "aging" when its next rotation falls within this window. */
 export const AGING_WINDOW_DAYS = 7
@@ -25,15 +26,18 @@ export interface RotationPosture {
   fresh: number
   aging: number
   overdue: number
-  drifted: number
+  /** Secrets reporting an error status. NOT drift. */
+  errored: number
+  /** Secrets with no rotation schedule — rotation health is unmeasured. */
+  unknown: number
   /** Total secrets classified. */
   total: number
   /** Actionable rotation work: overdue + aging. */
   needRotation: number
 }
 
-/** Drift proxy until a real drift endpoint exists (see file header). */
-function isDrifted(secret: Secret): boolean {
+/** Secret error state (status === 'error'). Not drift. */
+function isErrored(secret: Secret): boolean {
   return secret.status === 'error'
 }
 
@@ -44,15 +48,16 @@ function isDrifted(secret: Secret): boolean {
  * @param now - reference time in epoch ms (injectable for testing)
  */
 export function classifySecret(secret: Secret, now: number = Date.now()): RotationBucket {
-  if (isDrifted(secret)) return 'drifted'
+  if (isErrored(secret)) return 'errored'
 
-  // No rotation schedule (or rotation disabled) → not due, treat as fresh.
+  // No rotation schedule (or rotation disabled) → rotation health is UNKNOWN.
+  // Never treat unmeasured rotation as "fresh".
   if (!secret.next_rotation || secret.rotation_strategy === 'none') {
-    return 'fresh'
+    return 'unknown'
   }
 
   const next = new Date(secret.next_rotation).getTime()
-  if (Number.isNaN(next)) return 'fresh'
+  if (Number.isNaN(next)) return 'unknown'
 
   if (next <= now) return 'overdue'
   if (next <= now + AGING_WINDOW_DAYS * DAY_MS) return 'aging'
@@ -70,7 +75,8 @@ export function deriveRotationPosture(secrets: Secret[], now: number = Date.now(
     fresh: 0,
     aging: 0,
     overdue: 0,
-    drifted: 0,
+    errored: 0,
+    unknown: 0,
     total: secrets.length,
     needRotation: 0,
   }
@@ -83,6 +89,15 @@ export function deriveRotationPosture(secrets: Secret[], now: number = Date.now(
   return posture
 }
 
+/**
+ * True when rotation is effectively unmeasured for the whole estate (every
+ * secret is Unknown). In this case the UI must say "Rotation data unavailable"
+ * rather than show a green/secured posture.
+ */
+export function isRotationUnavailable(posture: RotationPosture): boolean {
+  return posture.total > 0 && posture.unknown >= posture.total
+}
+
 /** Visual + label metadata for each bucket, ordered most→least severe. */
 export const ROTATION_BUCKET_META: Array<{
   key: RotationBucket
@@ -92,8 +107,9 @@ export const ROTATION_BUCKET_META: Array<{
   /** Tailwind text class for legend/labels. */
   text: string
 }> = [
-  { key: 'drifted', label: 'Drifted', fill: 'bg-red-500', text: 'text-red-400' },
+  { key: 'errored', label: 'Secret errors', fill: 'bg-red-500', text: 'text-red-400' },
   { key: 'overdue', label: 'Overdue', fill: 'bg-orange-500', text: 'text-orange-400' },
   { key: 'aging', label: 'Aging', fill: 'bg-amber-500', text: 'text-amber-400' },
   { key: 'fresh', label: 'Fresh', fill: 'bg-emerald-500', text: 'text-emerald-400' },
+  { key: 'unknown', label: 'Unknown', fill: 'bg-slate-500', text: 'text-slate-400' },
 ]

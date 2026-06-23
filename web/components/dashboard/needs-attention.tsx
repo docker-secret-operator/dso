@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import Link from 'next/link'
 import {
   CalendarClock,
-  GitCompareArrows,
+  AlertCircle,
   RefreshCwOff,
   PlugZap,
   CheckCircle2,
@@ -13,7 +13,8 @@ import {
 } from 'lucide-react'
 
 export type AttentionSeverity = 'critical' | 'warning' | 'info'
-export type AttentionKind = 'overdue' | 'drift' | 'failed-sync' | 'provider'
+// 'error' = secret reporting an error status. NOT drift detection.
+export type AttentionKind = 'overdue' | 'error' | 'failed-sync' | 'provider'
 
 export interface AttentionItem {
   id: string
@@ -28,7 +29,7 @@ export interface AttentionItem {
 
 const kindIcon: Record<AttentionKind, LucideIcon> = {
   overdue: CalendarClock,
-  drift: GitCompareArrows,
+  error: AlertCircle,
   'failed-sync': RefreshCwOff,
   provider: PlugZap,
 }
@@ -43,12 +44,12 @@ const severityTone: Record<AttentionSeverity, string> = {
 const SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, warning: 1, info: 2 }
 const KIND_RANK: Record<AttentionKind, number> = {
   overdue: 0,
-  drift: 1,
+  error: 1,
   'failed-sync': 2,
   provider: 3,
 }
 
-/** Sort by severity, then by kind priority (overdue → drift → failed sync → provider). */
+/** Sort by severity, then by kind priority (overdue → error → failed sync → provider). */
 export function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
   return [...items].sort(
     (a, b) =>
