@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState } from 'react'
+import { useMemo, useCallback, useState, useEffect } from 'react'
 
 export interface SearchResult {
   id: string
@@ -11,15 +11,22 @@ export interface SearchResult {
 }
 
 export interface UseGlobalSearchProps {
+  isOpen: boolean
+  onOpenChange: (open: boolean) => void
   containers?: any[]
   secrets?: any[]
   events?: any[]
   auditEvents?: any[]
 }
 
-export function useGlobalSearch({ containers = [], secrets = [], events = [], auditEvents = [] }: UseGlobalSearchProps) {
+export function useGlobalSearch({ isOpen, onOpenChange, containers = [], secrets = [], events = [], auditEvents = [] }: UseGlobalSearchProps) {
   const [query, setQuery] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(t)
+  }, [query])
 
   // Memoize search index to avoid recalculating on every render
   const searchIndex = useMemo(() => {
@@ -115,11 +122,11 @@ export function useGlobalSearch({ containers = [], secrets = [], events = [], au
 
   // Memoize search filtering to avoid expensive operations
   const results = useMemo(() => {
-    if (!query.trim()) {
+    if (!debouncedQuery.trim()) {
       return []
     }
 
-    const q = query.toLowerCase()
+    const q = debouncedQuery.toLowerCase()
     return searchIndex
       .filter(
         (result) =>
@@ -127,8 +134,8 @@ export function useGlobalSearch({ containers = [], secrets = [], events = [], au
           result.subtitle?.toLowerCase().includes(q) ||
           Object.values(result.metadata || {}).some((v) => String(v).toLowerCase().includes(q))
       )
-      .slice(0, 20) // Limit to 20 results
-  }, [query, searchIndex])
+      .slice(0, 50)
+  }, [debouncedQuery, searchIndex])
 
   // Group results by category
   const groupedResults = useMemo(() => {
@@ -153,15 +160,14 @@ export function useGlobalSearch({ containers = [], secrets = [], events = [], au
   }, [])
 
   const handleOpenChange = useCallback((open: boolean) => {
-    setIsOpen(open)
-  }, [])
+    onOpenChange(open)
+  }, [onOpenChange])
 
   const handleNavigate = useCallback((route: string) => {
     setQuery('')
-    setIsOpen(false)
-    // Navigation will be handled by the component using this hook
+    onOpenChange(false)
     return route
-  }, [])
+  }, [onOpenChange])
 
   return {
     query,
@@ -173,6 +179,6 @@ export function useGlobalSearch({ containers = [], secrets = [], events = [], au
     handleOpenChange,
     handleNavigate,
     hasResults: results.length > 0,
-    isEmpty: query.trim().length > 0 && results.length === 0,
+    isEmpty: debouncedQuery.trim().length > 0 && results.length === 0,
   }
 }

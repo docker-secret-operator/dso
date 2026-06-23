@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { SearchResultsModal } from './search-results-modal'
@@ -8,7 +8,9 @@ import { useGlobalSearch } from '@/hooks/useGlobalSearch'
 import { Search } from 'lucide-react'
 
 export function GlobalSearch() {
-  // Fetch all searchable data
+  const [isOpen, setIsOpen] = useState(false)
+
+  // All queries are gated on isOpen — no fetches until the user opens search
   const { data: containers = [] } = useQuery({
     queryKey: ['containers-search'],
     queryFn: async () => {
@@ -21,31 +23,38 @@ export function GlobalSearch() {
         return []
       }
     },
-    refetchInterval: 60000, // Refetch every minute
+    enabled: isOpen,
+    refetchInterval: isOpen ? 60000 : false,
   })
 
-  const { data: secrets = [] } = useQuery({
+  const { data: secretsPage } = useQuery({
     queryKey: ['secrets-search'],
-    queryFn: () => apiClient.getSecrets(),
-    refetchInterval: 60000,
+    queryFn: () => apiClient.getSecretsPage({ pageSize: 50 }),
+    enabled: isOpen,
+    refetchInterval: isOpen ? 60000 : false,
   })
+  const secrets = secretsPage?.items ?? []
 
   const { data: events = [] } = useQuery({
     queryKey: ['events-search'],
     queryFn: () => apiClient.getEvents(100),
-    refetchInterval: 30000,
+    enabled: isOpen,
+    refetchInterval: isOpen ? 30000 : false,
   })
 
   const { data: auditData } = useQuery({
     queryKey: ['audit-search'],
     queryFn: () => apiClient.getAuditEvents({ limit: 200 }),
-    refetchInterval: 60000,
+    enabled: isOpen,
+    refetchInterval: isOpen ? 60000 : false,
   })
   const auditEvents = auditData?.events ?? []
 
   // Use global search hook
-  const { query, isOpen, results, groupedResults, isEmpty, hasResults, handleQueryChange, handleOpenChange } =
+  const { query, results, groupedResults, isEmpty, hasResults, handleQueryChange, handleOpenChange } =
     useGlobalSearch({
+      isOpen,
+      onOpenChange: setIsOpen,
       containers,
       secrets,
       events,
