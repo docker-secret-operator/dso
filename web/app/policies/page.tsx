@@ -2,6 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import { AlertCircle, Play, RotateCw, Trash2, TrendingUp } from 'lucide-react'
+import { useSelection } from '@/components/common/useSelection'
+import { BulkToolbar, type BulkAction } from '@/components/common/BulkToolbar'
+import { ConfirmModal } from '@/components/common/ConfirmModal'
+import * as bulkApi from '@/lib/api/bulk'
+import type { BulkIdResult } from '@/lib/api/bulk'
 
 interface Rule {
   id: string
@@ -49,6 +54,10 @@ export default function PoliciesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<string | null>(null)
+  const sel = useSelection()
+  const [bulkStatus, setBulkStatus] = useState<BulkIdResult | null>(null)
+  const [bulkPending, setBulkPending] = useState(false)
+  const [confirmBulkAction, setConfirmBulkAction] = useState<null | 'disable' | 'delete'>(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -128,6 +137,55 @@ export default function PoliciesPage() {
     }
   }
 
+  const handleBulkEnable = async () => {
+    const ids = Array.from(sel.selected)
+    setBulkPending(true)
+    try {
+      const result = await bulkApi.bulkPolicyEnable(ids)
+      setBulkStatus(result)
+      sel.clear()
+      const res = await fetch('/api/policies', { headers: getAuthHeaders() })
+      const data = await res.json()
+      setRules(data.rules || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bulk enable failed')
+    } finally {
+      setBulkPending(false)
+    }
+  }
+
+  const handleBulkDisable = async () => {
+    const ids = Array.from(sel.selected)
+    setBulkPending(true)
+    try {
+      const result = await bulkApi.bulkPolicyDisable(ids)
+      setBulkStatus(result)
+      sel.clear()
+      const res = await fetch('/api/policies', { headers: getAuthHeaders() })
+      const data = await res.json()
+      setRules(data.rules || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bulk disable failed')
+    } finally {
+      setBulkPending(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(sel.selected)
+    setBulkPending(true)
+    try {
+      const result = await bulkApi.bulkPolicyDelete(ids)
+      setBulkStatus(result)
+      sel.clear()
+      setRules(prev => prev.filter(r => !ids.includes(r.id)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bulk delete failed')
+    } finally {
+      setBulkPending(false)
+    }
+  }
+
   const formatTime = (ms?: number) => {
     if (!ms) return '—'
     return new Date(ms).toLocaleString()
@@ -165,6 +223,25 @@ export default function PoliciesPage() {
         </div>
       )}
 
+      {confirmBulkAction === 'disable' && (
+        <ConfirmModal
+          title={`Disable ${sel.size} policies?`}
+          message={`You are about to disable ${sel.size} policies. Disabled policies will not evaluate or fire until re-enabled.`}
+          confirmLabel={`Disable ${sel.size} policies`}
+          onConfirm={() => { setConfirmBulkAction(null); handleBulkDisable() }}
+          onCancel={() => setConfirmBulkAction(null)}
+        />
+      )}
+      {confirmBulkAction === 'delete' && (
+        <ConfirmModal
+          title={`Delete ${sel.size} policies?`}
+          message={`You are about to permanently delete ${sel.size} policies. This action cannot be undone.`}
+          confirmLabel={`Delete ${sel.size} policies`}
+          onConfirm={() => { setConfirmBulkAction(null); handleBulkDelete() }}
+          onCancel={() => setConfirmBulkAction(null)}
+        />
+      )}
+
       {/* Metrics Summary */}
       {metrics && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
@@ -196,6 +273,40 @@ export default function PoliciesPage() {
         </div>
       )}
 
+      {/* Bulk toolbar */}
+      <BulkToolbar
+        count={sel.size}
+        onClear={() => { sel.clear(); setBulkStatus(null) }}
+        status={
+          bulkPending
+            ? `Processing ${sel.size} policies…`
+            : bulkStatus
+            ? bulkStatus.failed === 0
+              ? `${bulkStatus.success} updated`
+              : `${bulkStatus.success} succeeded · ${bulkStatus.failed} failed: ${bulkStatus.failures.map((f) => f.id).join(', ')}`
+            : undefined
+        }
+        actions={[
+          {
+            label: 'Enable',
+            onClick: handleBulkEnable,
+            disabled: bulkPending,
+          },
+          {
+            label: 'Disable',
+            onClick: () => setConfirmBulkAction('disable'),
+            variant: 'danger',
+            disabled: bulkPending,
+          },
+          {
+            label: 'Delete',
+            onClick: () => setConfirmBulkAction('delete'),
+            variant: 'danger',
+            disabled: bulkPending,
+          },
+        ] satisfies BulkAction[]}
+      />
+
       {/* Policies Table */}
       <div className="rounded-lg border border-slate-700/50 bg-[#111827]">
         <div className="border-b border-slate-700/50 px-6 py-4">
@@ -206,6 +317,15 @@ export default function PoliciesPage() {
           <table className="w-full">
             <thead className="border-b border-slate-700/50 bg-[#0B1020]">
               <tr>
+                <th className="pl-6 pr-2 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select page"
+                    checked={rules.length > 0 && rules.every(r => sel.isSelected(r.id))}
+                    onChange={() => sel.togglePage(rules.map(r => r.id))}
+                    className="rounded border-slate-600 bg-transparent accent-indigo-500 cursor-pointer"
+                  />
+                </th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Name</th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Severity</th>
                 <th className="px-6 py-3 text-left text-sm font-medium text-slate-400">Trigger</th>
@@ -217,13 +337,22 @@ export default function PoliciesPage() {
             <tbody>
               {rules.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
                     No policies configured
                   </td>
                 </tr>
               ) : (
                 rules.map(rule => (
                   <tr key={rule.id} className="border-b border-slate-700/30 hover:bg-slate-800/50/[0.02]">
+                    <td className="pl-6 pr-2 py-4">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${rule.name}`}
+                        checked={sel.isSelected(rule.id)}
+                        onChange={() => sel.toggle(rule.id)}
+                        className="rounded border-slate-600 bg-transparent accent-indigo-500 cursor-pointer"
+                      />
+                    </td>
                     <td className="px-6 py-4">
                       <div>
                         <div className="font-medium text-slate-200">{rule.name}</div>
