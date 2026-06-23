@@ -8,8 +8,7 @@
 
 ## Configuration
 - [Configuration Reference](reference/config-reference.md)
-- [Configuration Guide](reference/configuration.md)
-- [Quick Reference](reference/quickref.md)
+- [CLI Reference](reference/cli.md)
 
 ## Providers
 - [Provider Overview](providers/index.md)
@@ -25,7 +24,6 @@
 ## Operations
 - [Operator Guide](operations/operator-guide.md)
 - [Deployment](operations/deployment.md)
-- [Runtime](operations/runtime.md)
 - [Incident Workflow](operations/incident-workflow.md)
 - [Bulk Operations](operations/bulk-operations.md)
 - [Recovery Procedures](operations/recovery-procedures.md)
@@ -43,6 +41,7 @@
 - [Secret History](architecture/secret-history.md)
 - [Security Model](architecture/security-model.md)
 - [Event Bus](architecture/eventbus.md)
+- [Audit Logging](architecture/audit-logging.md)
 
 ## Validation
 - [Validation Report](validation/validation.md)
@@ -52,6 +51,5 @@
 - [Chaos Tests](validation/chaos-tests.md)
 - [Security Review](validation/security-review.md)
 
-## Reference
-- [CLI Reference](reference/cli.md)
-- [CLI Commands](cli-reference/)
+## CLI Reference
+Individual command pages are in [cli-reference/](cli-reference/).
