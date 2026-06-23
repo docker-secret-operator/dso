@@ -53,6 +53,33 @@ export interface Secret {
   rotation_strategy?: 'rolling' | 'restart' | 'signal' | 'none'
 }
 
+export interface SecretsParams {
+  page?: number
+  pageSize?: number
+  search?: string
+  status?: string
+  provider?: string
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
+}
+
+export interface SecretsPage {
+  items: Secret[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+export interface DashboardPosture {
+  managedSecrets: number
+  needRotation: number
+  secretErrors: number
+  fresh: number
+  aging: number
+  overdue: number
+  unknown: number
+}
+
 export interface Event {
   timestamp: string
   action: string
@@ -305,6 +332,21 @@ class APIClient {
       return response.data as Secret[]
     }
     throw new Error('Invalid response format: expected array or { active_secrets: [] }')
+  }
+
+  async getSecretsPage(params: SecretsParams = {}): Promise<SecretsPage> {
+    const response = await this.client.get<SecretsPage>('/api/secrets', { params })
+    return {
+      items: response.data.items ?? [],
+      page: response.data.page ?? 1,
+      pageSize: response.data.pageSize ?? 50,
+      total: response.data.total ?? 0,
+    }
+  }
+
+  async getPosture(): Promise<DashboardPosture> {
+    const response = await this.client.get<DashboardPosture>('/api/dashboard/posture')
+    return response.data
   }
 
   async getSecret(name: string): Promise<Secret | null> {
