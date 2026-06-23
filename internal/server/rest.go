@@ -166,6 +166,11 @@ type RESTServer struct {
 	CorrelationHandler    http.Handler
 	PolicyHandler         http.Handler
 	GraphHandler          http.Handler
+	// P4 real drift detection
+	DriftEngine    *drift.Engine
+	InjectionStore drift.InjectionStore
+	// P5 bulk operations — audit logging
+	AuditService *services.AuditService
 	// startup time for uptime reporting
 	startTime time.Time
 }
@@ -890,6 +895,12 @@ func (s *RESTServer) handleSecrets(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	case path == "bulk-rotate":
+		if r.Method == http.MethodPost {
+			s.handleBulkRotate(w, r)
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	case strings.HasSuffix(path, "/rotate"):
 		name := strings.TrimSuffix(path, "/rotate")
 		if r.Method == http.MethodPost {
@@ -1007,6 +1018,7 @@ type postureResponse struct {
 	Aging          int `json:"aging"`
 	Overdue        int `json:"overdue"`
 	Unknown        int `json:"unknown"`
+	DriftedCount   int `json:"driftedCount"`
 }
 
 func (s *RESTServer) handleDashboardPosture(w http.ResponseWriter, r *http.Request) {
@@ -1032,6 +1044,9 @@ func (s *RESTServer) handleDashboardPosture(w http.ResponseWriter, r *http.Reque
 		posture.Unknown++
 	}
 	posture.NeedRotation = posture.Overdue + posture.Aging
+	if s.DriftEngine != nil {
+		posture.DriftedCount = s.DriftEngine.GetOpenCount()
+	}
 
 	if err := json.NewEncoder(w).Encode(posture); err != nil {
 		s.Logger.Error("failed to encode posture", zap.Error(err))
@@ -1062,24 +1077,20 @@ func (s *RESTServer) handleGetSecret(w http.ResponseWriter, r *http.Request, nam
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": "secret not found"})
 }
 
-func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, name string) {
-	w.Header().Set("Content-Type", "application/json")
-	if s.Config == nil || s.TriggerEngine == nil {
-		http.Error(w, "rotation not available", http.StatusServiceUnavailable)
-		return
-	}
+// rotateSingle rotates one secret: triggers provider webhook and records the injection hash.
+// It does NOT trigger a drift rescan — callers decide when to rescan.
+// Returns (providerName, error).
+func (s *RESTServer) rotateSingle(ctx context.Context, name string) (string, error) {
 	var targetSecret *config.SecretMapping
 	for _, sec := range s.Config.Secrets {
 		if sec.Name == name {
-			s := sec
-			targetSecret = &s
+			cp := sec
+			targetSecret = &cp
 			break
 		}
 	}
 	if targetSecret == nil {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "secret not configured"})
-		return
+		return "", fmt.Errorf("not configured")
 	}
 	pName := targetSecret.Provider
 	if pName == "" {
@@ -1090,21 +1101,123 @@ func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, 
 	}
 	pCfg, ok := s.Config.Providers[pName]
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "provider not found"})
-		return
+		return pName, fmt.Errorf("provider not found")
 	}
 	if err := s.TriggerEngine.HandleWebhook(pName, pCfg, *targetSecret, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		s.Logger.Error("rotation failed", zap.String("secret", name), zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "rotation failed"})
+		return pName, err
+	}
+	// Record the injection hash so drift detection has baseline state.
+	if s.InjectionStore != nil && s.Cache != nil {
+		cacheKey := fmt.Sprintf("%s:%s", pName, name)
+		if h, ok := s.Cache.GetHash(cacheKey); ok {
+			_ = s.InjectionStore.RecordInjection(ctx, name, h)
+		}
+	}
+	return pName, nil
+}
+
+func (s *RESTServer) handleRotateSecret(w http.ResponseWriter, r *http.Request, name string) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.Config == nil || s.TriggerEngine == nil {
+		http.Error(w, "rotation not available", http.StatusServiceUnavailable)
 		return
+	}
+	pName, err := s.rotateSingle(r.Context(), name)
+	if err != nil {
+		s.Logger.Error("rotation failed", zap.String("secret", name), zap.Error(err))
+		code := http.StatusInternalServerError
+		switch err.Error() {
+		case "not configured":
+			code = http.StatusNotFound
+		case "provider not found":
+			code = http.StatusBadRequest
+		}
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if s.DriftEngine != nil {
+		go func() {
+			if err := s.DriftEngine.RunScan(context.Background()); err != nil {
+				s.Logger.Warn("post-rotation drift scan failed", zap.Error(err))
+			}
+		}()
 	}
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":     "rotated",
 		"secret":     name,
 		"provider":   pName,
 		"rotated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// handleBulkRotate handles POST /api/secrets/bulk-rotate
+// Body: {"names":["a","b",...]}
+// Response: {"success":N,"failed":M,"failures":[{"name":"x","error":"msg"}]}
+// Never aborts on partial failure — all names are attempted.
+func (s *RESTServer) handleBulkRotate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.Config == nil || s.TriggerEngine == nil {
+		http.Error(w, "rotation not available", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Names []string `json:"names"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Names) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "names required"})
+		return
+	}
+
+	type rotFailure struct {
+		Name  string `json:"name"`
+		Error string `json:"error"`
+	}
+	var (
+		succeeded int
+		failures  []rotFailure
+	)
+	for _, name := range req.Names {
+		if _, err := s.rotateSingle(r.Context(), name); err != nil {
+			failures = append(failures, rotFailure{Name: name, Error: err.Error()})
+		} else {
+			succeeded++
+		}
+	}
+
+	// Audit one event for the entire batch.
+	if s.AuditService != nil {
+		user := auth.CurrentUser(r.Context())
+		actorID, actorName := "system", "system"
+		if user != nil {
+			actorID = user.ID
+			actorName = user.Username
+		}
+		_ = s.AuditService.LogEvent(r.Context(), actorID, actorName,
+			"bulk.rotate",
+			fmt.Sprintf("%d secrets", len(req.Names)),
+			fmt.Sprintf("success=%d failed=%d", succeeded, len(failures)),
+			"secret",
+		)
+	}
+
+	// One drift rescan after all rotations.
+	if s.DriftEngine != nil && succeeded > 0 {
+		go func() {
+			if err := s.DriftEngine.RunScan(context.Background()); err != nil {
+				s.Logger.Warn("post-bulk-rotation drift scan failed", zap.Error(err))
+			}
+		}()
+	}
+
+	if failures == nil {
+		failures = []rotFailure{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  succeeded,
+		"failed":   len(failures),
+		"failures": failures,
 	})
 }
 
@@ -1315,14 +1428,25 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	correlationHandler := api.NewCorrelationHandler(correlationEngine)
 	var driftStore drift.Store
 	var policyStore policy.RuleStore
+	var injectionStore drift.InjectionStore
 	if dbConn != nil {
 		driftStore = sqlite.NewDriftStore(dbConn)
 		policyStore = sqlite.NewPolicyStore(dbConn)
+		injectionStore = sqlite.NewInjectionStore(dbConn)
 	} else {
 		driftStore = drift.NewInMemoryStore()
 		policyStore = policy.NewInMemoryStore()
+		injectionStore = drift.NewInMemoryInjectionStore()
 	}
-	driftHandler := api.NewDriftHandler(drift.NewEngine(driftStore, logger))
+	driftEngine := drift.NewEngine(driftStore, logger)
+	versionScanner := drift.NewSecretVersionScanner(cache, cfg, injectionStore)
+	if err := driftEngine.RegisterDetector(versionScanner); err != nil {
+		logger.Warn("failed to register drift scanner", zap.Error(err))
+	}
+	if err := driftEngine.Initialize(ctx); err != nil {
+		logger.Warn("drift engine initialize failed", zap.Error(err))
+	}
+	driftHandler := api.NewDriftHandlerWithStore(driftEngine, driftStore)
 	policyHandler := api.NewPolicyHandler(policy.NewEngine(policyStore, logger))
 	graphHandler := api.NewGraphHandler(graph.NewGraph(logger))
 
@@ -1483,11 +1607,14 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Scheduler:               sch,
 		RecommendationHandler:   recommendationHandler,
 		DriftHandler:            driftHandler,
+		DriftEngine:             driftEngine,
+		InjectionStore:          injectionStore,
 		ForecastHandler:         forecastHandler,
 		AutonomyHandler:         autonomyHandler,
 		CorrelationHandler:      correlationHandler,
 		PolicyHandler:           policyHandler,
 		GraphHandler:            graphHandler,
+		AuditService:            auditService,
 	}
 
 	mux := http.NewServeMux()
