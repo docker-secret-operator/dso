@@ -288,6 +288,10 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLogs(w, r)
 	// Phase 4 API routes
 	case strings.HasPrefix(r.URL.Path, "/api/dashboard"):
+		if r.URL.Path == "/api/dashboard/posture" && r.Method == http.MethodGet {
+			s.handleDashboardPosture(w, r)
+			return
+		}
 		if s.DashboardHandler != nil {
 			s.DashboardHandler.ServeHTTP(w, r)
 		} else {
@@ -993,6 +997,45 @@ func secretsParseIntParam(s string, def, minVal, maxVal int) int {
 		return maxVal
 	}
 	return n
+}
+
+type postureResponse struct {
+	ManagedSecrets int `json:"managedSecrets"`
+	NeedRotation   int `json:"needRotation"`
+	SecretErrors   int `json:"secretErrors"`
+	Fresh          int `json:"fresh"`
+	Aging          int `json:"aging"`
+	Overdue        int `json:"overdue"`
+	Unknown        int `json:"unknown"`
+}
+
+func (s *RESTServer) handleDashboardPosture(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.Cache == nil {
+		if err := json.NewEncoder(w).Encode(postureResponse{}); err != nil {
+			s.Logger.Error("failed to encode posture", zap.Error(err))
+		}
+		return
+	}
+
+	keys := s.Cache.ListKeys()
+	posture := postureResponse{ManagedSecrets: len(keys)}
+
+	for _, k := range keys {
+		sr := s.buildSecretResponse(k)
+		if sr.Status == "error" {
+			posture.SecretErrors++
+			continue
+		}
+		// Without real per-secret rotation tracking, every non-error secret
+		// is Unknown — we do not fabricate a healthy posture.
+		posture.Unknown++
+	}
+	posture.NeedRotation = posture.Overdue + posture.Aging
+
+	if err := json.NewEncoder(w).Encode(posture); err != nil {
+		s.Logger.Error("failed to encode posture", zap.Error(err))
+	}
 }
 
 func (s *RESTServer) handleGetSecret(w http.ResponseWriter, r *http.Request, name string) {
