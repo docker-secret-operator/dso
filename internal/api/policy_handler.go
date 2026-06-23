@@ -42,6 +42,12 @@ func (h *PolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/policies/metrics" && r.Method == "GET":
 		// Must precede the generic /api/policies/{id} GET below.
 		h.GetMetrics(w, r)
+	case path == "/api/policies/bulk-enable" && r.Method == "POST":
+		h.BulkEnable(w, r)
+	case path == "/api/policies/bulk-disable" && r.Method == "POST":
+		h.BulkDisable(w, r)
+	case path == "/api/policies/bulk-delete" && r.Method == "POST":
+		h.BulkDelete(w, r)
 	case strings.HasPrefix(path, "/api/policies/") && strings.HasSuffix(path, "/run") && r.Method == "POST":
 		h.RunPolicy(w, r)
 	case strings.HasPrefix(path, "/api/policies/") && strings.HasSuffix(path, "/enable") && r.Method == "POST":
@@ -214,4 +220,59 @@ func (h *PolicyHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metrics)
+}
+
+// BulkEnable handles POST /api/policies/bulk-enable
+// Body: {"ids":["rule-id-1","rule-id-2"]}
+func (h *PolicyHandler) BulkEnable(w http.ResponseWriter, r *http.Request) {
+	h.bulkToggle(w, r, func(id string) error { return h.engine.EnableRule(id) })
+}
+
+// BulkDisable handles POST /api/policies/bulk-disable
+// Body: {"ids":["rule-id-1","rule-id-2"]}
+func (h *PolicyHandler) BulkDisable(w http.ResponseWriter, r *http.Request) {
+	h.bulkToggle(w, r, func(id string) error { return h.engine.DisableRule(id) })
+}
+
+// BulkDelete handles POST /api/policies/bulk-delete
+// Body: {"ids":["rule-id-1","rule-id-2"]}
+func (h *PolicyHandler) BulkDelete(w http.ResponseWriter, r *http.Request) {
+	h.bulkToggle(w, r, func(id string) error { return h.engine.DeleteRule(id) })
+}
+
+// bulkToggle is the shared implementation for all three bulk policy mutations.
+func (h *PolicyHandler) bulkToggle(w http.ResponseWriter, r *http.Request, fn func(string) error) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ids required"})
+		return
+	}
+
+	type idFailure struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	var (
+		succeeded int
+		failures  []idFailure
+	)
+	for _, id := range req.IDs {
+		if err := fn(id); err != nil {
+			failures = append(failures, idFailure{ID: id, Error: err.Error()})
+		} else {
+			succeeded++
+		}
+	}
+	if failures == nil {
+		failures = []idFailure{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  succeeded,
+		"failed":   len(failures),
+		"failures": failures,
+	})
 }
