@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useState, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Badge, Skeleton } from '@/components/ui-modern'
 import { X, ChevronDown, Copy, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Execution } from '@/lib/api/types'
+import type { Execution, JourneyEvent } from '@/lib/api/types'
+import * as operationsApi from '@/lib/api/operations'
+import * as auditApi from '@/lib/api/audit'
 
 interface ExecutionDetailsDrawerProps {
   execution: Execution | null
@@ -37,6 +40,37 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
       return () => window.removeEventListener('keydown', handleEscape)
     }
   }, [isOpen, onClose])
+
+  const { data: journey, isLoading: journeyLoading } = useQuery({
+    queryKey: ['execution-journey', execution?.id],
+    queryFn: () => operationsApi.getExecutionJourney(execution!.id),
+    enabled: !!execution && isOpen && expandedSections.has('journey'),
+  })
+
+  const { data: chainData, isLoading: chainLoading } = useQuery({
+    queryKey: ['correlation-chain', execution?.correlation_id],
+    queryFn: () => auditApi.getCorrelationChain(execution!.correlation_id),
+    enabled: !!execution?.correlation_id && isOpen &&
+             (expandedSections.has('audit') || expandedSections.has('resources')),
+  })
+
+  const affectedSecrets = useMemo(() => {
+    if (!chainData?.events) return []
+    return [...new Set(
+      chainData.events
+        .filter((e: any) => e.resource_type === 'secret' && e.resource_id)
+        .map((e: any) => e.resource_id as string)
+    )]
+  }, [chainData])
+
+  const affectedContainers = useMemo(() => {
+    if (!chainData?.events) return []
+    return [...new Set(
+      chainData.events
+        .filter((e: any) => e.resource_type === 'container' && e.resource_id)
+        .map((e: any) => e.resource_id as string)
+    )]
+  }, [chainData])
 
   const toggleSection = (section: string) => {
     const newSections = new Set(expandedSections)
@@ -106,11 +140,13 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
   }
 
   const sections = [
-    { id: 'general', title: 'General', icon: 'ℹ️' },
-    { id: 'plan', title: 'Plan', icon: '📋' },
+    { id: 'general',    title: 'General',    icon: 'ℹ️' },
+    { id: 'journey',    title: 'Journey',    icon: '🗺️' },
+    { id: 'audit',      title: 'Audit',      icon: '📋' },
+    { id: 'resources',  title: 'Resources',  icon: '🔗' },
+    { id: 'plan',       title: 'Plan',       icon: '📋' },
     { id: 'validation', title: 'Validation', icon: '✓' },
-    { id: 'trace', title: 'Trace', icon: '📝' },
-    { id: 'journey', title: 'Journey', icon: '🗺️' },
+    { id: 'trace',      title: 'Trace',      icon: '📝' },
   ]
 
   return (
@@ -252,10 +288,121 @@ export function ExecutionDetailsDrawer({ execution, isOpen, onClose }: Execution
                     )}
 
                     {section.id === 'journey' && (
-                      <div className="text-xs text-slate-500">
-                        <p className="mb-2">No journey events available</p>
-                        <p>Journey timeline will be loaded when available via API</p>
-                      </div>
+                      journeyLoading ? (
+                        <div className="space-y-2">
+                          {[1,2,3].map(i => (
+                            <div key={i} className="h-10 bg-white/[0.04] rounded animate-pulse" />
+                          ))}
+                        </div>
+                      ) : !journey?.events?.length ? (
+                        <p className="text-xs text-slate-500">No journey events recorded.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {journey.events.map((ev: JourneyEvent, i: number) => (
+                            <div key={i} className="flex items-start gap-3 py-2 border-b border-white/[0.05] last:border-0">
+                              <span className={cn(
+                                'mt-0.5 w-2 h-2 rounded-full flex-shrink-0',
+                                ev.status === 'success' ? 'bg-emerald-400' :
+                                ev.status === 'failed'  ? 'bg-red-400' :
+                                'bg-slate-500'
+                              )} />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-slate-300 truncate">{ev.action}</p>
+                                <p className="text-[11px] text-slate-500">
+                                  {ev.actor !== 'system' ? `${ev.actor} · ` : ''}{relativeTime(ev.timestamp)}
+                                </p>
+                                {ev.details && (
+                                  <p className="text-[11px] text-slate-600 truncate mt-0.5">{ev.details}</p>
+                                )}
+                              </div>
+                              <Badge className={cn(
+                                'text-[10px] flex-shrink-0',
+                                ev.status === 'success' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                                ev.status === 'failed'  ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                                'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                              )}>
+                                {ev.status}
+                              </Badge>
+                            </div>
+                          ))}
+                          <p className="text-[11px] text-slate-600 pt-1">
+                            {journey.total_steps} step{journey.total_steps === 1 ? '' : 's'} · {formatDuration(journey.duration_ms)}
+                          </p>
+                        </div>
+                      )
+                    )}
+
+                    {section.id === 'audit' && (
+                      chainLoading ? (
+                        <div className="space-y-2">
+                          {[1,2,3].map(i => <div key={i} className="h-8 bg-white/[0.04] rounded animate-pulse" />)}
+                        </div>
+                      ) : !chainData?.events?.length ? (
+                        <p className="text-xs text-slate-500">No audit events for this correlation chain.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {chainData.events.slice(0, 10).map((ev: any, i: number) => (
+                            <div key={i} className="flex items-center gap-2 py-1.5 border-b border-white/[0.04] last:border-0">
+                              <span className={cn(
+                                'w-1.5 h-1.5 rounded-full flex-shrink-0',
+                                ev.status === 'success' ? 'bg-emerald-400' :
+                                (ev.status === 'failure' || ev.status === 'failed') ? 'bg-red-400' :
+                                'bg-slate-500'
+                              )} />
+                              <span className="text-[12px] text-slate-300 flex-1 truncate">{ev.action}</span>
+                              <span className="text-[11px] text-slate-600 flex-shrink-0">{relativeTime(ev.timestamp)}</span>
+                            </div>
+                          ))}
+                          {chainData.events.length > 10 && (
+                            <p className="text-[11px] text-slate-600 pt-1">+{chainData.events.length - 10} more events</p>
+                          )}
+                        </div>
+                      )
+                    )}
+
+                    {section.id === 'resources' && (
+                      chainLoading ? (
+                        <div className="space-y-2">
+                          {[1,2].map(i => <div key={i} className="h-8 bg-white/[0.04] rounded animate-pulse" />)}
+                        </div>
+                      ) : (affectedSecrets.length === 0 && affectedContainers.length === 0) ? (
+                        <p className="text-xs text-slate-500">No specific resources found in correlation chain.</p>
+                      ) : (
+                        <div className="space-y-3">
+                          {affectedSecrets.length > 0 && (
+                            <div>
+                              <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1.5">Secrets</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {affectedSecrets.map(name => (
+                                  <a
+                                    key={name}
+                                    href={`/secrets?name=${encodeURIComponent(name)}`}
+                                    className="text-[12px] font-mono px-2 py-1 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:text-blue-300 hover:bg-blue-500/15 transition-colors"
+                                  >
+                                    {name}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {affectedContainers.length > 0 && (
+                            <div>
+                              <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1.5">Containers</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {affectedContainers.map(name => (
+                                  <a
+                                    key={name}
+                                    href={`/discovery?container=${encodeURIComponent(name)}`}
+                                    className="text-[12px] font-mono px-2 py-1 rounded bg-violet-500/10 border border-violet-500/20 text-violet-400 hover:text-violet-300 hover:bg-violet-500/15 transition-colors"
+                                  >
+                                    {name}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
                     )}
                   </div>
                 )}
