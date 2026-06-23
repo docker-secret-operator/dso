@@ -4,6 +4,11 @@ import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient, type Secret } from '@/lib/api-client'
 import * as auditApi from '@/lib/api/audit'
+import * as bulkApi from '@/lib/api/bulk'
+import type { BulkRotateResult } from '@/lib/api/bulk'
+import { useSelection } from '@/components/common/useSelection'
+import { BulkToolbar } from '@/components/common/BulkToolbar'
+import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { Pagination } from '@/components/common/Pagination'
 import { PageHeader, Card, Badge, StatusBadge, Button, Input, EmptyState, Skeleton } from '@/components/ui-modern'
 import {
@@ -246,6 +251,28 @@ export default function SecretsPage() {
     onError: (e: any) => setGlobalError(e?.message ?? 'Rotation failed'),
   })
 
+  const sel = useSelection()
+  const [bulkStatus, setBulkStatus] = useState<BulkRotateResult | null>(null)
+  const [confirmBulk, setConfirmBulk] = useState(false)
+
+  const bulkRotateMutation = useMutation({
+    mutationFn: (names: string[]) => bulkApi.bulkRotate(names),
+    onSuccess: (result) => {
+      setBulkStatus(result)
+      sel.clear()
+      qc.invalidateQueries({ queryKey: ['secrets'] })
+    },
+  })
+
+  const handleBulkRotate = () => {
+    const names = Array.from(sel.selected)
+    if (names.length > 50) {
+      setConfirmBulk(true)
+    } else {
+      bulkRotateMutation.mutate(names)
+    }
+  }
+
   // Sort toggle — resets page since sorted order changes results
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -320,6 +347,28 @@ export default function SecretsPage() {
         <span className="ml-auto text-xs text-slate-600 tabular-nums">{secrets.length} of {total}</span>
       </div>
 
+      {/* Bulk toolbar — visible when any rows selected */}
+      <BulkToolbar
+        count={sel.size}
+        onClear={() => { sel.clear(); setBulkStatus(null) }}
+        status={
+          bulkRotateMutation.isPending
+            ? `Rotating ${sel.size} secrets…`
+            : bulkStatus
+            ? bulkStatus.failed === 0
+              ? `${bulkStatus.success} rotated successfully`
+              : `${bulkStatus.success} succeeded · ${bulkStatus.failed} failed: ${bulkStatus.failures.map(f => f.name).join(', ')}`
+            : undefined
+        }
+        actions={[
+          {
+            label: bulkRotateMutation.isPending ? 'Rotating…' : 'Rotate',
+            onClick: handleBulkRotate,
+            disabled: bulkRotateMutation.isPending || sel.size === 0,
+          },
+        ]}
+      />
+
       {/* Table */}
       <Card className="overflow-hidden">
         {isLoading ? (
@@ -343,6 +392,15 @@ export default function SecretsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-white/[0.07] bg-white/[0.02]">
+                  <th className="pl-4 pr-2 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      aria-label="Select page"
+                      checked={secrets.length > 0 && secrets.every(s => sel.isSelected(s.name))}
+                      onChange={() => sel.togglePage(secrets.map(s => s.name))}
+                      className="rounded border-white/20 bg-transparent accent-indigo-500 cursor-pointer"
+                    />
+                  </th>
                   <ThCell col="name"         label="Name" />
                   <ThCell col="provider"     label="Provider" />
                   <ThCell col="status"       label="Status" />
@@ -358,6 +416,15 @@ export default function SecretsPage() {
                     className="hover:bg-white/[0.03] transition-colors cursor-pointer"
                     onClick={() => setSelected(secret)}
                   >
+                    <td className="pl-4 pr-2 py-3" onClick={e => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${secret.name}`}
+                        checked={sel.isSelected(secret.name)}
+                        onChange={() => sel.toggle(secret.name)}
+                        className="rounded border-white/20 bg-transparent accent-indigo-500 cursor-pointer"
+                      />
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-slate-200">{secret.name}</td>
                     <td className="px-4 py-3 text-slate-400 capitalize">{secret.provider}</td>
                     <td className="px-4 py-3">
@@ -401,6 +468,19 @@ export default function SecretsPage() {
           </div>
         )}
       </Card>
+
+      {confirmBulk && (
+        <ConfirmModal
+          title={`Rotate ${sel.size} secrets?`}
+          message={`You are about to rotate ${sel.size} secrets. This will trigger provider webhooks for each secret simultaneously. Continue?`}
+          confirmLabel={`Rotate ${sel.size} secrets`}
+          onConfirm={() => {
+            setConfirmBulk(false)
+            bulkRotateMutation.mutate(Array.from(sel.selected))
+          }}
+          onCancel={() => setConfirmBulk(false)}
+        />
+      )}
 
       {/* Detail drawer */}
       {selected && (
