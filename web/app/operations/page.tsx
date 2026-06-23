@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Skeleton, Card } from '@/components/ui-modern'
@@ -16,7 +17,7 @@ import {
   ExecutionDetailsDrawer,
 } from '@/components/operations'
 import * as operationsApi from '@/lib/api/operations'
-import type { Execution } from '@/lib/api/types'
+import type { Execution, FailureEvent } from '@/lib/api/types'
 
 /**
  * Shared query configuration for all operations queries
@@ -34,6 +35,15 @@ const QUERY_CONFIG = {
  */
 function OperationsContent() {
   const [selectedExecution, setSelectedExecution] = useState<Execution | null>(null)
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    const execId = searchParams?.get('exec')
+    if (!execId) return
+    operationsApi.getExecution(execId)
+      .then(setSelectedExecution)
+      .catch(() => {})
+  }, [searchParams])
 
   /**
    * Query 1: Operations Dashboard (KPIs, queue health, worker health, execution status)
@@ -133,6 +143,43 @@ function OperationsContent() {
               error={dashboardError ? 'Failed to load worker health' : null}
             />
           </div>
+
+          {/* ── Recent Failures ── */}
+          {(operationsDashboard?.recent_failures?.length ?? 0) > 0 && (
+            <div>
+              <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                Recent Failures
+              </h2>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {operationsDashboard!.recent_failures.map((f: FailureEvent) => (
+                  <div
+                    key={f.id}
+                    className="rounded-lg border border-red-500/20 bg-red-500/5 p-4 space-y-3"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="w-2 h-2 mt-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                      <p className="text-sm text-red-300 font-medium leading-snug">{f.reason || 'Unknown failure'}</p>
+                    </div>
+                    <div className="space-y-1 text-[12px] text-slate-500">
+                      <p>Execution: <code className="font-mono text-slate-400">{f.execution_id.slice(0, 12)}…</code></p>
+                      {f.worker_id && <p>Worker: <code className="font-mono text-slate-400">{f.worker_id.slice(0, 12)}</code></p>}
+                      <p>{new Date(f.timestamp).toLocaleString()}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        operationsApi.getExecution(f.execution_id)
+                          .then(setSelectedExecution)
+                          .catch(() => {})
+                      }}
+                      className="w-full text-xs text-center py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
+                    >
+                      Investigate →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── Execution Table - Full width ── */}
           <ExecutionTable
