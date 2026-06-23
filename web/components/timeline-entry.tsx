@@ -17,6 +17,7 @@ export interface TimelineEvent {
   metadata?: Record<string, unknown>
   container?: string
   secret?: string
+  execution_id?: string
 }
 
 interface TimelineEntryProps {
@@ -67,7 +68,7 @@ export function TimelineEntry({ event, expanded = false, onExpandChange }: Timel
     onExpandChange?.(!isExpanded)
   }
 
-  const hasDetails = event.metadata || event.container || event.secret
+  const hasDetails = event.metadata || event.container || event.secret || event.execution_id
 
   return (
     <div className={`border rounded-lg transition-colors ${isExpanded ? config.bg : ''} ${config.border}`}>
@@ -111,6 +112,17 @@ export function TimelineEntry({ event, expanded = false, onExpandChange }: Timel
       {/* Details */}
       {isExpanded && hasDetails && (
         <div className="border-t p-4 bg-white space-y-3">
+          {event.execution_id && (
+            <div>
+              <p className="text-xs text-gray-600 uppercase font-semibold mb-1">Execution</p>
+              <Link
+                href={`/operations?exec=${encodeURIComponent(event.execution_id)}`}
+                className="text-sm font-mono text-amber-600 hover:text-amber-800 hover:underline cursor-pointer"
+              >
+                {event.execution_id.slice(0, 12)}… →
+              </Link>
+            </div>
+          )}
           {event.container && (
             <div>
               <p className="text-xs text-gray-600 uppercase font-semibold mb-1">Container</p>

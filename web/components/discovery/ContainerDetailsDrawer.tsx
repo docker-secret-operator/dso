@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ContainerMetadata } from '@/lib/api/types'
 import { Card, Badge } from '@/components/ui-modern'
 import { X, Copy, ChevronDown } from 'lucide-react'
+import * as auditApi from '@/lib/api/audit'
 
 interface ContainerDetailsDrawerProps {
   container: ContainerMetadata | null
@@ -16,6 +18,17 @@ export function ContainerDetailsDrawer({
 }: ContainerDetailsDrawerProps) {
   const [showEnvVars, setShowEnvVars] = useState(false)
   const [copiedId, setCopiedId] = useState(false)
+
+  const { data: auditData } = useQuery({
+    queryKey: ['container-audit', container?.container_name],
+    queryFn: () => auditApi.getAuditEvents({
+      resource_id: container!.container_name,
+      resource_type: 'container',
+      limit: 3,
+    }),
+    enabled: !!container,
+  })
+  const recentAudit = auditData?.events ?? []
 
   if (!container) return null
 
@@ -161,9 +174,21 @@ export function ContainerDetailsDrawer({
               </div>
               <div>
                 <p className="text-xs text-slate-500 mb-1">Managed Secrets</p>
-                <p className="text-sm text-slate-200">
-                  {container.dso_awareness?.managed_secrets?.length ?? 0}
-                </p>
+                {(container.dso_awareness?.managed_secrets?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-slate-200">0</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {container.dso_awareness.managed_secrets.map(name => (
+                      <a
+                        key={name}
+                        href={`/secrets?name=${encodeURIComponent(name)}`}
+                        className="text-[12px] font-mono px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:text-blue-300 hover:bg-blue-500/15 transition-colors"
+                      >
+                        {name}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <p className="text-xs text-slate-500 mb-1">Config References</p>
@@ -178,6 +203,32 @@ export function ContainerDetailsDrawer({
                 </p>
               </div>
             </div>
+          </div>
+          {/* Recent audit activity */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-slate-300">Recent Activity</h3>
+              <a
+                href={`/audit?q=${encodeURIComponent(container.container_name)}`}
+                className="text-[11px] text-blue-400/70 hover:text-blue-400 transition-colors"
+              >
+                View all →
+              </a>
+            </div>
+            {recentAudit.length === 0 ? (
+              <p className="text-xs text-slate-500">No recent audit events.</p>
+            ) : (
+              <div className="bg-white/[0.01] border border-white/[0.06] rounded-lg divide-y divide-white/[0.05]">
+                {recentAudit.map(ev => (
+                  <div key={ev.id} className="px-3 py-2 space-y-0.5">
+                    <p className="text-xs text-slate-300 truncate">{ev.action}</p>
+                    <p className="text-[11px] text-slate-600">
+                      {ev.actor} · {new Date(ev.timestamp).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </Card>

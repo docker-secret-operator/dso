@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { PageHeader, Card } from '@/components/ui-modern'
@@ -26,6 +27,7 @@ type FilterType = 'managed' | 'partial' | 'unmanaged' | 'running' | 'stopped'
 
 function DiscoveryContent() {
   const queryClient = useQueryClient()
+  const searchParams = useSearchParams()
 
   // State
   const [searchTerm, setSearchTerm] = useState('')
@@ -37,6 +39,14 @@ function DiscoveryContent() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [demoMode, setDemoMode] = useState(false)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
+
+  // Pre-fill search from URL params (?container= or ?secret=)
+  useEffect(() => {
+    const container = searchParams?.get('container')
+    const secret = searchParams?.get('secret')
+    if (container) setSearchTerm(container)
+    else if (secret) setSearchTerm(secret)
+  }, [searchParams])
 
   // Queries
   const { data: discoveryData, isLoading: containersLoading, error: containersError } = useQuery({

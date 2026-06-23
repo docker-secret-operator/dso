@@ -48,6 +48,7 @@ export default function TimelinePage() {
           title: event.message || 'Event',
           message: event.message || '',
           metadata: event.metadata,
+          execution_id: event.execution_id || (event.metadata?.execution_id as string | undefined),
         })
         seen.add(event.id)
       }
@@ -64,6 +65,7 @@ export default function TimelinePage() {
           title: event.message || 'Event',
           message: event.message || '',
           metadata: event.metadata,
+          execution_id: event.execution_id || (event.metadata?.execution_id as string | undefined),
         })
         seen.add(event.id || event.message)
       }
