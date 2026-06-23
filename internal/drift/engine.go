@@ -228,7 +228,11 @@ func (e *Engine) GetMetrics() *DriftMetrics {
 	return e.metrics.GetMetrics()
 }
 
-// recordFinding records a new finding
+// recordFinding upserts a finding. If a finding with the same ID already exists:
+//   - acknowledged or resolved: skip (don't re-open what the operator closed)
+//   - detected: refresh description/metadata while preserving original DetectedAt
+//
+// New findings are persisted; updates are written back to the store.
 func (e *Engine) recordFinding(finding DriftFinding) {
 	if finding.ID == "" {
 		finding.ID = fmt.Sprintf("drift_%d", time.Now().UnixNano())
@@ -238,14 +242,40 @@ func (e *Engine) recordFinding(finding DriftFinding) {
 	}
 
 	e.mu.Lock()
+	existing, exists := e.findings[finding.ID]
+	if exists {
+		if existing.Status == StatusAcknowledged || existing.Status == StatusResolved {
+			// Operator closed this finding; don't re-open on rescan
+			e.mu.Unlock()
+			return
+		}
+		// Refresh description/metadata but keep the original DetectedAt
+		finding.DetectedAt = existing.DetectedAt
+		e.findings[finding.ID] = &finding
+		e.mu.Unlock()
+		_ = e.store.UpdateFinding(e.ctx, finding)
+		return
+	}
 	e.findings[finding.ID] = &finding
 	e.mu.Unlock()
 
 	e.metrics.RecordFinding(finding)
-
 	if err := e.store.CreateFinding(e.ctx, finding); err != nil {
 		e.logger.Error("failed to persist finding", zap.Error(err))
 	}
+}
+
+// GetOpenCount returns the number of findings with status StatusDetected.
+func (e *Engine) GetOpenCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := 0
+	for _, f := range e.findings {
+		if f.Status == StatusDetected {
+			n++
+		}
+	}
+	return n
 }
 
 // runLoop is the background drift detection loop
