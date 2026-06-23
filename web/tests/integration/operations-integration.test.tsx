@@ -40,12 +40,12 @@ function TestWrapper({ children }: { children: ReactNode }) {
  * Mock operations dashboard component for testing
  */
 function OperationsPageTest() {
-  const [dashboard, setDashboard] = React.useState(null)
-  const [alerts, setAlerts] = React.useState([])
-  const [recoveryEvents, setRecoveryEvents] = React.useState([])
-  const [metrics, setMetrics] = React.useState(null)
-  const [executions, setExecutions] = React.useState([])
-  const [selectedExecution, setSelectedExecution] = React.useState(null)
+  const [dashboard, setDashboard] = React.useState<any>(null)
+  const [alerts, setAlerts] = React.useState<any[]>([])
+  const [recoveryEvents, setRecoveryEvents] = React.useState<any[]>([])
+  const [metrics, setMetrics] = React.useState<any>(null)
+  const [executions, setExecutions] = React.useState<any[]>([])
+  const [selectedExecution, setSelectedExecution] = React.useState<any>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState(null)
   const [searchTerm, setSearchTerm] = React.useState('')
@@ -339,7 +339,7 @@ describe('Operations Integration Tests', () => {
         },
       }
 
-      vi.mocked(operationsApi.getOperationsDashboard).mockResolvedValue(mockDashboard)
+      vi.mocked(operationsApi.getOperationsDashboard).mockResolvedValue(mockDashboard as any)
       vi.mocked(operationsApi.getAlerts).mockResolvedValue([])
       vi.mocked(operationsApi.getRecoveryEvents).mockResolvedValue([])
       vi.mocked(operationsApi.getMetricsHistory).mockResolvedValue({
@@ -736,7 +736,7 @@ describe('Operations Integration Tests', () => {
         },
       }
 
-      vi.mocked(operationsApi.getOperationsDashboard).mockResolvedValue(mockDashboard)
+      vi.mocked(operationsApi.getOperationsDashboard).mockResolvedValue(mockDashboard as any)
       vi.mocked(operationsApi.getAlerts).mockRejectedValue(new Error('Alerts API failed'))
       vi.mocked(operationsApi.getRecoveryEvents).mockResolvedValue([])
       vi.mocked(operationsApi.getMetricsHistory).mockResolvedValue({

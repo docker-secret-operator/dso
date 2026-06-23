@@ -13,9 +13,7 @@ describe('CoverageMetrics Component', () => {
     container_name: name,
     image: 'test:v1',
     status: 'running',
-    networks: {
-      bridge: { ip_address: '172.17.0.2', gateway: '172.17.0.1' },
-    },
+    networks: { ip: '172.17.0.2', gateway: '172.17.0.1', networks: [] },
     env_vars: {},
     labels: {},
     restart_policy: { name: 'no' },
@@ -301,11 +299,11 @@ describe('CoverageMetrics Component', () => {
           container_name: 'test',
           image: 'test:v1',
           status: 'running',
-          networks: {},
+          networks: { ip: '', gateway: '', networks: [] },
           env_vars: {},
           labels: {},
           restart_policy: { name: 'no' },
-        } as ContainerMetadata,
+        } as unknown as ContainerMetadata,
       ]
       render(<CoverageMetrics containers={malformed} isLoading={false} />)
       expect(screen.getByText('Total')).toBeInTheDocument()
@@ -318,7 +316,7 @@ describe('CoverageMetrics Component', () => {
           container_name: 'test',
           image: 'test:v1',
           status: 'running',
-          networks: {},
+          networks: { ip: '', gateway: '', networks: [] },
           env_vars: {},
           labels: {},
           restart_policy: { name: 'no' },
@@ -468,7 +466,7 @@ describe('CoverageMetrics Component', () => {
           container_name: 'test',
           image: 'test:v1',
           status: 'running',
-          networks: {},
+          networks: { ip: '', gateway: '', networks: [] },
           env_vars: {},
           labels: {},
           restart_policy: { name: 'no' },

@@ -99,9 +99,8 @@ export function generateEvents(count: number): BenchmarkEvent[] {
     id: `event-${i}`,
     timestamp: new Date(Date.now() - (count - i) * 60 * 1000).toISOString(),
     action: ['rotate', 'create', 'delete', 'update'][i % 4],
-    status: i % 20 === 0 ? 'failure' : 'success',
-    error: i % 20 === 0 ? 'Rotation timeout' : undefined,
-    message: `Event ${i}`,
+    severity: (i % 20 === 0 ? 'error' : 'info') as BenchmarkEvent['severity'],
+    message: i % 20 === 0 ? 'Rotation timeout' : `Event ${i}`,
   }))
 }
 
@@ -158,10 +157,11 @@ export function benchmarkDriftDetection(
    REMEDIATION PLANNING BENCHMARKS
    ============================================================================ */
 
-import { generateRemediationPlans } from './remediation-planner'
+import { generateRemediationPlans, type RemediationPlan } from './remediation-planner'
+import type { DriftIssue } from './drift-detection'
 
 export function benchmarkRemediationPlanning(
-  driftIssues: Array<Record<string, unknown>>,
+  driftIssues: DriftIssue[],
   containers: BenchmarkContainer[],
   secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
@@ -179,7 +179,7 @@ export function benchmarkRemediationPlanning(
 import { generateChangeSets } from './change-set'
 
 export function benchmarkChangeSetGeneration(
-  remediationPlans: Array<Record<string, unknown>>,
+  remediationPlans: RemediationPlan[],
   containers: BenchmarkContainer[],
   secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>
@@ -232,10 +232,12 @@ import {
   calculateRiskAssessment,
   generateChecklist,
 } from './review-workflow'
+import type { WorkspaceState } from './workspace'
+import type { WorkspaceValidationResult } from './workspace-validation'
 
 export function benchmarkReviewWorkflow(
-  workspace: Record<string, unknown>,
-  validationResults: Array<Record<string, unknown>>,
+  workspace: WorkspaceState,
+  validationResults: WorkspaceValidationResult[],
   containers: BenchmarkContainer[],
   secrets: BenchmarkSecret[],
   mappings: Array<{ container: string; secret: string }>

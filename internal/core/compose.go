@@ -327,7 +327,6 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	}
 
 	if debugMode {
-		fmt.Println("DEBUG: Transformed Compose File (Redacted):")
 		PrintRedactedCompose(&parsed)
 	}
 

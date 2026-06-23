@@ -394,7 +394,9 @@ func (r *ReloaderController) handleContainerEvent(msg events.Message) error {
 		// Register with proxy for any container that has DSO-managed host ports
 		if r.ProxyManager != nil {
 			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
-				inspect, ierr := r.cli.ContainerInspect(context.Background(), msg.Actor.ID)
+				inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				inspect, ierr := r.cli.ContainerInspect(inspectCtx, msg.Actor.ID)
+				inspectCancel()
 				if ierr == nil {
 					containerIP := ""
 					for _, ep := range inspect.NetworkSettings.Networks {

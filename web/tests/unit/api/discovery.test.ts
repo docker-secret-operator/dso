@@ -33,8 +33,8 @@ describe('Discovery API', () => {
 
       const result = await discoveryApi.getContainers()
 
-      expect(result.total).toBe(1)
-      expect(result.managed).toBe(1)
+      expect(result.total_count).toBe(1)
+      expect(result.managed_count).toBe(1)
       expect(apiClient.client.get).toHaveBeenCalledWith('/api/discovery/containers')
     })
   })

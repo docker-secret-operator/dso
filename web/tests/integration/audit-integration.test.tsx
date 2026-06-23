@@ -166,8 +166,8 @@ function TestAuditPage() {
             const severity = e.target.value as any
             handleFilterChange({
               ...filters,
-              severity: severity || undefined,
-            })
+              ...(severity ? { severity } : {}),
+            } as any)
           }}
         >
           <option value="">All Classifications</option>

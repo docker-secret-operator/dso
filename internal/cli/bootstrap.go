@@ -35,13 +35,7 @@ func (l *cliLogger) Warn(msg string, args ...interface{}) {
 	}
 }
 
-func (l *cliLogger) Debug(msg string, args ...interface{}) {
-	if len(args) > 0 {
-		fmt.Printf("[DEBUG] "+msg+" %v\n", args)
-	} else {
-		fmt.Printf("[DEBUG] %s\n", msg)
-	}
-}
+func (l *cliLogger) Debug(_ string, _ ...interface{}) {}
 
 // Bootstrap command flags
 var (

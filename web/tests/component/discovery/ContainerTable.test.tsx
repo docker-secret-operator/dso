@@ -13,7 +13,7 @@ describe('ContainerTable Component', () => {
     container_name: name,
     image: `test-image:${id}`,
     status: 'running',
-    networks: { bridge: { ip_address: '172.17.0.2', gateway: '172.17.0.1' } },
+    networks: { ip: '172.17.0.2', gateway: '172.17.0.1', networks: [] },
     env_vars: {},
     labels: {},
     restart_policy: { name: 'no' },

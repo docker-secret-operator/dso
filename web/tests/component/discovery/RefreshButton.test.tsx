@@ -268,7 +268,7 @@ describe('RefreshButton Component', () => {
   describe('Rapid Clicks', () => {
     it('should not make multiple requests on rapid clicks while refreshing', async () => {
       const user = userEvent.setup()
-      const mockOnRefresh = vi.fn(() => new Promise(() => {}))
+      const mockOnRefresh = vi.fn((): Promise<void> => new Promise(() => {}))
 
       render(
         <RefreshButton

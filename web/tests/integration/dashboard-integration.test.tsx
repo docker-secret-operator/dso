@@ -27,11 +27,12 @@ vi.mock('@/lib/api/operations', () => ({
 }))
 
 vi.mock('@/lib/api/metrics', () => ({
-  getMetrics: vi.fn(),
+  getHistory: vi.fn(),
+  getCurrentMetrics: vi.fn(),
 }))
 
 vi.mock('@/lib/api/audit', () => ({
-  getAuditLog: vi.fn(),
+  getAuditEvents: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/session', () => ({
@@ -68,7 +69,7 @@ function TestDashboard() {
         setOverviewData(overview)
 
         // Load metrics
-        const metrics = await metricsApi.getMetrics()
+        const metrics = await metricsApi.getHistory?.()
         setMetricsData(metrics)
 
         // Load alerts
@@ -76,7 +77,7 @@ function TestDashboard() {
         setAlertsData(alerts)
 
         // Load activity
-        const activity = await auditApi.getAuditLog?.({ limit: 10 })
+        const activity = await auditApi.getAuditEvents?.({ limit: 10 } as any)
         setActivityData(activity)
       } catch (err: any) {
         // Handle partial failures - don't break UI
@@ -246,9 +247,9 @@ describe('Dashboard Integration Tests', () => {
 
     // Set default mock implementations using proper cast
     ;(dashboardApi.getOverview as any).mockResolvedValue(mockOverview)
-    ;(metricsApi.getMetrics as any).mockResolvedValue(mockMetrics)
+    ;(metricsApi.getHistory as any).mockResolvedValue(mockMetrics)
     ;(operationsApi.getAlerts as any).mockResolvedValue(mockAlerts)
-    ;(auditApi.getAuditLog as any).mockResolvedValue(mockActivity)
+    ;(auditApi.getAuditEvents as any).mockResolvedValue(mockActivity)
   })
 
   afterEach(() => {
@@ -329,7 +330,7 @@ describe('Dashboard Integration Tests', () => {
 
       // All queries should have been called
       expect(dashboardApi.getOverview).toHaveBeenCalled()
-      expect(metricsApi.getMetrics).toHaveBeenCalled()
+      expect(metricsApi.getHistory).toHaveBeenCalled()
     })
 
     it('should display correct system health status', async () => {
@@ -352,7 +353,7 @@ describe('Dashboard Integration Tests', () => {
 
   describe('Error Handling', () => {
     it('should handle metrics fetch error without breaking dashboard', async () => {
-      ;(metricsApi.getMetrics as any).mockRejectedValue(new Error('Metrics fetch failed'))
+      ;(metricsApi.getHistory as any).mockRejectedValue(new Error('Metrics fetch failed'))
 
       render(<TestDashboard />, { wrapper: Wrapper })
 
@@ -379,7 +380,7 @@ describe('Dashboard Integration Tests', () => {
     })
 
     it('should handle activity fetch error without impact', async () => {
-      ;(auditApi.getAuditLog as any).mockRejectedValue(new Error('Activity fetch failed'))
+      ;(auditApi.getAuditEvents as any).mockRejectedValue(new Error('Activity fetch failed'))
 
       render(<TestDashboard />, { wrapper: Wrapper })
 
@@ -530,7 +531,7 @@ describe('Dashboard Integration Tests', () => {
     })
 
     it('should not show activity section when no activity', async () => {
-      ;(auditApi.getAuditLog as any).mockResolvedValue([])
+      ;(auditApi.getAuditEvents as any).mockResolvedValue([])
 
       render(<TestDashboard />, { wrapper: Wrapper })
 
@@ -544,7 +545,7 @@ describe('Dashboard Integration Tests', () => {
 
   describe('No Blank Screens', () => {
     it('should keep UI intact when one KPI fails', async () => {
-      ;(metricsApi.getMetrics as any).mockRejectedValue(new Error('KPI error'))
+      ;(metricsApi.getHistory as any).mockRejectedValue(new Error('KPI error'))
 
       render(<TestDashboard />, { wrapper: Wrapper })
 
@@ -558,7 +559,7 @@ describe('Dashboard Integration Tests', () => {
 
     it('should display dashboard even with partial errors', async () => {
       ;(operationsApi.getAlerts as any).mockRejectedValue(new Error('Alerts error'))
-      ;(auditApi.getAuditLog as any).mockRejectedValue(new Error('Activity error'))
+      ;(auditApi.getAuditEvents as any).mockRejectedValue(new Error('Activity error'))
 
       render(<TestDashboard />, { wrapper: Wrapper })
 

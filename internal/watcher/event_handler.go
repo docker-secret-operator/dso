@@ -64,7 +64,6 @@ func ProcessEvent(msg events.Message, debug bool) {
 
 	if val, exists := recentDSOActions.Load(msg.Actor.ID); exists {
 		if time.Since(val.(time.Time)) < 15*time.Second {
-			fmt.Printf("\033[1;33m[DSO WATCH]\033[0m Ignoring self-triggered event → %s\n", shortID(msg.Actor.ID))
 			return
 		}
 	}
@@ -73,7 +72,6 @@ func ProcessEvent(msg events.Message, debug bool) {
 	if projectName != "" {
 		if val, exists := recentDSOActions.Load(projectName); exists {
 			if time.Since(val.(time.Time)) < 15*time.Second {
-				fmt.Printf("\033[1;33m[DSO WATCH]\033[0m Ignoring self-triggered event → project: %s\n", projectName)
 				return
 			}
 		}

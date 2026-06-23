@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
-import { QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { queryClient } from '@/lib/query-client'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import * as operationsApi from '@/lib/api/operations'
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 describe('Operations Performance', () => {
   beforeEach(() => {
@@ -58,12 +59,12 @@ describe('Operations Performance', () => {
       return { id: 'exec-1', steps: [], estimated_duration_seconds: 0 }
     })
 
-    vi.spyOn(operationsApi, 'getExecutionPlan').mockImplementation(mockPlan)
+    vi.spyOn(operationsApi, 'getExecutionPlan').mockImplementation(mockPlan as any)
 
     const TestComponent = () => {
       const { data } = useQuery({
         queryKey: ['execution-plan', 'exec-1'],
-        queryFn: () => mockPlan('exec-1'),
+        queryFn: () => mockPlan(),
       })
       return <div>{data ? 'loaded' : 'not loaded'}</div>
     }
