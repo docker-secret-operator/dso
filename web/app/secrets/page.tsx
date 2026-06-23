@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient, type Secret } from '@/lib/api-client'
+import * as auditApi from '@/lib/api/audit'
 import { Pagination } from '@/components/common/Pagination'
 import { PageHeader, Card, Badge, StatusBadge, Button, Input, EmptyState, Skeleton } from '@/components/ui-modern'
 import {
@@ -29,6 +30,12 @@ function SecretDrawer({ secret, onClose }: { secret: Secret; onClose: () => void
   const [rotating, setRotating] = useState(false)
   const [rotateError, setRotateError] = useState<string | null>(null)
   const [rotateSuccess, setRotateSuccess] = useState(false)
+
+  const { data: auditData } = useQuery({
+    queryKey: ['secret-audit', secret.name],
+    queryFn: () => auditApi.getAuditEvents({ resource_id: secret.name, resource_type: 'secret', limit: 3 }),
+  })
+  const recentAudit = auditData?.events ?? []
 
   const rotate = async () => {
     setRotating(true)
@@ -113,7 +120,14 @@ function SecretDrawer({ secret, onClose }: { secret: Secret; onClose: () => void
               },
               {
                 label: 'Containers',
-                value: secret.container_count ?? <span className="text-slate-600">—</span>,
+                value: secret.container_count != null ? (
+                  <a
+                    href={`/discovery?secret=${encodeURIComponent(secret.name)}`}
+                    className="text-blue-400 hover:text-blue-300 hover:underline transition-colors"
+                  >
+                    {secret.container_count} container{secret.container_count === 1 ? '' : 's'} →
+                  </a>
+                ) : <span className="text-slate-600">—</span>,
                 icon: <Server className="w-3.5 h-3.5" />,
               },
               {
@@ -131,6 +145,31 @@ function SecretDrawer({ secret, onClose }: { secret: Secret; onClose: () => void
               </div>
             ))}
           </div>
+
+          {/* Recent audit activity */}
+          {recentAudit.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Activity</p>
+                <a
+                  href={`/audit?q=${encodeURIComponent(secret.name)}`}
+                  className="text-[11px] text-blue-400/70 hover:text-blue-400 transition-colors"
+                >
+                  View all →
+                </a>
+              </div>
+              <div className="rounded-lg border border-white/[0.07] divide-y divide-white/[0.05]">
+                {recentAudit.map(ev => (
+                  <div key={ev.id} className="px-3 py-2 space-y-0.5">
+                    <p className="text-xs text-slate-300 truncate">{ev.action}</p>
+                    <p className="text-[11px] text-slate-600">
+                      {ev.actor} · {new Date(ev.timestamp).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Rotation feedback */}
           {rotateSuccess && (
