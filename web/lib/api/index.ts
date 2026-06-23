@@ -16,6 +16,8 @@ export * as operations from './operations'
 export * as metrics from './metrics'
 export * as users from './users'
 export * as dashboard from './dashboard'
+export * as drift from './drift'
+export * as bulk from './bulk'
 
 // Re-export apiClient for direct use if needed
 export { apiClient } from '../api-client'
