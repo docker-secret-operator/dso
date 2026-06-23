@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -907,17 +908,91 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cache not initialized", http.StatusInternalServerError)
 		return
 	}
+
+	q := r.URL.Query()
+	page      := secretsParseIntParam(q.Get("page"), 1, 1, 1<<30)
+	pageSize  := secretsParseIntParam(q.Get("pageSize"), 50, 1, 200)
+	search    := strings.ToLower(q.Get("search"))
+	statusF   := q.Get("status")
+	providerF := q.Get("provider")
+	sortBy    := q.Get("sortBy")
+	sortOrder := q.Get("sortOrder")
+
 	keys := s.Cache.ListKeys()
-	res := make([]secretResponse, 0, len(keys))
+	all := make([]secretResponse, 0, len(keys))
 	for _, k := range keys {
-		res = append(res, s.buildSecretResponse(k))
+		sr := s.buildSecretResponse(k)
+		if search != "" {
+			if !strings.Contains(strings.ToLower(sr.Name), search) &&
+				!strings.Contains(strings.ToLower(sr.Provider), search) {
+				continue
+			}
+		}
+		if statusF != "" && sr.Status != statusF {
+			continue
+		}
+		if providerF != "" && sr.Provider != providerF {
+			continue
+		}
+		all = append(all, sr)
 	}
+
+	if sortBy != "" {
+		sort.Slice(all, func(i, j int) bool {
+			var vi, vj string
+			switch sortBy {
+			case "provider":
+				vi, vj = all[i].Provider, all[j].Provider
+			case "status":
+				vi, vj = all[i].Status, all[j].Status
+			case "last_rotated":
+				vi, vj = all[i].LastRotated, all[j].LastRotated
+			default:
+				vi, vj = all[i].Name, all[j].Name
+			}
+			if sortOrder == "desc" {
+				return vi > vj
+			}
+			return vi < vj
+		})
+	}
+
+	total := len(all)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	items := all[start:end]
+
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"active_secrets": res,
-		"total_count":    len(res),
+		"items":          items,
+		"page":           page,
+		"pageSize":       pageSize,
+		"total":          total,
+		"active_secrets": items,
+		"total_count":    total,
 	}); err != nil {
 		s.Logger.Error("failed to encode secrets list", zap.Error(err))
 	}
+}
+
+// secretsParseIntParam parses s as int, returns def if invalid, clamps to [min, max].
+func secretsParseIntParam(s string, def, minVal, maxVal int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < minVal {
+		return minVal
+	}
+	if n > maxVal {
+		return maxVal
+	}
+	return n
 }
 
 func (s *RESTServer) handleGetSecret(w http.ResponseWriter, r *http.Request, name string) {
@@ -1195,9 +1270,17 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	forecastHandler := api.NewForecastHandler(forecastEngine)
 	autonomyHandler := api.NewAutonomyHandler(autonomyEngine)
 	correlationHandler := api.NewCorrelationHandler(correlationEngine)
-	// drift and policy have no SQLite store yet — back them with in-memory stores.
-	driftHandler := api.NewDriftHandler(drift.NewEngine(drift.NewInMemoryStore(), logger))
-	policyHandler := api.NewPolicyHandler(policy.NewEngine(policy.NewInMemoryStore(), logger))
+	var driftStore drift.Store
+	var policyStore policy.RuleStore
+	if dbConn != nil {
+		driftStore = sqlite.NewDriftStore(dbConn)
+		policyStore = sqlite.NewPolicyStore(dbConn)
+	} else {
+		driftStore = drift.NewInMemoryStore()
+		policyStore = policy.NewInMemoryStore()
+	}
+	driftHandler := api.NewDriftHandler(drift.NewEngine(driftStore, logger))
+	policyHandler := api.NewPolicyHandler(policy.NewEngine(policyStore, logger))
 	graphHandler := api.NewGraphHandler(graph.NewGraph(logger))
 
 	metricsCollector := api.NewMetricsCollector(dispatcher, workerManager)
