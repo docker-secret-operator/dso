@@ -15,7 +15,7 @@ import {
 import { OperationalHealth } from '@/components/dashboard/operational-health'
 import { RecentActivity } from '@/components/dashboard/recent-activity'
 
-import { deriveRotationPosture, classifySecret } from '@/lib/dashboard/rotation'
+import { classifySecret } from '@/lib/dashboard/rotation'
 import { apiClient, type Secret } from '@/lib/api-client'
 import type { FailureEvent } from '@/lib/api/types'
 import * as systemApi from '@/lib/api/system'
@@ -94,9 +94,9 @@ function buildAttentionItems(
 }
 
 function DashboardContent() {
-  const { data: secrets, isLoading: secretsLoading } = useQuery({
-    queryKey: ['secrets-all'],
-    queryFn: () => apiClient.getSecrets(),
+  const { data: postureData, isLoading: postureLoading } = useQuery({
+    queryKey: ['dashboard-posture'],
+    queryFn: () => apiClient.getPosture(),
     refetchInterval: 60000,
   })
 
@@ -130,12 +130,19 @@ function DashboardContent() {
     refetchInterval: 30000,
   })
 
-  const secretList = useMemo(() => (Array.isArray(secrets) ? secrets : []), [secrets])
-  const posture = useMemo(() => deriveRotationPosture(secretList), [secretList])
+  const posture = useMemo(() => ({
+    fresh:        postureData?.fresh        ?? 0,
+    aging:        postureData?.aging        ?? 0,
+    overdue:      postureData?.overdue      ?? 0,
+    errored:      postureData?.secretErrors ?? 0,
+    unknown:      postureData?.unknown      ?? 0,
+    total:        postureData?.managedSecrets ?? 0,
+    needRotation: postureData?.needRotation ?? 0,
+  }), [postureData])
 
   const attentionItems = useMemo(
-    () => buildAttentionItems(secretList, opsData?.recent_failures, alerts),
-    [secretList, opsData, alerts]
+    () => buildAttentionItems([], opsData?.recent_failures, alerts),
+    [opsData, alerts]
   )
 
   const coverage =
@@ -152,7 +159,7 @@ function DashboardContent() {
             posture={posture}
             coverage={coverage}
             lastSyncLabel={lastSync}
-            loading={secretsLoading}
+            loading={postureLoading}
           />
 
           {/* 2 — Needs attention */}
@@ -162,7 +169,7 @@ function DashboardContent() {
           >
             <NeedsAttention
               items={attentionItems}
-              loading={secretsLoading || opsLoading || alertsLoading}
+              loading={opsLoading || alertsLoading}
             />
           </Section>
 
