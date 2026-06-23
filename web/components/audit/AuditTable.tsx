@@ -18,10 +18,11 @@ function relTime(ts: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(ts))
 }
 
-function EventRow({ e, onCorrelation, onActor }: {
+function EventRow({ e, onCorrelation, onActor, onExecution }: {
   e: AuditEvent
   onCorrelation: (id: string) => void
   onActor: (id: string) => void
+  onExecution?: (id: string) => void
 }) {
   return (
     <div className="flex items-start gap-3 px-4 py-3 border-b border-white/[0.05] last:border-0 hover:bg-white/[0.02] transition-colors rounded-sm">
@@ -69,6 +70,17 @@ function EventRow({ e, onCorrelation, onActor }: {
             </button>
           )}
 
+          {e.execution_id && e.execution_id !== e.resource_id && (
+            <button
+              className="font-mono text-amber-400/80 hover:text-amber-400 transition-colors hover:underline flex items-center gap-0.5"
+              onClick={() => onExecution?.(e.execution_id)}
+              title="Open execution"
+            >
+              exec:{e.execution_id.slice(0, 12)}…
+              <ChevronRight className="w-3 h-3 inline" />
+            </button>
+          )}
+
           {e.ip_address && <span>{e.ip_address}</span>}
         </div>
       </div>
@@ -83,6 +95,7 @@ interface AuditTableProps {
   searchTerm: string
   onCorrelation: (id: string) => void
   onActor: (id: string) => void
+  onExecution?: (id: string) => void
 }
 
 export function AuditTable({
@@ -92,6 +105,7 @@ export function AuditTable({
   searchTerm,
   onCorrelation,
   onActor,
+  onExecution,
 }: AuditTableProps) {
   if (isLoading) {
     return (
@@ -114,7 +128,7 @@ export function AuditTable({
   return (
     <div>
       {events.map(e => (
-        <EventRow key={e.id} e={e} onCorrelation={onCorrelation} onActor={onActor} />
+        <EventRow key={e.id} e={e} onCorrelation={onCorrelation} onActor={onActor} onExecution={onExecution} />
       ))}
     </div>
   )

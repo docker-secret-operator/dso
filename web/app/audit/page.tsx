@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { PageHeader, Card, Button } from '@/components/ui-modern'
@@ -15,12 +16,21 @@ import { CorrelationTimeline } from '@/components/audit/CorrelationTimeline'
 import { ActorTimeline } from '@/components/audit/ActorTimeline'
 
 function AuditContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [filters, setFilters] = useState<AuditFiltersType>({ limit: 50, offset: 0 })
   const [search, setSearch] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [correlationId, setCorrelationId] = useState<string | null>(null)
   const [actorId, setActorId] = useState<string | null>(null)
   const [actorPeriod, setActorPeriod] = useState<'24h' | '7d' | '30d'>('24h')
+
+  useEffect(() => {
+    const q = searchParams?.get('q')
+    if (q) setSearch(q)
+    const execId = searchParams?.get('execution_id')
+    if (execId) setCorrelationId(execId)
+  }, [searchParams])
 
   // Main audit events query
   const { data, isLoading, isFetching, refetch } = useQuery({
@@ -137,6 +147,7 @@ function AuditContent() {
           searchTerm={search}
           onCorrelation={setCorrelationId}
           onActor={setActorId}
+          onExecution={(execId) => router.push(`/operations?exec=${encodeURIComponent(execId)}`)}
         />
 
         {/* Pagination */}
