@@ -253,6 +253,8 @@ export interface AuditFilters {
   actor?: string
   actor_id?: string
   resource?: string
+  resource_id?: string
+  resource_type?: string
   start_time?: string
   end_time?: string
   limit?: number
