@@ -111,12 +111,14 @@ func (h *AuditExplorerHandler) handleList(w http.ResponseWriter, r *http.Request
 	actor := q.Get("actor")
 	actorID := q.Get("actor_id")
 	resource := q.Get("resource")
+	resourceID := q.Get("resource_id")
+	resourceType := q.Get("resource_type")
 	startTime := q.Get("start_time")
 	endTime := q.Get("end_time")
 
 	limit, offset := parseLimitOffset(q.Get("limit"), q.Get("offset"), 50, 1000)
 
-	where, args := buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, startTime, endTime)
+	where, args := buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, resourceID, resourceType, startTime, endTime)
 
 	total := 0
 	countQ := "SELECT COUNT(*) FROM audit_events WHERE 1=1" + where
@@ -309,6 +311,8 @@ func (h *AuditExplorerHandler) handleExport(w http.ResponseWriter, r *http.Reque
 	actor := q.Get("actor")
 	actorID := q.Get("actor_id")
 	resource := q.Get("resource")
+	resourceID := q.Get("resource_id")
+	resourceType := q.Get("resource_type")
 	startTime := q.Get("start_time")
 	endTime := q.Get("end_time")
 	format := q.Get("format")
@@ -316,7 +320,7 @@ func (h *AuditExplorerHandler) handleExport(w http.ResponseWriter, r *http.Reque
 		format = "json"
 	}
 
-	where, args := buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, startTime, endTime)
+	where, args := buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, resourceID, resourceType, startTime, endTime)
 	listQ := auditSelectCols + " FROM audit_events WHERE 1=1" + where + " ORDER BY timestamp DESC LIMIT 10000"
 
 	rows, err := h.db.QueryContext(ctx, listQ, args...)
@@ -356,7 +360,7 @@ func (h *AuditExplorerHandler) handleExport(w http.ResponseWriter, r *http.Reque
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, startTime, endTime string) (string, []interface{}) {
+func buildAuditWhere(correlationID, executionID, action, actor, actorID, resource, resourceID, resourceType, startTime, endTime string) (string, []interface{}) {
 	var sb strings.Builder
 	var args []interface{}
 
@@ -384,6 +388,14 @@ func buildAuditWhere(correlationID, executionID, action, actor, actorID, resourc
 	if resource != "" {
 		sb.WriteString(" AND resource = ?")
 		args = append(args, resource)
+	}
+	if resourceID != "" {
+		sb.WriteString(" AND resource_id = ?")
+		args = append(args, resourceID)
+	}
+	if resourceType != "" {
+		sb.WriteString(" AND resource_type = ?")
+		args = append(args, resourceType)
 	}
 	// Parse time strings to time.Time so go-sqlite3 uses native timestamp comparison.
 	// String-based RFC3339 comparisons against stored DATETIME values are unreliable.
