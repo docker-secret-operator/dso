@@ -66,6 +66,11 @@ func NewAgentCmd() *cobra.Command {
 		Short: "Run the DSO background reconciliation engine",
 		Long:  `The agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
 		Run: func(cmd *cobra.Command, args []string) {
+			// Register signal handlers before any blocking work so SIGTERM during
+			// startup is never silently dropped.
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
 			logger, _ := observability.NewLogger("info", "console", false)
 			defer func() {
 				_ = logger.Sync()
@@ -103,7 +108,7 @@ func NewAgentCmd() *cobra.Command {
 			// with the dso.host_ports label and binds their ports immediately so traffic
 			// is never interrupted during secret rotation.
 			proxyManager := dsoProxy.NewManager(logger)
-			scanCtx, scanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
 			proxyManager.ScanAndRegister(scanCtx, dockerCli)
 			scanCancel()
 			reloader.ProxyManager = proxyManager
@@ -113,12 +118,6 @@ func NewAgentCmd() *cobra.Command {
 			if err != nil {
 				logger.Fatal("Failed to initialize trigger engine", zap.Error(err))
 			}
-
-			// Handle Termination with Graceful Shutdown. The context is created up
-			// front so every long-running server below is bound to it and exits
-			// cleanly on SIGTERM (CQ-C2, CQ-C3).
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
 
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, socketShutdown, err := agent.StartSocketServer(ctx, socketPath, cache, storeManager, logger, cfg)

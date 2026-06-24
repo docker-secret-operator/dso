@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
@@ -54,8 +55,11 @@ func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 	ar.logger.Warn("Detected pending rotations, performing automatic recovery",
 		zap.Int("count", len(pending)))
 
-	// List all containers once for efficiency
-	containers, err := ar.cli.ContainerList(ctx, container.ListOptions{All: true})
+	// List only DSO-managed containers to avoid acting on unowned containers on shared hosts.
+	containers, err := ar.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "dso.reloader=true")),
+	})
 	if err != nil {
 		ar.logger.Error("Failed to list containers for recovery",
 			zap.Error(err))

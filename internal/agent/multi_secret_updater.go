@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -248,9 +247,8 @@ func (msu *MultiSecretUpdater) ApplyTransaction(
 	updates []MultiSecretUpdate,
 	callback TransactionCallback,
 ) error {
-	var mu sync.Mutex
-	mu.Lock()
-	defer mu.Unlock()
+	// Atomicity is guaranteed by the caller holding the project rotation lock in
+	// trigger.go before calling ApplyTransaction. No additional lock needed here.
 
 	// Get old values
 	oldValues := make(map[string]map[string]string)
