@@ -148,7 +148,7 @@ func (cm *CryptoManager) EncryptProviderConfig(config *Config) error {
 
 // DecryptSensitiveFields decrypts provider credentials in config
 func (cm *CryptoManager) DecryptProviderConfig(config *Config) error {
-	for _, provider := range config.Providers {
+	for name, provider := range config.Providers {
 		if provider.Config == nil {
 			provider.Config = make(map[string]string)
 		}
@@ -172,6 +172,8 @@ func (cm *CryptoManager) DecryptProviderConfig(config *Config) error {
 				provider.Auth.Params[key] = decrypted
 			}
 		}
+
+		config.Providers[name] = provider
 	}
 	return nil
 }

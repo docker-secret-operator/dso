@@ -10,6 +10,8 @@ import (
 
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/util"
 )
 
 // PortMap is a single host-port → container-port mapping parsed from the
@@ -64,11 +66,11 @@ func (m *Manager) RegisterContainer(containerID, containerIP string, hostPort, c
 	addr := fmt.Sprintf("%s:%d", containerIP, containerPort)
 
 	if err := m.registry.Add(Backend{ID: backendID, Addr: addr}); err != nil {
-		return fmt.Errorf("proxy: register container %s: %w", containerID[:12], err)
+		return fmt.Errorf("proxy: register container %s: %w", util.ShortID(containerID), err)
 	}
 	m.containerToBackendID.Store(containerID, backendID)
 	m.log.Info("proxy: container registered as backend",
-		zap.String("container", containerID[:12]),
+		zap.String("container", util.ShortID(containerID)),
 		zap.String("addr", addr),
 		zap.Int("host_port", hostPort))
 	return nil
@@ -90,14 +92,14 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 	m.containerToBackendID.Store(newContainerID, newContainerID)
 
 	m.log.Info("proxy: new backend active, draining old",
-		zap.String("old", oldContainerID[:12]),
-		zap.String("new", newContainerID[:12]),
+		zap.String("old", util.ShortID(oldContainerID)),
+		zap.String("new", util.ShortID(newContainerID)),
 		zap.String("new_addr", newAddr))
 
 	// Step 2: mark old backend draining — router stops routing new connections to it
 	if err := m.registry.SetDraining(oldContainerID); err != nil {
 		m.log.Warn("proxy: could not drain old backend (may already be removed)",
-			zap.String("old", oldContainerID[:12]),
+			zap.String("old", util.ShortID(oldContainerID)),
 			zap.Error(err))
 	}
 
@@ -111,11 +113,11 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 		time.Sleep(5 * time.Second)
 		if err := m.registry.Remove(oldContainerID); err != nil {
 			m.log.Debug("proxy: remove old backend (already gone)",
-				zap.String("old", oldContainerID[:12]))
+				zap.String("old", util.ShortID(oldContainerID)))
 		}
 		m.containerToBackendID.Delete(oldContainerID)
 		m.log.Info("proxy: old backend removed",
-			zap.String("old", oldContainerID[:12]))
+			zap.String("old", util.ShortID(oldContainerID)))
 	}()
 
 	return nil
@@ -177,7 +179,7 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 		containerIP := extractContainerIP(c.NetworkSettings)
 		if containerIP == "" {
 			m.log.Warn("proxy: container has no IP, skipping",
-				zap.String("id", c.ID[:12]))
+				zap.String("id", util.ShortID(c.ID)))
 			continue
 		}
 		for _, pm := range portMaps {
@@ -188,11 +190,11 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 			}
 			if err := m.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
 				m.log.Warn("proxy: failed to register container",
-					zap.String("id", c.ID[:12]), zap.Error(err))
+					zap.String("id", util.ShortID(c.ID)), zap.Error(err))
 			}
 		}
 		m.log.Info("proxy: registered existing container",
-			zap.String("id", c.ID[:12]),
+			zap.String("id", util.ShortID(c.ID)),
 			zap.String("ports", portsLabel))
 	}
 }

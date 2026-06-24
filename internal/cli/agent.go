@@ -109,7 +109,10 @@ func NewAgentCmd() *cobra.Command {
 			reloader.ProxyManager = proxyManager
 
 			// Initialize Trigger Engine
-			trigger := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			if err != nil {
+				logger.Fatal("Failed to initialize trigger engine", zap.Error(err))
+			}
 
 			// Handle Termination with Graceful Shutdown. The context is created up
 			// front so every long-running server below is bound to it and exits

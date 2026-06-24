@@ -8,6 +8,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// safeString extracts a string from a map, returning an error if the key is
+// missing or its value is not a string. Prevents panic from bare type assertions
+// on provider config maps that may be missing required fields.
+func safeString(m map[string]interface{}, key string) (string, error) {
+	v, ok := m[key]
+	if !ok {
+		return "", fmt.Errorf("provider config missing required field %q", key)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("provider config field %q is not a string (got %T)", key, v)
+	}
+	return s, nil
+}
+
 // AgentBootstrapper handles agent mode (cloud/production) bootstrap
 type AgentBootstrapper struct {
 	logger     Logger
@@ -221,13 +236,49 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 
 	switch provider {
 	case ProviderAWS:
-		builder.WithAWSProvider(providerConfig["name"].(string), providerConfig["region"].(string))
+		name, err := safeString(providerConfig, "name")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		region, err := safeString(providerConfig, "region")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		builder.WithAWSProvider(name, region)
 	case ProviderAzure:
-		builder.WithAzureProvider(providerConfig["name"].(string), providerConfig["vault_url"].(string))
+		name, err := safeString(providerConfig, "name")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		vaultURL, err := safeString(providerConfig, "vault_url")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		builder.WithAzureProvider(name, vaultURL)
 	case ProviderHuawei:
-		builder.WithHuaweiProvider(providerConfig["name"].(string), providerConfig["region"].(string), providerConfig["project_id"].(string))
+		name, err := safeString(providerConfig, "name")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		region, err := safeString(providerConfig, "region")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		projectID, err := safeString(providerConfig, "project_id")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		builder.WithHuaweiProvider(name, region, projectID)
 	case ProviderVault:
-		builder.WithVaultProvider(providerConfig["name"].(string), providerConfig["address"].(string), "${VAULT_TOKEN}")
+		name, err := safeString(providerConfig, "name")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		address, err := safeString(providerConfig, "address")
+		if err != nil {
+			return nil, ErrConfigValidation("bootstrap", err.Error())
+		}
+		builder.WithVaultProvider(name, address, "${VAULT_TOKEN}")
 	default:
 		return nil, ErrConfigValidation("bootstrap", fmt.Sprintf("unknown provider: %s", provider))
 	}

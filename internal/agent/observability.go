@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/util"
 )
 
 // RotationTracer provides per-rotation tracing and diagnostics.
@@ -167,7 +169,7 @@ func (hcm *HealthCheckMonitor) RecordHealthCheck(containerID, status, output, la
 
 	// Log health check diagnostics
 	hcm.logger.Info("Health check result",
-		zap.String("container_id", containerID[:12]),
+		zap.String("container_id", util.ShortID(containerID)),
 		zap.String("status", status),
 		zap.Int("exit_code", exitCode),
 		zap.Duration("duration", duration),

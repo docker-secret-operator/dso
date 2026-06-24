@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/rotation"
+	"github.com/docker-secret-operator/dso/internal/util"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -104,7 +105,7 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("container not found: %w", err)
 	}
 
-	fmt.Printf("[DSO] ✓ Found container %s\n", containerID[:12])
+	fmt.Printf("[DSO] ✓ Found container %s\n", util.ShortID(containerID))
 
 	// 5. Inject secret via tar streaming
 	fmt.Printf("[DSO] Injecting secret into container...\n")
@@ -132,7 +133,7 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	// 7. Display success message
-	fmt.Printf("\n✓ Secret '%s' injected into container %s\n", injectOpts.Secret, containerID[:12])
+	fmt.Printf("\n✓ Secret '%s' injected into container %s\n", injectOpts.Secret, util.ShortID(containerID))
 	fmt.Printf("  Mount point: %s/%s\n", injectOpts.Mount, injectOpts.Secret)
 
 	return nil

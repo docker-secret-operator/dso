@@ -27,6 +27,7 @@ type FileLock struct {
 // LockManager manages locks for containers during rotation.
 type LockManager struct {
 	locks    map[string]*sync.Mutex
+	acquired map[string]bool // tracks which keys are currently locked
 	mu       sync.Mutex
 	fileLock *FileLock
 }
@@ -34,7 +35,8 @@ type LockManager struct {
 // NewLockManager creates a new lock manager with optional file-based distributed locking.
 func NewLockManager(lockDir string, logger *zap.Logger) (*LockManager, error) {
 	lm := &LockManager{
-		locks: make(map[string]*sync.Mutex),
+		locks:    make(map[string]*sync.Mutex),
+		acquired: make(map[string]bool),
 	}
 
 	if lockDir != "" {
@@ -71,10 +73,17 @@ func (lm *LockManager) AcquireLock(containerID string, timeout time.Duration) er
 		return fmt.Errorf("failed to acquire lock for container %s within %v", containerID, timeout)
 	}
 
+	lm.mu.Lock()
+	lm.acquired[containerID] = true
+	lm.mu.Unlock()
+
 	// Also acquire the cross-process file lock if distributed locking is enabled.
 	if lm.fileLock != nil {
 		if err := lm.fileLock.AcquireLock(containerID, timeout); err != nil {
+			lm.mu.Lock()
 			mutex.Unlock()
+			delete(lm.acquired, containerID)
+			lm.mu.Unlock()
 			return err
 		}
 	}
@@ -105,15 +114,20 @@ func tryLockWithTimeout(mu *sync.Mutex, timeout time.Duration) bool {
 	return false
 }
 
-// ReleaseLock releases the lock for a container.
+// ReleaseLock releases the lock for a container. Safe to call even if the lock
+// was never acquired (e.g. in a defer after a failed AcquireLock).
 func (lm *LockManager) ReleaseLock(containerID string) {
 	lm.mu.Lock()
-	if mutex, exists := lm.locks[containerID]; exists {
-		mutex.Unlock()
+	wasAcquired := lm.acquired[containerID]
+	if wasAcquired {
+		if mutex, exists := lm.locks[containerID]; exists {
+			mutex.Unlock()
+		}
+		delete(lm.acquired, containerID)
 	}
 	lm.mu.Unlock()
 
-	if lm.fileLock != nil {
+	if wasAcquired && lm.fileLock != nil {
 		lm.fileLock.ReleaseLock(containerID)
 	}
 }

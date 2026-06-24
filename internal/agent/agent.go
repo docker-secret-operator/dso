@@ -10,6 +10,7 @@ import (
 	eventqueue "github.com/docker-secret-operator/dso/internal/events"
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/internal/resolver"
+	"github.com/docker-secret-operator/dso/internal/util"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -108,7 +109,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			case msg := <-msgCh:
 				// Enqueue event with backpressure protection
 				if !a.eventQueue.Enqueue(msg) {
-					log.Printf("⚠️ [DSO Agent] Event queue full, dropping event: %s/%s", msg.Actor.ID[:12], string(msg.Action))
+					log.Printf("⚠️ [DSO Agent] Event queue full, dropping event: %s/%s", util.ShortID(msg.Actor.ID), string(msg.Action))
 				}
 			}
 		}
@@ -176,7 +177,7 @@ func (a *Agent) handleEvent(ctx context.Context, msg events.Message) {
 		defer cancel()
 
 		if err := a.inject(injectCtx, containerID, serviceSecrets); err != nil {
-			log.Printf("❌ [DSO Agent] Failed injection [start] for container %s (%s/%s): %v\n", containerID[:12], project, service, err)
+			log.Printf("❌ [DSO Agent] Failed injection [start] for container %s (%s/%s): %v\n", util.ShortID(containerID), project, service, err)
 			// Clear tracker so a restart (die→start) retries injection
 			a.mu.Lock()
 			delete(a.injected, containerID)
@@ -185,7 +186,7 @@ func (a *Agent) handleEvent(ctx context.Context, msg events.Message) {
 			a.mu.Lock()
 			a.injected[containerID] = true
 			a.mu.Unlock()
-			log.Printf("🔒 [DSO Agent] Injected secrets [start] for container %s (%s/%s)\n", containerID[:12], project, service)
+			log.Printf("🔒 [DSO Agent] Injected secrets [start] for container %s (%s/%s)\n", util.ShortID(containerID), project, service)
 		}
 
 	case "die", "destroy":

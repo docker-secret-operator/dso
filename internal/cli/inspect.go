@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/docker/docker/client"
+
+	"github.com/docker-secret-operator/dso/internal/util"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +31,7 @@ func NewInspectCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			fmt.Printf("Container Environment Variables for %s (%s):\n", containerInfo.Name, containerID[:12])
+			fmt.Printf("Container Environment Variables for %s (%s):\n", containerInfo.Name, util.ShortID(containerID))
 			found := false
 			for _, envVar := range containerInfo.Config.Env {
 				parts := strings.SplitN(envVar, "=", 2)
