@@ -22,7 +22,7 @@ func NewExportCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			socketPath := "/run/dso/dso.sock"
+			socketPath := DefaultSocketPath()
 			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 				socketPath = custom
 			}

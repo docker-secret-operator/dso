@@ -5,15 +5,45 @@
 # Responsibilities:
 #   1. Detect OS + architecture
 #   2. Download the correct prebuilt binary from GitHub Releases
-#   3. Place it in the appropriate path (root vs. user)
-#   4. chmod +x
-#   5. Print version, location, and context-aware next steps
+#   3. Verify SHA-256 checksum before installing anything
+#   4. Place it in the appropriate path (root vs. user)
+#   5. chmod +x
+#   6. Print version, location, and context-aware next steps
 #
 # Does NOT:
 #   - Compile any Go code
 #   - Set up systemd services
 #   - Initialize the vault
 #   - Install plugins
+#
+# ── SAFE INSTALL (recommended) ──────────────────────────────────────────────
+# Download and inspect this script before running it:
+#
+#   curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh \
+#     -o /tmp/dso-install.sh
+#   cat /tmp/dso-install.sh          # review the script
+#   bash /tmp/dso-install.sh         # run once satisfied
+#   rm /tmp/dso-install.sh           # clean up
+#
+# ── WHAT THIS SCRIPT DOES ───────────────────────────────────────────────────
+# 1. Fetches the latest release tag from GitHub (no code executed yet)
+# 2. Downloads the release tarball + SHA-256 checksum file over HTTPS
+# 3. Verifies the tarball matches the checksum — exits on mismatch
+# 4. Extracts the binary and installs it (nothing from the internet runs)
+#
+# ── COSIGN VERIFICATION (optional, strongest guarantee) ─────────────────────
+# Every release tarball is signed with Sigstore keyless cosign. To verify:
+#
+#   TARBALL="dso-VERSION-OS-ARCH.tar.gz"
+#   cosign verify-blob \
+#     --bundle "${TARBALL}.bundle" \
+#     --certificate-identity-regexp \
+#       "https://github.com/docker-secret-operator/dso/.github/workflows/release.yml" \
+#     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+#     "${TARBALL}"
+#
+# ── SOURCE ──────────────────────────────────────────────────────────────────
+# https://github.com/docker-secret-operator/dso/blob/main/scripts/install.sh
 # ==============================================================================
 
 set -euo pipefail

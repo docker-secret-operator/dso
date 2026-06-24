@@ -117,6 +117,24 @@ checksum:
   name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
   algorithm: sha256
 
+# Keyless signing via Sigstore/cosign.
+# Each archive and checksum file gets a .bundle sidecar containing the
+# Rekor transparency-log entry + certificate chain. Verifiers can run:
+#   cosign verify-blob --bundle <file>.bundle \
+#     --certificate-identity-regexp="https://github.com/docker-secret-operator/dso/.github/workflows/release.yml" \
+#     --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+#     <file>
+signs:
+  - cmd: cosign
+    args:
+      - sign-blob
+      - --yes
+      - --bundle=${signature}
+      - ${artifact}
+    signature: ${artifact}.bundle
+    artifacts: checksum
+    output: true
+
 snapshot:
   name_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"
 

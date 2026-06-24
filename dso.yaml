@@ -9,4 +9,4 @@ agent:
     mode: polling
     polling_interval: 30s
 
-secrets: []
+

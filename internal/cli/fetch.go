@@ -33,7 +33,7 @@ func NewFetchCmd() *cobra.Command {
 				return
 			}
 
-			socketPath := "/run/dso/dso.sock"
+			socketPath := DefaultSocketPath()
 			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 				socketPath = custom
 			}

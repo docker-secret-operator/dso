@@ -62,7 +62,7 @@ export default function LoginPage() {
       if (data.session) {
         localStorage.setItem('dso_session', JSON.stringify(data.session))
       }
-      router.replace('/discovery')
+      router.replace('/dashboard')
     } catch {
       setError('Unable to reach the API server. Is the DSO agent running?')
     } finally {
@@ -169,6 +169,12 @@ export default function LoginPage() {
                 </span>
               ) : 'Sign in'}
             </button>
+
+            {/* Forgot password */}
+            <p className="text-center text-xs text-slate-600 pt-1">
+              Forgot your password?{' '}
+              <span className="text-slate-500">Contact your administrator to reset it.</span>
+            </p>
           </form>
         </div>
 

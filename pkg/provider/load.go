@@ -15,6 +15,7 @@ import (
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/backend/env"
 	"github.com/docker-secret-operator/dso/pkg/backend/file"
+	"github.com/docker-secret-operator/dso/pkg/backend/local"
 	"github.com/hashicorp/go-plugin"
 )
 
@@ -160,6 +161,15 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 		return prov, nil, nil
 	case "env":
 		prov := &env.EnvProvider{}
+		return prov, nil, nil
+	case "local":
+		prov := &local.LocalVaultProvider{}
+		if providerConfig == nil {
+			providerConfig = make(map[string]string)
+		}
+		if err := prov.Init(providerConfig); err != nil {
+			return nil, nil, fmt.Errorf("local vault provider failed to initialize: %w", err)
+		}
 		return prov, nil, nil
 	}
 

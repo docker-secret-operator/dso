@@ -239,7 +239,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate providers
-	validProviderTypes := map[string]bool{"vault": true, "aws": true, "azure": true, "huawei": true}
+	validProviderTypes := map[string]bool{"vault": true, "aws": true, "azure": true, "huawei": true, "local": true}
 	for name, prov := range c.Providers {
 		if prov.Type == "" {
 			return fmt.Errorf("provider '%s' missing 'type'", name)

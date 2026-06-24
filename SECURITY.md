@@ -76,16 +76,35 @@ Continuous daemon with provider-based rotation:
 
 ### File Injection (Recommended for Production)
 
-When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` inside the container and streams the secret via an in-memory tar archive using the Docker API.
+When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` inside the container and writes the secret using Docker's exec API.
 
 - Never writes to host disk (SSD or HDD)
 - Disappears if the container stops or the machine reboots
 - **Invisible to `docker inspect`**
 - File permissions: `0400` (read-only by owner, no group/world access)
 
+**How the write works:** The secret is base64-encoded and passed as an environment variable (`_DSO_SECRET`) to the exec process — not embedded in the shell command string. This means the secret value never appears in the process's argv or `/proc/<pid>/cmdline` for the duration of the write. The shell reads it from its own environment and decodes it directly into a temp file, which is then atomically renamed to the final path.
+
 ### Environment Variable Injection
 
-When you use `dso://`, secrets are injected as environment variables. **These are visible to `docker inspect`.** Only use for non-sensitive configuration data or when your application requires environment variable injection.
+When you use `dso://`, secrets are injected as environment variables.
+
+> ⚠️ **Security limitation:** Environment variables injected via `dso://` are **visible to `docker inspect`** and to any process running as root on the host. Anyone with Docker socket access can read them with `docker inspect <container>`.
+
+DSO prints a warning at runtime each time `dso://` is used:
+```
+⚠️  WARNING: Service 'myapp' is injecting a secret into environment variable 'DB_PASSWORD'
+    via dso:// (environment injection). This is visible in docker inspect.
+```
+
+**When `dso://` is acceptable:**
+- Non-sensitive configuration (feature flags, public endpoints)
+- Applications that only accept secrets via environment variables and cannot read files
+- Development environments where `docker inspect` access is trusted
+
+**When to use `dsofile://` instead:**
+- Any credential, token, key, or password in a shared or production environment
+- Any secret that must not be readable by other users with Docker socket access
 
 ### Socket Security (Cloud/Agent Mode)
 
@@ -286,6 +305,64 @@ DSO does **not** provide protection against these threats:
 | Requires host filesystem | ✅ Yes | ❌ No | ❌ No |
 
 **Recommendation**: Always prefer `dsofile://` for production workloads.
+
+---
+
+## Release Integrity
+
+Every release artifact is protected by two independent verification mechanisms.
+
+### SHA-256 Checksum
+
+Every release includes a `dso-VERSION-checksums.txt` file. The installer verifies this automatically before placing any binary. To verify manually:
+
+```bash
+# Download tarball and checksum
+curl -fsSL https://github.com/docker-secret-operator/dso/releases/download/vVERSION/dso-VERSION-linux-amd64.tar.gz \
+  -o dso.tar.gz
+curl -fsSL https://github.com/docker-secret-operator/dso/releases/download/vVERSION/dso-VERSION-checksums.txt \
+  -o checksums.txt
+
+# Verify
+grep "dso-VERSION-linux-amd64.tar.gz" checksums.txt | sha256sum --check
+```
+
+### Cosign Keyless Signature (Sigstore)
+
+Starting with v3.6.0, every release checksum file is signed using [Sigstore](https://sigstore.dev) keyless cosign. The signing identity is the GitHub Actions workflow, verifiable against the public Rekor transparency log — no long-lived private key required.
+
+Each release includes a `.bundle` sidecar file containing the certificate chain and Rekor entry.
+
+```bash
+# Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+
+TARBALL="dso-VERSION-linux-amd64.tar.gz"
+CHECKSUMS="dso-VERSION-checksums.txt"
+
+# Verify the checksum file was signed by our release workflow
+cosign verify-blob \
+  --bundle "${CHECKSUMS}.bundle" \
+  --certificate-identity-regexp \
+    "https://github.com/docker-secret-operator/dso/.github/workflows/release.yml" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "${CHECKSUMS}"
+
+# Then verify the tarball against the signed checksum
+grep "${TARBALL}" "${CHECKSUMS}" | sha256sum --check
+```
+
+### Installer Safety
+
+The install script (`scripts/install.sh`) downloads a tarball, verifies the SHA-256 checksum, and only then installs the binary. It does **not** pipe arbitrary remote code directly to a shell interpreter.
+
+**Recommended install flow (inspect before running):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh \
+  -o /tmp/dso-install.sh
+cat /tmp/dso-install.sh        # inspect the script
+bash /tmp/dso-install.sh       # run once satisfied
+```
 
 ---
 

@@ -6,7 +6,8 @@ on:
       - "v*"   # Trigger on any tag matching v*, e.g. v3.4.0, v3.4.1-rc1
 
 permissions:
-  contents: write  # Required for GoReleaser to create GitHub Releases
+  contents: write       # Required for GoReleaser to create GitHub Releases
+  id-token: write       # Required for keyless cosign signing via Sigstore OIDC
 
 jobs:
   release:
@@ -26,7 +27,15 @@ jobs:
         with:
           go-version-file: go.mod   # Reads Go version from go.mod exactly
 
-      # ── 3. Cache Go modules ───────────────────────────────────────────────
+      # ── 3. Install cosign (keyless Sigstore signing) ──────────────────────
+      # Artifacts are signed with a short-lived certificate tied to this
+      # workflow's GitHub OIDC identity. No long-lived signing keys required.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.1"
+
+      # ── 4. Cache Go modules ───────────────────────────────────────────────
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
@@ -37,17 +46,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # ── 4. Validate build before release ──────────────────────────────────
+      # ── 5. Validate build before release ──────────────────────────────────
       - name: Verify build
         run: make build && ls -lh docker-dso
 
-      # ── 5. Clean artifacts before release ──────────────────────────────────
+      # ── 6. Clean artifacts before release ──────────────────────────────────
       - name: Clean build artifacts
         run: |
           make clean
           echo "✅ Build artifacts cleaned"
 
-      # ── 6. Run GoReleaser ─────────────────────────────────────────────────
+      # ── 7. Run GoReleaser (builds, packages, signs, publishes) ───────────
+      # GoReleaser invokes cosign via the `signs` block in .goreleaser.yml.
+      # The resulting *.bundle sidecars are uploaded to the GitHub Release
+      # alongside the tarballs and checksum file.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -56,3 +68,5 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cosign keyless signing reads GITHUB_TOKEN for OIDC token exchange.
+          COSIGN_YES: "true"

@@ -67,9 +67,9 @@ export function DiscoveryPageClient() {
   // Calculate container counts for filter UI
   const containerCounts = useMemo(
     () => ({
-      managed: containers.filter((c) => c.dso_awareness.status === 'managed').length,
-      partial: containers.filter((c) => c.dso_awareness.status === 'partial').length,
-      unmanaged: containers.filter((c) => c.dso_awareness.status === 'unmanaged').length,
+      managed: containers.filter((c) => c.dso_awareness?.status === 'managed').length,
+      partial: containers.filter((c) => c.dso_awareness?.status === 'partial').length,
+      unmanaged: containers.filter((c) => c.dso_awareness?.status === 'unmanaged').length,
     }),
     [containers]
   )
@@ -77,7 +77,7 @@ export function DiscoveryPageClient() {
   // Filter containers by status
   const filteredByStatus = useMemo(() => {
     if (selectedFilters.length === 0) return containers
-    return containers.filter((c) => selectedFilters.includes(c.dso_awareness.status as FilterType))
+    return containers.filter((c) => selectedFilters.includes(c.dso_awareness?.status as FilterType))
   }, [containers, selectedFilters])
 
   // Filter and search containers
@@ -87,9 +87,9 @@ export function DiscoveryPageClient() {
     const query = searchQuery.toLowerCase()
     return filteredByStatus.filter(
       (c) =>
-        c.name.toLowerCase().includes(query) ||
-        c.image.toLowerCase().includes(query) ||
-        Object.values(c.labels).some((label) => label.toLowerCase().includes(query))
+        c.name?.toLowerCase().includes(query) ||
+        c.image?.toLowerCase().includes(query) ||
+        Object.values(c.labels ?? {}).some((label) => label.toLowerCase().includes(query))
     )
   }, [filteredByStatus, searchQuery])
 
@@ -107,8 +107,8 @@ export function DiscoveryPageClient() {
         return sorted.sort((a, b) => {
           const statusOrder = { managed: 0, partial: 1, unmanaged: 2 }
           return (
-            (statusOrder[a.dso_awareness.status as FilterType] ?? 3) -
-            (statusOrder[b.dso_awareness.status as FilterType] ?? 3)
+            (statusOrder[a.dso_awareness?.status as FilterType] ?? 3) -
+            (statusOrder[b.dso_awareness?.status as FilterType] ?? 3)
           )
         })
       default:
@@ -542,11 +542,11 @@ export function DiscoveryPageClient() {
 
                         {/* DSO Status Badge */}
                         <Badge
-                          className={`${getDSOBadgeColor(container.dso_awareness.status)} flex items-center gap-1 whitespace-nowrap`}
+                          className={`${getDSOBadgeColor(container.dso_awareness?.status ?? '')} flex items-center gap-1 whitespace-nowrap`}
                         >
-                          {getDSOIcon(container.dso_awareness.status)}
-                          {container.dso_awareness.status.charAt(0).toUpperCase() +
-                            container.dso_awareness.status.slice(1)}
+                          {getDSOIcon(container.dso_awareness?.status ?? '')}
+                          {(container.dso_awareness?.status ?? '').charAt(0).toUpperCase() +
+                            (container.dso_awareness?.status ?? '').slice(1)}
                         </Badge>
                       </div>
                     </div>
@@ -585,7 +585,7 @@ export function DiscoveryPageClient() {
                               <p className="text-sm font-mono text-gray-900">{container.network.ip}</p>
                             </div>
                           )}
-                          {container.network.networks.length > 0 && (
+                          {(container.network?.networks?.length ?? 0) > 0 && (
                             <div>
                               <p className="text-xs text-gray-600">Networks</p>
                               <p className="text-sm text-gray-900">{container.network.networks.join(', ')}</p>
@@ -595,20 +595,22 @@ export function DiscoveryPageClient() {
                       </div>
 
                       {/* Restart Policy */}
-                      <div className="pt-2 border-t">
-                        <p className="text-xs text-gray-600 uppercase font-semibold mb-2">Restart Policy</p>
-                        <Badge className="bg-purple-100 text-purple-800">
-                          {container.restart_policy.name}
-                          {container.restart_policy.max_retry_count > 0 &&
-                            ` (max ${container.restart_policy.max_retry_count})`}
-                        </Badge>
-                      </div>
+                      {container.restart_policy && (
+                        <div className="pt-2 border-t">
+                          <p className="text-xs text-gray-600 uppercase font-semibold mb-2">Restart Policy</p>
+                          <Badge className="bg-purple-100 text-purple-800">
+                            {container.restart_policy.name}
+                            {(container.restart_policy.max_retry_count ?? 0) > 0 &&
+                              ` (max ${container.restart_policy.max_retry_count})`}
+                          </Badge>
+                        </div>
+                      )}
 
                       {/* DSO Status Detail */}
                       <div className="pt-2 border-t">
                         <p className="text-xs text-gray-600 uppercase font-semibold mb-2">DSO Configuration</p>
                         <div className="space-y-2">
-                          {container.dso_awareness.managed_secrets.length > 0 && (
+                          {(container.dso_awareness?.managed_secrets?.length ?? 0) > 0 && (
                             <div>
                               <p className="text-xs text-gray-600">Managed Secrets</p>
                               <div className="flex flex-wrap gap-2 mt-1">
@@ -620,7 +622,7 @@ export function DiscoveryPageClient() {
                               </div>
                             </div>
                           )}
-                          {container.dso_awareness.config_refs.length > 0 && (
+                          {(container.dso_awareness?.config_refs?.length ?? 0) > 0 && (
                             <div>
                               <p className="text-xs text-gray-600">Configuration References</p>
                               <div className="space-y-1 mt-1">
@@ -664,20 +666,20 @@ export function DiscoveryPageClient() {
                       )}
 
                       {/* Labels */}
-                      {Object.keys(container.labels).length > 0 && (
+                      {Object.keys(container.labels ?? {}).length > 0 && (
                         <div className="pt-2 border-t">
                           <p className="text-xs text-gray-600 uppercase font-semibold mb-2">Labels</p>
                           <div className="space-y-1">
-                            {Object.entries(container.labels)
+                            {Object.entries(container.labels ?? {})
                               .slice(0, 5)
                               .map(([key, value]) => (
                                 <p key={key} className="text-xs text-gray-700">
                                   <span className="font-semibold">{key}</span>: {value}
                                 </p>
                               ))}
-                            {Object.keys(container.labels).length > 5 && (
+                            {Object.keys(container.labels ?? {}).length > 5 && (
                               <p className="text-xs text-gray-600 italic">
-                                +{Object.keys(container.labels).length - 5} more labels
+                                +{Object.keys(container.labels ?? {}).length - 5} more labels
                               </p>
                             )}
                           </div>

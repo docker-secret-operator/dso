@@ -74,9 +74,14 @@ node_modules/
 ffmpeg-*
 reports/
 CLAUDE.md
-
+dso.yaml
 # Local release utility — not committed, run manually
 scripts/bump-version.sh
 # Build output and local database
 /dso
 data/dso.db
+data/dso.db-shm
+data/dso.db-wal
+dso.yaml.bak*
+data/dso.db-shm
+data/dso.db-wal

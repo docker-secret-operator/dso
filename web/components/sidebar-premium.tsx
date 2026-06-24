@@ -154,8 +154,11 @@ export function SidebarPremium() {
   const pathname = usePathname() || ''
   const { role } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  // Initialise every named group explicitly so that defaultOpen: false groups
+  // actually start closed. Previously, groups absent from the map evaluated as
+  // `undefined !== false` → true, making everything open at first render.
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(navGroups.filter(g => g.name && g.defaultOpen).map(g => [g.name, true]))
+    Object.fromEntries(navGroups.filter(g => g.name).map(g => [g.name, g.defaultOpen ?? false]))
   )
 
   // Roles that may access the Admin nav group
@@ -223,7 +226,7 @@ export function SidebarPremium() {
           // Gate Admin section to admin role only
           if (group.name === 'Admin' && !isAdmin) return null
 
-          const groupOpen = !group.name || openGroups[group.name] !== false
+          const groupOpen = !group.name || openGroups[group.name] === true
           const isCollapsible = !!group.name
 
           return (
@@ -233,9 +236,14 @@ export function SidebarPremium() {
                 <button
                   onClick={() => isCollapsible && toggleGroup(group.name)}
                   className="flex items-center justify-between w-full px-2 py-1.5 mb-0.5 group"
+                  title={group.name === 'Labs' ? 'Experimental features — not production-ready, state may not persist' : undefined}
                 >
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-600 group-hover:text-slate-500 transition-colors">
-                    {group.name}
+                  <span className={`text-[10px] font-semibold uppercase tracking-widest transition-colors ${
+                    group.name === 'Labs'
+                      ? 'text-amber-600/70 group-hover:text-amber-500/80'
+                      : 'text-slate-600 group-hover:text-slate-500'
+                  }`}>
+                    {group.name === 'Labs' ? '⚗ Labs' : group.name}
                   </span>
                   {isCollapsible && (
                     <ChevronDown

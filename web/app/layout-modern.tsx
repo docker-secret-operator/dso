@@ -1,3 +1,8 @@
+/**
+ * @deprecated This is a legacy root layout that is no longer used.
+ * The active layout is `app/layout.tsx`, which uses `components/app-shell.tsx`
+ * with `components/sidebar-premium.tsx`. This file can be safely deleted.
+ */
 import type { Metadata } from 'next'
 import { Providers } from '@/components/providers'
 import { AuthGuard } from '@/components/auth-guard'

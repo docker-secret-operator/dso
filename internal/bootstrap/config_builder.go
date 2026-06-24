@@ -270,6 +270,7 @@ func (cb *ConfigBuilder) Validate() error {
 		"azure":  true,
 		"huawei": true,
 		"vault":  true,
+		"local":  true,
 	}
 
 	for providerName, providerCfg := range cb.config.Providers {

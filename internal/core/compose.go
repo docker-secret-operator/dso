@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
+	"github.com/docker-secret-operator/dso/internal/paths"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"gopkg.in/yaml.v3"
@@ -128,7 +129,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 			envMap[k] = v
 		}
 	} else if cfg != nil {
-		socketPath := "/run/dso/dso.sock"
+		socketPath := paths.DefaultSocketPath()
 		if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 			socketPath = custom
 		}

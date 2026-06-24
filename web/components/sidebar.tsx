@@ -1,3 +1,8 @@
+/**
+ * @deprecated This is a legacy sidebar implementation that is no longer used.
+ * The active sidebar is `components/sidebar-premium.tsx`, rendered by
+ * `components/app-shell.tsx`. This file can be safely deleted.
+ */
 'use client'
 
 import Link from 'next/link'

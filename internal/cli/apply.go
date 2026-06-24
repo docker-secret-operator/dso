@@ -178,7 +178,7 @@ func (s *socketReconciler) Reconcile(ctx context.Context, cfg *config.Config, pl
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
 
-	socketPath := "/run/dso/dso.sock"
+	socketPath := DefaultSocketPath()
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
 	}

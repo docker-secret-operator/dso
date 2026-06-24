@@ -47,7 +47,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 ```bash
 # 1. Install DSO
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && bash /tmp/dso-install.sh
 
 # 2. Run setup wizard for local mode
 docker dso setup --mode local
@@ -77,7 +77,7 @@ docker dso status
 
 ```bash
 # 1. Install DSO system-wide
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && sudo bash /tmp/dso-install.sh
 
 # 2. Bootstrap agent mode (auto-detects cloud provider, configures systemd service)
 sudo docker dso bootstrap agent
@@ -98,7 +98,7 @@ docker dso status
 
 ```bash
 # 1. Install DSO
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && bash /tmp/dso-install.sh
 
 # 2. Run setup wizard for local mode
 docker dso setup --mode local
@@ -127,12 +127,12 @@ docker dso doctor
 
 ```bash
 # Local mode (non-interactive)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && bash /tmp/dso-install.sh
 docker dso setup --mode local --non-interactive
 docker dso init
 
 # Agent mode (non-interactive)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && sudo bash /tmp/dso-install.sh
 sudo docker dso bootstrap agent --non-interactive --provider aws
 ```
 
@@ -181,10 +181,10 @@ Rollback on failure (auto-restore previous state)
 
 ```bash
 # System-wide install (recommended for production)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && sudo bash /tmp/dso-install.sh
 
 # User install (local development only)
-curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh -o /tmp/dso-install.sh && bash /tmp/dso-install.sh
 
 # Verify
 docker dso version
