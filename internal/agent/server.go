@@ -119,14 +119,18 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 		data map[string]string
 		err  error
 	}
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer fetchCancel()
+
 	fetchCh := make(chan fetchResult, 1)
 	go func() {
 		d, e := prov.GetSecret(req.Secret)
-		fetchCh <- fetchResult{d, e}
+		select {
+		case fetchCh <- fetchResult{d, e}:
+		case <-fetchCtx.Done():
+			// timeout already fired; nobody is reading fetchCh, exit cleanly
+		}
 	}()
-
-	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer fetchCancel()
 
 	var data map[string]string
 	select {

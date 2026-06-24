@@ -51,7 +51,11 @@ func (s *EventStore) Add(e Event) {
 	s.mu.Unlock()
 
 	if s.hub != nil {
-		s.hub.broadcast <- e
+		select {
+		case s.hub.broadcast <- e:
+		default:
+			// Hub buffer full; drop broadcast to prevent blocking Add callers.
+		}
 	}
 }
 

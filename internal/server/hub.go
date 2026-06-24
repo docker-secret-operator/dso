@@ -31,7 +31,7 @@ type Hub struct {
 
 func NewHub(logger *zap.Logger) *Hub {
 	return &Hub{
-		broadcast:  make(chan Event),
+		broadcast:  make(chan Event, 64), // buffered to prevent EventStore.Add from blocking
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		clients:    make(map[*Client]bool),
@@ -104,9 +104,14 @@ func (c *Client) writePump() {
 }
 
 // readPump ensures the connection detects disconnects quickly since browsers often close TCP uncleanly.
-func (c *Client) readPump() {
+// ctx is the request context; when it is cancelled the goroutine exits without blocking on unregister.
+func (c *Client) readPump(ctx context.Context) {
 	defer func() {
-		c.hub.unregister <- c
+		select {
+		case c.hub.unregister <- c:
+		case <-ctx.Done():
+			// Hub already stopped; skip unregister to avoid blocking forever.
+		}
 		_ = c.conn.Close()
 	}()
 	c.conn.SetReadLimit(512)

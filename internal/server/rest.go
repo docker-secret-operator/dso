@@ -187,15 +187,21 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 	}
 	severity := r.URL.Query().Get("severity")
 
+	// Register the client with the hub before starting pumps so writePump is the
+	// sole goroutine that calls conn.WriteJSON — websocket.Conn is not goroutine-safe.
+	s.Hub.register <- client
+	go client.writePump()
+	go client.readPump(r.Context())
+
+	// Push historical events through the send channel (never directly on conn).
 	initialEvents := s.EventStore.GetLast(limit, severity)
 	for _, ev := range initialEvents {
-		if err := client.conn.WriteJSON(ev); err != nil {
-			return
+		select {
+		case client.send <- ev:
+		default:
+			// Client buffer full; skip remaining history rather than block.
 		}
 	}
-
-	go client.writePump()
-	go client.readPump()
 }
 
 func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) {
