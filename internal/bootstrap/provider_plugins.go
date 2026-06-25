@@ -8,6 +8,13 @@ import (
 	"path/filepath"
 )
 
+// knownProviders is the authoritative allowlist of valid provider names.
+// Provider names are used directly in file paths; unknown names are rejected
+// to prevent path traversal via crafted dso.yaml entries.
+var knownProviders = map[string]bool{
+	"aws": true, "azure": true, "vault": true, "huawei": true,
+}
+
 // ProviderPluginInstaller handles building and installing provider plugins
 type ProviderPluginInstaller struct {
 	logger Logger
@@ -75,6 +82,10 @@ func (ppi *ProviderPluginInstaller) InstallProviderPlugins(ctx context.Context, 
 
 // buildAndInstallPlugin builds and installs a single provider plugin
 func (ppi *ProviderPluginInstaller) buildAndInstallPlugin(ctx context.Context, provider string, pluginDir string) error {
+	if !knownProviders[provider] {
+		return fmt.Errorf("unknown provider %q: must be one of aws, azure, vault, huawei", provider)
+	}
+
 	pluginBinary := filepath.Join(pluginDir, fmt.Sprintf("dso-provider-%s", provider))
 
 	// Check if plugin already exists

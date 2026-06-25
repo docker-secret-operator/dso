@@ -94,6 +94,17 @@ type RESTServer struct {
 	Auth          *auth.Authenticator
 }
 
+// secureHeaders wraps a handler and adds security response headers to every reply.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // maxRequestBodyBytes caps incoming request bodies to prevent memory exhaustion.
 // WebSocket upgrade requests carry no body so they are exempt.
 const maxRequestBodyBytes = 64 * 1024 // 64 KB
@@ -404,11 +415,29 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 // unix-socket deployments may still run without a token for local development.
 // The shutdown function should be called on graceful agent shutdown to properly
 // close connections.
+const (
+	minAuthTokenBytes = 16  // brute-force floor
+	maxAuthTokenBytes = 512 // prevents constant-time compare from touching megabytes
+)
+
 func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) (func(), error) {
 	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
 		return nil, fmt.Errorf(
 			"refusing to start REST API on non-loopback address %q without authentication: "+
 				"set DSO_AUTH_TOKEN, or bind the API to a loopback address (e.g. 127.0.0.1)", addr)
+	}
+
+	if token := os.Getenv("DSO_AUTH_TOKEN"); token != "" {
+		if len(token) < minAuthTokenBytes {
+			return nil, fmt.Errorf(
+				"DSO_AUTH_TOKEN is too short (%d bytes); minimum is %d bytes — use a random token of at least 16 characters",
+				len(token), minAuthTokenBytes)
+		}
+		if len(token) > maxAuthTokenBytes {
+			return nil, fmt.Errorf(
+				"DSO_AUTH_TOKEN exceeds maximum length (%d bytes); maximum is %d bytes",
+				len(token), maxAuthTokenBytes)
+		}
 	}
 
 	hub := NewHub(logger)
@@ -441,7 +470,7 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", restServer)
+	mux.Handle("/", secureHeaders(restServer))
 
 	server := &http.Server{
 		Addr:              addr,
