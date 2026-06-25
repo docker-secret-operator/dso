@@ -274,10 +274,13 @@ func (c *Config) Validate() error {
 		// Validate provider reference
 		providerName := sec.Provider
 		if providerName == "" {
-			// Default to first provider
-			for name := range c.Providers {
-				providerName = name
-				break
+			if len(c.Providers) == 1 {
+				for name := range c.Providers {
+					providerName = name
+				}
+				sec.Provider = providerName
+			} else {
+				return fmt.Errorf("secret %q has no provider specified; set the 'provider' field (multiple providers are configured)", sec.Name)
 			}
 		}
 		if _, exists := c.Providers[providerName]; !exists {

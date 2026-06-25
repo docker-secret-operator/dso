@@ -193,16 +193,18 @@ func (c *SecretCache) Close() {
 // It acts as the secure intermediary between the CLI and the Agent runtime.
 // Secrets are stored as []byte and zeroized when cleared.
 type Cache struct {
-	secrets  map[string][]byte // hash → plaintext value
-	projects map[string]*resolver.AgentSeed
-	mu       sync.RWMutex
+	secrets       map[string][]byte    // hash → plaintext value
+	projects      map[string]*resolver.AgentSeed
+	projectHashes map[string][]string  // project → []hash (reverse index for zeroization)
+	mu            sync.RWMutex
 }
 
 // NewCache initializes an empty thread-safe cache for Native Vault secrets.
 func NewCache() *Cache {
 	return &Cache{
-		secrets:  make(map[string][]byte),
-		projects: make(map[string]*resolver.AgentSeed),
+		secrets:       make(map[string][]byte),
+		projects:      make(map[string]*resolver.AgentSeed),
+		projectHashes: make(map[string][]string),
 	}
 }
 
@@ -217,9 +219,12 @@ func (c *Cache) Seed(seed *resolver.AgentSeed) {
 
 	c.projects[seed.ProjectName] = seed
 
+	hashes := make([]string, 0, len(seed.SecretPool))
 	for hash, value := range seed.SecretPool {
 		c.secrets[hash] = []byte(value)
+		hashes = append(hashes, hash)
 	}
+	c.projectHashes[seed.ProjectName] = hashes
 }
 
 // Get retrieves a plaintext secret by its pool hash.
@@ -250,7 +255,14 @@ func (c *Cache) Clear(project string) {
 	defer c.mu.Unlock()
 
 	delete(c.projects, project)
-	// Note: SecretPool secrets are owned by the AgentSeed; we don't zeroize here
-	// since the seed may still be referenced elsewhere. Zeroization happens when
-	// the seed is garbage collected.
+
+	if hashes, ok := c.projectHashes[project]; ok {
+		for _, hash := range hashes {
+			if b, exists := c.secrets[hash]; exists {
+				zeroBytes(b)
+				delete(c.secrets, hash)
+			}
+		}
+		delete(c.projectHashes, project)
+	}
 }

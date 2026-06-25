@@ -62,6 +62,7 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 			zap.Error(err))
 		logger.Error("Lock manager is REQUIRED for rotation safety. Cannot proceed without it.",
 			zap.String("path", "/var/lib/dso/locks"))
+		cancel()
 		return nil, fmt.Errorf("rotation lock manager initialization failed: %w", err)
 	}
 

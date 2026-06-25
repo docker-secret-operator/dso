@@ -333,6 +333,25 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		AutoSyncEnabled bool   `json:"auto_sync_enabled"`
 	}
 
+	// Build a lookup map from config for rotation and injection metadata.
+	type secretMeta struct {
+		rotationEnabled bool
+		injectionType   string
+	}
+	configMeta := make(map[string]secretMeta)
+	if s.Config != nil {
+		for _, sec := range s.Config.Secrets {
+			injType := "env"
+			if sec.Inject.Type != "" {
+				injType = sec.Inject.Type
+			}
+			configMeta[sec.Name] = secretMeta{
+				rotationEnabled: sec.Rotation.Enabled,
+				injectionType:   injType,
+			}
+		}
+	}
+
 	res := []SecretResponse{}
 	for _, k := range keys {
 		parts := strings.SplitN(k, ":", 2)
@@ -343,16 +362,14 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 			name = parts[1]
 		}
 
+		meta := configMeta[name]
 		res = append(res, SecretResponse{
 			Name:            name,
 			Provider:        prov,
-			Status:          "synced",
-			LastSyncedAt:    time.Now().Format(time.RFC3339),
-			LastUpdatedAt:   time.Now().Format(time.RFC3339),
-			InjectionType:   "env",
-			Version:         "v1",
-			RotationEnabled: true,
-			AutoSyncEnabled: true,
+			Status:          "synced", // key is present in cache → it was successfully synced
+			InjectionType:   meta.injectionType,
+			RotationEnabled: meta.rotationEnabled,
+			// LastSyncedAt, LastUpdatedAt, Version omitted — not yet tracked; omitempty prevents fabrication
 		})
 	}
 

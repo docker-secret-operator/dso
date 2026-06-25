@@ -216,7 +216,11 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		fmt.Println("🚀 Starting DSO agent...")
 
 		// 1. Backup the custom config we just generated so bootstrap doesn't overwrite it with the default template
-		configData, _ := os.ReadFile(configPath)
+		configData, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			fmt.Printf("⚠ Warning: could not back up existing config at %s: %v — proceeding without backup\n", configPath, readErr)
+			configData = nil
+		}
 
 		// 2. Build bootstrap command with --non-interactive and provider to avoid interactive prompts (like AWS region) hitting EOF
 		bootstrapArgs := []string{"sudo", "docker", "dso", "bootstrap", "agent", "--provider", detectedProvider.Provider, "--non-interactive"}
@@ -252,7 +256,12 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 
 		// 3. Restore the user's custom config layout (with secrets: {})
 		if len(configData) > 0 {
-			os.WriteFile(configPath, configData, 0664)
+			if writeErr := os.WriteFile(configPath, configData, 0664); writeErr != nil {
+				fmt.Printf("❌ Error: failed to restore your config to %s: %v\n", configPath, writeErr)
+				fmt.Println("  Your custom config was backed up in memory but could not be written back.")
+				fmt.Printf("  To restore manually, re-edit %s with your secrets configuration.\n", configPath)
+				return fmt.Errorf("failed to restore config: %w", writeErr)
+			}
 		}
 	}
 
