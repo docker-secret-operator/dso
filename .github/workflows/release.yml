@@ -6,7 +6,9 @@ on:
       - "v*"   # Trigger on any tag matching v*, e.g. v3.4.0, v3.4.1-rc1
 
 permissions:
-  contents: write  # Required for GoReleaser to create GitHub Releases
+  contents: write      # Required for GoReleaser to create GitHub Releases
+  id-token: write      # Required for cosign keyless signing (OIDC token)
+  packages: write      # Required if publishing container images
 
 jobs:
   release:
@@ -37,17 +39,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # ── 4. Validate build before release ──────────────────────────────────
+      # ── 4. Install cosign for keyless release signing ─────────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # ── 5. Install syft for SBOM generation ───────────────────────────────
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # ── 7. Validate build before release ──────────────────────────────────
       - name: Verify build
         run: make build && ls -lh docker-dso
 
-      # ── 5. Clean artifacts before release ──────────────────────────────────
+      # ── 8. Clean artifacts before release ─────────────────────────────────
       - name: Clean build artifacts
         run: |
           make clean
           echo "✅ Build artifacts cleaned"
 
-      # ── 6. Run GoReleaser ─────────────────────────────────────────────────
+      # ── 9. Run GoReleaser (builds, signs checksum, generates SBOMs) ────────
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

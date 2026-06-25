@@ -117,6 +117,25 @@ checksum:
   name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
   algorithm: sha256
 
+# Sign the checksum file with cosign keyless signing (OIDC-based, no long-lived key).
+# Produces a .sig and .pem certificate alongside the checksum file.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+# Generate a CycloneDX SBOM for each release archive using syft.
+sboms:
+  - artifacts: archive
+    args: ["$artifact", "--file", "$sbom", "--output", "cyclonedx-json"]
+
 snapshot:
   name_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"
 
