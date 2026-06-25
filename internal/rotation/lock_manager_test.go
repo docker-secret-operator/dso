@@ -155,6 +155,32 @@ func TestLockManager_ConcurrentMutualExclusion(t *testing.T) {
 	}
 }
 
+// TestLockManager_IdempotentRelease verifies the C5 fix: calling ReleaseLock on
+// a key that was never acquired, or releasing twice, must not panic or unlock an
+// unlocked mutex.
+func TestLockManager_IdempotentRelease(t *testing.T) {
+	lm, err := NewLockManager("", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewLockManager: %v", err)
+	}
+
+	// Release without acquire — must not panic.
+	lm.ReleaseLock("never-acquired")
+
+	// Acquire, release, release again — second release must be a no-op.
+	if err := lm.AcquireLock("double-release", time.Second); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+	lm.ReleaseLock("double-release")
+	lm.ReleaseLock("double-release") // must not panic
+
+	// Lock must be re-acquirable after double-release.
+	if err := lm.AcquireLock("double-release", time.Second); err != nil {
+		t.Fatalf("re-acquire after double-release failed: %v", err)
+	}
+	lm.ReleaseLock("double-release")
+}
+
 func TestTryLockWithTimeout(t *testing.T) {
 	var mu sync.Mutex
 

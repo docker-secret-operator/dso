@@ -211,3 +211,50 @@ secrets:
 		t.Error("expected encrypted token when no key provided")
 	}
 }
+
+// TestDecryptProviderConfig_WriteBack verifies the C1 fix: DecryptProviderConfig
+// must write updated values back into the Providers map so the caller sees the
+// plaintext, not the encrypted ciphertext.
+func TestDecryptProviderConfig_WriteBack(t *testing.T) {
+	key := make([]byte, 32)
+	cm, err := NewCryptoManager(key)
+	if err != nil {
+		t.Fatalf("NewCryptoManager: %v", err)
+	}
+
+	const want = "plaintext-value"
+	cfg := &Config{
+		Providers: map[string]ProviderConfig{
+			"p1": {
+				Type: "vault",
+				Config: map[string]string{"token": want},
+				Auth:   AuthConfig{Params: map[string]string{"pass": want}},
+			},
+			"p2": {
+				Type:   "aws",
+				Config: map[string]string{"key": want},
+			},
+		},
+	}
+
+	if err := cm.EncryptProviderConfig(cfg); err != nil {
+		t.Fatalf("EncryptProviderConfig: %v", err)
+	}
+	if err := cm.DecryptProviderConfig(cfg); err != nil {
+		t.Fatalf("DecryptProviderConfig: %v", err)
+	}
+
+	// Both providers must be decrypted in-place in the map.
+	for name, prov := range cfg.Providers {
+		for k, v := range prov.Config {
+			if v != want {
+				t.Errorf("provider %q Config[%q] = %q after decrypt, want %q (write-back missing)", name, k, v, want)
+			}
+		}
+		for k, v := range prov.Auth.Params {
+			if v != want {
+				t.Errorf("provider %q Auth.Params[%q] = %q after decrypt, want %q (write-back missing)", name, k, v, want)
+			}
+		}
+	}
+}
