@@ -469,8 +469,12 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Auth:          auth.NewAuthenticator(),
 	}
 
+	// Rate-limit: 10 requests/second sustained, burst of 30.
+	// This is generous for any legitimate DSO client while stopping floods.
+	rl := newRateLimitMiddleware(10, 30)
+
 	mux := http.NewServeMux()
-	mux.Handle("/", secureHeaders(restServer))
+	mux.Handle("/", rl.wrap(secureHeaders(restServer)))
 
 	server := &http.Server{
 		Addr:              addr,
