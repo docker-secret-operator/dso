@@ -16,6 +16,7 @@ dso agent [flags]
       --api-addr string        Address to bind the REST API server (default "127.0.0.1:8471")
       --driver-socket string   Path to Docker Secret Driver socket (default "/run/docker/plugins/dso.sock")
   -h, --help                   help for agent
+      --metrics-addr string    Address to bind the Prometheus metrics server (default "127.0.0.1:9090")
       --socket string          Path to DSO internal IPC socket (default "/run/dso/dso.sock")
 ```
 

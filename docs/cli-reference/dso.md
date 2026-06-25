@@ -11,8 +11,11 @@ Quick start:
   docker dso setup                  # Interactive setup wizard (recommended)
 
 Usage:
-  docker dso bootstrap local        # For development
-  sudo docker dso bootstrap agent   # For production
+  docker dso setup                  # Interactive setup wizard (handles everything)
+
+Advanced Usage (Manual Bootstrapping):
+  docker dso bootstrap local        # Lower-level manual local mode init
+  sudo docker dso bootstrap agent   # Lower-level manual production init
 
 Quick reference:
   docker dso doctor                 # Validate environment
