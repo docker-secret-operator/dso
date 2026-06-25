@@ -103,14 +103,39 @@ Examples:
 	}
 }
 
-func editConfig(configPath string) error {
-	// Determine the editor to use
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
+// resolveEditor returns the editor binary and any pre-configured args from the
+// $EDITOR or $VISUAL environment variables, falling back to "nano".
+// The raw env value may be "code --wait" or "/usr/bin/vim -u NONE"; we split on
+// whitespace so users get expected behaviour. The binary component is validated
+// with exec.LookPath to prevent launching an arbitrary path that was injected
+// into the environment.
+func resolveEditor() (string, []string, error) {
+	raw := os.Getenv("EDITOR")
+	if raw == "" {
+		raw = os.Getenv("VISUAL")
 	}
-	if editor == "" {
-		editor = "nano"
+	if raw == "" {
+		raw = "nano"
+	}
+
+	parts := strings.Fields(raw)
+	binary := parts[0]
+	var extraArgs []string
+	if len(parts) > 1 {
+		extraArgs = parts[1:]
+	}
+
+	resolved, err := exec.LookPath(binary)
+	if err != nil {
+		return "", nil, fmt.Errorf("editor %q not found in PATH: %w", binary, err)
+	}
+	return resolved, extraArgs, nil
+}
+
+func editConfig(configPath string) error {
+	editorBin, editorArgs, err := resolveEditor()
+	if err != nil {
+		return fmt.Errorf("cannot determine editor: %w", err)
 	}
 
 	// Check if config file exists
@@ -121,8 +146,10 @@ func editConfig(configPath string) error {
 	// Get original file info for comparison
 	originalStat, _ := os.Stat(configPath)
 
-	// Open editor
-	cmd := exec.Command(editor, configPath)
+	// Open editor — binary is resolved via LookPath, args are kept separate,
+	// so the OS never passes this through a shell interpreter.
+	cmdArgs := append(editorArgs, configPath)
+	cmd := exec.Command(editorBin, cmdArgs...) // #nosec G204 — binary verified via LookPath
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

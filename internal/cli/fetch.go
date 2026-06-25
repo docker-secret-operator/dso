@@ -10,10 +10,17 @@ import (
 )
 
 func NewFetchCmd() *cobra.Command {
-	return &cobra.Command{
+	var reveal bool
+
+	c := &cobra.Command{
 		Use:   "fetch [secret-name]",
 		Short: "Manually fetch a secret and display it",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Fetch a secret from the configured provider and display its keys.
+
+By default secret values are masked (shown as ***) to prevent accidental
+exposure in terminal recordings and shared screens. Use --reveal to print
+the actual values — only do this in a private terminal session.`,
+		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg, err := config.LoadConfig(ResolveConfig())
 			if err != nil {
@@ -73,8 +80,18 @@ func NewFetchCmd() *cobra.Command {
 
 			fmt.Printf("Secret: %s\n", secretName)
 			for k, v := range data {
-				fmt.Printf("  %s: %s\n", k, v)
+				display := "***"
+				if reveal {
+					display = v
+				}
+				fmt.Printf("  %s: %s\n", k, display)
+			}
+			if !reveal {
+				fmt.Println("\n  (values masked — use --reveal to display plaintext)")
 			}
 		},
 	}
+
+	c.Flags().BoolVar(&reveal, "reveal", false, "Print secret values in plaintext (use only in a private terminal)")
+	return c
 }

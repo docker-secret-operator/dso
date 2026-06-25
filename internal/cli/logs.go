@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -125,6 +127,11 @@ func runJournaldLogs(follow bool, since string, tail int, level string) {
 
 // runAPILogs reads events from the DSO Agent REST API
 func runAPILogs(apiAddr string, follow bool) {
+	if err := validateLoopbackURL(apiAddr); err != nil {
+		fmt.Fprintf(os.Stderr, "\033[31m[DSO] %v\033[0m\n", err)
+		return
+	}
+
 	printHeader()
 
 	url := apiAddr + "/api/events"
@@ -169,8 +176,33 @@ func fetchAndPrintEvents(url string) {
 	}
 }
 
+// validateLoopbackURL rejects any --api-addr value whose host resolves to a
+// non-loopback address. The DSO agent only listens locally, so permitting
+// arbitrary hosts would enable SSRF against internal network services.
+func validateLoopbackURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid API address %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid API address %q: scheme must be http or https", raw)
+	}
+	host := u.Hostname()
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve API address host %q: %w", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("API address %q resolves to non-loopback IP %s: only loopback addresses are allowed", raw, ipStr)
+		}
+	}
+	return nil
+}
+
 func fetchEvents(url string) []map[string]interface{} {
-	resp, err := http.Get(url) // #nosec G107 — URL is constructed from a flag value
+	resp, err := http.Get(url) //nolint:noctx — short CLI helper, no streaming
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Cannot reach agent API at %s: %v\033[0m\n", url, err)
 		fmt.Fprintf(os.Stderr, "\033[33m      Is the agent running? Try: sudo systemctl start dso-agent\033[0m\n")
