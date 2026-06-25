@@ -202,7 +202,13 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 	}
 
 	logger.Info("Starting local Unix socket", zap.String("path", socketPath))
+	// Tighten umask before creating the socket file to close the TOCTOU window
+	// between net.Listen (which creates the file) and the os.Chmod below.
+	// Without this, the kernel creates the socket with umask-derived permissions
+	// (often 0755) giving any local user a brief connection window.
+	oldUmask := tightenUmask()
 	listener, err := net.Listen("unix", socketPath)
+	restoreUmask(oldUmask)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to listen on socket %s: %w", socketPath, err)
 	}
@@ -425,7 +431,9 @@ func StartDriverServer(ctx context.Context, socketPath string, cache *SecretCach
 	}
 
 	logger.Info("Starting Docker Secret Driver socket", zap.String("path", socketPath))
+	oldUmask2 := tightenUmask()
 	listener, err := net.Listen("unix", socketPath)
+	restoreUmask(oldUmask2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on driver socket %s: %w", socketPath, err)
 	}

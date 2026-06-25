@@ -94,7 +94,17 @@ type RESTServer struct {
 	Auth          *auth.Authenticator
 }
 
+// maxRequestBodyBytes caps incoming request bodies to prevent memory exhaustion.
+// WebSocket upgrade requests carry no body so they are exempt.
+const maxRequestBodyBytes = 64 * 1024 // 64 KB
+
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Cap request body size on all non-WebSocket endpoints to prevent OOM via
+	// large payloads. A 64 KB limit is generous for any legitimate DSO payload.
+	if r.URL.Path != "/api/events/ws" {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	}
+
 	// Public endpoints that don't require authorization.
 	// SEC-C3: /api/events/secret-update is intentionally NOT public. The webhook
 	// endpoint must pass through the global DSO auth middleware first (defense in
