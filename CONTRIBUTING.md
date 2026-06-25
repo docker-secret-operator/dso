@@ -95,7 +95,7 @@ If you forget, you can amend your last commit:
 git commit --amend -s
 ```
 
-> **Why DCO?** It's a simple, developer-friendly way to track contributions without requiring a full CLA. It's used by the Linux kernel, CNCF projects, and many others.
+> **Why DCO?** It's a simple, developer-friendly way to track contributions without requiring a full CLA. It's used by the Linux kernel and many major open-source projects.
 
 ### 5. Push and open a Pull Request
 

@@ -42,7 +42,7 @@ To add your entry, open a pull request editing this file with the following info
 - Provider(s) used
 - Optional: a short note about your setup
 
-You do not need to disclose sensitive infrastructure details. Even a high-level description is valuable — it helps demonstrate real-world adoption to the CNCF and shapes the project roadmap.
+You do not need to disclose sensitive infrastructure details. Even a high-level description is valuable — it helps demonstrate real-world adoption and shapes the project roadmap.
 
 ---
 

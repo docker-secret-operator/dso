@@ -58,16 +58,11 @@ This roadmap outlines Docker Secret Operator's direction over the next 6-12 mont
 
 ## Roadmap: Next 6 Months (Jun-Dec 2026)
 
-### Q2 2026 (Jun-Aug): CNCF Sandbox & Enterprise Foundation
+### Q2 2026 (Jun-Aug): Security Hardening & Enterprise Foundation
 
-**Focus**: CNCF Sandbox submission, enterprise hardening
+**Focus**: Security hardening, enterprise readiness
 
 #### Must-Have ✓
-- [ ] **CNCF Sandbox Submission** (June)
-  - Status: Preparing documentation
-  - Deliverable: Full submission with governance, roadmap, security docs
-  - Impact: Higher visibility, community contribution
-
 - [ ] **Code Coverage Pipeline** (June-July)
   - Status: Setting up Codecov integration
   - Target: 70% overall, 85% for critical paths
@@ -260,7 +255,7 @@ To stay focused, DSO explicitly does **not** aim to:
 - **Docker/Moby**: New security features or APIs may enable better integration
 - **Cloud Providers**: API changes in AWS, Azure, etc. require updates
 - **Community**: Dependent on adoption and feedback
-- **CNCF**: Sandbox requirements may shape priorities
+- **Community**: Open-source adoption and contributor feedback shape priorities
 
 ---
 
@@ -298,7 +293,7 @@ To stay focused, DSO explicitly does **not** aim to:
 | v3.5.16 | May 19, 2026 | ✅ Released |
 | v3.5.17 | May 20, 2026 | ✅ Released |
 | v3.5.18 | Jun 2, 2026  | ✅ Released (current) — Huawei provider panic fix |
-| v3.6.0  | Jun 30, 2026 | 🔵 Planned (CNCF + features) |
+| v3.6.0  | Jun 30, 2026 | 🔵 Planned (security hardening + features) |
 | v3.6.1 | Jul 15, 2026 | 🔵 Planned (bug fixes) |
 | v3.7.0 | Sep 30, 2026 | 🔵 Planned (RBAC + multi-tenancy) |
 | v4.0.0 | Jan 2027 | 🟡 Tentative (major features) |
@@ -309,7 +304,7 @@ To stay focused, DSO explicitly does **not** aim to:
 
 This roadmap is reviewed:
 - ✅ **Quarterly** — Check progress, adjust priorities
-- ✅ **After Major Events** — CNCF acceptance, critical issues
+- ✅ **After Major Events** — significant releases, critical issues
 - ✅ **Annually** — Rewrite for next year
 
 ### Feedback Loop
@@ -345,7 +340,7 @@ This roadmap reflects:
 - 🐛 Bug reports and production experience
 - 🤝 Community contributions
 - 💡 Maintainer vision and expertise
-- 🎯 CNCF Sandbox requirements
+- 🎯 Community adoption goals
 
 **Thank you to everyone who makes DSO better! 🙏**
 

@@ -8,7 +8,6 @@
 [![Code Coverage](https://codecov.io/gh/docker-secret-operator/dso/branch/main/graph/badge.svg)](https://codecov.io/gh/docker-secret-operator/dso)
 
 > **Current version: latest**  
-> **Status**: CNCF Sandbox Ready ✅  
 > **Governance**: [View GOVERNANCE.md](GOVERNANCE.md) | **Roadmap**: [View ROADMAP.md](ROADMAP.md)
 
 ---
@@ -20,7 +19,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 **In 30 seconds:**
 - Inject secrets from AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, or local encrypted storage
 - Automatically rotate containers when secrets change — zero-downtime rolling swap by default
-- Keep secrets out of logs, `docker inspect`, and host disk
+- Keep secrets off host disk; file injection (`dsofile://`) keeps them out of `docker inspect` too
 - Single Docker host per agent (no Kubernetes required)
 
 ---
@@ -29,7 +28,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 | Feature | Description |
 |---------|-------------|
-| **Zero-Persistence** | Plaintext secrets never written to disk; held only in process memory and tmpfs |
+| **Zero-Persistence** | Plaintext secrets never written to disk; held only in process memory and tmpfs. File injection (`dsofile://`) also keeps secrets out of `docker inspect`; env injection (`dso://`) is intentionally visible there — see [Security Model](#security-model) |
 | **Rolling Rotation** | Zero-downtime blue-green container swap — new container starts, health-checked, old container stops |
 | **Multi-Provider** | Works with AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, or local encrypted storage |
 | **Non-Root Operation** | Members of the `dso` group can run all standard commands without `sudo` |
@@ -161,6 +160,31 @@ Rollback on failure (auto-restore previous state)
 ```
 
 **Result**: Secrets never written to host disk. Zero-downtime rolling rotation completes in ~30 seconds. Failed rotations automatically restore the previous state.
+
+---
+
+## Security Model
+
+DSO offers two injection methods with different security trade-offs. Choose based on your threat model:
+
+| Method | Syntax | Visible in `docker inspect`? | Visible in `/proc/<pid>/cmdline`? | Use when |
+|--------|--------|------------------------------|-----------------------------------|----------|
+| **File injection** | `dsofile://path` | No — written to tmpfs inside container via stdin | No — secret delivered via exec stdin, not cmdline args | Production; high-sensitivity secrets |
+| **Env injection** | `dso://path` | **Yes** — env vars appear in `docker inspect` output | No | Development; lower-sensitivity config values |
+
+> **Recommendation**: Use `dsofile://` for all production secrets. Reserve `dso://` (env injection) for development convenience where `docker inspect` access is controlled. DSO prints a warning at startup when env injection is used so the exposure is explicit.
+
+### What DSO protects against
+
+- Secrets written to host disk or Docker overlay layer
+- Secrets in container image layers
+- Secrets in compose files committed to source control
+
+### What DSO does not protect against
+
+- `docker inspect` output when using `dso://` env injection (by design — see table above)
+- A compromised Docker daemon (DSO requires Docker socket access, which is equivalent to root)
+- Host users with access to the container's `/proc` PID namespace
 
 ---
 
