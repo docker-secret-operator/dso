@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/docker-secret-operator/dso/internal/bootstrap"
+	"github.com/docker-secret-operator/dso/internal/setup"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +41,33 @@ Examples:
   docker dso setup --mode local # Setup for local vault mode`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := &cliLogger{}
-			return runSetupWizard(cmd.Context(), logger, mode, provider, autoDetect, nonRoot)
+
+			// Build the setup engine wired to the existing wizard.
+			// Future phases will replace runSetupWizard stage by stage.
+			eng := setup.NewEngine(func(ctx context.Context, m, p string, ad, nr bool) error {
+				return runSetupWizard(ctx, logger, m, p, ad, nr)
+			})
+
+			// Subscribe to events for rendering (Phase 1: minimal).
+			eng.Events.Subscribe(func(evt setup.Event) {
+				switch evt.Type {
+				case setup.EventSetupFailed:
+					if evt.Error != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "setup error: %v\n", evt.Error)
+					}
+				}
+			})
+
+			opts := setup.SetupOptions{
+				Mode:        setup.SetupMode(mode),
+				Provider:    provider,
+				AutoDetect:  autoDetect,
+				NonRoot:     nonRoot,
+				Interactive: true,
+			}
+
+			_, err := eng.Setup(cmd.Context(), opts)
+			return err
 		},
 	}
 
