@@ -6,8 +6,8 @@ import (
 )
 
 // detectProviders probes for available secret provider credentials.
-// It never validates credentials — it only checks their presence.
-func detectProviders(cfg DetectorConfig) DetectedProviders {
+// It never validates credentials — it only checks for their presence.
+func detectProviders(cfg DetectorConfig) (DetectedProviders, []DetectionWarning) {
 	result := DetectedProviders{}
 	result.AWS = detectAWS(cfg)
 	result.Azure = detectAzure(cfg)
@@ -26,7 +26,7 @@ func detectProviders(cfg DetectorConfig) DetectedProviders {
 	}
 	result.Available = append(result.Available, "local")
 
-	return result
+	return result, nil
 }
 
 func detectAWS(cfg DetectorConfig) AWSInfo {
@@ -43,8 +43,7 @@ func detectAWS(cfg DetectorConfig) AWSInfo {
 	}
 
 	// Shared credentials file (~/.aws/credentials).
-	home := homeDir(cfg)
-	if home != "" {
+	if home := homeDir(cfg); home != "" {
 		if _, err := cfg.Stat(filepath.Join(home, ".aws", "credentials")); err == nil {
 			info.HasSharedCreds = true
 			info.Detected = true
@@ -100,8 +99,8 @@ func detectVault(cfg DetectorConfig) VaultInfo {
 	return info
 }
 
-// homeDir resolves the user's home directory using the injected getenv so
-// tests can override HOME without touching the real environment.
+// homeDir resolves the user's home directory using the injected getenv, so
+// tests can set HOME without touching the real environment.
 func homeDir(cfg DetectorConfig) string {
 	if h := cfg.Getenv("HOME"); h != "" {
 		return h

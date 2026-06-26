@@ -111,9 +111,10 @@ type UserInfo struct {
 type DockerInfo struct {
 	BinaryFound     bool
 	BinaryPath      string
+	SocketFound     bool   // true when at least one socket path was successfully stat'd
+	SocketPath      string // first socket path stat'd successfully; empty if none
+	DaemonReachable bool   // true when "docker version" returned a server version
 	Version         string // server version; empty if daemon unreachable
-	DaemonAvailable bool
-	SocketPath      string // first socket path found; empty if none
 }
 
 // SystemdInfo contains facts about the systemd service manager.
@@ -157,17 +158,36 @@ type DetectedProviders struct {
 }
 
 // ExistingDSOInfo describes a prior DSO installation, if any.
+// This structure is designed to support upgrade, repair, and migration flows.
 type ExistingDSOInfo struct {
-	Found       bool
-	ConfigPath  string // e.g. /etc/dso/dso.yaml
-	ServicePath string // e.g. /etc/systemd/system/dso-agent.service
-	Version     string // version string; empty if undetectable
+	Installed        bool   // true when any part of DSO is found
+	ConfigPath       string // e.g. /etc/dso/dso.yaml or ~/.dso/dso.yaml
+	AgentInstalled   bool   // true when the dso binary is found in PATH
+	ServiceInstalled bool   // true when the systemd unit file exists
+	Version          string // version string; empty if undetectable
+}
+
+// DetectionWarning records a non-fatal problem that occurred during detection.
+// The detector continues collecting facts even when a warning is generated.
+type DetectionWarning struct {
+	Code    string // machine-readable, e.g. "os_release_read_failed"
+	Message string // human-readable explanation
+}
+
+// Capabilities summarises what this environment can support. The detector
+// computes these once from raw facts so later phases never re-derive them.
+type Capabilities struct {
+	SupportsSystemd   bool // systemctl binary is present
+	SupportsDocker    bool // docker binary and daemon are reachable
+	SupportsAgentMode bool // systemd + root — required for agent mode
+	SupportsLocalMode bool // always true; local mode has no system requirements
 }
 
 // ─── Environment ─────────────────────────────────────────────────────────────
 
 // Environment holds facts gathered during detection. Detection never fails;
 // absence of a credential or binary is recorded as false/empty, not an error.
+// Treat this struct as stable after Phase 2 — later phases consume it, not modify it.
 type Environment struct {
 	OS          OSInfo
 	User        UserInfo
@@ -176,10 +196,13 @@ type Environment struct {
 	Providers   DetectedProviders
 	ExistingDSO ExistingDSOInfo
 
-	// RecommendedMode and RecommendedProvider are derived from detected facts.
-	// plan() applies opts overrides on top of these.
-	RecommendedMode     SetupMode
-	RecommendedProvider string
+	// Capabilities are derived once from raw facts. Later phases use these
+	// rather than re-inspecting raw fields like Docker.DaemonReachable.
+	Capabilities Capabilities
+
+	// DetectionWarnings holds non-fatal problems encountered during detection.
+	// The validator (Phase 3) may promote these to errors when appropriate.
+	DetectionWarnings []DetectionWarning
 
 	Timestamp time.Time
 }

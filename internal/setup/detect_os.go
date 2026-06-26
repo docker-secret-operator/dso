@@ -1,37 +1,22 @@
 package setup
 
-import (
-	"os"
-	"runtime"
-	"strings"
-)
+import "runtime"
 
-// detectOS returns facts about the host operating system. It reads
-// /etc/os-release on Linux to identify distribution and version.
-func detectOS() OSInfo {
+// detectOS returns facts about the host operating system. Platform-specific
+// details (distribution, version) are resolved by parsePlatformOSInfo, which
+// is implemented in detect_os_linux.go, detect_os_darwin.go, etc.
+func detectOS(cfg DetectorConfig) (OSInfo, []DetectionWarning) {
 	info := OSInfo{
 		GOOS:         runtime.GOOS,
 		Architecture: runtime.GOARCH,
 	}
-	if runtime.GOOS == "linux" {
-		info.Distribution, info.Version = parseOSRelease()
-	}
-	return info
-}
 
-// parseOSRelease reads /etc/os-release and extracts ID and VERSION_ID.
-func parseOSRelease() (distro, version string) {
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return "", ""
+	distro, version, warn := parsePlatformOSInfo(cfg.ReadFile)
+	info.Distribution = distro
+	info.Version = version
+
+	if warn != nil {
+		return info, []DetectionWarning{*warn}
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if after, ok := strings.CutPrefix(line, "ID="); ok && distro == "" {
-			distro = strings.Trim(after, `"'`)
-		}
-		if after, ok := strings.CutPrefix(line, "VERSION_ID="); ok && version == "" {
-			version = strings.Trim(after, `"'`)
-		}
-	}
-	return distro, version
+	return info, nil
 }

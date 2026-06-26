@@ -134,14 +134,16 @@ func (e *Engine) validate(_ context.Context, _ *Environment) (*ValidationResult,
 // Phase 4 replaces this with a real planner that builds the full file/
 // directory/service/permission change list without touching the filesystem.
 func (e *Engine) plan(_ context.Context, env *Environment, opts SetupOptions) (*InstallPlan, error) {
-	// Stub: capture the options that apply() needs to invoke the legacy wizard.
+	// Derive fallbacks from the environment; opts take priority.
+	recMode, recProvider := computeRecommendation(env)
+
 	mode := opts.Mode
 	if mode == "" {
-		mode = env.RecommendedMode
+		mode = recMode
 	}
 	provider := opts.Provider
 	if provider == "" {
-		provider = env.RecommendedProvider
+		provider = recProvider
 	}
 
 	return &InstallPlan{
@@ -152,6 +154,31 @@ func (e *Engine) plan(_ context.Context, env *Environment, opts SetupOptions) (*
 			"legacy": "true", // removed when Phase 4 ships
 		},
 	}, nil
+}
+
+// computeRecommendation derives the best mode and provider from detected
+// capabilities. This is a temporary home; Phase 4 will move this logic into
+// the real Planner once it replaces the plan() stub above.
+//
+// Provider priority: aws > azure > vault > local.
+func computeRecommendation(env *Environment) (SetupMode, string) {
+	mode := ModeLocal
+	if env.Capabilities.SupportsAgentMode {
+		mode = ModeAgent
+	}
+
+	provider := "local"
+	if env.Providers.Vault.Detected {
+		provider = "vault"
+	}
+	if env.Providers.Azure.Detected {
+		provider = "azure"
+	}
+	if env.Providers.AWS.Detected {
+		provider = "aws"
+	}
+
+	return mode, provider
 }
 
 // preview renders the InstallPlan for user confirmation.

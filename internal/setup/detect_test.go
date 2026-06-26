@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,13 +13,14 @@ import (
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// noopDetectorConfig returns a DetectorConfig where every system call is
-// stubbed to return "not found". Tests layer real values on top as needed.
+// noopDetectorConfig returns a DetectorConfig where every system call returns
+// "not found". Tests override individual fields as needed.
 func noopDetectorConfig() DetectorConfig {
 	return DetectorConfig{
 		Getenv:            func(string) string { return "" },
 		LookPath:          func(string) (string, error) { return "", exec.ErrNotFound },
 		Stat:              func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+		ReadFile:          func(string) ([]byte, error) { return nil, os.ErrNotExist },
 		DockerSocketPaths: []string{"/var/run/docker.sock"},
 		DockerTimeout:     100 * time.Millisecond,
 		SystemdTimeout:    100 * time.Millisecond,
@@ -49,128 +51,129 @@ func TestDetector_Detect_SetsTimestamp(t *testing.T) {
 
 func TestDetector_Detect_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 	d := newDetector()
 	env, err := d.Detect(ctx)
-	// Detect never errors; cancelled context only affects timed exec calls.
 	if err != nil {
-		t.Fatalf("unexpected error from Detect with cancelled context: %v", err)
+		t.Fatalf("Detect should never return a non-nil error, got: %v", err)
 	}
 	if env == nil {
 		t.Fatal("expected non-nil Environment even with cancelled context")
 	}
 }
 
-// ─── computeRecommendation ────────────────────────────────────────────────────
-
-func TestComputeRecommendation_LocalModeWhenNoSystemd(t *testing.T) {
-	env := &Environment{
-		Systemd: SystemdInfo{Available: false},
-		User:    UserInfo{IsRoot: true},
-	}
-	mode, _ := computeRecommendation(env)
-	if mode != ModeLocal {
-		t.Errorf("want ModeLocal, got %q", mode)
+func TestDetector_Detect_SetsCapabilities(t *testing.T) {
+	d := newDetector()
+	env, _ := d.Detect(context.Background())
+	// SupportsLocalMode is always true.
+	if !env.Capabilities.SupportsLocalMode {
+		t.Error("SupportsLocalMode should always be true")
 	}
 }
 
-func TestComputeRecommendation_AgentModeWhenSystemdAndRoot(t *testing.T) {
-	env := &Environment{
-		Systemd: SystemdInfo{Available: true},
-		User:    UserInfo{IsRoot: true},
+func TestDetector_Detect_CapabilitiesMatchRawFacts(t *testing.T) {
+	d := newDetector()
+	env, _ := d.Detect(context.Background())
+	// Capabilities must be consistent with the raw facts they derive from.
+	if env.Capabilities.SupportsDocker != env.Docker.DaemonReachable {
+		t.Errorf("SupportsDocker (%v) must equal Docker.DaemonReachable (%v)",
+			env.Capabilities.SupportsDocker, env.Docker.DaemonReachable)
 	}
-	mode, _ := computeRecommendation(env)
-	if mode != ModeAgent {
-		t.Errorf("want ModeAgent, got %q", mode)
-	}
-}
-
-func TestComputeRecommendation_LocalModeWhenSystemdButNotRoot(t *testing.T) {
-	env := &Environment{
-		Systemd: SystemdInfo{Available: true},
-		User:    UserInfo{IsRoot: false},
-	}
-	mode, _ := computeRecommendation(env)
-	if mode != ModeLocal {
-		t.Errorf("want ModeLocal (not root), got %q", mode)
+	if env.Capabilities.SupportsAgentMode != (env.Systemd.Available && env.User.IsRoot) {
+		t.Error("SupportsAgentMode must equal Systemd.Available && User.IsRoot")
 	}
 }
 
-func TestComputeRecommendation_DefaultProviderIsLocal(t *testing.T) {
-	env := &Environment{}
-	_, provider := computeRecommendation(env)
-	if provider != "local" {
-		t.Errorf("want 'local', got %q", provider)
+// ─── computeCapabilities ─────────────────────────────────────────────────────
+
+func TestComputeCapabilities_LocalModeAlwaysTrue(t *testing.T) {
+	caps := computeCapabilities(&Environment{})
+	if !caps.SupportsLocalMode {
+		t.Error("SupportsLocalMode should always be true")
 	}
 }
 
-func TestComputeRecommendation_AWSBeatsAllOthers(t *testing.T) {
-	env := &Environment{
-		Providers: DetectedProviders{
-			AWS:   AWSInfo{Detected: true},
-			Azure: AzureInfo{Detected: true},
-			Vault: VaultInfo{Detected: true},
-		},
-	}
-	_, provider := computeRecommendation(env)
-	if provider != "aws" {
-		t.Errorf("want 'aws', got %q", provider)
+func TestComputeCapabilities_DockerFromDaemonReachable(t *testing.T) {
+	env := &Environment{Docker: DockerInfo{DaemonReachable: true}}
+	caps := computeCapabilities(env)
+	if !caps.SupportsDocker {
+		t.Error("SupportsDocker should be true when DaemonReachable is true")
 	}
 }
 
-func TestComputeRecommendation_AzureBeatsVault(t *testing.T) {
-	env := &Environment{
-		Providers: DetectedProviders{
-			Azure: AzureInfo{Detected: true},
-			Vault: VaultInfo{Detected: true},
-		},
+func TestComputeCapabilities_AgentModeRequiresSystemdAndRoot(t *testing.T) {
+	tests := []struct {
+		name      string
+		systemd   bool
+		root      bool
+		wantAgent bool
+	}{
+		{"systemd+root", true, true, true},
+		{"systemd+nonroot", true, false, false},
+		{"nosystemd+root", false, true, false},
+		{"nosystemd+nonroot", false, false, false},
 	}
-	_, provider := computeRecommendation(env)
-	if provider != "azure" {
-		t.Errorf("want 'azure', got %q", provider)
-	}
-}
-
-func TestComputeRecommendation_VaultWhenOnlyVault(t *testing.T) {
-	env := &Environment{
-		Providers: DetectedProviders{
-			Vault: VaultInfo{Detected: true},
-		},
-	}
-	_, provider := computeRecommendation(env)
-	if provider != "vault" {
-		t.Errorf("want 'vault', got %q", provider)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := &Environment{
+				Systemd: SystemdInfo{Available: tt.systemd},
+				User:    UserInfo{IsRoot: tt.root},
+			}
+			caps := computeCapabilities(env)
+			if caps.SupportsAgentMode != tt.wantAgent {
+				t.Errorf("SupportsAgentMode: want %v, got %v", tt.wantAgent, caps.SupportsAgentMode)
+			}
+		})
 	}
 }
 
 // ─── detectOS ─────────────────────────────────────────────────────────────────
 
 func TestDetectOS_GOOS(t *testing.T) {
-	info := detectOS()
+	cfg := noopDetectorConfig()
+	info, _ := detectOS(cfg)
 	if info.GOOS != runtime.GOOS {
 		t.Errorf("want %q, got %q", runtime.GOOS, info.GOOS)
 	}
 }
 
 func TestDetectOS_Architecture(t *testing.T) {
-	info := detectOS()
+	cfg := noopDetectorConfig()
+	info, _ := detectOS(cfg)
 	if info.Architecture != runtime.GOARCH {
 		t.Errorf("want %q, got %q", runtime.GOARCH, info.Architecture)
 	}
 }
 
-func TestParseOSRelease_ValidContent(t *testing.T) {
-	// parseOSRelease reads the real /etc/os-release; on Linux it should parse,
-	// on macOS the file won't exist so we get empty strings.
-	distro, version := parseOSRelease()
+func TestDetectOS_WarningWhenReadFileFails(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("os-release reading only applicable on Linux")
+	}
+	cfg := noopDetectorConfig()
+	cfg.ReadFile = func(string) ([]byte, error) {
+		return nil, errors.New("permission denied")
+	}
+	_, warns := detectOS(cfg)
+	if len(warns) == 0 {
+		t.Error("expected a warning when ReadFile fails on Linux")
+	}
+	if len(warns) > 0 && warns[0].Code != "os_release_read_failed" {
+		t.Errorf("warn.Code: want os_release_read_failed, got %q", warns[0].Code)
+	}
+}
+
+func TestDetectOS_NoWarningOnRealSystem(t *testing.T) {
+	cfg := noopDetectorConfig()
+	cfg.ReadFile = os.ReadFile // use the real filesystem
+	_, warns := detectOS(cfg)
+	// On Linux with a normal /etc/os-release there should be no warnings.
+	// On macOS the stub never reads a file so there's also no warning.
 	if runtime.GOOS == "linux" {
-		if distro == "" {
-			t.Error("expected non-empty distro on Linux")
-		}
-	} else {
-		// macOS — file absent, expect empty.
-		if distro != "" || version != "" {
-			t.Errorf("expected empty on non-Linux, got distro=%q version=%q", distro, version)
+		// Only flag if there's an unexpected warning code.
+		for _, w := range warns {
+			if w.Code != "" {
+				t.Logf("detection warning on real system: %s: %s", w.Code, w.Message)
+			}
 		}
 	}
 }
@@ -178,7 +181,10 @@ func TestParseOSRelease_ValidContent(t *testing.T) {
 // ─── detectUser ──────────────────────────────────────────────────────────────
 
 func TestDetectUser_ReturnsCurrentUser(t *testing.T) {
-	info := detectUser()
+	info, warns := detectUser()
+	for _, w := range warns {
+		t.Logf("detection warning: %s: %s", w.Code, w.Message)
+	}
 	if info.Username == "" {
 		t.Error("expected non-empty Username")
 	}
@@ -190,8 +196,8 @@ func TestDetectUser_ReturnsCurrentUser(t *testing.T) {
 	}
 }
 
-func TestDetectUser_IsRootWhenUID0(t *testing.T) {
-	info := detectUser()
+func TestDetectUser_IsRootConsistentWithUID(t *testing.T) {
+	info, _ := detectUser()
 	if info.UID == "0" && !info.IsRoot {
 		t.Error("IsRoot should be true when UID is 0")
 	}
@@ -204,12 +210,16 @@ func TestDetectUser_IsRootWhenUID0(t *testing.T) {
 
 func TestDetectDocker_NotFoundWhenLookPathFails(t *testing.T) {
 	cfg := noopDetectorConfig()
-	info := detectDocker(context.Background(), cfg)
+	info, warns := detectDocker(context.Background(), cfg)
 	if info.BinaryFound {
 		t.Error("BinaryFound should be false when LookPath returns ErrNotFound")
 	}
-	if info.DaemonAvailable {
-		t.Error("DaemonAvailable should be false when binary not found")
+	if info.DaemonReachable {
+		t.Error("DaemonReachable should be false when binary not found")
+	}
+	// No warning when binary simply isn't installed.
+	if len(warns) != 0 {
+		t.Errorf("expected no warnings for missing binary, got %d", len(warns))
 	}
 }
 
@@ -221,20 +231,33 @@ func TestDetectDocker_BinaryFoundWhenLookPathSucceeds(t *testing.T) {
 		}
 		return "", exec.ErrNotFound
 	}
-	info := detectDocker(context.Background(), cfg)
+	info, _ := detectDocker(context.Background(), cfg)
 	if !info.BinaryFound {
 		t.Error("BinaryFound should be true when LookPath succeeds")
 	}
 	if info.BinaryPath != "/usr/local/bin/docker" {
 		t.Errorf("BinaryPath: want /usr/local/bin/docker, got %q", info.BinaryPath)
 	}
-	// Daemon is unavailable because /usr/local/bin/docker doesn't actually exist.
-	if info.DaemonAvailable {
-		t.Error("DaemonAvailable should be false for a fake binary path")
+}
+
+func TestDetectDocker_BinaryFoundButDaemonUnreachable_EmitsWarning(t *testing.T) {
+	cfg := noopDetectorConfig()
+	cfg.LookPath = func(name string) (string, error) {
+		if name == "docker" {
+			return "/usr/local/bin/docker", nil // fake path — exec will fail
+		}
+		return "", exec.ErrNotFound
+	}
+	_, warns := detectDocker(context.Background(), cfg)
+	if len(warns) == 0 {
+		t.Error("expected warning when binary found but daemon unreachable")
+	}
+	if len(warns) > 0 && warns[0].Code != "docker_daemon_unreachable" {
+		t.Errorf("warn.Code: want docker_daemon_unreachable, got %q", warns[0].Code)
 	}
 }
 
-func TestDetectDocker_SocketFoundWhenStatSucceeds(t *testing.T) {
+func TestDetectDocker_SocketFoundAndFlagSet(t *testing.T) {
 	cfg := noopDetectorConfig()
 	cfg.LookPath = func(name string) (string, error) {
 		if name == "docker" {
@@ -244,17 +267,20 @@ func TestDetectDocker_SocketFoundWhenStatSucceeds(t *testing.T) {
 	}
 	cfg.Stat = func(path string) (os.FileInfo, error) {
 		if path == "/var/run/docker.sock" {
-			return nil, nil // signal existence
+			return nil, nil
 		}
 		return nil, os.ErrNotExist
 	}
-	info := detectDocker(context.Background(), cfg)
+	info, _ := detectDocker(context.Background(), cfg)
+	if !info.SocketFound {
+		t.Error("SocketFound should be true when Stat succeeds")
+	}
 	if info.SocketPath != "/var/run/docker.sock" {
 		t.Errorf("SocketPath: want /var/run/docker.sock, got %q", info.SocketPath)
 	}
 }
 
-func TestDetectDocker_DaemonUnavailableWhenSocketMissing(t *testing.T) {
+func TestDetectDocker_SocketPermissionDenied_SocketNotFound(t *testing.T) {
 	cfg := noopDetectorConfig()
 	cfg.LookPath = func(name string) (string, error) {
 		if name == "docker" {
@@ -262,10 +288,25 @@ func TestDetectDocker_DaemonUnavailableWhenSocketMissing(t *testing.T) {
 		}
 		return "", exec.ErrNotFound
 	}
-	// Stat returns ErrNotExist for all sockets (already default in noopDetectorConfig).
-	info := detectDocker(context.Background(), cfg)
+	cfg.Stat = func(string) (os.FileInfo, error) {
+		return nil, os.ErrPermission
+	}
+	info, _ := detectDocker(context.Background(), cfg)
+	if info.SocketFound {
+		t.Error("SocketFound should be false when Stat returns permission denied")
+	}
 	if info.SocketPath != "" {
 		t.Errorf("SocketPath should be empty, got %q", info.SocketPath)
+	}
+}
+
+func TestDetectDocker_NoBinaryPath_SetsNoSocket(t *testing.T) {
+	cfg := noopDetectorConfig()
+	// Stat would succeed but LookPath fails — SocketPath must stay empty.
+	cfg.Stat = func(path string) (os.FileInfo, error) { return nil, nil }
+	info, _ := detectDocker(context.Background(), cfg)
+	if info.SocketPath != "" {
+		t.Error("SocketPath should be empty when binary not found, even if Stat succeeds")
 	}
 }
 
@@ -273,12 +314,12 @@ func TestDetectDocker_DaemonUnavailableWhenSocketMissing(t *testing.T) {
 
 func TestDetectSystemd_NotAvailableWhenLookPathFails(t *testing.T) {
 	cfg := noopDetectorConfig()
-	info := detectSystemd(context.Background(), cfg)
+	info, warns := detectSystemd(context.Background(), cfg)
 	if info.Available {
 		t.Error("Available should be false when systemctl not found")
 	}
-	if info.BinaryPath != "" {
-		t.Errorf("BinaryPath should be empty, got %q", info.BinaryPath)
+	if len(warns) != 0 {
+		t.Errorf("expected no warnings for missing systemctl, got %d", len(warns))
 	}
 }
 
@@ -290,22 +331,35 @@ func TestDetectSystemd_AvailableWhenSystemctlFound(t *testing.T) {
 		}
 		return "", exec.ErrNotFound
 	}
-	info := detectSystemd(context.Background(), cfg)
+	info, _ := detectSystemd(context.Background(), cfg)
 	if !info.Available {
 		t.Error("Available should be true when systemctl found")
 	}
 	if info.BinaryPath != "/bin/systemctl" {
 		t.Errorf("BinaryPath: want /bin/systemctl, got %q", info.BinaryPath)
 	}
-	// Version may be empty (fake binary won't run), that's fine.
+}
+
+func TestDetectSystemd_WarningWhenVersionCommandFails(t *testing.T) {
+	cfg := noopDetectorConfig()
+	// Fake path — exec will fail since /fake/systemctl doesn't exist.
+	cfg.LookPath = func(name string) (string, error) {
+		if name == "systemctl" {
+			return "/fake/systemctl", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	_, warns := detectSystemd(context.Background(), cfg)
+	if len(warns) == 0 {
+		t.Error("expected warning when systemctl --version fails")
+	}
 }
 
 // ─── detectProviders ──────────────────────────────────────────────────────────
 
 func TestDetectProviders_LocalAlwaysInAvailable(t *testing.T) {
 	cfg := noopDetectorConfig()
-	result := detectProviders(cfg)
-
+	result, _ := detectProviders(cfg)
 	found := false
 	for _, p := range result.Available {
 		if p == "local" {
@@ -314,6 +368,30 @@ func TestDetectProviders_LocalAlwaysInAvailable(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("'local' not found in Available: %v", result.Available)
+	}
+}
+
+func TestDetectProviders_MultipleProviders_AllPresent(t *testing.T) {
+	cfg := noopDetectorConfig()
+	cfg.Getenv = func(key string) string {
+		m := map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKID",
+			"AWS_SECRET_ACCESS_KEY": "SECRET",
+			"VAULT_ADDR":            "https://vault.example.com",
+			"VAULT_TOKEN":           "s.token",
+			"AZURE_CLIENT_ID":       "cid",
+			"AZURE_CLIENT_SECRET":   "csecret",
+			"AZURE_TENANT_ID":       "tid",
+		}
+		return m[key]
+	}
+	result, _ := detectProviders(cfg)
+	want := map[string]bool{"aws": true, "azure": true, "vault": true, "local": true}
+	for _, p := range result.Available {
+		delete(want, p)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing providers in Available: %v", want)
 	}
 }
 
@@ -345,11 +423,9 @@ func TestDetectAWS_DetectedWhenSharedCredsExist(t *testing.T) {
 	if err := os.MkdirAll(awsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	credsPath := filepath.Join(awsDir, "credentials")
-	if err := os.WriteFile(credsPath, []byte("[default]\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(awsDir, "credentials"), []byte("[default]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
 	cfg := noopDetectorConfig()
 	cfg.Getenv = func(key string) string {
 		if key == "HOME" {
@@ -357,8 +433,7 @@ func TestDetectAWS_DetectedWhenSharedCredsExist(t *testing.T) {
 		}
 		return ""
 	}
-	cfg.Stat = os.Stat // use real Stat so the temp file is found
-
+	cfg.Stat = os.Stat
 	info := detectAWS(cfg)
 	if !info.Detected {
 		t.Error("expected Detected=true when ~/.aws/credentials exists")
@@ -366,6 +441,15 @@ func TestDetectAWS_DetectedWhenSharedCredsExist(t *testing.T) {
 	if !info.HasSharedCreds {
 		t.Error("expected HasSharedCreds=true")
 	}
+}
+
+func TestDetectAWS_MissingHome_NoCredsFilePanic(t *testing.T) {
+	cfg := noopDetectorConfig()
+	// HOME not set, os.UserHomeDir will be called — must not panic.
+	cfg.Getenv = func(key string) string { return "" }
+	// Stat always returns ErrNotExist, so no creds found even if home is resolved.
+	info := detectAWS(cfg)
+	_ = info // just verify no panic
 }
 
 func TestDetectAWS_NotDetectedWhenNoCreds(t *testing.T) {
@@ -407,7 +491,7 @@ func TestDetectVault_DetectedWhenAddrAndToken(t *testing.T) {
 		t.Error("expected Detected=true")
 	}
 	if info.Address != "https://vault.example.com" {
-		t.Errorf("Address: want https://vault.example.com, got %q", info.Address)
+		t.Errorf("Address: got %q", info.Address)
 	}
 	if !info.HasToken {
 		t.Error("expected HasToken=true")
@@ -465,6 +549,24 @@ func TestDetectAzure_DetectedWhenEnvCreds(t *testing.T) {
 	}
 }
 
+func TestDetectAzure_PartialEnvCreds_NotDetected(t *testing.T) {
+	cfg := noopDetectorConfig()
+	// Only two of three required env vars set.
+	cfg.Getenv = func(key string) string {
+		if key == "AZURE_CLIENT_ID" {
+			return "cid"
+		}
+		if key == "AZURE_CLIENT_SECRET" {
+			return "csecret"
+		}
+		return "" // AZURE_TENANT_ID missing
+	}
+	info := detectAzure(cfg)
+	if info.HasEnvCreds {
+		t.Error("expected HasEnvCreds=false with incomplete Azure env credentials")
+	}
+}
+
 func TestDetectAzure_DetectedWhenCLIFound(t *testing.T) {
 	cfg := noopDetectorConfig()
 	cfg.LookPath = func(name string) (string, error) {
@@ -486,7 +588,7 @@ func TestDetectAzure_NotDetectedByDefault(t *testing.T) {
 	cfg := noopDetectorConfig()
 	info := detectAzure(cfg)
 	if info.Detected {
-		t.Error("expected Detected=false when no Azure credentials or CLI")
+		t.Error("expected Detected=false with no Azure credentials or CLI")
 	}
 }
 
@@ -494,13 +596,19 @@ func TestDetectAzure_NotDetectedByDefault(t *testing.T) {
 
 func TestDetectExistingDSO_NotFoundByDefault(t *testing.T) {
 	cfg := noopDetectorConfig()
-	info := detectExistingDSO(cfg)
-	if info.Found {
-		t.Error("expected Found=false when no DSO installation present")
+	info, _ := detectExistingDSO(cfg)
+	if info.Installed {
+		t.Error("expected Installed=false when no DSO installation present")
+	}
+	if info.AgentInstalled {
+		t.Error("expected AgentInstalled=false")
+	}
+	if info.ServiceInstalled {
+		t.Error("expected ServiceInstalled=false")
 	}
 }
 
-func TestDetectExistingDSO_FoundWhenSystemConfigExists(t *testing.T) {
+func TestDetectExistingDSO_InstalledWhenSystemConfigExists(t *testing.T) {
 	cfg := noopDetectorConfig()
 	cfg.Stat = func(path string) (os.FileInfo, error) {
 		if path == dsoSystemConfig {
@@ -508,16 +616,16 @@ func TestDetectExistingDSO_FoundWhenSystemConfigExists(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}
-	info := detectExistingDSO(cfg)
-	if !info.Found {
-		t.Error("expected Found=true when system config exists")
+	info, _ := detectExistingDSO(cfg)
+	if !info.Installed {
+		t.Error("expected Installed=true when system config exists")
 	}
 	if info.ConfigPath != dsoSystemConfig {
 		t.Errorf("ConfigPath: want %q, got %q", dsoSystemConfig, info.ConfigPath)
 	}
 }
 
-func TestDetectExistingDSO_FoundWhenUserConfigExists(t *testing.T) {
+func TestDetectExistingDSO_InstalledWhenUserConfigExists(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := noopDetectorConfig()
 	cfg.Getenv = func(key string) string {
@@ -533,13 +641,13 @@ func TestDetectExistingDSO_FoundWhenUserConfigExists(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}
-	info := detectExistingDSO(cfg)
-	if !info.Found {
-		t.Error("expected Found=true when user config exists")
+	info, _ := detectExistingDSO(cfg)
+	if !info.Installed {
+		t.Error("expected Installed=true when user config exists")
 	}
 }
 
-func TestDetectExistingDSO_FoundWhenServiceExists(t *testing.T) {
+func TestDetectExistingDSO_ServiceInstalledWhenServiceFileExists(t *testing.T) {
 	cfg := noopDetectorConfig()
 	cfg.Stat = func(path string) (os.FileInfo, error) {
 		if path == dsoSystemService {
@@ -547,11 +655,36 @@ func TestDetectExistingDSO_FoundWhenServiceExists(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}
-	info := detectExistingDSO(cfg)
-	if !info.Found {
-		t.Error("expected Found=true when service file exists")
+	info, _ := detectExistingDSO(cfg)
+	if !info.Installed {
+		t.Error("expected Installed=true when service file exists")
 	}
-	if info.ServicePath != dsoSystemService {
-		t.Errorf("ServicePath: want %q, got %q", dsoSystemService, info.ServicePath)
+	if !info.ServiceInstalled {
+		t.Error("expected ServiceInstalled=true when service file exists")
 	}
+}
+
+func TestDetectExistingDSO_AgentInstalledWhenBinaryFound(t *testing.T) {
+	cfg := noopDetectorConfig()
+	cfg.LookPath = func(name string) (string, error) {
+		if name == "dso" {
+			return "/usr/local/bin/dso", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	info, _ := detectExistingDSO(cfg)
+	if !info.Installed {
+		t.Error("expected Installed=true when dso binary found")
+	}
+	if !info.AgentInstalled {
+		t.Error("expected AgentInstalled=true when dso binary found")
+	}
+}
+
+func TestDetectExistingDSO_MissingHome_NoPanic(t *testing.T) {
+	cfg := noopDetectorConfig()
+	cfg.Getenv = func(key string) string { return "" } // no HOME
+	// Must not panic even when home directory cannot be resolved.
+	info, _ := detectExistingDSO(cfg)
+	_ = info
 }

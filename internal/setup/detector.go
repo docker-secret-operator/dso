@@ -13,6 +13,7 @@ type DetectorConfig struct {
 	Getenv            func(string) string
 	LookPath          func(string) (string, error)
 	Stat              func(string) (os.FileInfo, error)
+	ReadFile          func(string) ([]byte, error)
 	DockerSocketPaths []string
 	DockerTimeout     time.Duration
 	SystemdTimeout    time.Duration
@@ -32,6 +33,7 @@ func newDetector() *Detector {
 			Getenv:   os.Getenv,
 			LookPath: exec.LookPath,
 			Stat:     os.Stat,
+			ReadFile: os.ReadFile,
 			DockerSocketPaths: []string{
 				"/var/run/docker.sock",
 				"/run/docker.sock",
@@ -45,36 +47,49 @@ func newDetector() *Detector {
 
 // Detect collects all environmental facts. It never returns a non-nil error
 // for missing optional components — absence is a fact, not a failure.
+// Non-fatal problems are recorded in env.DetectionWarnings.
 func (d *Detector) Detect(ctx context.Context) (*Environment, error) {
 	env := &Environment{Timestamp: time.Now()}
-	env.OS = detectOS()
-	env.User = detectUser()
-	env.Docker = detectDocker(ctx, d.cfg)
-	env.Systemd = detectSystemd(ctx, d.cfg)
-	env.Providers = detectProviders(d.cfg)
-	env.ExistingDSO = detectExistingDSO(d.cfg)
-	env.RecommendedMode, env.RecommendedProvider = computeRecommendation(env)
+
+	var warnings []DetectionWarning
+
+	osInfo, osWarns := detectOS(d.cfg)
+	env.OS = osInfo
+	warnings = append(warnings, osWarns...)
+
+	userInfo, userWarns := detectUser()
+	env.User = userInfo
+	warnings = append(warnings, userWarns...)
+
+	dockerInfo, dockerWarns := detectDocker(ctx, d.cfg)
+	env.Docker = dockerInfo
+	warnings = append(warnings, dockerWarns...)
+
+	systemdInfo, systemdWarns := detectSystemd(ctx, d.cfg)
+	env.Systemd = systemdInfo
+	warnings = append(warnings, systemdWarns...)
+
+	providers, providerWarns := detectProviders(d.cfg)
+	env.Providers = providers
+	warnings = append(warnings, providerWarns...)
+
+	existingDSO, existingWarns := detectExistingDSO(d.cfg)
+	env.ExistingDSO = existingDSO
+	warnings = append(warnings, existingWarns...)
+
+	env.DetectionWarnings = warnings
+	env.Capabilities = computeCapabilities(env)
+
 	return env, nil
 }
 
-// computeRecommendation derives the best mode and provider from detected facts.
-// Provider priority: aws > azure > vault > local.
-func computeRecommendation(env *Environment) (SetupMode, string) {
-	mode := ModeLocal
-	if env.Systemd.Available && env.User.IsRoot {
-		mode = ModeAgent
+// computeCapabilities derives what this environment can support from raw facts.
+// All later phases use Capabilities rather than re-examining raw fields.
+func computeCapabilities(env *Environment) Capabilities {
+	return Capabilities{
+		SupportsSystemd:   env.Systemd.Available,
+		SupportsDocker:    env.Docker.DaemonReachable,
+		SupportsAgentMode: env.Systemd.Available && env.User.IsRoot,
+		SupportsLocalMode: true, // always available
 	}
-
-	provider := "local"
-	if env.Providers.Vault.Detected {
-		provider = "vault"
-	}
-	if env.Providers.Azure.Detected {
-		provider = "azure"
-	}
-	if env.Providers.AWS.Detected {
-		provider = "aws"
-	}
-
-	return mode, provider
 }
