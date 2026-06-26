@@ -114,18 +114,9 @@ func (e *Engine) fail(start time.Time, err error) (*SetupResult, error) {
 
 // detect gathers environmental facts. It must never fail due to missing
 // optional data — absence of a credential is a fact, not an error.
-//
-// Phase 2 replaces this with native detection across detect_docker.go,
-// detect_os.go, detect_systemd.go, detect_provider.go, etc.
-func (e *Engine) detect(_ context.Context, opts SetupOptions) (*Environment, error) {
-	// Stub: return a minimal environment derived from the options so that
-	// plan() and apply() have something to work with.
-	return &Environment{
-		RecommendedMode:     opts.Mode,
-		RecommendedProvider: opts.Provider,
-		Timestamp:           time.Now(),
-		Metadata:            make(map[string]interface{}),
-	}, nil
+// opts are intentionally ignored here; plan() applies user overrides on top.
+func (e *Engine) detect(ctx context.Context, _ SetupOptions) (*Environment, error) {
+	return newDetector().Detect(ctx)
 }
 
 // validate checks whether the detected environment is usable.

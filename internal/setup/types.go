@@ -88,39 +88,100 @@ type GroupChange struct {
 	Users     []string
 }
 
+// ─── Environment sub-types ───────────────────────────────────────────────────
+
+// OSInfo contains facts about the host operating system.
+type OSInfo struct {
+	GOOS         string // "linux" | "darwin" | ...
+	Architecture string // "amd64" | "arm64"
+	Distribution string // e.g. "ubuntu" (Linux only; empty otherwise)
+	Version      string // OS version string, e.g. "22.04"
+}
+
+// UserInfo contains facts about the process user.
+type UserInfo struct {
+	Username string
+	UID      string
+	GID      string
+	HomeDir  string
+	IsRoot   bool // true when UID == "0"
+}
+
+// DockerInfo contains facts about the Docker installation.
+type DockerInfo struct {
+	BinaryFound     bool
+	BinaryPath      string
+	Version         string // server version; empty if daemon unreachable
+	DaemonAvailable bool
+	SocketPath      string // first socket path found; empty if none
+}
+
+// SystemdInfo contains facts about the systemd service manager.
+type SystemdInfo struct {
+	Available  bool
+	BinaryPath string
+	Version    string // e.g. "252"; empty if not found
+}
+
+// AWSInfo contains AWS credential-detection results.
+type AWSInfo struct {
+	Detected       bool
+	Region         string
+	HasStaticCreds bool // AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+	HasSharedCreds bool // ~/.aws/credentials file exists
+	HasRole        bool // AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE
+}
+
+// AzureInfo contains Azure credential-detection results.
+type AzureInfo struct {
+	Detected    bool
+	HasEnvCreds bool // AZURE_CLIENT_ID + AZURE_CLIENT_SECRET + AZURE_TENANT_ID
+	HasCLI      bool // az CLI binary found
+}
+
+// VaultInfo contains HashiCorp Vault detection results.
+type VaultInfo struct {
+	Detected bool
+	Address  string // VAULT_ADDR env var
+	HasToken bool   // VAULT_TOKEN env var
+	HasRole  bool   // VAULT_ROLE_ID env var
+}
+
+// DetectedProviders summarises which secret providers were found.
+type DetectedProviders struct {
+	// Available is ordered by detection priority; always includes "local".
+	Available []string
+	AWS       AWSInfo
+	Azure     AzureInfo
+	Vault     VaultInfo
+}
+
+// ExistingDSOInfo describes a prior DSO installation, if any.
+type ExistingDSOInfo struct {
+	Found       bool
+	ConfigPath  string // e.g. /etc/dso/dso.yaml
+	ServicePath string // e.g. /etc/systemd/system/dso-agent.service
+	Version     string // version string; empty if undetectable
+}
+
 // ─── Environment ─────────────────────────────────────────────────────────────
 
 // Environment holds facts gathered during detection. Detection never fails;
-// it collects whatever is knowable and leaves the rest empty.
+// absence of a credential or binary is recorded as false/empty, not an error.
 type Environment struct {
-	OS               string // "linux" | "darwin"
-	IsRoot           bool
-	CurrentUser      string
-	DockerVersion    string // empty if Docker not found
-	SystemdAvailable bool
+	OS          OSInfo
+	User        UserInfo
+	Docker      DockerInfo
+	Systemd     SystemdInfo
+	Providers   DetectedProviders
+	ExistingDSO ExistingDSOInfo
 
-	// AvailableProviders lists providers whose credentials were detected.
-	AvailableProviders []string
-	// DetectedProvider is the first (highest-priority) detected provider.
-	DetectedProvider string
-
-	// Per-provider metadata (populated when detected).
-	AWSRegion    string
-	AWSIdentity  string // arn:aws:iam::...
-	AzureSubID   string
-	VaultAddress string
-
-	// Recommendations derived from the detected environment.
+	// RecommendedMode and RecommendedProvider are derived from detected facts.
+	// plan() applies opts overrides on top of these.
 	RecommendedMode     SetupMode
 	RecommendedProvider string
 
-	// ExistingConfig is the path to an existing dso.yaml, or empty.
-	ExistingConfig string
-	// ExistingDSOVersion is the version string from an existing installation.
-	ExistingDSOVersion string
-
 	Timestamp time.Time
-	Metadata  map[string]interface{}
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────────
