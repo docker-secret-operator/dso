@@ -4,18 +4,32 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
-// ─── Engine tests ─────────────────────────────────────────────────────────────
+// fullSuccessEvents is the complete ordered event sequence for a successful
+// non-dry-run setup. Every test that checks lifecycle events uses this so
+// there is a single source of truth for the expected sequence.
+var fullSuccessEvents = []EventType{
+	EventSetupStarted,
+	EventDetectionCompleted,
+	EventValidationCompleted,
+	EventPlanGenerated,
+	EventPreviewGenerated,
+	EventApplyStarted,
+	EventApplyCompleted,
+	EventSetupCompleted,
+}
+
+// ─── Engine.Setup ─────────────────────────────────────────────────────────────
 
 func TestEngine_Setup_Success(t *testing.T) {
 	var called bool
-	wizard := func(_ context.Context, mode, provider string, autoDetect, nonRoot bool) error {
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
 		called = true
 		return nil
-	}
+	})
 
-	eng := NewEngine(wizard)
 	result, err := eng.Setup(context.Background(), SetupOptions{
 		Mode:     ModeLocal,
 		Provider: "local",
@@ -28,7 +42,7 @@ func TestEngine_Setup_Success(t *testing.T) {
 		t.Fatal("expected legacy wizard to be called")
 	}
 	if result.Status != "success" {
-		t.Errorf("expected status 'success', got %q", result.Status)
+		t.Errorf("status: want 'success', got %q", result.Status)
 	}
 	if result.Duration <= 0 {
 		t.Error("expected positive duration")
@@ -37,67 +51,53 @@ func TestEngine_Setup_Success(t *testing.T) {
 
 func TestEngine_Setup_Failure(t *testing.T) {
 	sentinel := errors.New("wizard exploded")
-	wizard := func(_ context.Context, _, _ string, _, _ bool) error {
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
 		return sentinel
-	}
+	})
 
-	eng := NewEngine(wizard)
 	result, err := eng.Setup(context.Background(), SetupOptions{})
 
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
 	if !errors.Is(err, sentinel) {
-		t.Errorf("expected sentinel error, got: %v", err)
+		t.Errorf("expected sentinel error wrapped, got: %v", err)
 	}
 	if result.Status != "failed" {
-		t.Errorf("expected status 'failed', got %q", result.Status)
+		t.Errorf("status: want 'failed', got %q", result.Status)
 	}
 }
 
-func TestEngine_Setup_EmitsLifecycleEvents(t *testing.T) {
-	wizard := func(_ context.Context, _, _ string, _, _ bool) error { return nil }
-	eng := NewEngine(wizard)
-
-	var events []EventType
-	eng.Events.Subscribe(func(evt Event) {
-		events = append(events, evt.Type)
+func TestEngine_Setup_DryRun_DoesNotCallWizard(t *testing.T) {
+	var called bool
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
+		called = true
+		return nil
 	})
 
-	_, _ = eng.Setup(context.Background(), SetupOptions{})
+	result, err := eng.Setup(context.Background(), SetupOptions{DryRun: true})
 
-	want := []EventType{EventSetupStarted, EventSetupCompleted}
-	if len(events) != len(want) {
-		t.Fatalf("expected %d events, got %d: %v", len(want), len(events), events)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	for i, e := range want {
-		if events[i] != e {
-			t.Errorf("event[%d]: want %q, got %q", i, e, events[i])
-		}
+	if called {
+		t.Error("legacy wizard must not be called during dry-run")
+	}
+	if result.Status != "pending" {
+		t.Errorf("status: want 'pending', got %q", result.Status)
 	}
 }
 
-func TestEngine_Setup_EmitsFailureEvent(t *testing.T) {
-	wizard := func(_ context.Context, _, _ string, _, _ bool) error {
-		return errors.New("boom")
+func TestEngine_Setup_DryRun_PlanHasDryRunFlag(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+
+	result, _ := eng.Setup(context.Background(), SetupOptions{DryRun: true})
+
+	if result.Plan == nil {
+		t.Fatal("expected a plan in the result")
 	}
-	eng := NewEngine(wizard)
-
-	var events []EventType
-	eng.Events.Subscribe(func(evt Event) {
-		events = append(events, evt.Type)
-	})
-
-	_, _ = eng.Setup(context.Background(), SetupOptions{})
-
-	want := []EventType{EventSetupStarted, EventSetupFailed}
-	if len(events) != len(want) {
-		t.Fatalf("expected %d events, got %d: %v", len(want), len(events), events)
-	}
-	for i, e := range want {
-		if events[i] != e {
-			t.Errorf("event[%d]: want %q, got %q", i, e, events[i])
-		}
+	if !result.Plan.DryRun {
+		t.Error("plan.DryRun should be true")
 	}
 }
 
@@ -108,15 +108,14 @@ func TestEngine_Setup_OptionsPassedToWizard(t *testing.T) {
 		capturedDetect   bool
 		capturedNonRoot  bool
 	)
-	wizard := func(_ context.Context, mode, provider string, autoDetect, nonRoot bool) error {
+	eng := newTestEngine(func(_ context.Context, mode, provider string, autoDetect, nonRoot bool) error {
 		capturedMode = mode
 		capturedProvider = provider
 		capturedDetect = autoDetect
 		capturedNonRoot = nonRoot
 		return nil
-	}
+	})
 
-	eng := NewEngine(wizard)
 	_, _ = eng.Setup(context.Background(), SetupOptions{
 		Mode:       ModeAgent,
 		Provider:   "aws",
@@ -138,14 +137,180 @@ func TestEngine_Setup_OptionsPassedToWizard(t *testing.T) {
 	}
 }
 
-// ─── Emitter tests ────────────────────────────────────────────────────────────
+// ─── Lifecycle events ─────────────────────────────────────────────────────────
+
+func TestEngine_Setup_EmitsFullLifecycle_Success(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	events := collectEvents(eng)
+
+	_, _ = eng.Setup(context.Background(), SetupOptions{})
+
+	assertEventSequence(t, events(), fullSuccessEvents)
+}
+
+func TestEngine_Setup_EmitsFailureEvent(t *testing.T) {
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
+		return errors.New("boom")
+	})
+	events := collectEvents(eng)
+
+	_, _ = eng.Setup(context.Background(), SetupOptions{})
+
+	// On apply failure the engine emits: rollback start/complete then setup_failed.
+	want := []EventType{
+		EventSetupStarted,
+		EventDetectionCompleted,
+		EventValidationCompleted,
+		EventPlanGenerated,
+		EventPreviewGenerated,
+		EventApplyStarted,
+		EventRollbackStarted,
+		EventRollbackCompleted,
+		EventSetupFailed,
+	}
+	assertEventSequence(t, events(), want)
+}
+
+func TestEngine_Setup_DryRun_StopsAfterPreview(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	events := collectEvents(eng)
+
+	_, _ = eng.Setup(context.Background(), SetupOptions{DryRun: true})
+
+	// Dry-run must not emit apply events.
+	want := []EventType{
+		EventSetupStarted,
+		EventDetectionCompleted,
+		EventValidationCompleted,
+		EventPlanGenerated,
+		EventPreviewGenerated,
+		EventSetupCompleted,
+	}
+	assertEventSequence(t, events(), want)
+}
+
+// ─── Stage stubs ─────────────────────────────────────────────────────────────
+
+func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	env, err := eng.detect(context.Background(), SetupOptions{Mode: ModeLocal, Provider: "local"})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env == nil {
+		t.Fatal("expected non-nil Environment")
+	}
+	if env.Timestamp.IsZero() {
+		t.Error("expected Timestamp to be set")
+	}
+}
+
+func TestEngine_validate_AlwaysValidInPhase1(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	vr, err := eng.validate(context.Background(), &Environment{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !vr.Valid {
+		t.Error("Phase 1.5 stub should always return Valid=true")
+	}
+}
+
+func TestEngine_plan_PropagatesModeAndProvider(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	env := &Environment{RecommendedMode: ModeLocal, RecommendedProvider: "local"}
+	plan, err := eng.plan(context.Background(), env, SetupOptions{
+		Mode:     ModeAgent,
+		Provider: "aws",
+		DryRun:   true,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Mode != ModeAgent {
+		t.Errorf("mode: want 'agent', got %q", plan.Mode)
+	}
+	if plan.Provider != "aws" {
+		t.Errorf("provider: want 'aws', got %q", plan.Provider)
+	}
+	if !plan.DryRun {
+		t.Error("DryRun should be propagated to plan")
+	}
+}
+
+func TestEngine_plan_FallsBackToEnvRecommendation(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	env := &Environment{
+		RecommendedMode:     ModeLocal,
+		RecommendedProvider: "vault",
+	}
+	// No mode/provider in opts — should fall back to env recommendation.
+	plan, _ := eng.plan(context.Background(), env, SetupOptions{})
+
+	if plan.Mode != ModeLocal {
+		t.Errorf("mode: want 'local' from env, got %q", plan.Mode)
+	}
+	if plan.Provider != "vault" {
+		t.Errorf("provider: want 'vault' from env, got %q", plan.Provider)
+	}
+}
+
+func TestEngine_preview_ReturnsString(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	// Phase 1.5 stub returns empty string; test just ensures it doesn't panic.
+	result := eng.preview(&InstallPlan{})
+	_ = result // empty in Phase 1.5, Terraform-style output in Phase 5
+}
+
+func TestEngine_apply_CallsWizard(t *testing.T) {
+	var called bool
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
+		called = true
+		return nil
+	})
+
+	plan := &InstallPlan{Mode: ModeLocal, Provider: "local"}
+	tx, err := eng.apply(context.Background(), plan, SetupOptions{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected legacy wizard to be called from apply()")
+	}
+	if tx.Status != StatusCompleted {
+		t.Errorf("tx.Status: want Completed, got %q", tx.Status)
+	}
+	if tx.EndTime.IsZero() {
+		t.Error("expected EndTime to be set")
+	}
+}
+
+func TestEngine_apply_ReturnsFailedTransaction(t *testing.T) {
+	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
+		return errors.New("disk full")
+	})
+
+	plan := &InstallPlan{}
+	tx, err := eng.apply(context.Background(), plan, SetupOptions{})
+
+	if err == nil {
+		t.Fatal("expected error from apply()")
+	}
+	if tx.Status != StatusFailed {
+		t.Errorf("tx.Status: want Failed, got %q", tx.Status)
+	}
+}
+
+// ─── Emitter ─────────────────────────────────────────────────────────────────
 
 func TestEmitter_Subscribe_ReceivesEvent(t *testing.T) {
 	e := &Emitter{}
 	var received []Event
-	e.Subscribe(func(evt Event) {
-		received = append(received, evt)
-	})
+	e.Subscribe(func(evt Event) { received = append(received, evt) })
 
 	e.Emit(Event{Type: EventSetupStarted})
 
@@ -160,34 +325,83 @@ func TestEmitter_Subscribe_ReceivesEvent(t *testing.T) {
 func TestEmitter_Emit_SetsTimestamp(t *testing.T) {
 	e := &Emitter{}
 	var received Event
-	e.Subscribe(func(evt Event) {
-		received = evt
-	})
+	e.Subscribe(func(evt Event) { received = evt })
 
+	before := time.Now()
 	e.Emit(Event{Type: EventSetupStarted})
 
-	if received.Timestamp.IsZero() {
-		t.Error("expected timestamp to be set")
+	if received.Timestamp.Before(before) {
+		t.Error("expected timestamp >= before-emit time")
 	}
 }
 
 func TestEmitter_MultipleListeners(t *testing.T) {
 	e := &Emitter{}
-	const n = 5
 	count := 0
-	for range n {
+	for range 5 {
 		e.Subscribe(func(_ Event) { count++ })
 	}
-
 	e.Emit(Event{Type: EventSetupStarted})
-
-	if count != n {
-		t.Errorf("expected %d listeners called, got %d", n, count)
+	if count != 5 {
+		t.Errorf("expected 5 listeners called, got %d", count)
 	}
 }
 
 func TestEmitter_NoListeners_NoPanic(t *testing.T) {
 	e := &Emitter{}
-	// Must not panic with zero listeners.
-	e.Emit(Event{Type: EventSetupStarted})
+	e.Emit(Event{Type: EventSetupStarted}) // must not panic
+}
+
+func TestEmitter_PreservesEventOrder(t *testing.T) {
+	e := &Emitter{}
+	var received []EventType
+	e.Subscribe(func(evt Event) { received = append(received, evt.Type) })
+
+	types := []EventType{
+		EventSetupStarted,
+		EventDetectionCompleted,
+		EventValidationCompleted,
+		EventPlanGenerated,
+		EventSetupCompleted,
+	}
+	for _, et := range types {
+		e.Emit(Event{Type: et})
+	}
+
+	for i, want := range types {
+		if received[i] != want {
+			t.Errorf("event[%d]: want %q, got %q", i, want, received[i])
+		}
+	}
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+func noopWizard(_ context.Context, _, _ string, _, _ bool) error { return nil }
+
+func newTestEngine(wizard LegacyWizardFunc) *Engine {
+	return NewEngine(wizard)
+}
+
+// collectEvents subscribes before the test action and returns a func that
+// delivers the accumulated slice after the action completes. Because the
+// Emitter is synchronous this is race-free without any additional locking.
+func collectEvents(eng *Engine) func() []EventType {
+	var received []EventType
+	eng.Events.Subscribe(func(evt Event) {
+		received = append(received, evt.Type)
+	})
+	return func() []EventType { return received }
+}
+
+func assertEventSequence(t *testing.T, got []EventType, want []EventType) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("event count: want %d, got %d\n  want: %v\n   got: %v", len(want), len(got), want, got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("event[%d]: want %q, got %q", i, w, got[i])
+		}
+	}
 }
