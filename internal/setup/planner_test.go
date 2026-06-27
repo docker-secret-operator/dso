@@ -379,6 +379,89 @@ func TestPlanner_ExplicitOptsOverrideCapabilities(t *testing.T) {
 
 // ─── Planner.Plan — upgrade detection ────────────────────────────────────────
 
+// ─── Planner.Plan — PlanSummary ───────────────────────────────────────────────
+
+func TestPlanner_VersionIsOne(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if plan.Version != 1 {
+		t.Errorf("want Version=1, got %d", plan.Version)
+	}
+}
+
+func TestPlanner_LocalMode_SummaryTotalOperationsGTZero(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if plan.Summary.TotalOperations == 0 {
+		t.Error("expected TotalOperations > 0 for local mode plan")
+	}
+}
+
+func TestPlanner_LocalMode_SummaryCreateCountGTZero(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if plan.Summary.CreateCount == 0 {
+		t.Error("expected CreateCount > 0 for local mode plan")
+	}
+}
+
+func TestPlanner_LocalMode_SummaryRequiresRootFalse(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{User: UserInfo{IsRoot: false}}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if plan.Summary.RequiresRoot {
+		t.Error("local mode with no services/groups should not require root")
+	}
+}
+
+func TestPlanner_AgentMode_SummaryRequiresRootTrue(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeAgent,
+		Provider: "local",
+	})
+	if !plan.Summary.RequiresRoot {
+		t.Error("agent mode must require root")
+	}
+}
+
+func TestPlanner_SummaryEstimatedTimeGTZero(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if plan.Summary.EstimatedTime == 0 {
+		t.Error("expected EstimatedTime > 0")
+	}
+}
+
+func TestPlanner_SummaryTotalMatchesCreatePlusModifyPlusDelete(t *testing.T) {
+	p := newPlanner()
+	plan, _ := p.Plan(context.Background(), &Environment{User: UserInfo{IsRoot: true}}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeAgent,
+		Provider: "aws",
+	})
+	s := plan.Summary
+	if s.TotalOperations != s.CreateCount+s.ModifyCount+s.DeleteCount {
+		t.Errorf("TotalOperations(%d) != Create(%d)+Modify(%d)+Delete(%d)",
+			s.TotalOperations, s.CreateCount, s.ModifyCount, s.DeleteCount)
+	}
+}
+
+// ─── Planner.Plan — upgrade detection ────────────────────────────────────────
+
 func TestPlanner_ExistingInstallationProducesModifyOperation(t *testing.T) {
 	p := newPlanner()
 	env := &Environment{User: UserInfo{HomeDir: "/home/alice"}}

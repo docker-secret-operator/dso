@@ -31,9 +31,13 @@ const (
 // struct. Nothing touches disk until the plan is approved and executed.
 type InstallPlan struct {
 	ID        string
-	Timestamp time.Time
-	Mode      SetupMode
-	Provider  string // "aws", "vault", "azure", "local"
+	Version   int       // schema version; always 1 for now
+	Timestamp time.Time // when the plan was generated
+
+	Mode     SetupMode
+	Provider string // "aws", "vault", "azure", "local"
+
+	Summary PlanSummary // aggregate counts, computed by the Planner
 
 	Directories []DirectoryChange
 	Files       []FileChange
@@ -47,6 +51,17 @@ type InstallPlan struct {
 	DryRun      bool
 	ResumeToken string            // non-empty when resuming a prior run
 	Metadata    map[string]string
+}
+
+// PlanSummary holds aggregate counts computed by the Planner.
+// The Preview renders these values; it never recomputes them.
+type PlanSummary struct {
+	TotalOperations int
+	CreateCount     int
+	ModifyCount     int
+	DeleteCount     int
+	RequiresRoot    bool
+	EstimatedTime   time.Duration
 }
 
 // FileChange describes a file create or modify operation.
@@ -342,6 +357,9 @@ type SetupOptions struct {
 
 	// Resume continues a previously interrupted transaction.
 	Resume string
+
+	// Format selects the preview renderer: "terminal" (default) or "json".
+	Format string
 
 	// Overrides are applied on top of planner defaults (for scripting).
 	Overrides map[string]interface{}

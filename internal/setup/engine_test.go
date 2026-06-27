@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -299,11 +300,38 @@ func TestEngine_plan_HasID(t *testing.T) {
 	}
 }
 
-func TestEngine_preview_ReturnsString(t *testing.T) {
+func TestEngine_preview_TerminalRenderer(t *testing.T) {
 	eng := newTestEngine(noopWizard)
-	// Phase 1.5 stub returns empty string; test just ensures it doesn't panic.
-	result := eng.preview(&InstallPlan{})
-	_ = result // empty in Phase 1.5, Terraform-style output in Phase 5
+	out, err := eng.preview(&InstallPlan{Mode: ModeLocal, Provider: "local"}, "terminal")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Error("expected non-empty terminal preview")
+	}
+}
+
+func TestEngine_preview_JSONRenderer(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	out, err := eng.preview(&InstallPlan{Mode: ModeLocal, Provider: "local"}, "json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Error("expected non-empty JSON preview")
+	}
+}
+
+func TestEngine_preview_DefaultIsTerminal(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	out, err := eng.preview(&InstallPlan{Mode: ModeLocal}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Terminal renderer always includes "DSO Setup Plan".
+	if !strings.Contains(out, "DSO Setup Plan") {
+		t.Errorf("expected terminal header in default format output, got:\n%s", out)
+	}
 }
 
 func TestEngine_apply_CallsWizard(t *testing.T) {

@@ -64,8 +64,10 @@ func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, er
 	e.Events.emit(EventPlanGenerated, plan, nil)
 
 	// ── Stage 4: Preview ──────────────────────────────────────────────────
-	// Phase 5 replaces e.preview() with a native implementation.
-	preview := e.preview(plan)
+	preview, err := e.preview(plan, opts.Format)
+	if err != nil {
+		return e.fail(start, fmt.Errorf("preview failed: %w", err))
+	}
 	e.Events.emit(EventPreviewGenerated, preview, nil)
 
 	// Dry-run gate: stop here without writing anything.
@@ -131,12 +133,11 @@ func (e *Engine) plan(ctx context.Context, env *Environment, vr *ValidationResul
 	return newPlanner().Plan(ctx, env, vr, opts)
 }
 
-// preview renders the InstallPlan for user confirmation.
-//
-// Phase 5 replaces this with a Terraform-style diff renderer.
-func (e *Engine) preview(_ *InstallPlan) string {
-	// Stub: no preview yet — the legacy wizard prints its own summary.
-	return ""
+// preview renders the InstallPlan using the renderer selected by format.
+// "json" → JSONRenderer; anything else (including "") → TerminalRenderer.
+// Returns (string, error) so failures surface through the normal error path.
+func (e *Engine) preview(plan *InstallPlan, format string) (string, error) {
+	return NewPreviewEngine(newRenderer(format)).Render(*plan)
 }
 
 // apply executes the InstallPlan transactionally.

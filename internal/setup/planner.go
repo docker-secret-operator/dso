@@ -31,6 +31,7 @@ func (p *Planner) Plan(_ context.Context, env *Environment, vr *ValidationResult
 
 	plan := &InstallPlan{
 		ID:        generatePlanID(),
+		Version:   1,
 		Timestamp: time.Now(),
 		Mode:      mode,
 		Provider:  provider,
@@ -48,6 +49,7 @@ func (p *Planner) Plan(_ context.Context, env *Environment, vr *ValidationResult
 		p.planDockerGroup(plan, env, ctr)
 	}
 
+	plan.Summary = computeSummary(plan)
 	return plan, nil
 }
 
@@ -269,6 +271,67 @@ provider: %s
 // current timestamp. It is unique to the millisecond within a single host.
 func generatePlanID() string {
 	return fmt.Sprintf("plan-%s", time.Now().Format("20060102-150405"))
+}
+
+// ─── Summary computation ──────────────────────────────────────────────────────
+
+// computeSummary derives aggregate counts from a fully-built plan.
+// Called once at the end of Plan(); preview only renders, never recomputes.
+func computeSummary(plan *InstallPlan) PlanSummary {
+	s := PlanSummary{}
+
+	for _, d := range plan.Directories {
+		s.TotalOperations++
+		switch d.Operation {
+		case "create":
+			s.CreateCount++
+		case "modify":
+			s.ModifyCount++
+		case "delete":
+			s.DeleteCount++
+		}
+	}
+	for _, f := range plan.Files {
+		s.TotalOperations++
+		switch f.Operation {
+		case "create":
+			s.CreateCount++
+		case "modify":
+			s.ModifyCount++
+		case "delete":
+			s.DeleteCount++
+		}
+	}
+	// Permissions are always modifications of existing state.
+	for range plan.Permissions {
+		s.TotalOperations++
+		s.ModifyCount++
+	}
+	for _, svc := range plan.Services {
+		s.TotalOperations++
+		switch svc.Operation {
+		case "create", "enable", "start":
+			s.CreateCount++
+		case "stop", "disable":
+			s.DeleteCount++
+		}
+	}
+	for _, g := range plan.Groups {
+		s.TotalOperations++
+		switch g.Operation {
+		case "create":
+			s.CreateCount++
+		case "add-member":
+			s.ModifyCount++
+		case "delete":
+			s.DeleteCount++
+		}
+	}
+
+	s.RequiresRoot = plan.Mode == ModeAgent || len(plan.Services) > 0 || len(plan.Groups) > 0
+	s.EstimatedTime = time.Duration(s.TotalOperations) * 2 * time.Second
+
+	return s
 }
 
 // ─── Operation counter ────────────────────────────────────────────────────────
