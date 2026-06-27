@@ -50,8 +50,7 @@ func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, er
 	e.Events.emit(EventDetectionCompleted, env, nil)
 
 	// ── Stage 2: Validate ─────────────────────────────────────────────────
-	// Phase 3 replaces e.validate() with a native implementation.
-	vr, err := e.validate(ctx, env)
+	vr, err := e.validate(ctx, env, opts)
 	if err != nil {
 		return e.fail(start, fmt.Errorf("validation failed: %w", err))
 	}
@@ -119,14 +118,12 @@ func (e *Engine) detect(ctx context.Context, _ SetupOptions) (*Environment, erro
 	return newDetector().Detect(ctx)
 }
 
-// validate checks whether the detected environment is usable.
-//
-// Phase 3 replaces this with checks for Docker access, permissions,
-// provider credentials, and filesystem writability.
-func (e *Engine) validate(_ context.Context, _ *Environment) (*ValidationResult, error) {
-	// Stub: always valid — the legacy wizard performs its own validation
-	// internally and returns an error if something is wrong.
-	return &ValidationResult{Valid: true}, nil
+// validate checks whether the detected environment can support the requested
+// setup. It delegates to the Validator; the result is informational — the
+// engine emits it via EventValidationCompleted and the CLI decides whether to
+// abort. The legacy wizard performs its own final check during apply().
+func (e *Engine) validate(ctx context.Context, env *Environment, opts SetupOptions) (*ValidationResult, error) {
+	return newValidator().Validate(ctx, env, opts)
 }
 
 // plan generates an immutable InstallPlan from the detected environment.

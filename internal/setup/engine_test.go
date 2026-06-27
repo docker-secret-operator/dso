@@ -206,15 +206,38 @@ func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
 	}
 }
 
-func TestEngine_validate_AlwaysValidInPhase1(t *testing.T) {
+func TestEngine_validate_EmptyEnvironmentReturnsInvalid(t *testing.T) {
 	eng := newTestEngine(noopWizard)
-	vr, err := eng.validate(context.Background(), &Environment{})
+	// An empty environment has no Docker binary — the real validator must flag it.
+	vr, err := eng.validate(context.Background(), &Environment{}, SetupOptions{Mode: ModeLocal})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vr.Valid {
+		t.Error("expected Valid=false for environment with no Docker")
+	}
+	if len(vr.Errors) == 0 {
+		t.Error("expected at least one validation error")
+	}
+}
+
+func TestEngine_validate_HealthyLocalEnvironmentReturnsValid(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	env := &Environment{
+		Docker: DockerInfo{BinaryFound: true, DaemonReachable: true},
+		Capabilities: Capabilities{
+			SupportsDocker:    true,
+			SupportsLocalMode: true,
+		},
+	}
+	vr, err := eng.validate(context.Background(), env, SetupOptions{Mode: ModeLocal, Provider: "local"})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !vr.Valid {
-		t.Error("Phase 1.5 stub should always return Valid=true")
+		t.Errorf("expected Valid=true for healthy local environment, got errors: %v", vr.Errors)
 	}
 }
 

@@ -211,9 +211,10 @@ type Environment struct {
 
 // ValidationResult summarises whether the detected environment is usable.
 type ValidationResult struct {
-	Valid    bool
-	Errors   []ValidationError   // must-fix issues; setup cannot proceed
-	Warnings []ValidationWarning // nice-to-fix; setup can proceed
+	Valid       bool
+	Errors      []ValidationError    // must-fix issues; setup cannot proceed
+	Warnings    []ValidationWarning  // nice-to-fix; setup can proceed
+	Suggestions []ValidationSuggestion // informational notes for the user
 }
 
 // ValidationError describes a blocking problem and how to recover from it.
@@ -225,6 +226,12 @@ type ValidationError struct {
 
 // ValidationWarning describes a non-blocking concern.
 type ValidationWarning struct {
+	Code    string
+	Message string
+}
+
+// ValidationSuggestion is an informational note that requires no user action.
+type ValidationSuggestion struct {
 	Code    string
 	Message string
 }
