@@ -12,9 +12,10 @@ type DirectoryExecutor struct {
 	ops     []DirectoryChange
 	emitter *Emitter
 	// Injectable OS hooks — defaults point to real syscalls.
-	stat  func(string) (os.FileInfo, error)
-	mkdir func(string, os.FileMode) error
-	chown func(string, string) error // "path", "user:group"
+	stat    func(string) (os.FileInfo, error)
+	mkdir   func(string, os.FileMode) error
+	chown   func(string, string) error // "path", "user:group"
+	ownerOf func(string) (string, error)
 }
 
 func newDirectoryExecutor(ops []DirectoryChange, emitter *Emitter) *DirectoryExecutor {
@@ -24,6 +25,7 @@ func newDirectoryExecutor(ops []DirectoryChange, emitter *Emitter) *DirectoryExe
 		stat:    os.Stat,
 		mkdir:   os.MkdirAll,
 		chown:   chownPath,
+		ownerOf: ownerOfPath,
 	}
 }
 
@@ -46,6 +48,7 @@ func (e *DirectoryExecutor) executeOne(_ context.Context, op *DirectoryChange, t
 	if info, err := e.stat(op.Path); err == nil {
 		before.Existed = true
 		before.Mode = info.Mode()
+		before.Owner, _ = e.ownerOf(op.Path) // best-effort; empty string is safe
 	}
 	txOp.Before = before
 

@@ -130,6 +130,7 @@ func TestDirectoryExecutor_Create_ExistingDirSnapshotted(t *testing.T) {
 	}
 	exec.mkdir = noopMkdir
 	exec.chown = noopChown
+	exec.ownerOf = func(_ string) (string, error) { return "root:root", nil }
 
 	tx := newTransaction("plan-001")
 	_ = exec.execute(context.Background(), tx)
@@ -358,6 +359,7 @@ func TestFileExecutor_ExistingFile_BeforeContentSaved(t *testing.T) {
 	exec.readFile = func(_ string) ([]byte, error) { return existing, nil }
 	exec.writeFile = noopWriteFile
 	exec.chown = noopChown
+	exec.ownerOf = func(_ string) (string, error) { return "root:root", nil }
 
 	tx := newTransaction("plan-001")
 	_ = exec.execute(context.Background(), tx)

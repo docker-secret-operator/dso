@@ -12,9 +12,10 @@ type PermissionExecutor struct {
 	ops     []PermissionChange
 	emitter *Emitter
 	// Injectable OS hooks — defaults point to real syscalls.
-	stat  func(string) (os.FileInfo, error)
-	chmod func(string, os.FileMode) error
-	chown func(string, string) error
+	stat    func(string) (os.FileInfo, error)
+	chmod   func(string, os.FileMode) error
+	chown   func(string, string) error
+	ownerOf func(string) (string, error)
 }
 
 func newPermissionExecutor(ops []PermissionChange, emitter *Emitter) *PermissionExecutor {
@@ -24,6 +25,7 @@ func newPermissionExecutor(ops []PermissionChange, emitter *Emitter) *Permission
 		stat:    os.Stat,
 		chmod:   os.Chmod,
 		chown:   chownPath,
+		ownerOf: ownerOfPath,
 	}
 }
 
@@ -41,11 +43,15 @@ func (e *PermissionExecutor) executeOne(_ context.Context, op *PermissionChange,
 	markRunning(txOp)
 	e.emitter.emit(EventOperationStarted, txOp, nil)
 
-	// Snapshot current mode for rollback (prefer live stat over plan's Current field).
-	before := &PermSnapshot{Mode: op.Current, Owner: op.Owner}
+	// Snapshot current mode and owner for rollback.
+	// op.Current is the plan's expected mode; live stat overrides it when available.
+	// op.Owner is the TARGET owner (what we're setting), not the original — so we
+	// must read the actual current owner from the OS.
+	before := &PermSnapshot{Mode: op.Current}
 	if info, err := e.stat(op.Path); err == nil {
 		before.Mode = info.Mode()
 	}
+	before.Owner, _ = e.ownerOf(op.Path) // best-effort; empty string means skip chown in rollback
 	txOp.Before = before
 
 	if err := e.chmod(op.Path, op.Target); err != nil {

@@ -80,15 +80,15 @@ func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, er
 	}
 
 	// ── Stage 5: Apply ────────────────────────────────────────────────────
-	// Phase 6 replaces e.apply() with a native transactional implementation.
 	e.Events.emit(EventApplyStarted, plan, nil)
 	tx, err := e.apply(ctx, plan, opts)
 	if err != nil {
-		e.Events.emit(EventRollbackStarted, tx, nil)
-		// Phase 7 will add real rollback here; for now the legacy wizard
-		// does not produce partial state that needs undoing.
-		e.Events.emit(EventRollbackCompleted, tx, nil)
-		return e.fail(start, err)
+		// Stage 6: Rollback — replay in reverse; collect partial failures.
+		rb := newRollback(e.Events)
+		rr := rb.Execute(ctx, tx)
+		result, applyErr := e.fail(start, err)
+		result.Rollback = rr
+		return result, applyErr
 	}
 	e.Events.emit(EventApplyCompleted, tx, nil)
 

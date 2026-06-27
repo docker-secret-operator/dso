@@ -34,6 +34,12 @@ const (
 	EventOperationStarted     EventType = "operation_started"
 	EventOperationCompleted   EventType = "operation_completed"
 	EventOperationFailed      EventType = "operation_failed"
+
+	// Rollback operation lifecycle — emitted by the Rollback engine.
+	// These fire between EventRollbackStarted and EventRollbackCompleted/EventRollbackFailed.
+	EventRollbackOperationStarted   EventType = "rollback_operation_started"
+	EventRollbackOperationCompleted EventType = "rollback_operation_completed"
+	EventRollbackOperationFailed    EventType = "rollback_operation_failed"
 )
 
 // Event carries a single lifecycle notification from the setup engine.

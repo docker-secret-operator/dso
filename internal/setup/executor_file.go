@@ -16,6 +16,7 @@ type FileExecutor struct {
 	readFile  func(string) ([]byte, error)
 	writeFile func(string, []byte, os.FileMode) error
 	chown     func(string, string) error
+	ownerOf   func(string) (string, error)
 }
 
 func newFileExecutor(ops []FileChange, emitter *Emitter) *FileExecutor {
@@ -26,6 +27,7 @@ func newFileExecutor(ops []FileChange, emitter *Emitter) *FileExecutor {
 		readFile:  os.ReadFile,
 		writeFile: os.WriteFile,
 		chown:     chownPath,
+		ownerOf:   ownerOfPath,
 	}
 }
 
@@ -51,6 +53,7 @@ func (e *FileExecutor) executeOne(_ context.Context, op *FileChange, tx *Transac
 		if info, err := e.stat(op.Path); err == nil {
 			before.Mode = info.Mode()
 		}
+		before.Owner, _ = e.ownerOf(op.Path) // best-effort; empty string is safe
 	}
 	txOp.Before = before
 

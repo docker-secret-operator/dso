@@ -17,11 +17,13 @@ const (
 type TransactionStatus string
 
 const (
-	StatusPending    TransactionStatus = "pending"
-	StatusRunning    TransactionStatus = "running"
-	StatusCompleted  TransactionStatus = "completed"
-	StatusFailed     TransactionStatus = "failed"
-	StatusRolledBack TransactionStatus = "rolled_back"
+	StatusPending         TransactionStatus = "pending"
+	StatusRunning         TransactionStatus = "running"
+	StatusCompleted       TransactionStatus = "completed"
+	StatusFailed          TransactionStatus = "failed"
+	StatusRollbackRunning TransactionStatus = "rollback_running"
+	StatusRolledBack      TransactionStatus = "rolled_back"
+	StatusRollbackFailed  TransactionStatus = "rollback_failed"
 )
 
 // ─── Install Plan ────────────────────────────────────────────────────────────
@@ -365,11 +367,29 @@ type SetupOptions struct {
 	Overrides map[string]interface{}
 }
 
+// RollbackResult summarises the outcome of a rollback execution.
+type RollbackResult struct {
+	TransactionID string
+	Completed     []string          // OperIDs of successfully rolled back operations
+	Failed        []RollbackFailure // operations that could not be reversed
+	Warnings      []string
+	StartTime     time.Time
+	EndTime       time.Time
+}
+
+// RollbackFailure records a single rollback step that could not be completed.
+type RollbackFailure struct {
+	OperID string
+	Target string
+	Error  error
+}
+
 // SetupResult is returned by Engine.Setup.
 type SetupResult struct {
 	Plan        *InstallPlan
 	Transaction *Transaction
-	Status      string // "success" | "failed" | "pending" | "rolled_back"
+	Rollback    *RollbackResult // non-nil when Apply failed and rollback was attempted
+	Status      string          // "success" | "failed" | "pending" | "rolled_back"
 	Duration    time.Duration
 }
 
