@@ -208,7 +208,6 @@ func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
 
 func TestEngine_validate_EmptyEnvironmentReturnsInvalid(t *testing.T) {
 	eng := newTestEngine(noopWizard)
-	// An empty environment has no Docker binary — the real validator must flag it.
 	vr, err := eng.validate(context.Background(), &Environment{}, SetupOptions{Mode: ModeLocal})
 
 	if err != nil {
@@ -217,7 +216,7 @@ func TestEngine_validate_EmptyEnvironmentReturnsInvalid(t *testing.T) {
 	if vr.Valid {
 		t.Error("expected Valid=false for environment with no Docker")
 	}
-	if len(vr.Errors) == 0 {
+	if len(vr.Errors()) == 0 {
 		t.Error("expected at least one validation error")
 	}
 }
@@ -237,7 +236,7 @@ func TestEngine_validate_HealthyLocalEnvironmentReturnsValid(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !vr.Valid {
-		t.Errorf("expected Valid=true for healthy local environment, got errors: %v", vr.Errors)
+		t.Errorf("expected Valid=true for healthy local environment, got errors: %v", vr.Errors())
 	}
 }
 

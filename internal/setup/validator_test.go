@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-// healthyLocalEnv builds a minimal Environment that passes all validations for
-// local mode with no cloud provider.
+// healthyLocalEnv returns a minimal Environment that passes all validations
+// for local mode with no cloud provider.
 func healthyLocalEnv() *Environment {
 	return &Environment{
 		Docker: DockerInfo{
@@ -30,15 +30,15 @@ func noopValidatorConfig() ValidatorConfig {
 	return ValidatorConfig{} // nil functions == no probes
 }
 
-// mockValidator constructs a Validator with injectable connectivity probes.
-func mockValidator(cfg ValidatorConfig) *Validator {
+// newMockValidator constructs a Validator with injectable connectivity probes.
+func newMockValidator(cfg ValidatorConfig) *Validator {
 	return &Validator{cfg: cfg}
 }
 
 // ─── Validator.Validate ───────────────────────────────────────────────────────
 
 func TestValidator_Validate_ValidLocalEnvironment(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	result, err := v.Validate(context.Background(), healthyLocalEnv(), SetupOptions{
 		Mode:     ModeLocal,
 		Provider: "local",
@@ -48,33 +48,29 @@ func TestValidator_Validate_ValidLocalEnvironment(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Valid {
-		t.Errorf("expected Valid=true, got errors: %v", result.Errors)
-	}
-	if len(result.Errors) != 0 {
-		t.Errorf("expected no errors, got: %v", result.Errors)
+		t.Errorf("expected Valid=true, got issues: %v", result.Errors())
 	}
 }
 
 func TestValidator_Validate_MissingDocker_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
-	env.Docker = DockerInfo{} // no Docker at all
+	env.Docker = DockerInfo{}
 
 	result, err := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal})
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Valid {
 		t.Error("expected Valid=false when Docker is not installed")
 	}
-	if !hasErrorCode(result.Errors, "docker_not_installed") {
-		t.Errorf("expected docker_not_installed error, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeDockerNotInstalled) {
+		t.Errorf("expected %s, got issues: %v", CodeDockerNotInstalled, result.Issues)
 	}
 }
 
-func TestValidator_Validate_DockerBinaryFoundButDaemonDown_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+func TestValidator_Validate_DockerBinaryFoundDaemonDown_Invalid(t *testing.T) {
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Docker = DockerInfo{BinaryFound: true, DaemonReachable: false}
 
@@ -83,13 +79,13 @@ func TestValidator_Validate_DockerBinaryFoundButDaemonDown_Invalid(t *testing.T)
 	if result.Valid {
 		t.Error("expected Valid=false when Docker daemon is not running")
 	}
-	if !hasErrorCode(result.Errors, "docker_daemon_unreachable") {
-		t.Errorf("expected docker_daemon_unreachable, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeDockerDaemonUnreachable) {
+		t.Errorf("expected %s, got issues: %v", CodeDockerDaemonUnreachable, result.Issues)
 	}
 }
 
 func TestValidator_Validate_SocketFoundDaemonDown_DistinctError(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Docker = DockerInfo{BinaryFound: true, SocketFound: true, DaemonReachable: false}
 
@@ -98,46 +94,44 @@ func TestValidator_Validate_SocketFoundDaemonDown_DistinctError(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false")
 	}
-	if !hasErrorCode(result.Errors, "docker_daemon_not_running") {
-		t.Errorf("expected docker_daemon_not_running, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeDockerDaemonNotRunning) {
+		t.Errorf("expected %s, got issues: %v", CodeDockerDaemonNotRunning, result.Issues)
 	}
 }
 
 func TestValidator_Validate_AgentModeNoRoot_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Systemd = SystemdInfo{Available: true}
 	env.Capabilities.SupportsSystemd = true
 	env.Capabilities.SupportsAgentMode = true
-	// IsRoot is false by default from healthyLocalEnv
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeAgent})
 
 	if result.Valid {
-		t.Error("expected Valid=false when agent mode is requested without root")
+		t.Error("expected Valid=false when agent mode requested without root")
 	}
-	if !hasErrorCode(result.Errors, "agent_mode_requires_root") {
-		t.Errorf("expected agent_mode_requires_root, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeAgentModeRequiresRoot) {
+		t.Errorf("expected %s, got issues: %v", CodeAgentModeRequiresRoot, result.Issues)
 	}
 }
 
 func TestValidator_Validate_AgentModeNonRootFlag_Valid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Systemd = SystemdInfo{Available: true}
 	env.Capabilities.SupportsSystemd = true
 	env.Capabilities.SupportsAgentMode = true
 
-	// --non-root suppresses the root requirement during initial setup.
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeAgent, NonRoot: true})
 
 	if !result.Valid {
-		t.Errorf("expected Valid=true with NonRoot=true, got errors: %v", result.Errors)
+		t.Errorf("expected Valid=true with NonRoot=true, got issues: %v", result.Errors())
 	}
 }
 
 func TestValidator_Validate_AgentModeNoSystemd_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.User.IsRoot = true
 	env.Capabilities.SupportsSystemd = false
@@ -145,15 +139,15 @@ func TestValidator_Validate_AgentModeNoSystemd_Invalid(t *testing.T) {
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeAgent})
 
 	if result.Valid {
-		t.Error("expected Valid=false when agent mode is requested without systemd")
+		t.Error("expected Valid=false when agent mode requested without systemd")
 	}
-	if !hasErrorCode(result.Errors, "agent_mode_requires_systemd") {
-		t.Errorf("expected agent_mode_requires_systemd, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeAgentModeRequiresSystemd) {
+		t.Errorf("expected %s, got issues: %v", CodeAgentModeRequiresSystemd, result.Issues)
 	}
 }
 
 func TestValidator_Validate_UnknownProvider_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	result, _ := v.Validate(context.Background(), healthyLocalEnv(), SetupOptions{
 		Mode:     ModeLocal,
 		Provider: "notacloud",
@@ -162,13 +156,13 @@ func TestValidator_Validate_UnknownProvider_Invalid(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false for unknown provider")
 	}
-	if !hasErrorCode(result.Errors, "unknown_provider") {
-		t.Errorf("expected unknown_provider, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeUnknownProvider) {
+		t.Errorf("expected %s, got issues: %v", CodeUnknownProvider, result.Issues)
 	}
 }
 
 func TestValidator_Validate_AWSNoCredentials_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Providers.AWS = AWSInfo{Detected: false}
 
@@ -180,13 +174,13 @@ func TestValidator_Validate_AWSNoCredentials_Invalid(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false when AWS credentials are missing")
 	}
-	if !hasErrorCode(result.Errors, "aws_credentials_missing") {
-		t.Errorf("expected aws_credentials_missing, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeAWSCredentialsMissing) {
+		t.Errorf("expected %s, got issues: %v", CodeAWSCredentialsMissing, result.Issues)
 	}
 }
 
-func TestValidator_Validate_AWSCredentialsWithConnectivitySuccess(t *testing.T) {
-	v := mockValidator(ValidatorConfig{
+func TestValidator_Validate_AWSConnectivitySuccess(t *testing.T) {
+	v := newMockValidator(ValidatorConfig{
 		CheckAWSConnectivity: func(_ context.Context, _ string) error { return nil },
 	})
 	env := healthyLocalEnv()
@@ -198,12 +192,12 @@ func TestValidator_Validate_AWSCredentialsWithConnectivitySuccess(t *testing.T) 
 	})
 
 	if !result.Valid {
-		t.Errorf("expected Valid=true when AWS connectivity probe succeeds, got errors: %v", result.Errors)
+		t.Errorf("expected Valid=true when AWS connectivity probe succeeds, got issues: %v", result.Errors())
 	}
 }
 
-func TestValidator_Validate_AWSCredentialsWithConnectivityFailure(t *testing.T) {
-	v := mockValidator(ValidatorConfig{
+func TestValidator_Validate_AWSConnectivityFailure(t *testing.T) {
+	v := newMockValidator(ValidatorConfig{
 		CheckAWSConnectivity: func(_ context.Context, _ string) error {
 			return errors.New("connection refused")
 		},
@@ -219,13 +213,13 @@ func TestValidator_Validate_AWSCredentialsWithConnectivityFailure(t *testing.T) 
 	if result.Valid {
 		t.Error("expected Valid=false when AWS connectivity probe fails")
 	}
-	if !hasErrorCode(result.Errors, "aws_connectivity_failed") {
-		t.Errorf("expected aws_connectivity_failed, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeAWSConnectivityFailed) {
+		t.Errorf("expected %s, got issues: %v", CodeAWSConnectivityFailed, result.Issues)
 	}
 }
 
 func TestValidator_Validate_VaultNoCredentials_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Providers.Vault = VaultInfo{Detected: false}
 
@@ -234,13 +228,13 @@ func TestValidator_Validate_VaultNoCredentials_Invalid(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false when Vault credentials are missing")
 	}
-	if !hasErrorCode(result.Errors, "vault_credentials_missing") {
-		t.Errorf("expected vault_credentials_missing, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeVaultCredentialsMissing) {
+		t.Errorf("expected %s, got issues: %v", CodeVaultCredentialsMissing, result.Issues)
 	}
 }
 
 func TestValidator_Validate_VaultConnectivityFailure(t *testing.T) {
-	v := mockValidator(ValidatorConfig{
+	v := newMockValidator(ValidatorConfig{
 		CheckVaultConnectivity: func(_ context.Context, _ string) error {
 			return errors.New("dial tcp: connection refused")
 		},
@@ -253,13 +247,13 @@ func TestValidator_Validate_VaultConnectivityFailure(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false when Vault is unreachable")
 	}
-	if !hasErrorCode(result.Errors, "vault_connectivity_failed") {
-		t.Errorf("expected vault_connectivity_failed, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeVaultConnectivityFailed) {
+		t.Errorf("expected %s, got issues: %v", CodeVaultConnectivityFailed, result.Issues)
 	}
 }
 
 func TestValidator_Validate_AzureNoCredentials_Invalid(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Providers.Azure = AzureInfo{Detected: false}
 
@@ -268,60 +262,58 @@ func TestValidator_Validate_AzureNoCredentials_Invalid(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false when Azure credentials are missing")
 	}
-	if !hasErrorCode(result.Errors, "azure_credentials_missing") {
-		t.Errorf("expected azure_credentials_missing, got: %v", result.Errors)
+	if !hasCode(result, SeverityError, CodeAzureCredentialsMissing) {
+		t.Errorf("expected %s, got issues: %v", CodeAzureCredentialsMissing, result.Issues)
 	}
 }
 
 func TestValidator_Validate_AzureConnectivitySkippedWhenNilChecker(t *testing.T) {
-	v := mockValidator(ValidatorConfig{
-		CheckAzureConnectivity: nil, // no probe
-	})
+	v := newMockValidator(ValidatorConfig{CheckAzureConnectivity: nil})
 	env := healthyLocalEnv()
 	env.Providers.Azure = AzureInfo{Detected: true, HasEnvCreds: true}
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Provider: "azure"})
 
 	if !result.Valid {
-		t.Errorf("expected Valid=true when Azure connectivity probe is nil, got errors: %v", result.Errors)
+		t.Errorf("expected Valid=true when Azure connectivity probe is nil, got issues: %v", result.Errors())
 	}
 }
 
 func TestValidator_Validate_NoCloudProvider_WarnsUser(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Providers = DetectedProviders{Available: []string{"local"}}
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal})
-	// Valid=true; only a warning is emitted
+
 	if !result.Valid {
-		t.Errorf("expected Valid=true with no cloud provider, got errors: %v", result.Errors)
+		t.Errorf("expected Valid=true with no cloud provider, got issues: %v", result.Errors())
 	}
-	if !hasWarningCode(result.Warnings, "no_cloud_provider_detected") {
-		t.Errorf("expected no_cloud_provider_detected warning, got: %v", result.Warnings)
+	if !hasCode(result, SeverityWarning, CodeNoCloudProviderDetected) {
+		t.Errorf("expected %s warning, got: %v", CodeNoCloudProviderDetected, result.Warnings())
 	}
 }
 
-func TestValidator_Validate_ExplicitLocalProvider_NoWarning(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+func TestValidator_Validate_ExplicitLocalProvider_NoCloudWarning(t *testing.T) {
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Providers = DetectedProviders{Available: []string{"local"}}
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{
 		Mode:     ModeLocal,
-		Provider: "local", // explicit: user chose local intentionally
+		Provider: "local",
 	})
 
 	if !result.Valid {
-		t.Errorf("expected Valid=true for explicit local provider, got errors: %v", result.Errors)
+		t.Errorf("expected Valid=true for explicit local provider, got issues: %v", result.Errors())
 	}
-	if hasWarningCode(result.Warnings, "no_cloud_provider_detected") {
+	if hasCode(result, SeverityWarning, CodeNoCloudProviderDetected) {
 		t.Error("should not warn about no cloud provider when local is explicitly requested")
 	}
 }
 
-func TestValidator_Validate_ExistingInstallation_Suggestion(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+func TestValidator_Validate_ExistingInstallation_InfoIssue(t *testing.T) {
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.ExistingDSO = ExistingDSOInfo{
 		Installed:  true,
@@ -332,15 +324,15 @@ func TestValidator_Validate_ExistingInstallation_Suggestion(t *testing.T) {
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal, Provider: "local"})
 
 	if !result.Valid {
-		t.Errorf("existing installation should not block setup, errors: %v", result.Errors)
+		t.Errorf("existing installation should not block setup, errors: %v", result.Errors())
 	}
-	if !hasSuggestionCode(result.Suggestions, "existing_installation_found") {
-		t.Errorf("expected existing_installation_found suggestion, got: %v", result.Suggestions)
+	if !hasCode(result, SeverityInfo, CodeExistingInstallationFound) {
+		t.Errorf("expected %s info issue, got: %v", CodeExistingInstallationFound, result.Info())
 	}
 }
 
 func TestValidator_Validate_ServiceWithoutAgent_Warning(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.ExistingDSO = ExistingDSOInfo{
 		Installed:        true,
@@ -350,13 +342,13 @@ func TestValidator_Validate_ServiceWithoutAgent_Warning(t *testing.T) {
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal, Provider: "local"})
 
-	if !hasWarningCode(result.Warnings, "service_without_agent") {
-		t.Errorf("expected service_without_agent warning, got: %v", result.Warnings)
+	if !hasCode(result, SeverityWarning, CodeServiceWithoutAgent) {
+		t.Errorf("expected %s warning, got: %v", CodeServiceWithoutAgent, result.Warnings())
 	}
 }
 
 func TestValidator_Validate_DetectionWarningsPromoted(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.DetectionWarnings = []DetectionWarning{
 		{Code: "systemd_version_failed", Message: "could not read systemd version"},
@@ -365,36 +357,33 @@ func TestValidator_Validate_DetectionWarningsPromoted(t *testing.T) {
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal, Provider: "local"})
 
 	if !result.Valid {
-		t.Errorf("detection warnings should not block setup, errors: %v", result.Errors)
+		t.Errorf("detection warnings should not block setup, errors: %v", result.Errors())
 	}
-	if !hasWarningCode(result.Warnings, "systemd_version_failed") {
-		t.Errorf("expected systemd_version_failed warning promoted, got: %v", result.Warnings)
+	if !hasCode(result, SeverityWarning, "systemd_version_failed") {
+		t.Errorf("expected systemd_version_failed warning promoted, got: %v", result.Warnings())
 	}
 }
 
 func TestValidator_Validate_DockerDaemonUnreachableWarning_NotDuplicated(t *testing.T) {
-	// docker_daemon_unreachable from detection should be dropped; validateDocker
-	// emits a richer error instead. The two must not appear side by side.
-	v := mockValidator(noopValidatorConfig())
+	// docker_daemon_unreachable from detection must be dropped; validateDocker
+	// emits a richer error. The two must not appear simultaneously.
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.Docker = DockerInfo{BinaryFound: true, DaemonReachable: false}
 	env.DetectionWarnings = []DetectionWarning{
-		{Code: "docker_daemon_unreachable", Message: "daemon did not respond"},
+		{Code: CodeDockerDaemonUnreachable, Message: "daemon did not respond"},
 	}
 
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal})
 
-	// Validate returns exactly one docker error — not an error plus a warning.
-	dockerErrors := filterCode(result.Errors, "docker_daemon_unreachable")
-	dockerWarnings := filterWarningCode(result.Warnings, "docker_daemon_unreachable")
-	if len(dockerErrors)+len(dockerWarnings) > 1 {
-		t.Errorf("docker_daemon_unreachable should appear at most once, errors=%v warnings=%v",
-			dockerErrors, dockerWarnings)
+	count := countCode(result, CodeDockerDaemonUnreachable)
+	if count > 1 {
+		t.Errorf("docker_daemon_unreachable should appear at most once, found %d: %v", count, result.Issues)
 	}
 }
 
 func TestValidator_Validate_OsReleaseWarning_Dropped(t *testing.T) {
-	v := mockValidator(noopValidatorConfig())
+	v := newMockValidator(noopValidatorConfig())
 	env := healthyLocalEnv()
 	env.DetectionWarnings = []DetectionWarning{
 		{Code: "os_release_read_failed", Message: "cannot read /etc/os-release"},
@@ -403,53 +392,69 @@ func TestValidator_Validate_OsReleaseWarning_Dropped(t *testing.T) {
 	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal, Provider: "local"})
 
 	if !result.Valid {
-		t.Errorf("os_release_read_failed should not block setup, errors: %v", result.Errors)
+		t.Errorf("os_release_read_failed should not block setup, errors: %v", result.Errors())
 	}
-	if hasWarningCode(result.Warnings, "os_release_read_failed") {
+	if hasCode(result, SeverityWarning, "os_release_read_failed") {
 		t.Error("os_release_read_failed should be silently dropped by the validator")
+	}
+}
+
+func TestValidator_Validate_InCategory_Docker(t *testing.T) {
+	v := newMockValidator(noopValidatorConfig())
+	env := healthyLocalEnv()
+	env.Docker = DockerInfo{} // triggers docker_not_installed
+
+	result, _ := v.Validate(context.Background(), env, SetupOptions{Mode: ModeLocal})
+
+	dockerIssues := result.InCategory(CategoryDocker)
+	if len(dockerIssues) == 0 {
+		t.Error("expected Docker category issues when Docker is not installed")
+	}
+	for _, i := range dockerIssues {
+		if i.Category != CategoryDocker {
+			t.Errorf("expected CategoryDocker, got %q", i.Category)
+		}
 	}
 }
 
 // ─── validateDocker ───────────────────────────────────────────────────────────
 
 func TestValidateDocker_NoBinary_ReturnsError(t *testing.T) {
-	errs, _ := validateDocker(Environment{}, SetupOptions{})
-	if !hasErrorCode(errs, "docker_not_installed") {
-		t.Errorf("expected docker_not_installed, got: %v", errs)
+	issues := validateDocker(Environment{}, SetupOptions{})
+	if !issueHasCode(issues, SeverityError, CodeDockerNotInstalled) {
+		t.Errorf("expected %s, got: %v", CodeDockerNotInstalled, issues)
 	}
 }
 
-func TestValidateDocker_BinaryFoundDaemonReachable_NoErrors(t *testing.T) {
+func TestValidateDocker_BinaryFoundDaemonReachable_NoIssues(t *testing.T) {
 	env := Environment{Docker: DockerInfo{BinaryFound: true, DaemonReachable: true}}
-	errs, warns := validateDocker(env, SetupOptions{})
-	if len(errs) != 0 || len(warns) != 0 {
-		t.Errorf("expected no errors/warnings, got errs=%v warns=%v", errs, warns)
+	issues := validateDocker(env, SetupOptions{})
+	if len(issues) != 0 {
+		t.Errorf("expected no issues, got: %v", issues)
 	}
 }
 
-func TestValidateDocker_BinaryFoundSocketFoundDaemonDown_SpecificError(t *testing.T) {
+func TestValidateDocker_SocketFoundDaemonDown_SpecificError(t *testing.T) {
 	env := Environment{Docker: DockerInfo{BinaryFound: true, SocketFound: true, DaemonReachable: false}}
-	errs, _ := validateDocker(env, SetupOptions{})
-	if !hasErrorCode(errs, "docker_daemon_not_running") {
-		t.Errorf("expected docker_daemon_not_running, got: %v", errs)
+	issues := validateDocker(env, SetupOptions{})
+	if !issueHasCode(issues, SeverityError, CodeDockerDaemonNotRunning) {
+		t.Errorf("expected %s, got: %v", CodeDockerDaemonNotRunning, issues)
 	}
 }
 
-func TestValidateDocker_BinaryFoundNoSocketDaemonDown_GenericError(t *testing.T) {
+func TestValidateDocker_NoSocketDaemonDown_GenericError(t *testing.T) {
 	env := Environment{Docker: DockerInfo{BinaryFound: true, SocketFound: false, DaemonReachable: false}}
-	errs, _ := validateDocker(env, SetupOptions{})
-	if !hasErrorCode(errs, "docker_daemon_unreachable") {
-		t.Errorf("expected docker_daemon_unreachable, got: %v", errs)
+	issues := validateDocker(env, SetupOptions{})
+	if !issueHasCode(issues, SeverityError, CodeDockerDaemonUnreachable) {
+		t.Errorf("expected %s, got: %v", CodeDockerDaemonUnreachable, issues)
 	}
 }
 
-func TestValidateDocker_NoBinary_DoesNotCheckSocket(t *testing.T) {
-	// When the binary is missing, exactly one error should be returned and
-	// no socket-related errors should follow.
+func TestValidateDocker_NoBinary_ExactlyOneError(t *testing.T) {
 	env := Environment{Docker: DockerInfo{BinaryFound: false, SocketFound: true}}
-	errs, _ := validateDocker(env, SetupOptions{})
-	if len(errs) != 1 {
-		t.Errorf("expected exactly 1 error when binary is missing, got: %v", errs)
+	issues := validateDocker(env, SetupOptions{})
+	if len(issues) != 1 {
+		t.Errorf("expected exactly 1 error when binary is missing, got: %v", issues)
 	}
 }
 
@@ -457,9 +462,9 @@ func TestValidateDocker_NoBinary_DoesNotCheckSocket(t *testing.T) {
 
 func TestValidatePermissions_LocalModeNonRoot_NoError(t *testing.T) {
 	env := Environment{User: UserInfo{IsRoot: false}}
-	errs, _ := validatePermissions(env, SetupOptions{Mode: ModeLocal})
-	if len(errs) != 0 {
-		t.Errorf("local mode should not require root, got: %v", errs)
+	issues := validatePermissions(env, SetupOptions{Mode: ModeLocal})
+	if len(issues) != 0 {
+		t.Errorf("local mode should not require root, got: %v", issues)
 	}
 }
 
@@ -468,9 +473,9 @@ func TestValidatePermissions_AgentModeNonRoot_Error(t *testing.T) {
 		User:         UserInfo{IsRoot: false},
 		Capabilities: Capabilities{SupportsSystemd: true},
 	}
-	errs, _ := validatePermissions(env, SetupOptions{Mode: ModeAgent})
-	if !hasErrorCode(errs, "agent_mode_requires_root") {
-		t.Errorf("expected agent_mode_requires_root, got: %v", errs)
+	issues := validatePermissions(env, SetupOptions{Mode: ModeAgent})
+	if !issueHasCode(issues, SeverityError, CodeAgentModeRequiresRoot) {
+		t.Errorf("expected %s, got: %v", CodeAgentModeRequiresRoot, issues)
 	}
 }
 
@@ -479,8 +484,8 @@ func TestValidatePermissions_AgentModeRoot_NoRootError(t *testing.T) {
 		User:         UserInfo{IsRoot: true},
 		Capabilities: Capabilities{SupportsSystemd: true},
 	}
-	errs, _ := validatePermissions(env, SetupOptions{Mode: ModeAgent})
-	if hasErrorCode(errs, "agent_mode_requires_root") {
+	issues := validatePermissions(env, SetupOptions{Mode: ModeAgent})
+	if issueHasCode(issues, SeverityError, CodeAgentModeRequiresRoot) {
 		t.Error("root user should not get agent_mode_requires_root error")
 	}
 }
@@ -490,9 +495,9 @@ func TestValidatePermissions_AgentModeNoSystemd_Error(t *testing.T) {
 		User:         UserInfo{IsRoot: true},
 		Capabilities: Capabilities{SupportsSystemd: false},
 	}
-	errs, _ := validatePermissions(env, SetupOptions{Mode: ModeAgent})
-	if !hasErrorCode(errs, "agent_mode_requires_systemd") {
-		t.Errorf("expected agent_mode_requires_systemd, got: %v", errs)
+	issues := validatePermissions(env, SetupOptions{Mode: ModeAgent})
+	if !issueHasCode(issues, SeverityError, CodeAgentModeRequiresSystemd) {
+		t.Errorf("expected %s, got: %v", CodeAgentModeRequiresSystemd, issues)
 	}
 }
 
@@ -501,9 +506,9 @@ func TestValidatePermissions_DockerBinaryNoSocket_Warning(t *testing.T) {
 		User:   UserInfo{IsRoot: false},
 		Docker: DockerInfo{BinaryFound: true, SocketFound: false},
 	}
-	_, warns := validatePermissions(env, SetupOptions{Mode: ModeLocal})
-	if !hasWarningCode(warns, "docker_socket_inaccessible") {
-		t.Errorf("expected docker_socket_inaccessible warning, got: %v", warns)
+	issues := validatePermissions(env, SetupOptions{Mode: ModeLocal})
+	if !issueHasCode(issues, SeverityWarning, CodeDockerSocketInaccessible) {
+		t.Errorf("expected %s warning, got: %v", CodeDockerSocketInaccessible, issues)
 	}
 }
 
@@ -512,9 +517,9 @@ func TestValidatePermissions_DockerBinaryNoSocketRootUser_NoWarning(t *testing.T
 		User:   UserInfo{IsRoot: true},
 		Docker: DockerInfo{BinaryFound: true, SocketFound: false},
 	}
-	_, warns := validatePermissions(env, SetupOptions{Mode: ModeLocal})
-	if hasWarningCode(warns, "docker_socket_inaccessible") {
-		t.Error("root user should not get docker socket inaccessible warning")
+	issues := validatePermissions(env, SetupOptions{Mode: ModeLocal})
+	if issueHasCode(issues, SeverityWarning, CodeDockerSocketInaccessible) {
+		t.Error("root user should not get docker_socket_inaccessible warning")
 	}
 }
 
@@ -522,37 +527,20 @@ func TestValidatePermissions_DockerBinaryNoSocketRootUser_NoWarning(t *testing.T
 
 func TestValidateExisting_NoInstallation_NoOutput(t *testing.T) {
 	env := Environment{ExistingDSO: ExistingDSOInfo{Installed: false}}
-	errs, warns, suggestions := validateExisting(env, SetupOptions{})
-	if len(errs)+len(warns)+len(suggestions) != 0 {
-		t.Errorf("fresh install should produce no output, got errs=%v warns=%v suggestions=%v",
-			errs, warns, suggestions)
+	issues := validateExisting(env, SetupOptions{})
+	if len(issues) != 0 {
+		t.Errorf("fresh install should produce no issues, got: %v", issues)
 	}
 }
 
-func TestValidateExisting_ConfigFound_Suggestion(t *testing.T) {
+func TestValidateExisting_ConfigFound_InfoIssue(t *testing.T) {
 	env := Environment{ExistingDSO: ExistingDSOInfo{
 		Installed:  true,
 		ConfigPath: "/etc/dso/dso.yaml",
 	}}
-	_, _, suggestions := validateExisting(env, SetupOptions{})
-	if !hasSuggestionCode(suggestions, "existing_installation_found") {
-		t.Errorf("expected existing_installation_found suggestion, got: %v", suggestions)
-	}
-}
-
-func TestValidateExisting_ConfigFoundWithVersion_MentionsVersion(t *testing.T) {
-	env := Environment{ExistingDSO: ExistingDSOInfo{
-		Installed:  true,
-		ConfigPath: "/etc/dso/dso.yaml",
-		Version:    "2.0.0",
-	}}
-	_, _, suggestions := validateExisting(env, SetupOptions{})
-	if len(suggestions) == 0 {
-		t.Fatal("expected at least one suggestion")
-	}
-	msg := suggestions[0].Message
-	if msg == "" {
-		t.Error("expected non-empty suggestion message")
+	issues := validateExisting(env, SetupOptions{})
+	if !issueHasCode(issues, SeverityInfo, CodeExistingInstallationFound) {
+		t.Errorf("expected %s info issue, got: %v", CodeExistingInstallationFound, issues)
 	}
 }
 
@@ -562,13 +550,13 @@ func TestValidateExisting_ServiceWithoutAgent_Warning(t *testing.T) {
 		ServiceInstalled: true,
 		AgentInstalled:   false,
 	}}
-	_, warns, _ := validateExisting(env, SetupOptions{})
-	if !hasWarningCode(warns, "service_without_agent") {
-		t.Errorf("expected service_without_agent warning, got: %v", warns)
+	issues := validateExisting(env, SetupOptions{})
+	if !issueHasCode(issues, SeverityWarning, CodeServiceWithoutAgent) {
+		t.Errorf("expected %s warning, got: %v", CodeServiceWithoutAgent, issues)
 	}
 }
 
-func TestValidateExisting_AgentWithoutServiceAgentMode_Suggestion(t *testing.T) {
+func TestValidateExisting_AgentWithoutServiceAgentMode_InfoIssue(t *testing.T) {
 	env := Environment{
 		ExistingDSO: ExistingDSOInfo{
 			Installed:        true,
@@ -577,21 +565,21 @@ func TestValidateExisting_AgentWithoutServiceAgentMode_Suggestion(t *testing.T) 
 		},
 		Capabilities: Capabilities{SupportsAgentMode: true},
 	}
-	_, _, suggestions := validateExisting(env, SetupOptions{Mode: ModeAgent})
-	if !hasSuggestionCode(suggestions, "agent_without_service") {
-		t.Errorf("expected agent_without_service suggestion, got: %v", suggestions)
+	issues := validateExisting(env, SetupOptions{Mode: ModeAgent})
+	if !issueHasCode(issues, SeverityInfo, CodeAgentWithoutService) {
+		t.Errorf("expected %s info issue, got: %v", CodeAgentWithoutService, issues)
 	}
 }
 
-func TestValidateExisting_AgentWithoutServiceLocalMode_NoSuggestion(t *testing.T) {
+func TestValidateExisting_AgentWithoutServiceLocalMode_NoIssue(t *testing.T) {
 	env := Environment{ExistingDSO: ExistingDSOInfo{
 		Installed:        true,
 		AgentInstalled:   true,
 		ServiceInstalled: false,
 	}}
-	_, _, suggestions := validateExisting(env, SetupOptions{Mode: ModeLocal})
-	if hasSuggestionCode(suggestions, "agent_without_service") {
-		t.Error("agent_without_service suggestion should not appear for local mode")
+	issues := validateExisting(env, SetupOptions{Mode: ModeLocal})
+	if issueHasCode(issues, SeverityInfo, CodeAgentWithoutService) {
+		t.Error("agent_without_service should not appear for local mode")
 	}
 }
 
@@ -623,49 +611,28 @@ func TestEffectiveMode_FallsBackToLocalWhenNoAgent(t *testing.T) {
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
-func hasErrorCode(errs []ValidationError, code string) bool {
-	for _, e := range errs {
-		if e.Code == code {
+// hasCode reports whether result contains an issue with the given severity and code.
+func hasCode(result *ValidationResult, severity ValidationSeverity, code string) bool {
+	return issueHasCode(result.Issues, severity, code)
+}
+
+// issueHasCode reports whether the slice contains an issue with the given severity and code.
+func issueHasCode(issues []ValidationIssue, severity ValidationSeverity, code string) bool {
+	for _, i := range issues {
+		if i.Severity == severity && i.Code == code {
 			return true
 		}
 	}
 	return false
 }
 
-func hasWarningCode(warns []ValidationWarning, code string) bool {
-	for _, w := range warns {
-		if w.Code == code {
-			return true
+// countCode returns the number of issues with the given code (any severity).
+func countCode(result *ValidationResult, code string) int {
+	n := 0
+	for _, i := range result.Issues {
+		if i.Code == code {
+			n++
 		}
 	}
-	return false
-}
-
-func hasSuggestionCode(suggestions []ValidationSuggestion, code string) bool {
-	for _, s := range suggestions {
-		if s.Code == code {
-			return true
-		}
-	}
-	return false
-}
-
-func filterCode(errs []ValidationError, code string) []ValidationError {
-	var out []ValidationError
-	for _, e := range errs {
-		if e.Code == code {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func filterWarningCode(warns []ValidationWarning, code string) []ValidationWarning {
-	var out []ValidationWarning
-	for _, w := range warns {
-		if w.Code == code {
-			out = append(out, w)
-		}
-	}
-	return out
+	return n
 }

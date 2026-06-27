@@ -3,8 +3,7 @@ package setup
 import "context"
 
 // ValidatorConfig holds injectable dependencies for the Validator.
-// In production these default to real HTTP probes; tests supply mocks or nil
-// (which skips the connectivity check entirely).
+// Production wires real HTTP probes; tests supply mocks or nil (skip the check).
 type ValidatorConfig struct {
 	// Provider connectivity probes. If nil, the check is skipped.
 	// These are the ONLY network calls the Validator is permitted to make.
@@ -14,7 +13,7 @@ type ValidatorConfig struct {
 }
 
 // Validator answers one question: "Can this environment successfully run the
-// requested setup?" It consumes Environment and SetupOptions; it never
+// requested setup?" It consumes Environment and SetupOptions only; it never
 // rediscovers the environment — no LookPath, os.Stat, user.Current, or
 // exec.Command calls live here. Those belong exclusively in the detector.
 type Validator struct {
@@ -33,57 +32,44 @@ func newValidator() *Validator {
 }
 
 // Validate checks the environment and returns a structured result.
-// A non-nil error signals an unexpected internal failure; normal validation
-// failures are expressed as Errors inside the returned ValidationResult.
+// A non-nil error signals an unexpected internal failure; all validation
+// findings are expressed as Issues inside the returned ValidationResult.
 func (v *Validator) Validate(ctx context.Context, env *Environment, opts SetupOptions) (*ValidationResult, error) {
 	result := &ValidationResult{}
 
-	// 1. Promote relevant detection warnings into validation-level warnings.
+	// Detection warnings first — they may be promoted or silently dropped.
 	v.promoteDetectionWarnings(env, result)
 
-	// 2. Docker availability.
-	dockerErrs, dockerWarns := validateDocker(*env, opts)
-	result.Errors = append(result.Errors, dockerErrs...)
-	result.Warnings = append(result.Warnings, dockerWarns...)
+	result.Issues = append(result.Issues, validateDocker(*env, opts)...)
+	result.Issues = append(result.Issues, validatePermissions(*env, opts)...)
 
-	// 3. User permissions for the requested mode.
-	permErrs, permWarns := validatePermissions(*env, opts)
-	result.Errors = append(result.Errors, permErrs...)
-	result.Warnings = append(result.Warnings, permWarns...)
-
-	// 4. Provider credentials and connectivity.
-	provErrs, provWarns, err := v.validateProvider(ctx, *env, opts)
+	provIssues, err := v.validateProvider(ctx, *env, opts)
 	if err != nil {
 		return nil, err
 	}
-	result.Errors = append(result.Errors, provErrs...)
-	result.Warnings = append(result.Warnings, provWarns...)
+	result.Issues = append(result.Issues, provIssues...)
+	result.Issues = append(result.Issues, validateExisting(*env, opts)...)
 
-	// 5. Existing installation — determines install vs. upgrade vs. repair.
-	existErrs, existWarns, existSuggestions := validateExisting(*env, opts)
-	result.Errors = append(result.Errors, existErrs...)
-	result.Warnings = append(result.Warnings, existWarns...)
-	result.Suggestions = append(result.Suggestions, existSuggestions...)
-
-	result.Valid = len(result.Errors) == 0
+	result.Valid = len(result.Errors()) == 0
 	return result, nil
 }
 
 // promoteDetectionWarnings converts detection warnings into validation-level
-// warnings. Warnings that are already handled by a dedicated validator
-// (e.g. docker_daemon_unreachable is covered by validateDocker) are silently
-// dropped to avoid duplicates.
+// issues. Codes already covered by a dedicated validator are silently dropped
+// to avoid duplicating the same finding at different levels of detail.
 func (v *Validator) promoteDetectionWarnings(env *Environment, result *ValidationResult) {
 	for _, dw := range env.DetectionWarnings {
 		switch dw.Code {
-		case "docker_daemon_unreachable":
-			// Covered by validateDocker with richer context — skip.
+		case CodeDockerDaemonUnreachable:
+			// validateDocker emits a richer, categorised error — skip.
 		case "os_release_read_failed":
-			// Informational only; has no bearing on setup correctness.
+			// Informational; has no bearing on whether setup can proceed.
 		default:
-			result.Warnings = append(result.Warnings, ValidationWarning{
-				Code:    dw.Code,
-				Message: "detection warning: " + dw.Message,
+			result.Issues = append(result.Issues, ValidationIssue{
+				Severity: SeverityWarning,
+				Category: CategoryConfiguration,
+				Code:     dw.Code,
+				Message:  "detection warning: " + dw.Message,
 			})
 		}
 	}

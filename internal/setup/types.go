@@ -209,31 +209,108 @@ type Environment struct {
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
-// ValidationResult summarises whether the detected environment is usable.
+// ValidationSeverity classifies a validation finding.
+type ValidationSeverity string
+
+const (
+	SeverityError   ValidationSeverity = "error"
+	SeverityWarning ValidationSeverity = "warning"
+	SeverityInfo    ValidationSeverity = "info"
+)
+
+// ValidationCategory groups related findings for Doctor and Repair routing.
+type ValidationCategory string
+
+const (
+	CategoryDocker        ValidationCategory = "docker"
+	CategoryPermissions   ValidationCategory = "permissions"
+	CategoryProvider      ValidationCategory = "provider"
+	CategorySecurity      ValidationCategory = "security"
+	CategoryFilesystem    ValidationCategory = "filesystem"
+	CategoryConfiguration ValidationCategory = "configuration"
+)
+
+// Validation codes — machine-readable identifiers reused by Doctor, Repair, UI,
+// and documentation. Use these constants; never scatter string literals.
+const (
+	// Docker
+	CodeDockerNotInstalled       = "docker_not_installed"
+	CodeDockerDaemonNotRunning   = "docker_daemon_not_running"
+	CodeDockerDaemonUnreachable  = "docker_daemon_unreachable"
+	CodeDockerSocketInaccessible = "docker_socket_inaccessible"
+
+	// Permissions
+	CodeAgentModeRequiresRoot    = "agent_mode_requires_root"
+	CodeAgentModeRequiresSystemd = "agent_mode_requires_systemd"
+
+	// Provider
+	CodeUnknownProvider         = "unknown_provider"
+	CodeNoCloudProviderDetected = "no_cloud_provider_detected"
+	CodeAWSCredentialsMissing   = "aws_credentials_missing"
+	CodeAWSConnectivityFailed   = "aws_connectivity_failed"
+	CodeVaultCredentialsMissing = "vault_credentials_missing"
+	CodeVaultConnectivityFailed = "vault_connectivity_failed"
+	CodeAzureCredentialsMissing = "azure_credentials_missing"
+	CodeAzureConnectivityFailed = "azure_connectivity_failed"
+
+	// Existing installation
+	CodeExistingInstallationFound = "existing_installation_found"
+	CodeServiceWithoutAgent       = "service_without_agent"
+	CodeAgentWithoutService       = "agent_without_service"
+)
+
+// ValidationIssue is a single finding from the validator. A unified type with
+// a Severity field (rather than separate Errors/Warnings/Suggestions slices)
+// lets Doctor and Repair route by Category without unwrapping multiple collections.
+type ValidationIssue struct {
+	Severity  ValidationSeverity
+	Category  ValidationCategory
+	Code      string   // one of the Code* constants above
+	Message   string   // human-readable explanation
+	Recovery  []string // ordered fix steps; populated for SeverityError only
+}
+
+// ValidationResult summarises the validator's findings.
+// Treat this as a stable API after Phase 3 — later phases consume it, not modify it.
 type ValidationResult struct {
-	Valid       bool
-	Errors      []ValidationError    // must-fix issues; setup cannot proceed
-	Warnings    []ValidationWarning  // nice-to-fix; setup can proceed
-	Suggestions []ValidationSuggestion // informational notes for the user
+	Valid  bool
+	Issues []ValidationIssue
 }
 
-// ValidationError describes a blocking problem and how to recover from it.
-type ValidationError struct {
-	Code     string   // machine-readable, e.g. "docker_unavailable"
-	Message  string   // human-readable summary
-	Recovery []string // ordered steps the user can take to fix it
+// Errors returns all issues with SeverityError.
+func (r *ValidationResult) Errors() []ValidationIssue {
+	return r.filterBySeverity(SeverityError)
 }
 
-// ValidationWarning describes a non-blocking concern.
-type ValidationWarning struct {
-	Code    string
-	Message string
+// Warnings returns all issues with SeverityWarning.
+func (r *ValidationResult) Warnings() []ValidationIssue {
+	return r.filterBySeverity(SeverityWarning)
 }
 
-// ValidationSuggestion is an informational note that requires no user action.
-type ValidationSuggestion struct {
-	Code    string
-	Message string
+// Info returns all issues with SeverityInfo.
+func (r *ValidationResult) Info() []ValidationIssue {
+	return r.filterBySeverity(SeverityInfo)
+}
+
+// InCategory returns all issues belonging to the given category.
+func (r *ValidationResult) InCategory(cat ValidationCategory) []ValidationIssue {
+	var out []ValidationIssue
+	for _, i := range r.Issues {
+		if i.Category == cat {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func (r *ValidationResult) filterBySeverity(s ValidationSeverity) []ValidationIssue {
+	var out []ValidationIssue
+	for _, i := range r.Issues {
+		if i.Severity == s {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // ─── Options & Result ────────────────────────────────────────────────────────
