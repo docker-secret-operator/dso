@@ -242,8 +242,9 @@ func TestEngine_validate_HealthyLocalEnvironmentReturnsValid(t *testing.T) {
 
 func TestEngine_plan_PropagatesModeAndProvider(t *testing.T) {
 	eng := newTestEngine(noopWizard)
-	env := &Environment{} // opts override all — env contents don't matter here
-	plan, err := eng.plan(context.Background(), env, SetupOptions{
+	env := &Environment{}
+	vr := &ValidationResult{}
+	plan, err := eng.plan(context.Background(), env, vr, SetupOptions{
 		Mode:     ModeAgent,
 		Provider: "aws",
 		DryRun:   true,
@@ -265,7 +266,6 @@ func TestEngine_plan_PropagatesModeAndProvider(t *testing.T) {
 
 func TestEngine_plan_FallsBackToCapabilities(t *testing.T) {
 	eng := newTestEngine(noopWizard)
-	// No systemd+root → ModeLocal; Vault detected → provider "vault".
 	env := &Environment{
 		Capabilities: Capabilities{
 			SupportsAgentMode: false,
@@ -275,8 +275,7 @@ func TestEngine_plan_FallsBackToCapabilities(t *testing.T) {
 			Vault: VaultInfo{Detected: true},
 		},
 	}
-	// No mode/provider in opts — should fall back to computed recommendation.
-	plan, _ := eng.plan(context.Background(), env, SetupOptions{})
+	plan, _ := eng.plan(context.Background(), env, &ValidationResult{}, SetupOptions{})
 
 	if plan.Mode != ModeLocal {
 		t.Errorf("mode: want 'local' from capabilities, got %q", plan.Mode)
@@ -286,56 +285,17 @@ func TestEngine_plan_FallsBackToCapabilities(t *testing.T) {
 	}
 }
 
-// ─── computeRecommendation ────────────────────────────────────────────────────
-
-func TestComputeRecommendation_LocalModeWhenAgentNotSupported(t *testing.T) {
-	env := &Environment{Capabilities: Capabilities{SupportsAgentMode: false}}
-	mode, _ := computeRecommendation(env)
-	if mode != ModeLocal {
-		t.Errorf("want ModeLocal, got %q", mode)
+func TestEngine_plan_HasID(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	plan, err := eng.plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
+		Mode:     ModeLocal,
+		Provider: "local",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-}
-
-func TestComputeRecommendation_AgentModeWhenSupported(t *testing.T) {
-	env := &Environment{Capabilities: Capabilities{SupportsAgentMode: true}}
-	mode, _ := computeRecommendation(env)
-	if mode != ModeAgent {
-		t.Errorf("want ModeAgent, got %q", mode)
-	}
-}
-
-func TestComputeRecommendation_DefaultProviderIsLocal(t *testing.T) {
-	env := &Environment{}
-	_, provider := computeRecommendation(env)
-	if provider != "local" {
-		t.Errorf("want 'local', got %q", provider)
-	}
-}
-
-func TestComputeRecommendation_AWSBeatsAllOthers(t *testing.T) {
-	env := &Environment{
-		Providers: DetectedProviders{
-			AWS:   AWSInfo{Detected: true},
-			Azure: AzureInfo{Detected: true},
-			Vault: VaultInfo{Detected: true},
-		},
-	}
-	_, provider := computeRecommendation(env)
-	if provider != "aws" {
-		t.Errorf("want 'aws', got %q", provider)
-	}
-}
-
-func TestComputeRecommendation_AzureBeatsVault(t *testing.T) {
-	env := &Environment{
-		Providers: DetectedProviders{
-			Azure: AzureInfo{Detected: true},
-			Vault: VaultInfo{Detected: true},
-		},
-	}
-	_, provider := computeRecommendation(env)
-	if provider != "azure" {
-		t.Errorf("want 'azure', got %q", provider)
+	if plan.ID == "" {
+		t.Error("expected plan to have a non-empty ID")
 	}
 }
 

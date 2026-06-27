@@ -57,8 +57,7 @@ func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, er
 	e.Events.emit(EventValidationCompleted, vr, nil)
 
 	// ── Stage 3: Plan ─────────────────────────────────────────────────────
-	// Phase 4 replaces e.plan() with a native implementation.
-	plan, err := e.plan(ctx, env, opts)
+	plan, err := e.plan(ctx, env, vr, opts)
 	if err != nil {
 		return e.fail(start, fmt.Errorf("planning failed: %w", err))
 	}
@@ -126,56 +125,10 @@ func (e *Engine) validate(ctx context.Context, env *Environment, opts SetupOptio
 	return newValidator().Validate(ctx, env, opts)
 }
 
-// plan generates an immutable InstallPlan from the detected environment.
-//
-// Phase 4 replaces this with a real planner that builds the full file/
-// directory/service/permission change list without touching the filesystem.
-func (e *Engine) plan(_ context.Context, env *Environment, opts SetupOptions) (*InstallPlan, error) {
-	// Derive fallbacks from the environment; opts take priority.
-	recMode, recProvider := computeRecommendation(env)
-
-	mode := opts.Mode
-	if mode == "" {
-		mode = recMode
-	}
-	provider := opts.Provider
-	if provider == "" {
-		provider = recProvider
-	}
-
-	return &InstallPlan{
-		Mode:     mode,
-		Provider: string(provider),
-		DryRun:   opts.DryRun,
-		Metadata: map[string]string{
-			"legacy": "true", // removed when Phase 4 ships
-		},
-	}, nil
-}
-
-// computeRecommendation derives the best mode and provider from detected
-// capabilities. This is a temporary home; Phase 4 will move this logic into
-// the real Planner once it replaces the plan() stub above.
-//
-// Provider priority: aws > azure > vault > local.
-func computeRecommendation(env *Environment) (SetupMode, string) {
-	mode := ModeLocal
-	if env.Capabilities.SupportsAgentMode {
-		mode = ModeAgent
-	}
-
-	provider := "local"
-	if env.Providers.Vault.Detected {
-		provider = "vault"
-	}
-	if env.Providers.Azure.Detected {
-		provider = "azure"
-	}
-	if env.Providers.AWS.Detected {
-		provider = "aws"
-	}
-
-	return mode, provider
+// plan generates an immutable InstallPlan. The ValidationResult is threaded in
+// so the Planner can inspect existing-installation findings without re-validating.
+func (e *Engine) plan(ctx context.Context, env *Environment, vr *ValidationResult, opts SetupOptions) (*InstallPlan, error) {
+	return newPlanner().Plan(ctx, env, vr, opts)
 }
 
 // preview renders the InstallPlan for user confirmation.

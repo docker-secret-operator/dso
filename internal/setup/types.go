@@ -50,7 +50,10 @@ type InstallPlan struct {
 }
 
 // FileChange describes a file create or modify operation.
+// ID is a stable, sequential identifier (e.g. "FILE-001") used in preview
+// output, logs, rollback references, and debug traces.
 type FileChange struct {
+	ID        string // e.g. "FILE-001"
 	Path      string
 	Content   []byte
 	Mode      os.FileMode
@@ -60,6 +63,7 @@ type FileChange struct {
 
 // DirectoryChange describes a directory create operation.
 type DirectoryChange struct {
+	ID        string // e.g. "DIR-001"
 	Path      string
 	Mode      os.FileMode
 	Owner     string
@@ -68,6 +72,7 @@ type DirectoryChange struct {
 
 // PermissionChange describes a chmod/chown operation.
 type PermissionChange struct {
+	ID      string // e.g. "PERM-001"
 	Path    string
 	Current os.FileMode
 	Target  os.FileMode
@@ -76,6 +81,7 @@ type PermissionChange struct {
 
 // ServiceChange describes a systemd unit operation.
 type ServiceChange struct {
+	ID        string // e.g. "SERVICE-001"
 	Name      string // e.g. "dso-agent.service"
 	Content   []byte // unit file content
 	Operation string // "create" | "enable" | "start"
@@ -83,8 +89,9 @@ type ServiceChange struct {
 
 // GroupChange describes a Unix group create or membership operation.
 type GroupChange struct {
+	ID        string // e.g. "GROUP-001"
 	Name      string
-	Operation string // "create"
+	Operation string // "create" | "add-member"
 	Users     []string
 }
 
