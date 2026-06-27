@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// LegacyWizardFunc is the signature of the existing setup wizard.
-// The engine holds a reference until each stage is replaced by a native
-// implementation (Phases 2-6). After Phase 6 it can be removed entirely.
+// LegacyWizardFunc is retained for interface compatibility with existing callers.
+// It is no longer invoked by the engine after Phase 6; removal is Phase 10.
 type LegacyWizardFunc func(ctx context.Context, mode, provider string, autoDetect, nonRoot bool) error
 
 // Engine is the reusable setup orchestrator. It owns the event system and
@@ -19,16 +18,19 @@ type LegacyWizardFunc func(ctx context.Context, mode, provider string, autoDetec
 // It emits Events; the CLI subscribes and renders them.
 type Engine struct {
 	Events       *Emitter
-	legacyWizard LegacyWizardFunc
+	legacyWizard LegacyWizardFunc // retained for signature compatibility; unused after Phase 6
+	applier      applyIface
 }
 
-// NewEngine constructs an Engine wired to the provided legacy wizard.
-// Pass nil for legacyWizard only in tests that stub all stages explicitly.
+// NewEngine constructs an Engine wired to a real Applier.
+// The wizard parameter is retained for call-site compatibility but no longer used in apply().
 func NewEngine(wizard LegacyWizardFunc) *Engine {
-	return &Engine{
+	e := &Engine{
 		Events:       &Emitter{},
 		legacyWizard: wizard,
 	}
+	e.applier = newApplier(e.Events)
+	return e
 }
 
 // ─── Stable orchestrator ──────────────────────────────────────────────────────
@@ -140,25 +142,9 @@ func (e *Engine) preview(plan *InstallPlan, format string) (string, error) {
 	return NewPreviewEngine(newRenderer(format)).Render(*plan)
 }
 
-// apply executes the InstallPlan transactionally.
-//
-// Phase 6 replaces this with a real Applier that records every operation
-// in a Transaction and triggers rollback on failure.
-func (e *Engine) apply(ctx context.Context, plan *InstallPlan, opts SetupOptions) (*Transaction, error) {
-	tx := &Transaction{
-		PlanID:    plan.ID,
-		Status:    StatusRunning,
-		StartTime: time.Now(),
-	}
-
-	// All real work still flows through the legacy wizard for now.
-	if err := e.legacyWizard(ctx, string(plan.Mode), plan.Provider, opts.AutoDetect, opts.NonRoot); err != nil {
-		tx.Status = StatusFailed
-		tx.EndTime = time.Now()
-		return tx, fmt.Errorf("apply failed: %w", err)
-	}
-
-	tx.Status = StatusCompleted
-	tx.EndTime = time.Now()
-	return tx, nil
+// apply executes the InstallPlan using the transactional Applier.
+// Every operation is tracked in a Transaction for Phase 7 rollback.
+// The legacy wizard is no longer called.
+func (e *Engine) apply(ctx context.Context, plan *InstallPlan, _ SetupOptions) (*Transaction, error) {
+	return e.applier.Apply(ctx, plan)
 }

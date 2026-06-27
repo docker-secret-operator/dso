@@ -388,14 +388,20 @@ type Transaction struct {
 }
 
 // TxOperation is a single tracked step within a transaction.
+// Every field that starts empty is populated as the operation progresses
+// through Pending → Running → Completed|Failed so Phase 7 can replay in reverse.
 type TxOperation struct {
 	Sequence   int
-	Type       string      // "file_create" | "chmod" | "service_start" etc.
-	Target     string      // affected path or resource name
-	Before     interface{} // state before the change (for rollback)
-	After      interface{} // state after the change
-	Reversible bool
-	Error      error
+	OperID     string            // plan operation ID, e.g. "DIR-001"
+	Type       string            // "directory_create" | "file_create" | "permission_change" | "service_enable" etc.
+	Target     string            // affected path or resource name
+	Status     TransactionStatus // Pending → Running → Completed | Failed
+	Before     interface{}       // OS state snapshot captured before execution (for rollback)
+	After      interface{}       // OS state snapshot captured after success (for verification)
+	Reversible bool              // true once the operation completed successfully
+	Error      error             // set on failure; nil on success
+	StartedAt  time.Time
+	EndedAt    time.Time
 }
 
 // Checkpoint is a named save-point within a transaction.

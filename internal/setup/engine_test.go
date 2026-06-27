@@ -9,8 +9,11 @@ import (
 )
 
 // fullSuccessEvents is the complete ordered event sequence for a successful
-// non-dry-run setup. Every test that checks lifecycle events uses this so
-// there is a single source of truth for the expected sequence.
+// non-dry-run setup at the Engine orchestration level. Transaction-level events
+// (transaction_started, operation_started, …) appear between apply_started and
+// apply_completed and are intentionally not captured here; they are tested in
+// apply_test.go. Tests that use newTestEngine get a noopApplier that emits
+// no transaction events, so this sequence stays stable across phases.
 var fullSuccessEvents = []EventType{
 	EventSetupStarted,
 	EventDetectionCompleted,
@@ -22,14 +25,52 @@ var fullSuccessEvents = []EventType{
 	EventSetupCompleted,
 }
 
+// ─── Test helpers ─────────────────────────────────────────────────────────────
+
+// noopApplier always succeeds and emits no transaction-level events.
+// Used by newTestEngine so engine integration tests are OS-free.
+type noopApplier struct{}
+
+func (a *noopApplier) Apply(_ context.Context, plan *InstallPlan) (*Transaction, error) {
+	return &Transaction{
+		PlanID:    plan.ID,
+		Status:    StatusCompleted,
+		StartTime: time.Now(),
+		EndTime:   time.Now(),
+	}, nil
+}
+
+// stubApplier returns a controlled error so failure-path engine tests work
+// without needing real OS interactions.
+type stubApplier struct{ err error }
+
+func (a *stubApplier) Apply(_ context.Context, _ *InstallPlan) (*Transaction, error) {
+	tx := &Transaction{
+		Status:    StatusCompleted,
+		StartTime: time.Now(),
+		EndTime:   time.Now(),
+	}
+	if a.err != nil {
+		tx.Status = StatusFailed
+		return tx, a.err
+	}
+	return tx, nil
+}
+
+func noopWizard(_ context.Context, _, _ string, _, _ bool) error { return nil }
+
+// newTestEngine creates an Engine with a noopApplier so tests never touch the OS.
+// The wizard parameter is accepted for call-site compatibility but is unused.
+func newTestEngine(wizard LegacyWizardFunc) *Engine {
+	e := NewEngine(wizard)
+	e.applier = &noopApplier{}
+	return e
+}
+
 // ─── Engine.Setup ─────────────────────────────────────────────────────────────
 
 func TestEngine_Setup_Success(t *testing.T) {
-	var called bool
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		called = true
-		return nil
-	})
+	eng := newTestEngine(noopWizard)
 
 	result, err := eng.Setup(context.Background(), SetupOptions{
 		Mode:     ModeLocal,
@@ -38,9 +79,6 @@ func TestEngine_Setup_Success(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !called {
-		t.Fatal("expected legacy wizard to be called")
 	}
 	if result.Status != "success" {
 		t.Errorf("status: want 'success', got %q", result.Status)
@@ -51,10 +89,9 @@ func TestEngine_Setup_Success(t *testing.T) {
 }
 
 func TestEngine_Setup_Failure(t *testing.T) {
-	sentinel := errors.New("wizard exploded")
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		return sentinel
-	})
+	sentinel := errors.New("apply exploded")
+	eng := newTestEngine(noopWizard)
+	eng.applier = &stubApplier{err: sentinel}
 
 	result, err := eng.Setup(context.Background(), SetupOptions{})
 
@@ -69,20 +106,13 @@ func TestEngine_Setup_Failure(t *testing.T) {
 	}
 }
 
-func TestEngine_Setup_DryRun_DoesNotCallWizard(t *testing.T) {
-	var called bool
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		called = true
-		return nil
-	})
+func TestEngine_Setup_DryRun_SkipsApply(t *testing.T) {
+	eng := newTestEngine(noopWizard)
 
 	result, err := eng.Setup(context.Background(), SetupOptions{DryRun: true})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if called {
-		t.Error("legacy wizard must not be called during dry-run")
 	}
 	if result.Status != "pending" {
 		t.Errorf("status: want 'pending', got %q", result.Status)
@@ -102,39 +132,23 @@ func TestEngine_Setup_DryRun_PlanHasDryRunFlag(t *testing.T) {
 	}
 }
 
-func TestEngine_Setup_OptionsPassedToWizard(t *testing.T) {
-	var (
-		capturedMode     string
-		capturedProvider string
-		capturedDetect   bool
-		capturedNonRoot  bool
-	)
-	eng := newTestEngine(func(_ context.Context, mode, provider string, autoDetect, nonRoot bool) error {
-		capturedMode = mode
-		capturedProvider = provider
-		capturedDetect = autoDetect
-		capturedNonRoot = nonRoot
-		return nil
+func TestEngine_Setup_PlanModeAndProviderPropagated(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+
+	result, _ := eng.Setup(context.Background(), SetupOptions{
+		Mode:     ModeAgent,
+		Provider: "aws",
+		DryRun:   true, // dry-run keeps apply from running; plan is still generated
 	})
 
-	_, _ = eng.Setup(context.Background(), SetupOptions{
-		Mode:       ModeAgent,
-		Provider:   "aws",
-		AutoDetect: true,
-		NonRoot:    true,
-	})
-
-	if capturedMode != "agent" {
-		t.Errorf("mode: want 'agent', got %q", capturedMode)
+	if result.Plan == nil {
+		t.Fatal("expected a plan in the result")
 	}
-	if capturedProvider != "aws" {
-		t.Errorf("provider: want 'aws', got %q", capturedProvider)
+	if result.Plan.Mode != ModeAgent {
+		t.Errorf("mode: want 'agent', got %q", result.Plan.Mode)
 	}
-	if !capturedDetect {
-		t.Error("autoDetect: expected true")
-	}
-	if !capturedNonRoot {
-		t.Error("nonRoot: expected true")
+	if result.Plan.Provider != "aws" {
+		t.Errorf("provider: want 'aws', got %q", result.Plan.Provider)
 	}
 }
 
@@ -150,14 +164,12 @@ func TestEngine_Setup_EmitsFullLifecycle_Success(t *testing.T) {
 }
 
 func TestEngine_Setup_EmitsFailureEvent(t *testing.T) {
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		return errors.New("boom")
-	})
+	eng := newTestEngine(noopWizard)
+	eng.applier = &stubApplier{err: errors.New("boom")}
 	events := collectEvents(eng)
 
 	_, _ = eng.Setup(context.Background(), SetupOptions{})
 
-	// On apply failure the engine emits: rollback start/complete then setup_failed.
 	want := []EventType{
 		EventSetupStarted,
 		EventDetectionCompleted,
@@ -178,7 +190,6 @@ func TestEngine_Setup_DryRun_StopsAfterPreview(t *testing.T) {
 
 	_, _ = eng.Setup(context.Background(), SetupOptions{DryRun: true})
 
-	// Dry-run must not emit apply events.
 	want := []EventType{
 		EventSetupStarted,
 		EventDetectionCompleted,
@@ -190,7 +201,7 @@ func TestEngine_Setup_DryRun_StopsAfterPreview(t *testing.T) {
 	assertEventSequence(t, events(), want)
 }
 
-// ─── Stage stubs ─────────────────────────────────────────────────────────────
+// ─── Stage methods ────────────────────────────────────────────────────────────
 
 func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
 	eng := newTestEngine(noopWizard)
@@ -328,27 +339,18 @@ func TestEngine_preview_DefaultIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Terminal renderer always includes "DSO Setup Plan".
 	if !strings.Contains(out, "DSO Setup Plan") {
 		t.Errorf("expected terminal header in default format output, got:\n%s", out)
 	}
 }
 
-func TestEngine_apply_CallsWizard(t *testing.T) {
-	var called bool
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		called = true
-		return nil
-	})
-
-	plan := &InstallPlan{Mode: ModeLocal, Provider: "local"}
+func TestEngine_apply_CompletesTransaction(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	plan := &InstallPlan{ID: "plan-test-001", Mode: ModeLocal, Provider: "local"}
 	tx, err := eng.apply(context.Background(), plan, SetupOptions{})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called {
-		t.Error("expected legacy wizard to be called from apply()")
 	}
 	if tx.Status != StatusCompleted {
 		t.Errorf("tx.Status: want Completed, got %q", tx.Status)
@@ -358,13 +360,11 @@ func TestEngine_apply_CallsWizard(t *testing.T) {
 	}
 }
 
-func TestEngine_apply_ReturnsFailedTransaction(t *testing.T) {
-	eng := newTestEngine(func(_ context.Context, _, _ string, _, _ bool) error {
-		return errors.New("disk full")
-	})
+func TestEngine_apply_FailedApplierReturnsFailedTransaction(t *testing.T) {
+	eng := newTestEngine(noopWizard)
+	eng.applier = &stubApplier{err: errors.New("disk full")}
 
-	plan := &InstallPlan{}
-	tx, err := eng.apply(context.Background(), plan, SetupOptions{})
+	tx, err := eng.apply(context.Background(), &InstallPlan{}, SetupOptions{})
 
 	if err == nil {
 		t.Fatal("expected error from apply()")
@@ -444,17 +444,8 @@ func TestEmitter_PreservesEventOrder(t *testing.T) {
 	}
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Collection helpers ───────────────────────────────────────────────────────
 
-func noopWizard(_ context.Context, _, _ string, _, _ bool) error { return nil }
-
-func newTestEngine(wizard LegacyWizardFunc) *Engine {
-	return NewEngine(wizard)
-}
-
-// collectEvents subscribes before the test action and returns a func that
-// delivers the accumulated slice after the action completes. Because the
-// Emitter is synchronous this is race-free without any additional locking.
 func collectEvents(eng *Engine) func() []EventType {
 	var received []EventType
 	eng.Events.Subscribe(func(evt Event) {

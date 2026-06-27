@@ -9,6 +9,7 @@ import (
 type EventType string
 
 const (
+	// Setup lifecycle — emitted by the Engine orchestrator.
 	EventSetupStarted         EventType = "setup_started"
 	EventDetectionCompleted   EventType = "detection_completed"
 	EventValidationCompleted  EventType = "validation_completed"
@@ -24,6 +25,15 @@ const (
 	EventSetupFailed          EventType = "setup_failed"
 	EventResumeStarted        EventType = "resume_started"
 	EventResumeCompleted      EventType = "resume_completed"
+
+	// Transaction lifecycle — emitted by the Applier and Executors.
+	// These fire between EventApplyStarted and EventApplyCompleted.
+	EventTransactionStarted   EventType = "transaction_started"
+	EventTransactionCompleted EventType = "transaction_completed"
+	EventTransactionFailed    EventType = "transaction_failed"
+	EventOperationStarted     EventType = "operation_started"
+	EventOperationCompleted   EventType = "operation_completed"
+	EventOperationFailed      EventType = "operation_failed"
 )
 
 // Event carries a single lifecycle notification from the setup engine.
