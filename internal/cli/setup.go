@@ -40,13 +40,7 @@ Examples:
   docker dso setup --auto-detect # Auto-detect cloud provider
   docker dso setup --mode local # Setup for local vault mode`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			logger := &cliLogger{}
-
-			// Build the setup engine wired to the existing wizard.
-			// Future phases will replace runSetupWizard stage by stage.
-			eng := setup.NewEngine(func(ctx context.Context, m, p string, ad, nr bool) error {
-				return runSetupWizard(ctx, logger, m, p, ad, nr)
-			})
+			eng := setup.NewEngine()
 
 			// Subscribe to events for rendering (Phase 1: minimal).
 			eng.Events.Subscribe(func(evt setup.Event) {

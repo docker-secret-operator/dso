@@ -1,22 +1,26 @@
 ## dso setup
 
-Simple setup wizard for DSO
+Configure DSO for your environment
 
 ### Synopsis
 
-Setup wizard that configures DSO for your environment.
+Runs the DSO setup engine, which configures your environment through a structured pipeline:
 
-This command provides an interactive experience to:
-  - Detect cloud provider (AWS, Azure, Huawei, or Local)
-  - Select deployment mode (Local or Cloud)
-  - Automatically install required provider plugins
-  - Generate configuration file
-  - Verify your setup
+1. **Detect** — discovers Docker, cloud provider metadata, and system capabilities
+2. **Validate** — checks that the detected environment can support the requested mode
+3. **Plan** — generates a declarative install plan (files, directories, services, groups)
+4. **Preview** — displays what will be applied before any changes are made
+5. **Apply** — executes the plan transactionally; every operation is recorded for rollback
+6. **Rollback** — if any step fails, previously applied operations are reversed automatically
+
+After setup, use `docker dso doctor` to validate the installation and `docker dso doctor --repair` to fix any issues found.
 
 Examples:
-  docker dso setup              # Interactive setup wizard
-  docker dso setup --auto-detect # Auto-detect cloud provider
-  docker dso setup --mode local # Setup for local vault mode
+  docker dso setup                              # Auto-detect mode and provider
+  docker dso setup --mode local                 # Local vault mode (no cloud required)
+  docker dso setup --mode agent --provider aws  # Cloud agent mode with AWS
+  docker dso setup --auto-detect                # Auto-detect cloud provider from instance metadata
+  docker dso setup --dry-run                    # Preview the plan without applying anything
 
 ```
 dso setup [flags]

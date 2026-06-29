@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// LegacyWizardFunc is retained for interface compatibility with existing callers.
-// It is no longer invoked by the engine after Phase 6; removal is Phase 10.
-type LegacyWizardFunc func(ctx context.Context, mode, provider string, autoDetect, nonRoot bool) error
-
 // Engine is the reusable setup orchestrator. It owns the event system and
 // the permanent control-flow skeleton in Setup(). Individual stages are
 // replaced incrementally by later phases without ever touching Setup() again.
@@ -17,26 +13,18 @@ type LegacyWizardFunc func(ctx context.Context, mode, provider string, autoDetec
 // The engine must never print to stdout or stderr.
 // It emits Events; the CLI subscribes and renders them.
 type Engine struct {
-	Events       *Emitter
-	legacyWizard LegacyWizardFunc // retained for signature compatibility; unused after Phase 6
-	applier      applyIface
+	Events  *Emitter
+	applier applyIface
 }
 
 // NewEngine constructs an Engine wired to a real Applier.
-// The wizard parameter is retained for call-site compatibility but no longer used in apply().
-func NewEngine(wizard LegacyWizardFunc) *Engine {
-	e := &Engine{
-		Events:       &Emitter{},
-		legacyWizard: wizard,
-	}
+func NewEngine() *Engine {
+	e := &Engine{Events: &Emitter{}}
 	e.applier = newApplier(e.Events)
 	return e
 }
 
 // ─── Stable orchestrator ──────────────────────────────────────────────────────
-//
-// Setup is the permanent control-flow skeleton. It must not change after
-// Phase 1.5. Only the five private stage methods below evolve over time.
 
 // Setup runs the full setup workflow for the given options.
 func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, error) {
@@ -44,7 +32,6 @@ func (e *Engine) Setup(ctx context.Context, opts SetupOptions) (*SetupResult, er
 	e.Events.emit(EventSetupStarted, opts, nil)
 
 	// ── Stage 1: Detect ───────────────────────────────────────────────────
-	// Phase 2 replaces e.detect() with a native implementation.
 	env, err := e.detect(ctx, opts)
 	if err != nil {
 		return e.fail(start, fmt.Errorf("detection failed: %w", err))
@@ -110,41 +97,23 @@ func (e *Engine) fail(start time.Time, err error) (*SetupResult, error) {
 }
 
 // ─── Stage methods ────────────────────────────────────────────────────────────
-//
-// Each method below is a seam. Phase 2-6 replaces them one at a time.
-// Only the method being replaced changes; Setup() above stays frozen.
 
-// detect gathers environmental facts. It must never fail due to missing
-// optional data — absence of a credential is a fact, not an error.
-// opts are intentionally ignored here; plan() applies user overrides on top.
 func (e *Engine) detect(ctx context.Context, _ SetupOptions) (*Environment, error) {
 	return newDetector().Detect(ctx)
 }
 
-// validate checks whether the detected environment can support the requested
-// setup. It delegates to the Validator; the result is informational — the
-// engine emits it via EventValidationCompleted and the CLI decides whether to
-// abort. The legacy wizard performs its own final check during apply().
 func (e *Engine) validate(ctx context.Context, env *Environment, opts SetupOptions) (*ValidationResult, error) {
 	return newValidator().Validate(ctx, env, opts)
 }
 
-// plan generates an immutable InstallPlan. The ValidationResult is threaded in
-// so the Planner can inspect existing-installation findings without re-validating.
 func (e *Engine) plan(ctx context.Context, env *Environment, vr *ValidationResult, opts SetupOptions) (*InstallPlan, error) {
 	return newPlanner().Plan(ctx, env, vr, opts)
 }
 
-// preview renders the InstallPlan using the renderer selected by format.
-// "json" → JSONRenderer; anything else (including "") → TerminalRenderer.
-// Returns (string, error) so failures surface through the normal error path.
 func (e *Engine) preview(plan *InstallPlan, format string) (string, error) {
 	return NewPreviewEngine(newRenderer(format)).Render(*plan)
 }
 
-// apply executes the InstallPlan using the transactional Applier.
-// Every operation is tracked in a Transaction for Phase 7 rollback.
-// The legacy wizard is no longer called.
 func (e *Engine) apply(ctx context.Context, plan *InstallPlan, _ SetupOptions) (*Transaction, error) {
 	return e.applier.Apply(ctx, plan)
 }

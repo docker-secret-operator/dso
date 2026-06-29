@@ -35,6 +35,8 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 | **Deterministic Rollback** | Failed rotations automatically restore the previous container state |
 | **TCP Proxy** | DSO owns host port bindings (e.g. MySQL 3306) so traffic is never interrupted during rotation |
 | **Crash Recovery** | Agent restarts automatically recover orphaned containers and resume incomplete rotations |
+| **Transactional Setup** | `docker dso setup` runs a Detect → Validate → Plan → Preview → Apply pipeline; every operation is recorded and rolled back automatically on failure |
+| **Doctor & Repair** | `docker dso doctor` runs 17+ named diagnostic checks; the repair engine applies safe fixes automatically and prompts for confirmation on riskier operations |
 | **Production-Ready** | systemd integration, crash recovery, Prometheus metrics, comprehensive monitoring |
 | **No Swarm/Kubernetes** | Works with standard `docker compose` on any machine |
 
@@ -48,27 +50,29 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 # 1. Install DSO
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
-# 2. Run setup wizard for local mode
+# 2. Run setup (detects environment, generates config, rolls back on failure)
 docker dso setup --mode local
 
-# 3. Initialize the local vault
+# 3. Verify the installation is healthy
+docker dso doctor
+
+# 4. Initialize the local vault
 docker dso init
 
-# 4. Store a secret
+# 5. Store a secret
 docker dso secret set myapp/db_password
 
-# 5. Add secret references to docker-compose.yaml
+# 6. Add secret references to docker-compose.yaml
 # services:
 #   app:
 #     image: myapp:latest
 #     environment:
 #       DB_PASSWORD: dso://myapp/db_password
 
-# 6. Deploy
+# 7. Deploy
 docker dso up -d
 
-# 7. Verify
-docker dso doctor
+# 8. Check status
 docker dso status
 ```
 
@@ -78,18 +82,19 @@ docker dso status
 # 1. Install DSO system-wide
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
 
-# 2. Run setup wizard for agent mode (auto-detects cloud provider, configures systemd service)
+# 2. Run setup (auto-detects cloud provider, writes config, installs and starts systemd service)
 docker dso setup
 
-# 3. Configure your secrets
+# 3. Verify the installation is healthy
+docker dso doctor
+
+# 4. Configure your secrets
 sudo vi /etc/dso/dso.yaml
 
-# 4. Start the agent
-sudo systemctl start dso-agent
-sudo systemctl enable dso-agent
+# 5. Restart the agent after editing config
+sudo docker dso system restart
 
-# 5. Verify everything is healthy
-docker dso doctor
+# 6. Check agent status
 docker dso status
 ```
 
@@ -99,40 +104,43 @@ docker dso status
 # 1. Install DSO
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
 
-# 2. Run setup wizard for local mode
+# 2. Run setup
 docker dso setup --mode local
 
-# 3. Initialize the local vault
+# 3. Verify the installation
+docker dso doctor
+
+# 4. Initialize the local vault
 docker dso init
 
-# 4. Set a secret
+# 5. Set a secret
 docker dso secret set app/db_password
 
-# 5. Use in docker-compose.yaml
+# 6. Use in docker-compose.yaml
 # services:
 #   postgres:
 #     image: postgres:15
 #     environment:
 #       POSTGRES_PASSWORD_FILE: dsofile://app/db_password
 
-# 6. Deploy
+# 7. Deploy
 docker dso up -d
-
-# 7. Verify
-docker dso doctor
 ```
 
-### Advanced: Non-interactive Setup
+### Advanced: Script-Friendly Setup
 
 ```bash
-# Local mode (non-interactive)
+# Local mode — specify everything, no prompts
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | bash
-docker dso setup --mode local --non-interactive
+docker dso setup --mode local
 docker dso init
 
-# Agent mode (non-interactive)
+# Agent mode — specify provider directly, no prompts
 curl -fsSL https://raw.githubusercontent.com/docker-secret-operator/dso/main/scripts/install.sh | sudo bash
-docker dso setup --mode agent --provider aws --non-interactive
+docker dso setup --mode agent --provider aws
+
+# Preview the install plan before applying anything
+docker dso setup --mode agent --provider aws --dry-run
 ```
 
 ---
@@ -468,14 +476,23 @@ docker dso system logs --since 1h
 docker dso system logs --api --api-addr http://localhost:8471
 ```
 
-### Health Check
+### Health Check & Repair
 
 ```bash
-# CLI health check
+# Quick health check — pass/warn/fail for every diagnostic category
 docker dso doctor
 
-# Full diagnostics
+# Full diagnostics — all 17+ checks with root cause and recovery steps
 docker dso doctor --level full
+
+# Machine-readable output for scripts and CI
+docker dso doctor --json
+
+# Preview what the repair engine would fix (no changes applied)
+docker dso repair --dry-run
+
+# Apply repairs — safe fixes are automatic; moderate/destructive ones prompt for confirmation
+docker dso repair
 
 # REST health endpoint
 curl http://localhost:8471/health

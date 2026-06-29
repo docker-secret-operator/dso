@@ -17,9 +17,8 @@ func newTransaction(planID string) *Transaction {
 	}
 }
 
-// generateTransactionID produces a time-based transaction identifier.
 func generateTransactionID() string {
-	return fmt.Sprintf("tx-%s", time.Now().Format("20060102-150405"))
+	return fmt.Sprintf("tx-%s", time.Now().Format("20060102-150405.000000000"))
 }
 
 // appendOperation adds a new Pending operation to the transaction and returns

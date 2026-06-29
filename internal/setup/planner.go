@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -249,10 +250,7 @@ func isUpgrade(vr *ValidationResult, configPath string) bool {
 }
 
 func containsPath(msg, path string) bool {
-	return len(path) > 0 && len(msg) > 0 &&
-		(msg == path || // exact match unlikely but safe
-			len(msg) > len(path) && msg[:len(msg)-len(path)+len(path)] != "" &&
-			filepath.Base(msg) == filepath.Base(path))
+	return len(path) > 0 && strings.Contains(msg, path)
 }
 
 // renderConfigYAML produces the DSO configuration content for the given mode
@@ -267,10 +265,8 @@ provider: %s
 `, mode, provider)
 }
 
-// generatePlanID produces a human-readable plan identifier based on the
-// current timestamp. It is unique to the millisecond within a single host.
 func generatePlanID() string {
-	return fmt.Sprintf("plan-%s", time.Now().Format("20060102-150405"))
+	return fmt.Sprintf("plan-%s", time.Now().Format("20060102-150405.000000000"))
 }
 
 // ─── Summary computation ──────────────────────────────────────────────────────
@@ -342,12 +338,10 @@ type opCounter struct {
 	dirs     int
 	files    int
 	services int
-	perms    int
 	groups   int
 }
 
 func (c *opCounter) nextDir() string     { c.dirs++; return fmt.Sprintf("DIR-%03d", c.dirs) }
 func (c *opCounter) nextFile() string    { c.files++; return fmt.Sprintf("FILE-%03d", c.files) }
 func (c *opCounter) nextService() string { c.services++; return fmt.Sprintf("SERVICE-%03d", c.services) }
-func (c *opCounter) nextPerm() string    { c.perms++; return fmt.Sprintf("PERM-%03d", c.perms) }
 func (c *opCounter) nextGroup() string   { c.groups++; return fmt.Sprintf("GROUP-%03d", c.groups) }

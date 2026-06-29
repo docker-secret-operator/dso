@@ -57,12 +57,9 @@ func (a *stubApplier) Apply(_ context.Context, _ *InstallPlan) (*Transaction, er
 	return tx, nil
 }
 
-func noopWizard(_ context.Context, _, _ string, _, _ bool) error { return nil }
-
 // newTestEngine creates an Engine with a noopApplier so tests never touch the OS.
-// The wizard parameter is accepted for call-site compatibility but is unused.
-func newTestEngine(wizard LegacyWizardFunc) *Engine {
-	e := NewEngine(wizard)
+func newTestEngine() *Engine {
+	e := NewEngine()
 	e.applier = &noopApplier{}
 	return e
 }
@@ -70,7 +67,7 @@ func newTestEngine(wizard LegacyWizardFunc) *Engine {
 // ─── Engine.Setup ─────────────────────────────────────────────────────────────
 
 func TestEngine_Setup_Success(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 
 	result, err := eng.Setup(context.Background(), SetupOptions{
 		Mode:     ModeLocal,
@@ -90,7 +87,7 @@ func TestEngine_Setup_Success(t *testing.T) {
 
 func TestEngine_Setup_Failure(t *testing.T) {
 	sentinel := errors.New("apply exploded")
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	eng.applier = &stubApplier{err: sentinel}
 
 	result, err := eng.Setup(context.Background(), SetupOptions{})
@@ -107,7 +104,7 @@ func TestEngine_Setup_Failure(t *testing.T) {
 }
 
 func TestEngine_Setup_DryRun_SkipsApply(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 
 	result, err := eng.Setup(context.Background(), SetupOptions{DryRun: true})
 
@@ -120,7 +117,7 @@ func TestEngine_Setup_DryRun_SkipsApply(t *testing.T) {
 }
 
 func TestEngine_Setup_DryRun_PlanHasDryRunFlag(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 
 	result, _ := eng.Setup(context.Background(), SetupOptions{DryRun: true})
 
@@ -133,7 +130,7 @@ func TestEngine_Setup_DryRun_PlanHasDryRunFlag(t *testing.T) {
 }
 
 func TestEngine_Setup_PlanModeAndProviderPropagated(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 
 	result, _ := eng.Setup(context.Background(), SetupOptions{
 		Mode:     ModeAgent,
@@ -155,7 +152,7 @@ func TestEngine_Setup_PlanModeAndProviderPropagated(t *testing.T) {
 // ─── Lifecycle events ─────────────────────────────────────────────────────────
 
 func TestEngine_Setup_EmitsFullLifecycle_Success(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	events := collectEvents(eng)
 
 	_, _ = eng.Setup(context.Background(), SetupOptions{})
@@ -164,7 +161,7 @@ func TestEngine_Setup_EmitsFullLifecycle_Success(t *testing.T) {
 }
 
 func TestEngine_Setup_EmitsFailureEvent(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	eng.applier = &stubApplier{err: errors.New("boom")}
 	events := collectEvents(eng)
 
@@ -185,7 +182,7 @@ func TestEngine_Setup_EmitsFailureEvent(t *testing.T) {
 }
 
 func TestEngine_Setup_DryRun_StopsAfterPreview(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	events := collectEvents(eng)
 
 	_, _ = eng.Setup(context.Background(), SetupOptions{DryRun: true})
@@ -204,7 +201,7 @@ func TestEngine_Setup_DryRun_StopsAfterPreview(t *testing.T) {
 // ─── Stage methods ────────────────────────────────────────────────────────────
 
 func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	env, err := eng.detect(context.Background(), SetupOptions{Mode: ModeLocal, Provider: "local"})
 
 	if err != nil {
@@ -219,7 +216,7 @@ func TestEngine_detect_ReturnsEnvironment(t *testing.T) {
 }
 
 func TestEngine_validate_EmptyEnvironmentReturnsInvalid(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	vr, err := eng.validate(context.Background(), &Environment{}, SetupOptions{Mode: ModeLocal})
 
 	if err != nil {
@@ -234,7 +231,7 @@ func TestEngine_validate_EmptyEnvironmentReturnsInvalid(t *testing.T) {
 }
 
 func TestEngine_validate_HealthyLocalEnvironmentReturnsValid(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	env := &Environment{
 		Docker: DockerInfo{BinaryFound: true, DaemonReachable: true},
 		Capabilities: Capabilities{
@@ -253,7 +250,7 @@ func TestEngine_validate_HealthyLocalEnvironmentReturnsValid(t *testing.T) {
 }
 
 func TestEngine_plan_PropagatesModeAndProvider(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	env := &Environment{}
 	vr := &ValidationResult{}
 	plan, err := eng.plan(context.Background(), env, vr, SetupOptions{
@@ -277,7 +274,7 @@ func TestEngine_plan_PropagatesModeAndProvider(t *testing.T) {
 }
 
 func TestEngine_plan_FallsBackToCapabilities(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	env := &Environment{
 		Capabilities: Capabilities{
 			SupportsAgentMode: false,
@@ -298,7 +295,7 @@ func TestEngine_plan_FallsBackToCapabilities(t *testing.T) {
 }
 
 func TestEngine_plan_HasID(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	plan, err := eng.plan(context.Background(), &Environment{}, &ValidationResult{}, SetupOptions{
 		Mode:     ModeLocal,
 		Provider: "local",
@@ -312,7 +309,7 @@ func TestEngine_plan_HasID(t *testing.T) {
 }
 
 func TestEngine_preview_TerminalRenderer(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	out, err := eng.preview(&InstallPlan{Mode: ModeLocal, Provider: "local"}, "terminal")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -323,7 +320,7 @@ func TestEngine_preview_TerminalRenderer(t *testing.T) {
 }
 
 func TestEngine_preview_JSONRenderer(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	out, err := eng.preview(&InstallPlan{Mode: ModeLocal, Provider: "local"}, "json")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -334,7 +331,7 @@ func TestEngine_preview_JSONRenderer(t *testing.T) {
 }
 
 func TestEngine_preview_DefaultIsTerminal(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	out, err := eng.preview(&InstallPlan{Mode: ModeLocal}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -345,7 +342,7 @@ func TestEngine_preview_DefaultIsTerminal(t *testing.T) {
 }
 
 func TestEngine_apply_CompletesTransaction(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	plan := &InstallPlan{ID: "plan-test-001", Mode: ModeLocal, Provider: "local"}
 	tx, err := eng.apply(context.Background(), plan, SetupOptions{})
 
@@ -361,7 +358,7 @@ func TestEngine_apply_CompletesTransaction(t *testing.T) {
 }
 
 func TestEngine_apply_FailedApplierReturnsFailedTransaction(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	eng.applier = &stubApplier{err: errors.New("disk full")}
 
 	tx, err := eng.apply(context.Background(), &InstallPlan{}, SetupOptions{})

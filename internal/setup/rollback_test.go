@@ -836,7 +836,7 @@ func TestRollback_UnknownOpType_Skipped(t *testing.T) {
 // ─── Engine integration ───────────────────────────────────────────────────────
 
 func TestEngine_Setup_FailedApply_AttachesRollbackResult(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 	eng.applier = &stubApplier{err: errors.New("apply failed")}
 
 	result, err := eng.Setup(context.Background(), SetupOptions{})
@@ -849,7 +849,7 @@ func TestEngine_Setup_FailedApply_AttachesRollbackResult(t *testing.T) {
 }
 
 func TestEngine_Setup_SuccessfulApply_NoRollback(t *testing.T) {
-	eng := newTestEngine(noopWizard)
+	eng := newTestEngine()
 
 	result, err := eng.Setup(context.Background(), SetupOptions{})
 	if err != nil {

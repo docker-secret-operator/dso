@@ -1,352 +1,376 @@
-# Public Roadmap
+# DSO Roadmap — v4.0 Production Readiness
 
-**Last Updated**: May 2026  
-**Current Version**: v3.5.18 (Jun 2, 2026)  
-**Status**: Actively Developed
-
-This roadmap outlines Docker Secret Operator's direction over the next 6-12 months. It reflects community feedback, security requirements, and operational priorities.
+**Last Updated**: June 2026  
+**Current Version**: v3.5.18  
+**Status**: Active — transitioning from feature development to production hardening
 
 ---
 
-## Vision for 2026
+## Where We Are
 
-**DSO will become the standard secret injection solution for Docker Compose applications**, whether in development or production, by combining:
+DSO has a working, well-tested foundation:
 
-- ✅ **Zero-Disk Security** — Secrets never touch disk
-- ✅ **Cloud-Agnostic** — Works with AWS, Azure, Vault, Huawei, or local storage
-- ✅ **Zero-Downtime Rotation** — Seamless secret updates
-- ✅ **Simple Setup** — 5-minute local mode, automated cloud mode
-- ✅ **Enterprise-Ready** — Audit logging, compliance, multi-tenancy support
+| Subsystem | Status |
+|-----------|--------|
+| Local mode (encrypted vault) | ✅ Complete |
+| Agent mode (cloud providers: AWS, Azure, Vault, Huawei) | ✅ Complete |
+| Zero-downtime rolling rotation | ✅ Complete |
+| Crash recovery and state persistence | ✅ Complete |
+| Setup engine (Detect → Validate → Plan → Preview → Apply → Rollback) | ✅ Complete |
+| Doctor diagnostics (17+ named checks) | ✅ Complete |
+| Automated repair engine | ✅ Complete |
+| Security hardening (panic isolation, permission validation, rollback safety) | ✅ Complete |
+| Unit + integration tests (426+) | ✅ Complete |
+| CI/CD pipeline with vulnerability scanning | ✅ Complete |
 
----
-
-## Current Status (v3.5.18 - Jun 2026)
-
-### ✅ Completed Features
-
-**Core Functionality**:
-- ✅ Local mode (encrypted vault, single-host)
-- ✅ Agent mode with cloud providers (AWS, Azure, Vault, Huawei)
-- ✅ Socket-based IPC for non-root access
-- ✅ Zero-downtime rolling rotation
-- ✅ Crash recovery and state persistence
-
-**Security & Operations**:
-- ✅ AES-256-GCM encryption (local mode)
-- ✅ TLS for all provider communication
-- ✅ Log redaction (no secrets in logs)
-- ✅ Threat model documentation
-- ✅ Security.md with guarantees
-- ✅ Docker V2 Secret Driver support
-
-**Developer Experience**:
-- ✅ Comprehensive documentation
-- ✅ Local & cloud mode guides
-- ✅ CLI with 30+ commands
-- ✅ Health checks (`docker dso doctor`)
-- ✅ Real-time monitoring (`docker dso watch`)
-- ✅ Multiple secret injection methods (env, file)
-
-**Testing & Quality**:
-- ✅ Unit tests (core packages >80%)
-- ✅ Integration tests
-- ✅ CI/CD pipeline
-- ✅ Code scanning (SAST)
-- ✅ Dependency checks
+The setup subsystem is **feature complete**. Further investment there provides diminishing returns.
 
 ---
 
-## Roadmap: Next 6 Months (Jun-Dec 2026)
+## What Comes Next — v4.0 Roadmap
 
-### Q2 2026 (Jun-Aug): Security Hardening & Enterprise Foundation
-
-**Focus**: Security hardening, enterprise readiness
-
-#### Must-Have ✓
-- [ ] **Code Coverage Pipeline** (June-July)
-  - Status: Setting up Codecov integration
-  - Target: 70% overall, 85% for critical paths
-  - Impact: Improved quality assurance
-
-- [ ] **Secret Rotation Hooks** (July-Aug)
-  - Status: Designing extensibility
-  - Feature: Pre/post-rotation webhooks for compliance logging
-  - Impact: Audit logging for enterprises
-
-- [ ] **Comprehensive Audit Logging** (Aug)
-  - Status: RFC in discussion
-  - Feature: All secret operations logged with timestamps, users, reasons
-  - Impact: HIPAA/PCI compliance
-
-#### Nice-to-Have
-- [ ] **Docker Swarm Support** (Optional)
-  - Status: Community request
-  - Scope: Support Docker Swarm mode in addition to docker-compose
-  - Effort: Medium (2-3 weeks)
+The following phases move DSO from a well-built internal tool to a production-grade, community-ready project. They are ordered by impact.
 
 ---
 
-### Q3 2026 (Sep-Nov): Enterprise & Multi-Tenancy
+### Phase A — CLI Polish ⭐⭐⭐⭐
 
-**Focus**: Multi-tenancy, RBAC, audit
+Every command should feel consistent and complete.
 
-#### Must-Have ✓
-- [ ] **Multi-Tenant Architecture** (Sep-Oct)
-  - Status: Designing namespacing
-  - Feature: Isolate secrets by namespace/project
-  - Impact: Shared infrastructure support
+Target commands:
+```
+docker dso setup
+docker dso doctor
+docker dso repair
+docker dso status
+docker dso version
+docker dso logs
+docker dso config
+docker dso provider
+```
 
-- [ ] **Role-Based Access Control (RBAC)** (Oct-Nov)
-  - Status: RFC planned
-  - Feature: Admin, operator, viewer roles with fine-grained permissions
-  - Impact: Enterprise security policies
+Each command should have:
+- `--json` for machine-readable output
+- `--verbose` for debugging
+- Consistent error messages (same format, same exit codes)
+- Help text with working examples
+- `--dry-run` where it makes sense
 
-- [ ] **Enhanced Audit Logging** (Nov)
-  - Status: Building on logging from Q2
-  - Feature: Queryable audit logs, export to Splunk/ELK
-  - Impact: Compliance & forensics
-
-- [ ] **Policy Engine** (Stretch)
-  - Status: Early design
-  - Feature: Define rotation policies (frequency, strategy, targets)
-  - Impact: Centralized secret management
-
-#### Nice-to-Have
-- [ ] **Metrics Export** (Prometheus)
-  - Status: Design
-  - Feature: Expose rotation metrics, cache stats to Prometheus
-  - Impact: Observability
+**Why now**: The engine is solid but the surface is uneven. A polished CLI reduces support burden and makes the project look credible.
 
 ---
 
-### Q4 2026 (Dec 2026 - Jan 2027): Polish & v4.0 Planning
+### Phase B — Configuration Management ⭐⭐⭐⭐
 
-**Focus**: Stabilization, performance, v4.0 strategy
+Configuration is currently a first-class feature of the setup engine but not of the daily workflow. Build it out:
 
-#### Must-Have ✓
-- [ ] **Performance Optimization** (Dec)
-  - Status: Baseline established
-  - Focus: Sub-second rotation, optimized polling
-  - Impact: Production readiness
+```bash
+docker dso config show       # Pretty-print current config with section headers
+docker dso config validate   # Validate YAML schema + connectivity checks
+docker dso config edit       # Open in $EDITOR with validation on save
+docker dso config export     # Export sanitized config (secrets redacted)
+docker dso config import     # Apply a config file
+docker dso config reset      # Restore defaults (with confirmation)
+```
 
-- [ ] **v4.0 Strategy RFC** (Jan 2027)
-  - Status: Planning
-  - Decision: Breaking changes needed? (API, config format)
-  - Impact: Direction for 2027
-
-#### Nice-to-Have
-- [ ] **Kubernetes Native Integration** (Optional)
-  - Status: Community interest assessment
-  - Scope: Native K8s support (Operators, CRDs)
-  - Note: Major effort, deferred to 2027 if needed
-
-- [ ] **Provider Plugins** (Optional)
-  - Status: Design phase
-  - Feature: Custom provider plugins
-  - Impact: Third-party integrations
+**Why now**: Configuration mistakes are the most common source of support requests. Making them easy to catch and fix early reduces friction significantly.
 
 ---
 
-## Roadmap: Next 12 Months (2027)
+### Phase C — Provider Plugin Framework ⭐⭐⭐⭐
 
-### v4.0 (2027)
+The current provider system works but adding a new provider requires forking the core binary. Define a clean interface:
 
-Tentative major release focusing on:
-- Cloud-native features (Kubernetes support)
-- Advanced multi-tenancy
-- Breaking API improvements (if needed)
-- Further performance optimization
+```go
+type Provider interface {
+    Detect(ctx context.Context) (bool, error)
+    Validate(ctx context.Context, cfg ProviderConfig) error
+    Health(ctx context.Context) (*HealthResult, error)
+    Watch(ctx context.Context, paths []string) (<-chan SecretEvent, error)
+    Fetch(ctx context.Context, path string) ([]byte, error)
+    Rotate(ctx context.Context, path string) error
+}
+```
 
-**Depends on**: Community feedback, production usage patterns, resource availability
+Target layout:
+```
+providers/
+    aws/
+    vault/
+    azure/
+    gcp/          ← new
+    bitwarden/    ← new
+    onepassword/  ← new
+```
 
----
-
-## Community-Requested Features (Backlog)
-
-These are frequently requested and under consideration:
-
-### High Priority
-- 🟨 **Kubernetes Integration** (requested by 20+ users)
-  - Status: Early research phase
-  - Challenge: Significantly different architecture
-  - Timeline: Possible in v4.0 (2027)
-
-- 🟨 **Encrypted Backups** (enterprise request)
-  - Status: Designing backup/restore mechanism
-  - Use Case: Disaster recovery, vault portability
-  - Effort: Medium (3-4 weeks)
-
-- 🟨 **Custom Providers via SDK** (developer request)
-  - Status: RFC planned for Q3
-  - Use Case: Integration with proprietary secret systems
-  - Effort: High (6-8 weeks)
-
-### Medium Priority
-- 🟦 **Docker Swarm Support** (niche use case)
-  - Status: Waiting for demand
-  - Effort: Medium
-  - Timeline: If there's demand, Q3 2026
-
-- 🟦 **GUI Dashboard** (nice-to-have)
-  - Status: Low priority, community contribution welcome
-  - Use Case: Visual secret management
-  - Effort: High
-
-- 🟦 **Automatic Secret Generation** (advanced feature)
-  - Status: Design phase
-  - Use Case: Generate passwords, API keys automatically
-  - Effort: Medium-high
-
-### Low Priority
-- 🟩 **Slack Integration** (nice-to-have)
-- 🟩 **Webhook Support** (partial: rotation hooks in Q2)
-- 🟩 **Metrics Dashboard** (would use Grafana)
-- 🟩 **Web UI** (community contribution?)
+**Why now**: Provider extensibility is frequently requested. A clean plugin interface makes community contributions viable.
 
 ---
 
-## Won't Do (Explicit Non-Goals)
+### Phase D — Watcher Engine ⭐⭐⭐⭐⭐
 
-To stay focused, DSO explicitly does **not** aim to:
+This is what makes DSO genuinely differentiated. The full reactive pipeline:
 
-- ❌ **Kubernetes-First** — DSO is for Docker Compose / single-host. K8s has ExternalSecrets.
-- ❌ **GitOps Tool** — Not a deployment tool, doesn't manage infrastructure.
-- ❌ **Secrets Generation** — Doesn't create initial credentials (use your provider or manual setup).
-- ❌ **SSL/TLS Cert Management** — Use Cert-Manager or your provider.
-- ❌ **Full Compliance Suite** — Compliance is shared responsibility (policy, monitoring, audit logging included).
+```
+Secret changed (provider)
+        ↓
+Event received (polling / webhook / provider push)
+        ↓
+Determine affected containers
+        ↓
+Rolling update (blue-green swap)
+        ↓
+Health check
+        ↓
+Complete or rollback
+```
 
----
+Support three watch modes:
+- **Polling** — timer-based, configurable interval (existing)
+- **Webhook** — provider pushes change events to DSO
+- **Provider events** — native provider event streams (AWS EventBridge, Azure Event Grid)
 
-## Quality & Performance Goals
-
-### Code Quality (2026)
-- 📊 Code coverage: 70%+ (core), 85%+ (critical packages)
-- 🔒 Zero unpatched CVEs (security patches within 24h)
-- 📈 No memory leaks on 30-day+ deployments
-- ⚡ Sub-second rotation (P99 < 1s)
-
-### Testing Standards
-- ✅ Unit tests for all new code (>80% coverage)
-- ✅ Integration tests for provider integrations
-- ✅ Chaos testing for crash recovery
-- ✅ Load testing (1000+ rotating secrets)
-
-### Performance Targets
-- ✅ Local mode: Setup <1s
-- ✅ Agent mode: Setup <5s (cloud detection)
-- ✅ Rotation: <30s (blue-green swap + health check)
-- ✅ Secret fetch: <100ms (from cache), <1s (from provider)
+**Why now**: This is the technical differentiator. Without a solid watcher, DSO is a one-shot injector, not a secret operator.
 
 ---
 
-## Dependencies & Known Constraints
+### Phase E — Runtime Intelligence ⭐⭐⭐⭐
 
-### Resource Limitations
-- **Time**: 1-2 FTE lead maintainers (Umair)
-- **Infrastructure**: Using GitHub (free tier), no cloud resources yet
-- **Testing**: Limited access to some cloud providers
+`docker dso status` should give operators a clear operational picture:
 
-### Technical Debt
-- [ ] Provider plugin system needs refactoring (Q3)
-- [ ] Configuration merging logic could be simpler (Q2)
-- [ ] Some race conditions in state machine (rare, Q2 fixes)
+```
+$ docker dso status
 
-### External Factors
-- **Docker/Moby**: New security features or APIs may enable better integration
-- **Cloud Providers**: API changes in AWS, Azure, etc. require updates
-- **Community**: Dependent on adoption and feedback
-- **Community**: Open-source adoption and contributor feedback shape priorities
+Containers (3 managed)
+  ✓ app          healthy    secrets: 2    last rotation: 4m ago
+  ✓ postgres     healthy    secrets: 1    last rotation: 4m ago
+  ⚠ redis        degraded   secrets: 0    no secrets configured
 
----
+Secrets (3 active)
+  ✓ database_credentials    provider: aws    age: 12d    next rotation: 18d
+  ✓ api_keys                provider: aws    age: 3d     next rotation: 27d
+  ✓ tls_cert                provider: vault  age: 89d    expires: 1d  ⚠
 
-## How to Influence This Roadmap
+Provider Health
+  ✓ aws     reachable    latency: 42ms
+  ✓ vault   reachable    latency: 18ms
+```
 
-### Request a Feature
-1. Open a [Feature Request](https://github.com/docker-secret-operator/dso/issues/new?template=feature.md)
-2. Describe your use case and why it matters
-3. Upvote similar requests if they exist
-4. Discuss in [GitHub Discussions](https://github.com/docker-secret-operator/dso/discussions)
-
-### Vote on Priorities
-- 👍 Upvote issues you care about
-- 💬 Comment with your use case
-- 🤝 Offer to help implement (PRs welcome!)
-
-### Contribute
-- 🚀 Implement features yourself
-- 🧪 Add tests and documentation
-- 🐛 Fix bugs
-- 📚 Improve documentation
-
-### Sponsor Development
-- 💰 Fund features (contact maintainers)
-- 🤵 Contribute developer time
-- 🎓 Share knowledge and expertise
+**Why now**: Operators need to see system state at a glance. This also makes the doctor/repair workflow much more useful.
 
 ---
 
-## Release Schedule
+### Phase F — Observability ⭐⭐⭐⭐
 
-| Version | Release Date | Status |
-|---------|-------------|--------|
-| v3.5.15 | May 18, 2026 | ✅ Released |
-| v3.5.16 | May 19, 2026 | ✅ Released |
-| v3.5.17 | May 20, 2026 | ✅ Released |
-| v3.5.18 | Jun 2, 2026  | ✅ Released (current) — Huawei provider panic fix |
-| v3.6.0  | Jun 30, 2026 | 🔵 Planned (security hardening + features) |
-| v3.6.1 | Jul 15, 2026 | 🔵 Planned (bug fixes) |
-| v3.7.0 | Sep 30, 2026 | 🔵 Planned (RBAC + multi-tenancy) |
-| v4.0.0 | Jan 2027 | 🟡 Tentative (major features) |
+Expose structured data that operations teams can actually use:
 
----
+**Prometheus metrics**:
+```
+dso_setup_duration_seconds
+dso_secret_fetch_duration_seconds
+dso_rotation_duration_seconds
+dso_rotation_total{status="success|failed"}
+dso_provider_errors_total{provider="aws|vault|azure"}
+dso_doctor_check_status{check_id="DSO-DOCTOR-001",status="pass|warn|fail"}
+dso_secret_age_seconds{secret="name"}
+```
 
-## Roadmap Review & Updates
+**Structured logs** (JSON):
+```json
+{"level":"info","event":"rotation_complete","secret":"db_creds","duration_ms":1240,"strategy":"rolling"}
+```
 
-This roadmap is reviewed:
-- ✅ **Quarterly** — Check progress, adjust priorities
-- ✅ **After Major Events** — significant releases, critical issues
-- ✅ **Annually** — Rewrite for next year
+**OpenTelemetry traces** for rotation workflows.
 
-### Feedback Loop
-
-**Community Input**: Each quarter we'll:
-1. Post a roadmap update in Discussions
-2. Ask for feedback on priorities
-3. Adjust based on feedback
-4. Document decisions
-
-**Next Roadmap Review**: August 2026
+**Why now**: Without metrics, operators are flying blind. This is also what enterprise users need before they'll adopt DSO.
 
 ---
 
-## Contact & Questions
+### Phase G — Web Dashboard ⭐⭐⭐
 
-**Questions about the roadmap?**
-- 💬 [GitHub Discussions](https://github.com/docker-secret-operator/dso/discussions)
-- 📧 Email: [maintainers@docker-secret-operator.org](mailto:maintainers@docker-secret-operator.org)
-- 🐦 [Project updates in announcements](https://github.com/docker-secret-operator/dso/discussions/categories/announcements)
+The event system and status engine provide everything a dashboard needs. Build a lightweight read-only web UI that consumes the existing REST API:
 
-**Want to contribute?**
-- See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md)
-- Check out [Help Wanted](https://github.com/docker-secret-operator/dso/issues?q=label%3A%22help+wanted%22) issues
-- Join the next community sync (TBD)
+```
+Overview  →  Containers  →  Secrets  →  Providers  →  Health  →  Events
+```
+
+Serve it from the agent on a configurable port. No external dependencies.
+
+**Why now**: Dashboards lower the barrier for non-CLI users and make the project more approachable. Deferred until Phase E and F are solid because the dashboard is only as good as its data sources.
 
 ---
 
-## Acknowledgments
+### Phase H — Cross-Distribution Integration Tests ⭐⭐⭐⭐⭐
 
-This roadmap reflects:
-- 📋 User feedback and feature requests
-- 🐛 Bug reports and production experience
-- 🤝 Community contributions
-- 💡 Maintainer vision and expertise
-- 🎯 Community adoption goals
+The setup engine and repair workflows need to be validated on real Linux distributions under real privilege boundaries:
 
-**Thank you to everyone who makes DSO better! 🙏**
+Target distributions:
+- Ubuntu 22.04
+- Ubuntu 24.04
+- Debian 12
+- Fedora 40
+- Rocky Linux 9 / RHEL
+- Amazon Linux 2023
+
+Test scenarios per distribution:
+```
+Fresh install (local mode)
+Fresh install (agent mode)
+Upgrade from previous version
+Rollback after failed apply
+Doctor → detect issue
+Repair → fix issue
+Rotation (provider mock)
+Docker restart
+System reboot
+```
+
+Run these in CI against fresh VMs or containers using GitHub Actions with matrix builds.
+
+**Why now**: This is the highest-confidence signal that DSO actually works. No amount of unit tests replaces this.
+
+---
+
+### Phase I — Security & Supply Chain ⭐⭐⭐⭐⭐
+
+This directly addresses the feedback received from the last security review:
+
+**Signed releases** (Cosign):
+```bash
+cosign verify-blob --certificate dso-linux-amd64.cert --signature dso-linux-amd64.sig dso-linux-amd64
+```
+
+**SBOM** (CycloneDX format):
+```bash
+docker dso version --sbom
+```
+
+**SLSA Build Provenance** — generate verifiable provenance for every release artifact.
+
+**Reproducible builds** — same source + same toolchain = byte-identical binary.
+
+**Automated scanning in CI**:
+- `govulncheck` — Go vulnerability database
+- `gosec` — static security analysis
+- `trivy` — image and dependency scanning
+- Dependency review on every PR
+
+**Why now**: Supply chain security is increasingly a prerequisite for enterprise adoption and sandbox program consideration. This is the single highest-leverage investment after cross-distribution testing.
+
+---
+
+### Phase J — Documentation ⭐⭐⭐
+
+Produce documentation that a new user can follow without asking questions:
+
+- **Architecture Guide** — how the components fit together, with diagrams
+- **Developer Guide** — how to build, test, and contribute
+- **Provider SDK** — how to write a custom provider plugin
+- **CLI Reference** — every command, flag, and exit code documented
+- **Troubleshooting Guide** — the 20 most common failure modes and their solutions
+- **Security Model** — what DSO protects, what it doesn't, and why
+- **Upgrade Guide** — how to move between versions safely
+- **Migration Guide** — moving from local mode to agent mode
+
+**Why now**: Good documentation is the single biggest force multiplier for a solo maintainer.
+
+---
+
+### Phase K — Community ⭐⭐⭐⭐
+
+Without community, technical quality alone doesn't build adoption:
+
+- Respond to every issue within 48 hours
+- Label issues clearly (`good-first-issue`, `help-wanted`, `bug`, `enhancement`)
+- Write tutorials (blog posts, videos) showing real use cases
+- Create example projects that people can clone and run
+- Post in Docker community forums, Reddit, and relevant Slack communities
+- Track which providers and platforms users care about
+
+**Why now**: Community feedback tells you which Phase C providers to build first, which Phase H distributions matter most, and which Phase J docs are missing. Without community signal, you're guessing.
+
+---
+
+### Phase L — Release Engineering ⭐⭐⭐
+
+Automate everything around a release:
+
+- GitHub Actions release pipeline (triggered by tag)
+- Nightly builds with automated test matrix
+- Homebrew formula for macOS
+- Official Docker images (`docker pull docker-secret-operator/dso`)
+- APT repository for Debian/Ubuntu
+- RPM repository for Fedora/RHEL
+- Checksums and signatures for every artifact
+- GitHub Release notes auto-generated from conventional commits
+
+**Why now**: Manual releases are error-prone and don't scale. Release automation also enables the nightly test matrix for Phase H.
+
+---
+
+## Priority Order
+
+| Priority | Phase | Impact |
+|----------|-------|--------|
+| ⭐⭐⭐⭐⭐ | D — Watcher Engine | Makes DSO a true secret operator, not just an injector |
+| ⭐⭐⭐⭐⭐ | H — Cross-distribution E2E tests | Production confidence; no substitute for real environments |
+| ⭐⭐⭐⭐⭐ | I — Security & supply chain | Signed releases, SBOM, SLSA provenance |
+| ⭐⭐⭐⭐ | A — CLI polish | Consistent, professional user experience |
+| ⭐⭐⭐⭐ | F — Observability | Metrics, traces, structured logs |
+| ⭐⭐⭐⭐ | C — Provider plugin framework | Extensibility; enables community contributions |
+| ⭐⭐⭐⭐ | K — Community | Adoption and real-world feedback |
+| ⭐⭐⭐⭐ | B — Config management | Reduces support burden |
+| ⭐⭐⭐ | E — Runtime intelligence | Better operational visibility |
+| ⭐⭐⭐ | J — Documentation | Force multiplier for solo maintainer |
+| ⭐⭐⭐ | G — Web dashboard | Accessibility for non-CLI users |
+| ⭐⭐⭐ | L — Release engineering | Scales the release process |
+
+---
+
+## What Is Not On This Roadmap
+
+To stay focused, DSO explicitly does **not** plan to:
+
+- **Kubernetes-native support** — DSO is for Docker Compose on a single host. Kubernetes has ExternalSecrets Operator.
+- **Multi-tenancy / RBAC** — Out of scope for the single-host model.
+- **SSL/TLS certificate management** — Use Cert-Manager or your provider's certificate service.
+- **GitOps / infrastructure management** — DSO manages secrets at runtime, not deployments.
+- **Secrets generation** — DSO injects secrets; it does not create them.
+
+---
+
+## Completed Work (June 2026)
+
+### Setup Engine (Phases 1–10)
+- Detect → Validate → Plan → Preview → Apply → Rollback pipeline
+- Immutable `InstallPlan` with declarative operations
+- Transactional apply with before/after snapshots
+- Automatic rollback on failure
+- Doctor engine: 17 named checks across 6 categories
+- Repair engine: risk-gated actions (safe / moderate / destructive)
+- Post-repair verification loop
+- 426+ unit + integration tests
+- 13 performance benchmarks
+- Panic-safe event system
+
+### Security Hardening (Tracks A & B)
+- Panic/crash fixes across core packages
+- Permission validation on all filesystem operations
+- Rollback safety for partial failures
+- Rate limiting middleware on REST API
+- Vulnerability scanning in CI (`govulncheck`)
+
+---
+
+## Resources
+
+- **Issues**: [github.com/docker-secret-operator/dso/issues](https://github.com/docker-secret-operator/dso/issues)
+- **Discussions**: [github.com/docker-secret-operator/dso/discussions](https://github.com/docker-secret-operator/dso/discussions)
+- **Security**: md.umair@antiersolutions.com
+- **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
 **Maintained by**: Umair (Project Lead)  
-**Last Updated**: May 2026  
-**Next Review**: August 2026  
-**Status**: Active ✅
+**Last Updated**: June 2026  
+**Next Review**: September 2026

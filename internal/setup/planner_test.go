@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -93,9 +94,6 @@ func TestOpCounter_SequentialIDs(t *testing.T) {
 	}
 	if got := ctr.nextService(); got != "SERVICE-002" {
 		t.Errorf("want SERVICE-002, got %q", got)
-	}
-	if got := ctr.nextPerm(); got != "PERM-001" {
-		t.Errorf("want PERM-001, got %q", got)
 	}
 	if got := ctr.nextGroup(); got != "GROUP-001" {
 		t.Errorf("want GROUP-001, got %q", got)
@@ -473,7 +471,7 @@ func TestPlanner_ExistingInstallationProducesModifyOperation(t *testing.T) {
 				Severity: SeverityInfo,
 				Category: CategoryConfiguration,
 				Code:     CodeExistingInstallationFound,
-				Message:  configPath,
+				Message:  fmt.Sprintf("DSO configuration found at %s — setup will upgrade", configPath),
 			},
 		},
 	}

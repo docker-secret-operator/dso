@@ -52,8 +52,7 @@ type Event struct {
 	Error error
 }
 
-// Emitter broadcasts events to all registered listeners.
-// Listeners are called asynchronously so a slow renderer cannot block the engine.
+// Emitter broadcasts events to all registered listeners synchronously.
 type Emitter struct {
 	mu        sync.RWMutex
 	listeners []func(Event)
@@ -79,7 +78,10 @@ func (e *Emitter) Emit(evt Event) {
 	e.mu.RUnlock()
 
 	for _, fn := range listeners {
-		fn(evt)
+		func() {
+			defer func() { recover() }() //nolint:errcheck
+			fn(evt)
+		}()
 	}
 }
 
