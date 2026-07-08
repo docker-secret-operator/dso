@@ -380,8 +380,8 @@ func TestRepairService_WriteUnitFile_WritesContent(t *testing.T) {
 	if !strings.Contains(string(written), "[Unit]") {
 		t.Error("expected [Unit] section in written unit file")
 	}
-	if !strings.Contains(string(written), "dso-agent") {
-		t.Error("expected dso-agent in unit file content")
+	if !strings.Contains(string(written), "dso-agent.service") {
+		t.Error("expected dso-agent.service in unit file content")
 	}
 }
 
