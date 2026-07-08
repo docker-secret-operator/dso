@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"testing"
 )
 
@@ -853,5 +854,138 @@ func TestApplier_CompletedTransaction_NotFailed(t *testing.T) {
 	}
 	if tx.Status == StatusFailed {
 		t.Error("expected Status != Failed on success")
+	}
+}
+
+// ─── parseOwnerIDs ────────────────────────────────────────────────────────────
+
+func TestParseOwnerIDs_NonNumericUID_ReturnsError(t *testing.T) {
+	u := &user.User{Uid: "notanumber", Gid: "0"}
+	_, _, err := parseOwnerIDs(u, nil)
+	if err == nil {
+		t.Error("expected error for non-numeric UID, got nil")
+	}
+}
+
+func TestParseOwnerIDs_NonNumericGID_ReturnsError(t *testing.T) {
+	u := &user.User{Uid: "1000", Gid: "0"}
+	g := &user.Group{Gid: "notanumber"}
+	_, _, err := parseOwnerIDs(u, g)
+	if err == nil {
+		t.Error("expected error for non-numeric GID, got nil")
+	}
+}
+
+func TestParseOwnerIDs_ValidUserNoGroup_ReturnsNegativeGID(t *testing.T) {
+	u := &user.User{Uid: "1000", Gid: "1000"}
+	uid, gid, err := parseOwnerIDs(u, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if uid != 1000 {
+		t.Errorf("want uid=1000, got %d", uid)
+	}
+	if gid != -1 {
+		t.Errorf("want gid=-1 (no group specified), got %d", gid)
+	}
+}
+
+// ─── GroupExecutor: groupExists error propagation ────────────────────────────
+
+func TestGroupExecutor_ExistsCheckError_FailsOp(t *testing.T) {
+	exec := newGroupExecutor([]GroupChange{
+		{ID: "GROUP-001", Name: "dso", Operation: "create"},
+	}, &Emitter{})
+	exec.groupExists = func(_ string) (bool, error) {
+		return false, errors.New("NSS lookup failure")
+	}
+	exec.createGroup = noopGroupHook
+
+	tx := newTransaction("plan-001")
+	err := exec.execute(context.Background(), tx)
+
+	if err == nil {
+		t.Fatal("expected error when groupExists returns a non-nil error")
+	}
+	if tx.Operations[0].Status != StatusFailed {
+		t.Errorf("want StatusFailed, got %q", tx.Operations[0].Status)
+	}
+}
+
+// ─── GroupExecutor: Before.Members records actual OS members ─────────────────
+
+func TestGroupExecutor_BeforeSnapshot_RecordsActualMembersNotPlanUsers(t *testing.T) {
+	exec := newGroupExecutor([]GroupChange{
+		{ID: "GROUP-001", Name: "dso", Operation: "add-member", Users: []string{"alice"}},
+	}, &Emitter{})
+	exec.groupExists = func(_ string) (bool, error) { return true, nil }
+	exec.getMembers = func(_ string) ([]string, error) { return []string{"bob"}, nil }
+	exec.addMember = noopMemberHook
+
+	tx := newTransaction("plan-001")
+	_ = exec.execute(context.Background(), tx)
+
+	before, ok := tx.Operations[0].Before.(*GroupSnapshot)
+	if !ok {
+		t.Fatalf("expected *GroupSnapshot Before, got %T", tx.Operations[0].Before)
+	}
+	if len(before.Members) != 1 || before.Members[0] != "bob" {
+		t.Errorf("Before.Members must be the actual OS members [bob], got %v", before.Members)
+	}
+}
+
+// ─── ServiceExecutor: After snapshot re-queries actual state ─────────────────
+
+func TestServiceExecutor_Disable_AfterSnapshotReflectsActualState(t *testing.T) {
+	callCount := 0
+	se := newServiceExecutor([]ServiceChange{
+		{ID: "SVC-001", Name: "dso-agent.service", Operation: "disable"},
+	}, &Emitter{})
+	se.isEnabled = func(_ string) (bool, error) {
+		callCount++
+		if callCount == 1 {
+			return true, nil // before: was enabled
+		}
+		return false, nil // after: now disabled
+	}
+	se.isActive = func(_ string) (bool, error) { return false, nil }
+	se.disable = func(_ context.Context, _ string) error { return nil }
+
+	tx := newTransaction("plan-001")
+	_ = se.execute(context.Background(), tx)
+
+	after, ok := tx.Operations[0].After.(*ServiceSnapshot)
+	if !ok {
+		t.Fatalf("expected *ServiceSnapshot After, got %T", tx.Operations[0].After)
+	}
+	if after.Enabled {
+		t.Error("After.Enabled must be false after disable; old inferred value (op==\"enable\"||enabled) was wrong")
+	}
+}
+
+func TestServiceExecutor_Stop_AfterSnapshotReflectsActualState(t *testing.T) {
+	activeCallCount := 0
+	se := newServiceExecutor([]ServiceChange{
+		{ID: "SVC-001", Name: "dso-agent.service", Operation: "stop"},
+	}, &Emitter{})
+	se.isEnabled = func(_ string) (bool, error) { return false, nil }
+	se.isActive = func(_ string) (bool, error) {
+		activeCallCount++
+		if activeCallCount == 1 {
+			return true, nil // before: active
+		}
+		return false, nil // after: stopped
+	}
+	se.stop = func(_ context.Context, _ string) error { return nil }
+
+	tx := newTransaction("plan-001")
+	_ = se.execute(context.Background(), tx)
+
+	after, ok := tx.Operations[0].After.(*ServiceSnapshot)
+	if !ok {
+		t.Fatalf("expected *ServiceSnapshot After, got %T", tx.Operations[0].After)
+	}
+	if after.Active {
+		t.Error("After.Active must be false after stop; old inferred value (op==\"start\"||active) was wrong")
 	}
 }

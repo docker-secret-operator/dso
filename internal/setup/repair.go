@@ -234,7 +234,7 @@ func (r *Repair) executeAction(ctx context.Context, action *RepairAction) error 
 	case "DSO-DOCTOR-013":
 		return r.runtime.removeStaleLocks()
 	case "DSO-DOCTOR-015":
-		return r.service.writeUnitFile()
+		return r.service.writeUnitFile(ctx)
 	case "DSO-DOCTOR-016":
 		return r.service.enableService(ctx)
 	case "DSO-DOCTOR-017":

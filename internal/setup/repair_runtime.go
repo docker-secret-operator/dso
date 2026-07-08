@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,17 +63,18 @@ func (rr *RepairRuntime) createRuntimeDir() error {
 
 // removeStaleLocks removes all *.lock files from the runtime directory.
 // ErrNotExist is tolerated — a lock removed by another process is not an error.
+// All removal failures are collected and returned together.
 func (rr *RepairRuntime) removeStaleLocks() error {
 	pattern := filepath.Join(rr.runtimeDir, "*.lock")
 	locks, err := rr.glob(pattern)
 	if err != nil {
 		return fmt.Errorf("glob lock files in %s: %w", rr.runtimeDir, err)
 	}
-	var lastErr error
+	var errs []error
 	for _, f := range locks {
 		if err := rr.removeFile(f); err != nil && !os.IsNotExist(err) {
-			lastErr = fmt.Errorf("remove lock file %s: %w", f, err)
+			errs = append(errs, fmt.Errorf("remove lock file %s: %w", f, err))
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }

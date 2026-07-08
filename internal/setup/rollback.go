@@ -21,6 +21,7 @@ type Rollback struct {
 	file       rollbackExec
 	permission rollbackExec
 	service    rollbackExec
+	group      rollbackExec
 }
 
 // newRollback constructs a Rollback wired to the given emitter and real OS hooks.
@@ -31,6 +32,7 @@ func newRollback(emitter *Emitter) *Rollback {
 		file:       newFileRollback(emitter),
 		permission: newPermissionRollback(emitter),
 		service:    newServiceRollback(emitter),
+		group:      newGroupRollback(emitter),
 	}
 }
 
@@ -90,9 +92,9 @@ func (r *Rollback) dispatch(ctx context.Context, op *TxOperation) error {
 		return r.permission.rollback(ctx, op)
 	case strings.HasPrefix(op.Type, "service_"):
 		return r.service.rollback(ctx, op)
+	case strings.HasPrefix(op.Type, "group_"):
+		return r.group.rollback(ctx, op)
 	default:
-		// group_ operations and any unknown types are skipped without error.
-		// Group rollback is deferred to a later phase.
 		return nil
 	}
 }

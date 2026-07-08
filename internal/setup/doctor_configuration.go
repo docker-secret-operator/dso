@@ -107,7 +107,10 @@ func (cc *ConfigurationChecks) checkConfigMode() DoctorCheck {
 	}
 
 	mode := info.Mode().Perm()
-	if mode > 0640 {
+	// Use a bitmask rather than numeric comparison: 0604 < 0640 numerically
+	// but grants world-read (0004). Check for any world bits (0007) or
+	// group-write (0020) — the only allowed group bit is group-read (0040).
+	if mode&0027 != 0 {
 		return warnCheck(id, name, desc,
 			fmt.Sprintf("config mode is %04o — more permissive than recommended 0600", mode),
 			"Overly permissive config may expose secret provider credentials to other users",

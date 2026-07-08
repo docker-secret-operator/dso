@@ -72,9 +72,12 @@ func (e *ServiceExecutor) executeOne(ctx context.Context, op *ServiceChange, tx 
 		return fmt.Errorf("%s: systemctl %s %s: %w", op.ID, op.Operation, op.Name, execErr)
 	}
 
+	// Re-query actual post-operation state so rollback diffs are correct.
+	enabled2, _ := e.isEnabled(op.Name)
+	active2, _ := e.isActive(op.Name)
 	txOp.After = &ServiceSnapshot{
-		Enabled: op.Operation == "enable" || enabled,
-		Active:  op.Operation == "start" || active,
+		Enabled: enabled2,
+		Active:  active2,
 	}
 	markCompleted(txOp)
 	e.emitter.emit(EventOperationCompleted, txOp, nil)

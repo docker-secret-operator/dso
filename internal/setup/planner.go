@@ -249,8 +249,26 @@ func isUpgrade(vr *ValidationResult, configPath string) bool {
 	return false
 }
 
+// containsPath reports whether msg references path as a whole path segment,
+// not merely as a prefix of a longer path. This prevents "/etc/dso/dso.yaml"
+// from falsely matching a message about "/etc/dso/dso.yaml-backup".
 func containsPath(msg, path string) bool {
-	return len(path) > 0 && strings.Contains(msg, path)
+	if len(path) == 0 {
+		return false
+	}
+	idx := strings.Index(msg, path)
+	if idx < 0 {
+		return false
+	}
+	// Ensure the match is not immediately followed by a path-extending character.
+	end := idx + len(path)
+	if end < len(msg) {
+		next := msg[end]
+		if next != ' ' && next != '\t' && next != '\n' && next != '"' && next != '\'' {
+			return false
+		}
+	}
+	return true
 }
 
 // renderConfigYAML produces the DSO configuration content for the given mode

@@ -485,3 +485,19 @@ func TestPlanner_ExistingInstallationProducesModifyOperation(t *testing.T) {
 		t.Errorf("want 'modify' for existing install, got %q", plan.Files[0].Operation)
 	}
 }
+
+// ─── containsPath false-positive regression ───────────────────────────────────
+
+func TestContainsPath_PathSuffixIsNotFalsePositive(t *testing.T) {
+	// "/etc/dso/dso.yaml" is a substring of "/etc/dso/dso.yaml-backup".
+	// containsPath must not match the suffix case.
+	if containsPath("/etc/dso/dso.yaml-backup", "/etc/dso/dso.yaml") {
+		t.Error("containsPath must not match when path appears only as a prefix of a longer segment")
+	}
+}
+
+func TestContainsPath_ExactMatch_ReturnsTrue(t *testing.T) {
+	if !containsPath("config found at /etc/dso/dso.yaml on this system", "/etc/dso/dso.yaml") {
+		t.Error("containsPath must return true for an exact path match in the message")
+	}
+}

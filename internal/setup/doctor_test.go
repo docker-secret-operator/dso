@@ -905,3 +905,15 @@ func truncLen(s string, n int) int {
 func testTime() time.Time {
 	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 }
+
+// ─── DSO-DOCTOR-009 bitmask regression ───────────────────────────────────────
+
+func TestConfigCheck_009_Mode0604_WorldReadable_Warns(t *testing.T) {
+	cc := newConfigurationChecks("/etc/dso/dso.yaml")
+	cc.stat = fakeStatWithMode(0604) // owner-read + world-read; numeric 388 < 416 (0640) but IS permissive
+
+	c := cc.checkConfigMode()
+
+	assertCheckID(t, c, "DSO-DOCTOR-009")
+	assertWarn(t, c) // must warn: 0604 grants world-read, the old `mode > 0640` check silently passes it
+}

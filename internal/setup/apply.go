@@ -77,14 +77,33 @@ func chownPath(path, owner string) error {
 	if err != nil {
 		return fmt.Errorf("lookup user %q: %w", parts[0], err)
 	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid := -1
+	var g *user.Group
 	if len(parts) == 2 && parts[1] != "" {
-		g, err := user.LookupGroup(parts[1])
+		g, err = user.LookupGroup(parts[1])
 		if err != nil {
 			return fmt.Errorf("lookup group %q: %w", parts[1], err)
 		}
-		gid, _ = strconv.Atoi(g.Gid)
+	}
+	uid, gid, err := parseOwnerIDs(u, g)
+	if err != nil {
+		return fmt.Errorf("chown %s: %w", path, err)
 	}
 	return os.Lchown(path, uid, gid)
+}
+
+// parseOwnerIDs converts user.User and optional user.Group to numeric uid/gid.
+// Returns an error if either UID or GID string is not a valid integer.
+func parseOwnerIDs(u *user.User, g *user.Group) (uid, gid int, err error) {
+	uid, err = strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse UID %q: not a valid integer: %w", u.Uid, err)
+	}
+	if g == nil {
+		return uid, -1, nil
+	}
+	gid, err = strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse GID %q: not a valid integer: %w", g.Gid, err)
+	}
+	return uid, gid, nil
 }

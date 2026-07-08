@@ -374,7 +374,7 @@ func TestRepairService_WriteUnitFile_WritesContent(t *testing.T) {
 	}
 	rs.daemonReload = func(_ context.Context) error { return nil }
 
-	if err := rs.writeUnitFile(); err != nil {
+	if err := rs.writeUnitFile(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(string(written), "[Unit]") {
@@ -393,7 +393,7 @@ func TestRepairService_WriteUnitFile_CallsDaemonReload(t *testing.T) {
 		reloadCalled = true
 		return nil
 	}
-	if err := rs.writeUnitFile(); err != nil {
+	if err := rs.writeUnitFile(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !reloadCalled {
@@ -411,7 +411,7 @@ func TestRepairService_WriteUnitFile_WriteError_NoDaemonReload(t *testing.T) {
 		reloadCalled = true
 		return nil
 	}
-	err := rs.writeUnitFile()
+	err := rs.writeUnitFile(context.Background())
 	if err == nil {
 		t.Error("expected error when writeFile fails")
 	}
@@ -424,7 +424,7 @@ func TestRepairService_WriteUnitFile_DaemonReloadError(t *testing.T) {
 	rs := newRepairService()
 	rs.writeFile = func(_ string, _ []byte, _ os.FileMode) error { return nil }
 	rs.daemonReload = func(_ context.Context) error { return errors.New("systemd not running") }
-	if err := rs.writeUnitFile(); err == nil {
+	if err := rs.writeUnitFile(context.Background()); err == nil {
 		t.Error("expected error when daemonReload fails")
 	}
 }
@@ -771,4 +771,38 @@ func failingDoctorCheck(id string) DoctorCheck {
 // warnDoctorCheck creates a DoctorCheck stub with Status=DoctorWarn.
 func warnDoctorCheck(id string) DoctorCheck {
 	return DoctorCheck{ID: id, Status: DoctorWarn, Severity: DoctorMedium}
+}
+
+// ─── writeUnitFile context propagation ───────────────────────────────────────
+
+func TestRepairService_WriteUnitFile_RespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+
+	rs := newRepairService()
+	rs.writeFile = func(_ string, _ []byte, _ os.FileMode) error { return nil }
+	rs.daemonReload = func(ctx context.Context) error { return ctx.Err() }
+
+	if err := rs.writeUnitFile(ctx); err == nil {
+		t.Error("expected error when context is cancelled; writeUnitFile ignores its context parameter")
+	}
+}
+
+// ─── removeStaleLocks collects all errors ────────────────────────────────────
+
+func TestRepairRuntime_RemoveLocks_ReturnsAllErrors(t *testing.T) {
+	rr := newRepairRuntime("/var/run/dso")
+	rr.glob = func(_ string) ([]string, error) {
+		return []string{"/var/run/dso/a.lock", "/var/run/dso/b.lock", "/var/run/dso/c.lock"}, nil
+	}
+	rr.removeFile = func(path string) error { return errors.New("perm denied: " + path) }
+
+	err := rr.removeStaleLocks()
+	if err == nil {
+		t.Fatal("expected error when all lock file removals fail")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "a.lock") || !strings.Contains(errStr, "b.lock") || !strings.Contains(errStr, "c.lock") {
+		t.Errorf("all three lock-file errors must be reported; got: %v", err)
+	}
 }

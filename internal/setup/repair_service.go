@@ -70,12 +70,12 @@ func (rs *RepairService) planForCheck(check DoctorCheck) *RepairAction {
 }
 
 // writeUnitFile writes a default dso-agent systemd unit file and reloads systemd.
-func (rs *RepairService) writeUnitFile() error {
+// The caller's context is propagated to daemonReload so cancellation and deadlines are respected.
+func (rs *RepairService) writeUnitFile(ctx context.Context) error {
 	content := []byte(dsoAgentUnitContent(rs.serviceName))
 	if err := rs.writeFile(rs.unitFilePath, content, 0644); err != nil {
 		return fmt.Errorf("write unit file %s: %w", rs.unitFilePath, err)
 	}
-	ctx := context.Background()
 	if err := rs.daemonReload(ctx); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}

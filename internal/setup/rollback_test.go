@@ -820,16 +820,15 @@ func TestRollback_UnknownOpType_Skipped(t *testing.T) {
 	rb := newRollback(em)
 
 	tx := txWithOps(TxOperation{
-		Sequence: 1, OperID: "GROUP-001", Type: "group_create", Target: "dso",
-		Before: &GroupSnapshot{Existed: false}, After: &GroupSnapshot{Existed: true},
+		Sequence: 1, OperID: "CUSTOM-001", Type: "custom_unknown_type", Target: "resource",
 		Status: StatusCompleted, Reversible: true, StartedAt: time.Now(), EndedAt: time.Now(),
 	})
 
 	result := rb.Execute(context.Background(), tx)
 
-	// Group rollback is deferred; the operation is silently skipped (no failure).
+	// Truly unknown op types are silently skipped (no failure).
 	if len(result.Failed) != 0 {
-		t.Errorf("expected 0 failures for group op (silently skipped), got %d", len(result.Failed))
+		t.Errorf("expected 0 failures for unknown op type (silently skipped), got %d", len(result.Failed))
 	}
 }
 
@@ -857,5 +856,49 @@ func TestEngine_Setup_SuccessfulApply_NoRollback(t *testing.T) {
 	}
 	if result.Rollback != nil {
 		t.Error("RollbackResult must be nil on successful apply")
+	}
+}
+
+// ─── Group rollback ───────────────────────────────────────────────────────────
+
+// mockGroupRollback captures group rollback calls for assertions.
+type mockGroupRollback struct {
+	targets []string
+}
+
+func (m *mockGroupRollback) rollback(_ context.Context, op *TxOperation) error {
+	m.targets = append(m.targets, op.Target)
+	return nil
+}
+
+func TestRollback_GroupCreate_IsRolledBack(t *testing.T) {
+	mock := &mockGroupRollback{}
+	rb := &Rollback{
+		emitter:    &Emitter{},
+		directory:  newDirectoryRollback(&Emitter{}),
+		file:       newFileRollback(&Emitter{}),
+		permission: newPermissionRollback(&Emitter{}),
+		service:    newServiceRollback(&Emitter{}),
+		group:      mock,
+	}
+
+	tx := txWithOps(TxOperation{
+		Sequence:   1,
+		OperID:     "GROUP-001",
+		Type:       "group_create",
+		Target:     "dso",
+		Status:     StatusCompleted,
+		Reversible: true,
+		Before:     &GroupSnapshot{Existed: false},
+		After:      &GroupSnapshot{Existed: true},
+	})
+
+	result := rb.Execute(context.Background(), tx)
+
+	if len(result.Failed) > 0 {
+		t.Fatalf("expected no rollback failures, got: %v", result.Failed)
+	}
+	if len(mock.targets) != 1 || mock.targets[0] != "dso" {
+		t.Errorf("expected group 'dso' to be dispatched to group rollback handler, got: %v", mock.targets)
 	}
 }

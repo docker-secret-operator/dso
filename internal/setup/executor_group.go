@@ -3,8 +3,10 @@ package setup
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
+	"strings"
 )
 
 // GroupExecutor creates Unix groups and manages memberships as declared in the InstallPlan.
@@ -14,6 +16,7 @@ type GroupExecutor struct {
 	emitter *Emitter
 	// Injectable OS hooks — defaults call real system commands.
 	groupExists func(name string) (bool, error)
+	getMembers  func(name string) ([]string, error)
 	createGroup func(name string) error
 	addMember   func(group, username string) error
 }
@@ -23,6 +26,7 @@ func newGroupExecutor(ops []GroupChange, emitter *Emitter) *GroupExecutor {
 		ops:         ops,
 		emitter:     emitter,
 		groupExists: groupExistsOS,
+		getMembers:  getGroupMembersOS,
 		createGroup: groupAddOS,
 		addMember:   groupAddMemberOS,
 	}
@@ -42,8 +46,17 @@ func (e *GroupExecutor) executeOne(_ context.Context, op *GroupChange, tx *Trans
 	markRunning(txOp)
 	e.emitter.emit(EventOperationStarted, txOp, nil)
 
-	existed, _ := e.groupExists(op.Name)
-	txOp.Before = &GroupSnapshot{Existed: existed, Members: op.Users}
+	existed, err := e.groupExists(op.Name)
+	if err != nil {
+		markFailed(txOp, err)
+		e.emitter.emit(EventOperationFailed, txOp, err)
+		return fmt.Errorf("%s: group exists check %s: %w", op.ID, op.Name, err)
+	}
+	var currentMembers []string
+	if existed {
+		currentMembers, _ = e.getMembers(op.Name)
+	}
+	txOp.Before = &GroupSnapshot{Existed: existed, Members: currentMembers}
 
 	var execErr error
 	switch op.Operation {
@@ -76,9 +89,39 @@ func (e *GroupExecutor) executeOne(_ context.Context, op *GroupChange, tx *Trans
 
 // ─── Real OS helpers ──────────────────────────────────────────────────────────
 
+// groupExistsOS returns (true, nil) when the group exists, (false, nil) when it
+// doesn't, and (false, err) for any real lookup error (e.g. NSS misconfiguration).
 func groupExistsOS(name string) (bool, error) {
 	_, err := user.LookupGroup(name)
-	return err == nil, nil
+	if err == nil {
+		return true, nil
+	}
+	if _, ok := err.(user.UnknownGroupError); ok {
+		return false, nil
+	}
+	return false, err
+}
+
+// getGroupMembersOS reads the current members of a Unix group from /etc/group.
+func getGroupMembersOS(name string) ([]string, error) {
+	content, err := os.ReadFile("/etc/group")
+	if err != nil {
+		return nil, fmt.Errorf("read /etc/group: %w", err)
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		parts := strings.Split(line, ":")
+		if len(parts) < 4 || parts[0] != name {
+			continue
+		}
+		var members []string
+		for _, m := range strings.Split(parts[3], ",") {
+			if m != "" {
+				members = append(members, m)
+			}
+		}
+		return members, nil
+	}
+	return nil, nil
 }
 
 func groupAddOS(name string) error {
