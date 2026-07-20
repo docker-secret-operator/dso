@@ -22,10 +22,14 @@ type ContainerListener struct {
 	cancel     context.CancelFunc
 	lastLabels map[string]map[string]string // containerID -> labels snapshot
 	mu         sync.RWMutex                  // Protect lastLabels
+	wg         sync.WaitGroup                // Track watchEvents goroutine completion
 }
 
 // NewContainerListener creates a new ContainerListener with the given Docker client
 func NewContainerListener(dockerClient *client.Client) *ContainerListener {
+	if dockerClient == nil {
+		panic("docker client cannot be nil")
+	}
 	return &ContainerListener{
 		client:     dockerClient,
 		eventsChan: make(chan *ContainerLabelEvent, 10),
@@ -51,6 +55,7 @@ func (cl *ContainerListener) Start(ctx context.Context) error {
 	}
 
 	// Start the event watching goroutine
+	cl.wg.Add(1)
 	go cl.watchEvents()
 
 	return nil
@@ -69,9 +74,8 @@ func (cl *ContainerListener) Stop() error {
 		// Timeout, move on
 	}
 
-	// Close the events channel after a brief delay to allow final events to be sent
-	time.Sleep(100 * time.Millisecond)
-	close(cl.eventsChan)
+	// Wait for watchEvents goroutine to exit (it will close eventsChan)
+	cl.wg.Wait()
 
 	return nil
 }
@@ -158,6 +162,9 @@ func (cl *ContainerListener) initializeContainers() error {
 
 // watchEvents is the main event watching loop
 func (cl *ContainerListener) watchEvents() {
+	defer cl.wg.Done()
+	defer close(cl.eventsChan)
+
 	// Set up event filters for container events
 	filter := filters.NewArgs()
 	filter.Add("type", "container")
@@ -172,11 +179,16 @@ func (cl *ContainerListener) watchEvents() {
 			return
 		case event := <-eventChan:
 			cl.handleEvent(event)
-		case err := <-errChan:
-			if err != nil {
-				// Log error but continue watching
-				// In production, would log this properly
-				continue
+		case err, ok := <-errChan:
+			if !ok {
+				// Channel closed, time to exit
+				return
+			}
+			if err != nil && err != context.Canceled {
+				// Docker event stream error - log and exit gracefully
+				// In production, would use proper logging here
+				// For now, return to cleanly exit the watch loop
+				return
 			}
 		}
 	}
