@@ -59,7 +59,7 @@ jobs:
         # (those tests run 90s–3m each and would exceed the runner timeout).
         # Run them explicitly in a dedicated stability job instead.
         run: |
-          go test -short -count=1 -timeout 300s ./...
+          go test -race -short -count=1 -timeout 300s ./...
           echo "✅ Tests passed"
 
   # ── Stability Tests (long-running, separate job with extended timeout) ────
@@ -82,7 +82,7 @@ jobs:
         # These are long-running resource tests (90s–3m each, ~13m total).
         # Run them WITHOUT -short so they execute at full duration.
         run: |
-          go test -v -count=1 -timeout 900s \
+          go test -race -v -count=1 -timeout 900s \
             -run 'TestMemoryStabilityUnderSustainedLoad|TestGoroutineStabilityUnderChurn|TestQueueStabilityUnderSaturation|TestProviderRestartStability|TestReconnectStormStability|TestCombinedOperationalLoad' \
             ./internal/testing/
           echo "✅ Stability tests passed"
