@@ -284,3 +284,225 @@ func TestRedaction_EdgeCases(t *testing.T) {
 		t.Errorf("Case-insensitive redaction failed: %s", result)
 	}
 }
+
+// TestRedactString verifies secrets are redacted from arbitrary strings
+func TestRedactString(t *testing.T) {
+	rp := NewRedactionPatterns()
+
+	tests := []struct {
+		name      string
+		input     string
+		shouldNotContain string
+	}{
+		{
+			name:                "generic_api_key",
+			input:               "api_key=super_secret_key_12345",
+			shouldNotContain:    "super_secret_key_12345",
+		},
+		{
+			name:                "vault_token",
+			input:               "vault_token: s.xxxxxxxxxxxxxxxx",
+			shouldNotContain:    "s.xxxxxxxxxxxxxxxx",
+		},
+		{
+			name:                "postgres_url_password",
+			input:               "postgresql://user:MySecureP@ssw0rd@localhost:5432/mydb",
+			shouldNotContain:    "MySecureP@ssw0rd",
+		},
+		{
+			name:                "aws_access_key",
+			input:               "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+			shouldNotContain:    "AKIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:                "bearer_token",
+			input:               "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+			shouldNotContain:    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+		},
+		{
+			name:                "docker_password",
+			input:               `{"auth": "dXNlcm5hbWU6cGFzc3dvcmQ="}`,
+			shouldNotContain:    "dXNlcm5hbWU6cGFzc3dvcmQ=",
+		},
+		{
+			name:                "database_password",
+			input:               "password=MyDatabasePassword123!",
+			shouldNotContain:    "MyDatabasePassword123!",
+		},
+		{
+			name:                "sk_style_api_key",
+			input:               "sk-abcd1234efgh5678ijkl9012",
+			shouldNotContain:    "sk-abcd1234efgh5678ijkl9012",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := rp.RedactString(test.input)
+
+			// Verify secret is NOT in output
+			if strings.Contains(result, test.shouldNotContain) {
+				t.Errorf("Secret leaked in output. Input: %s, Output: %s", test.input, result)
+			}
+
+			// Verify [REDACTED] IS in output
+			if !strings.Contains(result, "[REDACTED]") {
+				t.Errorf("Expected [REDACTED] in output, got: %s", result)
+			}
+		})
+	}
+}
+
+// TestRedactError verifies secrets are redacted from error messages
+func TestRedactError(t *testing.T) {
+	rp := NewRedactionPatterns()
+
+	tests := []struct {
+		name               string
+		errMsg             string
+		shouldNotContain   string
+	}{
+		{
+			name:              "secret_in_error",
+			errMsg:            "connection failed with secret: my_super_secret_value_xyz",
+			shouldNotContain:  "my_super_secret_value_xyz",
+		},
+		{
+			name:              "password_in_error",
+			errMsg:            "authentication failed: password=MySecretPassword123",
+			shouldNotContain:  "MySecretPassword123",
+		},
+		{
+			name:              "api_key_in_error",
+			errMsg:            "API request failed with key sk-1234567890abcdefghij",
+			shouldNotContain:  "sk-1234567890abcdefghij",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := errMsg(test.errMsg)
+			redacted := rp.RedactError(err)
+
+			// Secrets don't leak even in errors
+			if strings.Contains(redacted, test.shouldNotContain) {
+				t.Errorf("Secret leaked in error redaction. Input: %s, Output: %s", test.errMsg, redacted)
+			}
+
+			// Verify redaction occurred
+			if !strings.Contains(redacted, "[REDACTED]") {
+				t.Errorf("Expected [REDACTED] in error redaction, got: %s", redacted)
+			}
+		})
+	}
+
+	// Test nil error
+	result := rp.RedactError(nil)
+	if result != "" {
+		t.Errorf("RedactError(nil) should return empty string, got: %s", result)
+	}
+}
+
+// TestShouldLogField verifies sensitive field detection
+func TestShouldLogField(t *testing.T) {
+	tests := []struct {
+		name       string
+		fieldName  string
+		shouldLog  bool
+	}{
+		// Sensitive fields that should NOT be logged
+		{name: "password", fieldName: "password", shouldLog: false},
+		{name: "api_key", fieldName: "api_key", shouldLog: false},
+		{name: "apikey", fieldName: "apikey", shouldLog: false},
+		{name: "secret", fieldName: "secret", shouldLog: false},
+		{name: "token", fieldName: "token", shouldLog: false},
+		{name: "vault_token", fieldName: "vault_token", shouldLog: false},
+		{name: "aws_access_key", fieldName: "aws_access_key", shouldLog: false},
+		{name: "azure_client_secret", fieldName: "azure_client_secret", shouldLog: false},
+		{name: "private_key", fieldName: "private_key", shouldLog: false},
+		{name: "jwt", fieldName: "jwt", shouldLog: false},
+		{name: "authorization", fieldName: "authorization", shouldLog: false},
+		{name: "credential", fieldName: "credential", shouldLog: false},
+		{name: "passwd", fieldName: "passwd", shouldLog: false},
+
+		// Safe fields that SHOULD be logged
+		{name: "username", fieldName: "username", shouldLog: true},
+		{name: "container_id", fieldName: "container_id", shouldLog: true},
+		{name: "status", fieldName: "status", shouldLog: true},
+		{name: "error_code", fieldName: "error_code", shouldLog: true},
+		{name: "hostname", fieldName: "hostname", shouldLog: true},
+		{name: "port", fieldName: "port", shouldLog: true},
+		{name: "version", fieldName: "version", shouldLog: true},
+		{name: "image_name", fieldName: "image_name", shouldLog: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := ShouldLogField(test.fieldName)
+			if result != test.shouldLog {
+				t.Errorf("ShouldLogField(%q) = %v, want %v", test.fieldName, result, test.shouldLog)
+			}
+		})
+	}
+}
+
+// TestRedactStructFields verifies struct field redaction
+func TestRedactStructFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         map[string]interface{}
+		checkFields   map[string]interface{}
+	}{
+		{
+			name: "mixed_sensitivity",
+			input: map[string]interface{}{
+				"container_id":  "abc123",
+				"password":      "SecretPassword",
+				"status":        "running",
+				"api_key":       "sk-xyz789",
+				"hostname":      "localhost",
+				"secret":        "my_secret_value",
+				"port":          8080,
+				"vault_token":   "s.xxxxx",
+			},
+			checkFields: map[string]interface{}{
+				"container_id":  "abc123",         // Should be preserved
+				"password":      "[REDACTED]",     // Should be redacted
+				"status":        "running",        // Should be preserved
+				"api_key":       "[REDACTED]",     // Should be redacted
+				"hostname":      "localhost",      // Should be preserved
+				"secret":        "[REDACTED]",     // Should be redacted
+				"port":          8080,             // Should be preserved
+				"vault_token":   "[REDACTED]",     // Should be redacted
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := RedactStructFields(test.input)
+
+			// Verify sensitive fields are redacted
+			for key, expectedValue := range test.checkFields {
+				actualValue := result[key]
+				if actualValue != expectedValue {
+					t.Errorf("Field %q: expected %v, got %v", key, expectedValue, actualValue)
+				}
+			}
+		})
+	}
+}
+
+// errMsg creates an error with the given message
+func errMsg(msg string) error {
+	return errors.New(msg)
+}
+
+// errWithMsg is a simple error implementation for testing
+type errWithMsg struct {
+	message string
+}
+
+func (e *errWithMsg) Error() string {
+	return e.message
+}
