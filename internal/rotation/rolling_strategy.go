@@ -161,43 +161,39 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			zap.String("original_name", originalName),
 			zap.Error(err))
 
-		// CRITICAL FIX: Verify current state before recovery
-		// The rename might have partially succeeded
+		// Check if rename actually succeeded despite error (race condition detection)
+		// Explicit state verification before recovery path
 		newInspect, inspectErr := rs.cli.ContainerInspect(ctx, newContainerID)
 		if inspectErr == nil && newInspect.Name != "" {
-			// Container still exists - check its current name
 			currentName := strings.TrimPrefix(newInspect.Name, "/")
 			if currentName == originalName {
-				// Rename actually succeeded! Continue normally
-				rs.logger.Info("Rename verification: new container successfully renamed (race condition)")
-				// Fall through to success path
-			} else {
-				// Rename failed and new container is stuck with temp name
-				// Try to restore the original container to its original name
-				if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
-					rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
-						zap.String("container_id", containerID),
-						zap.String("original_name", originalName),
-						zap.Error(err))
-					return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
-				}
-				// Restore succeeded, remove the new container
-				_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-				_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-				return fmt.Errorf("failed to finalize swap: %w", err)
-			}
-		} else {
-			// Container disappeared - assume partial failure, try restore
-			if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
-				rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
-					zap.String("container_id", containerID),
-					zap.String("original_name", originalName),
-					zap.Error(err))
-				return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
+				// Rename succeeded despite error - skip recovery and proceed to verification
+				rs.logger.Info("Rename succeeded despite API error (race condition detected)",
+					zap.String("new_container_id", newContainerID),
+					zap.String("original_name", originalName))
+				goto verifySwap
 			}
 		}
+		// If we reach here, rename actually failed - restore original container
+		rs.logger.Info("Rename failed, restoring original container to original name",
+			zap.String("container_id", containerID),
+			zap.String("original_name", originalName))
+
+		if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
+			rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
+				zap.String("container_id", containerID),
+				zap.String("original_name", originalName),
+				zap.Error(err))
+			return fmt.Errorf("FATAL: State corruption - could not complete atomic swap: %w", err)
+		}
+
+		// Restore succeeded, cleanup the new container
+		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
+		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		return fmt.Errorf("failed to finalize swap: %w", err)
 	}
 
+verifySwap:
 	// VERIFICATION: Ensure atomic swap actually completed
 	// This is critical for detecting partial swap failures due to daemon crashes
 	if err := rs.verifyAtomicSwap(ctx, containerID, newContainerID,
