@@ -13,23 +13,34 @@ import (
 
 // RollingStrategy coordinates the zero-downtime rotation lifecycle with atomic guarantees
 type RollingStrategy struct {
-	cli    *client.Client
-	logger *zap.Logger
+	cli           *client.Client
+	logger        *zap.Logger
+	renameTimeout time.Duration
 }
 
 func NewRollingStrategy(cli *client.Client) *RollingStrategy {
 	return &RollingStrategy{
-		cli:    cli,
-		logger: zap.NewNop(),
+		cli:           cli,
+		logger:        zap.NewNop(),
+		renameTimeout: 30 * time.Second,
 	}
 }
 
 // NewRollingStrategyWithLogger creates a RollingStrategy with custom logger
 func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *RollingStrategy {
 	return &RollingStrategy{
-		cli:    cli,
-		logger: logger,
+		cli:           cli,
+		logger:        logger,
+		renameTimeout: 30 * time.Second,
 	}
+}
+
+// renameWithTimeout executes a container rename with a timeout to prevent indefinite hangs
+func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, newName string) error {
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), rs.renameTimeout)
+	defer cancel()
+
+	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)
 }
 
 // Execute performs an atomic blue/green swap on a single container.
@@ -126,7 +137,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("original_id", containerID),
 		zap.String("backup_name", backupName))
 
-	if err := rs.cli.ContainerRename(ctx, containerID, backupName); err != nil {
+	if err := rs.renameWithTimeout(ctx, containerID, backupName); err != nil {
 		rs.logger.Error("FATAL: Failed to rename original to backup. Cannot proceed with swap.",
 			zap.String("original_id", containerID),
 			zap.String("backup_name", backupName),
@@ -144,7 +155,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("new_container_id", newContainerID),
 		zap.String("original_name", originalName))
 
-	if err := rs.cli.ContainerRename(ctx, newContainerID, originalName); err != nil {
+	if err := rs.renameWithTimeout(ctx, newContainerID, originalName); err != nil {
 		rs.logger.Error("FATAL: Failed to rename new to original. Attempting recovery.",
 			zap.String("new_container_id", newContainerID),
 			zap.String("original_name", originalName),
@@ -163,7 +174,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			} else {
 				// Rename failed and new container is stuck with temp name
 				// Try to restore the original container to its original name
-				if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+				if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
 					rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
 						zap.String("container_id", containerID),
 						zap.String("original_name", originalName),
@@ -177,7 +188,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			}
 		} else {
 			// Container disappeared - assume partial failure, try restore
-			if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+			if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
 				rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
 					zap.String("container_id", containerID),
 					zap.String("original_name", originalName),
@@ -198,7 +209,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 
 		// Attempt to restore to consistent state
 		// Try to rename containers back if swap failed
-		if err := rs.cli.ContainerRename(ctx, containerID, originalName); err != nil {
+		if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
 			rs.logger.Error("FATAL: Could not restore original name. State is corrupted.",
 				zap.String("container_id", containerID),
 				zap.Error(err))
