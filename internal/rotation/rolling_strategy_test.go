@@ -263,3 +263,103 @@ func TestRollingStrategy_RenameTimeout(t *testing.T) {
 		t.Error("Expected error due to caller's deadline, got nil")
 	}
 }
+
+func TestRollingStrategy_Execute_ContextCancellation(t *testing.T) {
+	inspectResp := getBaseInspect()
+
+	createResp := container.CreateResponse{
+		ID: "new-container-id",
+	}
+	bCreate, _ := json.Marshal(createResp)
+
+	// Track container names and rename timing
+	containerNames := map[string]string{
+		"cid":              "my-container",
+		"new-container-id": "my-container",
+	}
+	renameAttempts := 0
+	healthCheckCount := 0
+
+	httpClient := &http.Client{
+		Transport: &mockTransport{
+			reqFunc: func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
+					resp := inspectResp
+					resp.Name = "/" + containerNames["cid"]
+					bResp, _ := json.Marshal(resp)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/rename":
+					renameAttempts++
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["cid"] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
+					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/start":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
+					healthCheckCount++
+					healthyInspect := inspectResp
+					healthyInspect.Name = "/" + containerNames["new-container-id"]
+					healthyInspect.State.Health = &container.Health{Status: "healthy"}
+					bHealthy, _ := json.Marshal(healthyInspect)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/rename":
+					renameAttempts++
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["new-container-id"] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/stop":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/cid":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				default:
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				}
+			},
+		},
+	}
+
+	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
+	rs := NewRollingStrategy(cli)
+
+	// Create a context with a deadline that expires during the atomic swap
+	// The health check will pass (it's before the swap), but the context will be
+	// cancelled during the rename operations. Since swapCtx is independent,
+	// renames should still complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Execute rotation - this will succeed despite context cancellation
+	// because swapCtx (context.Background()) is used for rename operations
+	err := rs.Execute(ctx, "cid", map[string]string{"SECRET": "val"}, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Execute failed unexpectedly: %v", err)
+	}
+
+	// Verify that renames completed despite the caller's context being cancelled
+	// We expect 2 rename calls: one for original->backup, one for new->original
+	if renameAttempts < 2 {
+		t.Errorf("Expected at least 2 rename attempts (atomic swap), got %d", renameAttempts)
+	}
+
+	// Verify final state: original container should have the backup name,
+	// new container should have the original name
+	expectedBackupPrefix := "my-container_dso_backup_"
+	if !strings.HasPrefix(containerNames["cid"], expectedBackupPrefix) {
+		t.Errorf("Expected original container to have backup name (prefix: %s), got: %s",
+			expectedBackupPrefix, containerNames["cid"])
+	}
+
+	if containerNames["new-container-id"] != "my-container" {
+		t.Errorf("Expected new container to have original name (my-container), got: %s",
+			containerNames["new-container-id"])
+	}
+}

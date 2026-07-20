@@ -130,14 +130,18 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 
 	// ATOMIC SWAP POINT: All previous steps are reversible. After this point,
-	// we're committed to the new container becoming the active one.
+	// we use a non-cancellable context to ensure critical state transitions complete
+	// even if the overall context is cancelled. The caller's context cancellation is
+	// only respected before this point.
+
+	swapCtx := context.Background()
 
 	// Step 6: Rename original container to backup
 	rs.logger.Info("Renaming original container to backup",
 		zap.String("original_id", containerID),
 		zap.String("backup_name", backupName))
 
-	if err := rs.renameWithTimeout(ctx, containerID, backupName); err != nil {
+	if err := rs.renameWithTimeout(swapCtx, containerID, backupName); err != nil {
 		rs.logger.Error("FATAL: Failed to rename original to backup. Cannot proceed with swap.",
 			zap.String("original_id", containerID),
 			zap.String("backup_name", backupName),
@@ -155,7 +159,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("new_container_id", newContainerID),
 		zap.String("original_name", originalName))
 
-	if err := rs.renameWithTimeout(ctx, newContainerID, originalName); err != nil {
+	if err := rs.renameWithTimeout(swapCtx, newContainerID, originalName); err != nil {
 		rs.logger.Error("FATAL: Failed to rename new to original. Attempting recovery.",
 			zap.String("new_container_id", newContainerID),
 			zap.String("original_name", originalName),
@@ -179,7 +183,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			zap.String("container_id", containerID),
 			zap.String("original_name", originalName))
 
-		if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
+		if err := rs.renameWithTimeout(swapCtx, containerID, originalName); err != nil {
 			rs.logger.Error("FATAL: Could not restore original container. State is corrupted.",
 				zap.String("container_id", containerID),
 				zap.String("original_name", originalName),
@@ -205,7 +209,7 @@ verifySwap:
 
 		// Attempt to restore to consistent state
 		// Try to rename containers back if swap failed
-		if err := rs.renameWithTimeout(ctx, containerID, originalName); err != nil {
+		if err := rs.renameWithTimeout(swapCtx, containerID, originalName); err != nil {
 			rs.logger.Error("FATAL: Could not restore original name. State is corrupted.",
 				zap.String("container_id", containerID),
 				zap.Error(err))
