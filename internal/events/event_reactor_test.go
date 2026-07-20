@@ -16,7 +16,7 @@ func TestEventReactorImpl_ProcessSecretEvent_Enqueue(t *testing.T) {
 		return nil
 	})
 
-	event := &SecretChangeEvent{
+	event := SecretChangeEvent{
 		SecretName: "my-secret",
 		Version:    "v2",
 		Severity:   SeverityNormal,
@@ -50,7 +50,7 @@ func TestEventReactorImpl_Deduplication_1sWindow(t *testing.T) {
 	defer reactor.Stop(context.Background())
 
 	// Send same secret twice within 1s
-	event := &SecretChangeEvent{
+	event := SecretChangeEvent{
 		SecretName: "my-secret",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -92,17 +92,17 @@ func TestEventReactorImpl_PriorityOrdering(t *testing.T) {
 	defer reactor.Stop(context.Background())
 
 	// Enqueue in order: Low, High, Critical
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "low",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "high",
 		Severity:   SeverityHigh,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "critical",
 		Severity:   SeverityCritical,
 		Timestamp:  time.Now(),
@@ -150,7 +150,7 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 
 	// Enqueue 7 events at time 0
 	for i := 1; i <= 7; i++ {
-		err := reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+		err := reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 			SecretName: fmt.Sprintf("secret-%d", i),
 			Severity:   SeverityNormal,
 			Timestamp:  time.Now(),
@@ -190,7 +190,7 @@ func TestEventReactorImpl_ProcessContainerEvent(t *testing.T) {
 	defer reactor.Stop(context.Background())
 
 	// Container event with secret labels
-	event := &ContainerLabelEvent{
+	event := ContainerLabelEvent{
 		ContainerID: "abc123",
 		Labels: map[string]string{
 			"secret":    "my-secret",
@@ -230,7 +230,7 @@ func TestEventReactorImpl_IsHealthy(t *testing.T) {
 	}
 
 	// Process event
-	err := reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	err := reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "test",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -266,7 +266,7 @@ func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				err := reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+				err := reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 					SecretName: fmt.Sprintf("secret-%d", id%10),
 					Severity:   SeverityNormal,
 					Timestamp:  time.Now(),
@@ -306,17 +306,17 @@ func TestEventReactorImpl_CallbackError_Continues(t *testing.T) {
 	defer reactor.Stop(context.Background())
 
 	// Queue events, one will fail
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "ok-1",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "fail-secret",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "ok-2",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -350,7 +350,7 @@ func TestEventReactorImpl_MultipleStartCalls(t *testing.T) {
 		t.Fatalf("Start failed: %v, %v", err1, err2)
 	}
 
-	err := reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+	err := reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "test",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -382,7 +382,7 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 	reactor.Start(ctx)
 	defer reactor.Stop(context.Background())
 
-	event := &SecretChangeEvent{
+	event := SecretChangeEvent{
 		SecretName: "my-secret",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -422,8 +422,8 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 	}
 }
 
-// TestEventReactorImpl_NilEvent tests error handling for nil events
-func TestEventReactorImpl_NilEvent(t *testing.T) {
+// TestEventReactorImpl_EmptyEvent tests handling of empty/zero-value events
+func TestEventReactorImpl_EmptyEvent(t *testing.T) {
 	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
 		return nil
 	})
@@ -433,16 +433,19 @@ func TestEventReactorImpl_NilEvent(t *testing.T) {
 	reactor.Start(ctx)
 	defer reactor.Stop(context.Background())
 
-	// Process nil event
-	err := reactor.ProcessSecretEvent(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error for nil event, got nil")
+	// Process empty event (zero values are valid for value types)
+	emptySecretEvent := SecretChangeEvent{}
+	err := reactor.ProcessSecretEvent(context.Background(), emptySecretEvent)
+	// Empty events are allowed and will be deduplicated (empty string secret name)
+	if err != nil {
+		t.Logf("processing empty secret event returned: %v", err)
 	}
 
-	// Process nil container event
-	err = reactor.ProcessContainerEvent(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error for nil container event, got nil")
+	// Process empty container event
+	emptyContainerEvent := ContainerLabelEvent{}
+	err = reactor.ProcessContainerEvent(context.Background(), emptyContainerEvent)
+	if err != nil {
+		t.Logf("processing empty container event returned: %v", err)
 	}
 }
 
@@ -465,7 +468,7 @@ func TestEventReactorImpl_QueueMaxBatch(t *testing.T) {
 
 	// Enqueue 12 events
 	for i := 1; i <= 12; i++ {
-		reactor.ProcessSecretEvent(context.Background(), &SecretChangeEvent{
+		reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 			SecretName: fmt.Sprintf("secret-%d", i),
 			Severity:   SeverityNormal,
 			Timestamp:  time.Now(),

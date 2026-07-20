@@ -46,6 +46,9 @@ type EventReactorImpl struct {
 	logger *zap.Logger
 }
 
+// Verify that EventReactorImpl implements the EventReactor interface
+var _ EventReactor = (*EventReactorImpl)(nil)
+
 // PriorityQueue is a min-heap based priority queue for events
 // Higher priority values are processed first, with FIFO ordering within same priority
 type PriorityQueue []*QueuedEvent
@@ -105,11 +108,7 @@ func NewEventReactorImpl(rotationTrigger RotationTrigger) *EventReactorImpl {
 }
 
 // ProcessSecretEvent processes a secret change event
-func (r *EventReactorImpl) ProcessSecretEvent(ctx context.Context, event *SecretChangeEvent) error {
-	if event == nil {
-		return fmt.Errorf("event cannot be nil")
-	}
-
+func (r *EventReactorImpl) ProcessSecretEvent(ctx context.Context, event SecretChangeEvent) error {
 	// Check for deduplication
 	if !r.deduplicateSecret(event.SecretName) {
 		return nil // Deduplicated, skip processing
@@ -120,7 +119,7 @@ func (r *EventReactorImpl) ProcessSecretEvent(ctx context.Context, event *Secret
 
 	// Enqueue the event
 	r.enqueueEvent(&QueuedEvent{
-		Event:      event,
+		Event:      &event,
 		Priority:   priority,
 		EnqueuedAt: time.Now(),
 	})
@@ -129,11 +128,7 @@ func (r *EventReactorImpl) ProcessSecretEvent(ctx context.Context, event *Secret
 }
 
 // ProcessContainerEvent processes a container label event
-func (r *EventReactorImpl) ProcessContainerEvent(ctx context.Context, event *ContainerLabelEvent) error {
-	if event == nil {
-		return fmt.Errorf("event cannot be nil")
-	}
-
+func (r *EventReactorImpl) ProcessContainerEvent(ctx context.Context, event ContainerLabelEvent) error {
 	// Extract secret name from labels (look for "secret" label)
 	if secretName, ok := event.Labels["secret"]; ok && secretName != "" {
 		// Create a SecretChangeEvent from the container event
@@ -141,7 +136,7 @@ func (r *EventReactorImpl) ProcessContainerEvent(ctx context.Context, event *Con
 		if len(version) > 12 {
 			version = version[:12]
 		}
-		secretEvent := &SecretChangeEvent{
+		secretEvent := SecretChangeEvent{
 			SecretName: secretName,
 			Version:    version,
 			Source:     SourceDockerLabel,
@@ -160,7 +155,7 @@ func (r *EventReactorImpl) ProcessContainerEvent(ctx context.Context, event *Con
 
 		// Enqueue with normal priority
 		r.enqueueEvent(&QueuedEvent{
-			Event:      secretEvent,
+			Event:      &secretEvent,
 			Priority:   PriorityNormal,
 			EnqueuedAt: time.Now(),
 		})
