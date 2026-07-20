@@ -37,7 +37,7 @@ func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *Rolli
 
 // renameWithTimeout executes a container rename with a timeout to prevent indefinite hangs
 func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, newName string) error {
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), rs.renameTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, rs.renameTimeout)
 	defer cancel()
 
 	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)

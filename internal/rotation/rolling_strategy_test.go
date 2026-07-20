@@ -178,56 +178,11 @@ func TestRollingStrategy_Execute_HealthTimeout(t *testing.T) {
 }
 
 func TestRollingStrategy_RenameTimeout(t *testing.T) {
-	inspectResp := getBaseInspect()
-
-	createResp := container.CreateResponse{
-		ID: "new-container-id",
-	}
-	bCreate, _ := json.Marshal(createResp)
-
-	// Track container names for verification after rename
-	containerNames := map[string]string{
-		"cid":              "my-container",
-		"new-container-id": "my-container",
-	}
-
-	renameAttempts := 0
-	renameBlocked := false
-
+	// Test 1: Verify default timeout is 30 seconds
 	httpClient := &http.Client{
 		Transport: &mockTransport{
 			reqFunc: func(req *http.Request) (*http.Response, error) {
-				switch {
-				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
-					resp := inspectResp
-					resp.Name = "/" + containerNames["cid"]
-					bResp, _ := json.Marshal(resp)
-					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
-				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
-					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
-				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/start":
-					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
-				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
-					healthyInspect := inspectResp
-					healthyInspect.Name = "/" + containerNames["new-container-id"]
-					healthyInspect.State.Health = &container.Health{Status: "healthy"}
-					bHealthy, _ := json.Marshal(healthyInspect)
-					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
-				case req.Method == "POST" && strings.Contains(req.URL.Path, "/rename"):
-					// Block rename to simulate timeout
-					renameAttempts++
-					if renameBlocked {
-						// Simulate timeout by not responding
-						<-time.After(5 * time.Second)
-					}
-					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
-				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/stop":
-					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
-				case req.Method == "DELETE":
-					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
-				default:
-					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
-				}
+				return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 			},
 		},
 	}
@@ -235,16 +190,76 @@ func TestRollingStrategy_RenameTimeout(t *testing.T) {
 	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
 	rs := NewRollingStrategy(cli)
 
-	// Verify default rename timeout is set to 30 seconds
 	if rs.renameTimeout != 30*time.Second {
 		t.Errorf("Expected default renameTimeout to be 30 seconds, got %v", rs.renameTimeout)
 	}
 
-	// Verify that renameWithTimeout correctly creates a timeout context
-	// by attempting a rename (should succeed since we're not blocking)
-	testCtx := context.Background()
-	err := rs.renameWithTimeout(testCtx, "test-id", "test-name")
-	if err != nil {
-		t.Logf("renameWithTimeout returned an error (expected for test scenario): %v", err)
+	// Test 2: Verify timeout is actually enforced by checking context composition
+	// Create a custom transport that respects context cancellation
+	blockingTransport := &mockTransport{
+		reqFunc: func(req *http.Request) (*http.Response, error) {
+			// For rename requests, block and check context
+			if req.Method == "POST" && strings.Contains(req.URL.Path, "/rename") {
+				// Use a channel to simulate blocking operation
+				done := make(chan struct{})
+				go func() {
+					time.Sleep(2 * time.Second)
+					close(done)
+				}()
+
+				// Wait for either operation to complete or context to be cancelled
+				select {
+				case <-done:
+					// Operation completed (this shouldn't happen with timeout)
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case <-req.Context().Done():
+					// Context was cancelled (timeout occurred)
+					return nil, req.Context().Err()
+				}
+			}
+			return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+		},
+	}
+
+	blockingCli, _ := client.NewClientWithOpts(
+		client.WithVersion("1.41"),
+		client.WithHost("tcp://127.0.0.1:2375"),
+		client.WithHTTPClient(&http.Client{Transport: blockingTransport}),
+	)
+	rsWithTimeout := NewRollingStrategy(blockingCli)
+
+	// Override the timeout to 1 second for testing
+	rsWithTimeout.renameTimeout = 1 * time.Second
+
+	// Measure elapsed time and verify timeout occurs before blocking completes
+	start := time.Now()
+	err := rsWithTimeout.renameWithTimeout(context.Background(), "test-id", "test-name")
+	elapsed := time.Since(start)
+
+	// Should timeout after ~1 second, not wait 2 seconds
+	if elapsed >= 2*time.Second {
+		t.Errorf("Expected timeout after ~1 second, but took %v - timeout not enforced", elapsed)
+	}
+
+	// Verify context deadline exceeded error occurred
+	if err == nil {
+		t.Error("Expected error due to timeout, got nil")
+	}
+
+	// Test 3: Verify context deadline is properly composed (caller's context is respected)
+	shortDeadlineCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	composedStart := time.Now()
+	err = rsWithTimeout.renameWithTimeout(shortDeadlineCtx, "test-id", "test-name")
+	composedElapsed := time.Since(composedStart)
+
+	// Should respect the caller's shorter deadline (500ms) instead of the 1s rename timeout
+	if composedElapsed >= 1*time.Second {
+		t.Errorf("Expected caller's 500ms deadline to be respected, but took %v", composedElapsed)
+	}
+
+	if err == nil {
+		t.Error("Expected error due to caller's deadline, got nil")
 	}
 }
