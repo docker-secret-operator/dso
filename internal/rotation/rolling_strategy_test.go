@@ -363,3 +363,90 @@ func TestRollingStrategy_Execute_ContextCancellation(t *testing.T) {
 			containerNames["new-container-id"])
 	}
 }
+
+func TestRollingStrategy_CleanupContainerWithRetry(t *testing.T) {
+	inspectResp := getBaseInspect()
+
+	createResp := container.CreateResponse{
+		ID: "new-container-id",
+	}
+	bCreate, _ := json.Marshal(createResp)
+
+	// Track container names and cleanup attempts
+	containerNames := map[string]string{
+		"cid":              "my-container",
+		"new-container-id": "my-container",
+	}
+	stopAttempts := 0
+	removeAttempts := 0
+
+	httpClient := &http.Client{
+		Transport: &mockTransport{
+			reqFunc: func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
+					resp := inspectResp
+					resp.Name = "/" + containerNames["cid"]
+					bResp, _ := json.Marshal(resp)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/rename":
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["cid"] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
+					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/start":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
+					healthyInspect := inspectResp
+					healthyInspect.Name = "/" + containerNames["new-container-id"]
+					healthyInspect.State.Health = &container.Health{Status: "healthy"}
+					bHealthy, _ := json.Marshal(healthyInspect)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/rename":
+					// Extract the new name from query parameter
+					newName := req.URL.Query().Get("name")
+					if newName != "" {
+						containerNames["new-container-id"] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/stop":
+					stopAttempts++
+					// Fail on first attempt, succeed on second
+					if stopAttempts == 1 {
+						return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte("transient error")))}, nil
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/cid":
+					removeAttempts++
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				default:
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				}
+			},
+		},
+	}
+
+	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
+	rs := NewRollingStrategy(cli)
+
+	// Execute rotation - cleanup should retry after initial stop failure
+	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify retry behavior:
+	// Stop should be called twice (first fails, second succeeds)
+	if stopAttempts != 2 {
+		t.Errorf("Expected stopAttempts == 2, got %d", stopAttempts)
+	}
+
+	// Remove should be called once after stop succeeds
+	if removeAttempts != 1 {
+		t.Errorf("Expected removeAttempts == 1, got %d", removeAttempts)
+	}
+}

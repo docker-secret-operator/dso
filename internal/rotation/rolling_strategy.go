@@ -43,6 +43,73 @@ func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, n
 	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)
 }
 
+// cleanupContainerWithRetry attempts to stop and remove a container with exponential backoff retry.
+// Makes 3 attempts: immediate, after 1s, after 2s. Logs at each attempt.
+func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, containerID, backupName string, timeout int) {
+	maxAttempts := 3
+	sleepDurations := []time.Duration{0, 1 * time.Second, 2 * time.Second}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Sleep before attempt if needed (skip on first attempt)
+		if attempt > 1 {
+			rs.logger.Info("Waiting before cleanup retry",
+				zap.String("backup_name", backupName),
+				zap.Int("attempt", attempt),
+				zap.Duration("wait_duration", sleepDurations[attempt-1]))
+			time.Sleep(sleepDurations[attempt-1])
+		}
+
+		rs.logger.Info("Attempting to stop backup container",
+			zap.String("backup_name", backupName),
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxAttempts))
+
+		// Try to stop the container
+		stopErr := rs.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
+		if stopErr != nil {
+			if attempt < maxAttempts {
+				rs.logger.Warn("Failed to stop backup container, will retry",
+					zap.String("backup_name", backupName),
+					zap.Int("attempt", attempt),
+					zap.Int("max_attempts", maxAttempts),
+					zap.Error(stopErr))
+				continue
+			}
+			rs.logger.Error("Failed to stop backup container after all retries",
+				zap.String("backup_name", backupName),
+				zap.Int("attempts", maxAttempts),
+				zap.Error(stopErr))
+		}
+
+		rs.logger.Info("Attempting to remove backup container",
+			zap.String("backup_name", backupName),
+			zap.Int("attempt", attempt))
+
+		// Try to remove the container
+		removeErr := rs.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+		if removeErr != nil {
+			if attempt < maxAttempts {
+				rs.logger.Warn("Failed to remove backup container, will retry",
+					zap.String("backup_name", backupName),
+					zap.Int("attempt", attempt),
+					zap.Int("max_attempts", maxAttempts),
+					zap.Error(removeErr))
+				continue
+			}
+			rs.logger.Error("Failed to remove backup container after all retries",
+				zap.String("backup_name", backupName),
+				zap.Int("attempts", maxAttempts),
+				zap.Error(removeErr))
+		}
+
+		// If we get here, both stop and remove succeeded
+		rs.logger.Info("Successfully cleaned up backup container",
+			zap.String("backup_name", backupName),
+			zap.Int("attempt", attempt))
+		return
+	}
+}
+
 // Execute performs an atomic blue/green swap on a single container.
 // The rotation follows these atomic steps:
 // 1. Prepare new container config (no state changes)
@@ -229,23 +296,13 @@ verifySwap:
 		zap.String("original_name", originalName),
 		zap.String("backup_name", backupName))
 
-	// Step 8: Cleanup backup container (best effort)
-	rs.logger.Info("Cleaning up backup container",
+	// Step 8: Cleanup backup container with retry
+	rs.logger.Info("Cleaning up backup container with retry",
 		zap.String("backup_name", backupName),
 		zap.String("original_id", containerID))
 
 	stopTimeout := int(timeout.Seconds())
-	if err := rs.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
-		rs.logger.Warn("Failed to stop backup container",
-			zap.String("backup_name", backupName),
-			zap.Error(err))
-	}
-
-	if err := rs.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-		rs.logger.Warn("Failed to remove backup container",
-			zap.String("backup_name", backupName),
-			zap.Error(err))
-	}
+	rs.cleanupContainerWithRetry(ctx, containerID, backupName, stopTimeout)
 
 	rs.logger.Info("Rotation finished successfully",
 		zap.String("original_name", originalName))
