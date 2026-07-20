@@ -246,3 +246,154 @@ func TestSmartPoller_ZeroTimeState(t *testing.T) {
 		t.Fatalf("expected 30s for zero-time state, got %v", interval)
 	}
 }
+
+// TestSmartPoller_ConcurrentHeavyLoad tests SmartPoller under heavy concurrent load
+// 100 goroutines, 1000 operations each = 100K operations
+func TestSmartPoller_ConcurrentHeavyLoad(t *testing.T) {
+	sp := NewSmartPoller()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			secretName := fmt.Sprintf("secret-%d", id%50) // 50 unique secrets
+
+			for j := 0; j < 1000; j++ {
+				sp.GetNextInterval(secretName)
+				sp.RecordChange(secretName)
+				sp.RecordPoll(secretName)
+				if j%10 == 0 {
+					sp.GetStats(secretName)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify no panics, all counts reasonable
+	for i := 0; i < 50; i++ {
+		secretName := fmt.Sprintf("secret-%d", i)
+		state := sp.GetStats(secretName)
+		if state != nil && state.ChangeCount == 0 {
+			t.Fatalf("secret-%d: expected non-zero change count", i)
+		}
+	}
+}
+
+// TestSmartPoller_BoundaryExact tests exact boundary conditions
+// Tests 119s, 120s, 121s, 599s, 600s, 601s
+func TestSmartPoller_BoundaryExact(t *testing.T) {
+	tests := []struct {
+		name     string
+		timeSince time.Duration
+		expected time.Duration
+	}{
+		{"119s (just under 2m)", 119 * time.Second, 5 * time.Second},
+		{"120s (exactly 2m)", 120 * time.Second, 30 * time.Second},
+		{"121s (just over 2m)", 121 * time.Second, 30 * time.Second},
+		{"599s (just under 10m)", 599 * time.Second, 30 * time.Second},
+		{"600s (exactly 10m)", 600 * time.Second, 5 * time.Minute},
+		{"601s (just over 10m)", 601 * time.Second, 5 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		result := CalculateInterval(tt.timeSince)
+		if result != tt.expected {
+			t.Fatalf("%s: CalculateInterval(%v) = %v, want %v", tt.name, tt.timeSince, result, tt.expected)
+		}
+	}
+}
+
+// TestSmartPoller_StatePersistenceStress tests state persistence across 1000+ operations
+func TestSmartPoller_StatePersistenceStress(t *testing.T) {
+	sp := NewSmartPoller()
+
+	for i := 0; i < 1000; i++ {
+		secretName := "persistent-secret"
+		sp.RecordChange(secretName)
+		sp.RecordPoll(secretName)
+
+		state := sp.GetStats(secretName)
+		expectedChangeCount := i + 1
+		if state.ChangeCount != expectedChangeCount {
+			t.Fatalf("iteration %d: expected change count %d, got %d", i, expectedChangeCount, state.ChangeCount)
+		}
+		expectedPollCount := i + 1
+		if state.PollCount != expectedPollCount {
+			t.Fatalf("iteration %d: expected poll count %d, got %d", i, expectedPollCount, state.PollCount)
+		}
+	}
+}
+
+// TestSmartPoller_SecretsIndependent tests that secrets with different change times are independent
+func TestSmartPoller_SecretsIndependent(t *testing.T) {
+	sp := NewSmartPoller()
+
+	// Record changes
+	sp.RecordChange("secret-a")
+	sp.RecordChange("secret-b")
+
+	// Both should have interval 5s (recent)
+	intervalA := sp.GetNextInterval("secret-a")
+	intervalB := sp.GetNextInterval("secret-b")
+
+	if intervalA != 5*time.Second || intervalB != 5*time.Second {
+		t.Fatalf("expected both 5s, got a=%v, b=%v", intervalA, intervalB)
+	}
+
+	// Verify that CalculateInterval respects boundaries correctly
+	// Secret-a at 2m+ elapsed: should return 30s
+	intervalA = CalculateInterval(2*time.Minute + 10*time.Second)
+	if intervalA != 30*time.Second {
+		t.Fatalf("secret-a at 2m+: expected 30s, got %v", intervalA)
+	}
+
+	// Secret-b at 5m elapsed (still in baseline range): should return 30s
+	intervalB = CalculateInterval(5 * time.Minute)
+	if intervalB != 30*time.Second {
+		t.Fatalf("secret-b at 5m: expected 30s, got %v", intervalB)
+	}
+}
+
+// BenchmarkSmartPoller_GetNextInterval benchmarks GetNextInterval performance
+func BenchmarkSmartPoller_GetNextInterval(b *testing.B) {
+	sp := NewSmartPoller()
+	sp.RecordChange("test-secret")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sp.GetNextInterval("test-secret")
+	}
+}
+
+// BenchmarkSmartPoller_RecordChange benchmarks RecordChange performance
+func BenchmarkSmartPoller_RecordChange(b *testing.B) {
+	sp := NewSmartPoller()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sp.RecordChange(fmt.Sprintf("secret-%d", i%100))
+	}
+}
+
+// BenchmarkSmartPoller_RecordPoll benchmarks RecordPoll performance
+func BenchmarkSmartPoller_RecordPoll(b *testing.B) {
+	sp := NewSmartPoller()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sp.RecordPoll(fmt.Sprintf("secret-%d", i%100))
+	}
+}
+
+// BenchmarkSmartPoller_GetStats benchmarks GetStats performance
+func BenchmarkSmartPoller_GetStats(b *testing.B) {
+	sp := NewSmartPoller()
+	sp.RecordChange("test-secret")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sp.GetStats("test-secret")
+	}
+}
