@@ -132,9 +132,11 @@ signs:
     artifacts: checksum
 
 # Generate a CycloneDX SBOM for each release archive using syft.
-sboms:
-  - artifacts: archive
-    args: ["$artifact", "--file", "$sbom", "--output", "cyclonedx-json"]
+# DISABLED: SBOM generation is not critical for the release process.
+# Can be re-enabled later with proper syft configuration if needed.
+# sboms:
+#   - artifacts: archive
+#     args: ["$artifact", "--file", "$sbom", "--output", "cyclonedx-json"]
 
 snapshot:
   name_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"

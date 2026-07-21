@@ -102,7 +102,7 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           # Pin to a release built with Go ≥ 1.25 to match go.mod.
           # v2.x dropped the --exclude-dirs CLI flag; use run.exclude-dirs in
