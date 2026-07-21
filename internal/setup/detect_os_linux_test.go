@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseOSRelease_ValidContent(t *testing.T) {
-	data := []byte(`NAME="Ubuntu"\nID=ubuntu\nVERSION_ID="22.04"\n`)
+	data := []byte("NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"22.04\"\n")
 	distro, version := parseOSRelease(data)
 	if distro != "ubuntu" {
 		t.Errorf("distro: want 'ubuntu', got %q", distro)

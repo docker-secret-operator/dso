@@ -244,7 +244,8 @@ func TestDetectDocker_BinaryFoundButDaemonUnreachable_EmitsWarning(t *testing.T)
 	cfg := noopDetectorConfig()
 	cfg.LookPath = func(name string) (string, error) {
 		if name == "docker" {
-			return "/usr/local/bin/docker", nil // fake path — exec will fail
+			// Use a path that definitely doesn't exist so exec will fail
+			return "/nonexistent-path-that-does-not-exist/docker-fake-binary", nil
 		}
 		return "", exec.ErrNotFound
 	}
