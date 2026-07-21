@@ -35,6 +35,9 @@ type Agent struct {
 	pollerMu            sync.RWMutex
 	secretVersions      map[string]string // Track last seen versions for change detection
 	secretVersionsMu    sync.RWMutex
+	tickerStopChans     map[string]chan struct{} // Signal channels for ticker goroutines
+	tickerStopMu        sync.Mutex               // Protect tickerStopChans map
+	lastCleanup         time.Time                // Track last cleanup time for stale secret entries
 }
 
 // NewAgent creates a new Agent daemon.
@@ -45,14 +48,15 @@ func NewAgent(docker *client.Client) *Agent {
 		logger = zap.Must(zap.NewDevelopment())
 	}
 	return &Agent{
-		cache:           NewCache(),
-		docker:          docker,
-		logger:          logger,
-		injected:        make(map[string]bool),
-		Ready:           make(chan struct{}),
-		readyOnce:       sync.Once{},
-		poller:          polling.NewSmartPoller(),
-		secretVersions:  make(map[string]string),
+		cache:               NewCache(),
+		docker:              docker,
+		logger:              logger,
+		injected:            make(map[string]bool),
+		Ready:               make(chan struct{}),
+		readyOnce:           sync.Once{},
+		poller:              polling.NewSmartPoller(),
+		secretVersions:      make(map[string]string),
+		tickerStopChans:     make(map[string]chan struct{}),
 	}
 }
 
@@ -261,6 +265,15 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 			listener.Stop()
 		}
 		reactor.Stop(ctx)
+
+		// Close all ticker stop channels to signal goroutines to exit
+		a.tickerStopMu.Lock()
+		for _, stopChan := range a.tickerStopChans {
+			close(stopChan)
+		}
+		a.tickerStopChans = make(map[string]chan struct{})
+		a.tickerStopMu.Unlock()
+
 		log.Println("✅ [DSO Agent] Main loop components cleaned up")
 	}()
 
@@ -277,6 +290,9 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 
 	// 5. Start ticker goroutines for each secret
 	go a.startPollingGoroutines(ctx, poller, tickers, tickersChan)
+
+	// 5.5. Start cleanup goroutine to remove stale secret entries
+	go a.cleanupStaleSecrets(ctx)
 
 	// 6. Get listener events channel (nil if listener not available)
 	var listenerEventsChan <-chan *eventqueue.ContainerLabelEvent
@@ -354,13 +370,22 @@ func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.Smar
 		interval := poller.GetNextInterval(secretName)
 		ticker := time.NewTicker(interval)
 
+		// Create stop channel for this secret's goroutine
+		stopChan := make(chan struct{})
+
 		tickersMu.Lock()
 		tickers[secretName] = ticker
 		tickersMu.Unlock()
 
-		go func(name string, t *time.Ticker) {
+		a.tickerStopMu.Lock()
+		a.tickerStopChans[secretName] = stopChan
+		a.tickerStopMu.Unlock()
+
+		go func(name string, t *time.Ticker, stop <-chan struct{}) {
 			for {
 				select {
+				case <-stop:
+					return
 				case <-ctx.Done():
 					return
 				case <-t.C:
@@ -371,7 +396,7 @@ func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.Smar
 					}
 				}
 			}
-		}(secretName, ticker)
+		}(secretName, ticker, stopChan)
 	}
 }
 
@@ -380,6 +405,17 @@ func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.Smar
 // The adaptive interval uses: 5s for active changes, 30s for baseline, 5m for backoff.
 func (a *Agent) updateTicker(ctx context.Context, tickers map[string]*time.Ticker,
 	tickersChan chan<- string, secretName string, poller *polling.SmartPoller) {
+
+	a.tickerStopMu.Lock()
+	// Signal old goroutine to exit immediately
+	if stopChan, exists := a.tickerStopChans[secretName]; exists {
+		close(stopChan)
+	}
+
+	// Create new stop channel for new goroutine
+	newStopChan := make(chan struct{})
+	a.tickerStopChans[secretName] = newStopChan
+	a.tickerStopMu.Unlock()
 
 	interval := poller.GetNextInterval(secretName)
 
@@ -390,10 +426,12 @@ func (a *Agent) updateTicker(ctx context.Context, tickers map[string]*time.Ticke
 	newTicker := time.NewTicker(interval)
 	tickers[secretName] = newTicker
 
-	// Start new ticker goroutine
-	go func(name string, t *time.Ticker) {
+	// Start new ticker goroutine with new stop channel
+	go func(name string, t *time.Ticker, stop <-chan struct{}) {
 		for {
 			select {
+			case <-stop:
+				return
 			case <-ctx.Done():
 				return
 			case <-t.C:
@@ -404,7 +442,7 @@ func (a *Agent) updateTicker(ctx context.Context, tickers map[string]*time.Ticke
 				}
 			}
 		}
-	}(secretName, newTicker)
+	}(secretName, newTicker, newStopChan)
 }
 
 // pollSecret queries the current version of a secret from its configured backend.
@@ -484,4 +522,68 @@ func (a *Agent) rotationCallback() eventqueue.RotationTrigger {
 
 		return nil
 	}
+}
+
+// cleanupStaleSecrets periodically removes entries for secrets no longer being monitored.
+// This prevents unbounded growth of the secretVersions map. Cleanup runs every 5 minutes.
+func (a *Agent) cleanupStaleSecrets(ctx context.Context) {
+	// Helper function to perform cleanup
+	performCleanup := func() {
+		// Get list of currently monitored secrets
+		currentSecrets := a.getSecretsToMonitor()
+		currentSet := make(map[string]bool)
+		for _, s := range currentSecrets {
+			currentSet[s] = true
+		}
+
+		// Remove entries for secrets no longer monitored
+		a.secretVersionsMu.Lock()
+		staleCount := 0
+		for secret := range a.secretVersions {
+			if !currentSet[secret] {
+				delete(a.secretVersions, secret)
+				staleCount++
+			}
+		}
+		a.lastCleanup = time.Now()
+		mapSize := len(a.secretVersions)
+		a.secretVersionsMu.Unlock()
+
+		// Log cleanup result
+		if staleCount > 0 {
+			a.logger.Debug("cleaned stale secret entries",
+				zap.Int("stale_count", staleCount),
+				zap.Int("map_size", mapSize))
+		}
+	}
+
+	// Run cleanup immediately on startup
+	performCleanup()
+
+	// Then set up periodic cleanup every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			performCleanup()
+		}
+	}
+}
+
+// GetSecretVersionsMapSize returns the current size of the secretVersions map for monitoring.
+func (a *Agent) GetSecretVersionsMapSize() int {
+	a.secretVersionsMu.RLock()
+	defer a.secretVersionsMu.RUnlock()
+	return len(a.secretVersions)
+}
+
+// GetLastCleanupTime returns when cleanup last ran.
+func (a *Agent) GetLastCleanupTime() time.Time {
+	a.secretVersionsMu.RLock()
+	defer a.secretVersionsMu.RUnlock()
+	return a.lastCleanup
 }

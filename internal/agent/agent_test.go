@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -745,4 +746,199 @@ func TestAgent_MainLoop_GracefulShutdown(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("main loop did not shut down gracefully in time")
 	}
+}
+
+// ============================================================================
+// Cleanup Tests (Issue #2: Unbounded secretVersions map growth)
+// ============================================================================
+
+// TestAgent_CleanupStaleSecrets verifies that stale secret entries are removed
+func TestAgent_CleanupStaleSecrets(t *testing.T) {
+	agent := NewAgent(nil)
+
+	// Manually add some entries to secretVersions map
+	agent.secretVersionsMu.Lock()
+	agent.secretVersions["active-secret"] = "hash1"
+	agent.secretVersions["stale-secret-1"] = "hash2"
+	agent.secretVersions["stale-secret-2"] = "hash3"
+	agent.secretVersionsMu.Unlock()
+
+	// Initial size should be 3
+	if size := agent.GetSecretVersionsMapSize(); size != 3 {
+		t.Errorf("expected initial map size 3, got %d", size)
+	}
+
+	// Add active-secret to cache so it's considered monitored
+	cache := agent.GetCache()
+	seed := &resolver.AgentSeed{
+		ProjectName: "test-project",
+		SecretPool: map[string]string{
+			"active-secret": "value",
+		},
+		Services: make(map[string]resolver.ServiceSecrets),
+	}
+	cache.Seed(seed)
+
+	// Create a context with short timeout to trigger one cleanup cycle
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Run cleanup (will timeout after 100ms)
+	agent.cleanupStaleSecrets(ctx)
+
+	// After cleanup, map should only have active-secret
+	if size := agent.GetSecretVersionsMapSize(); size != 1 {
+		t.Errorf("expected map size 1 after cleanup, got %d", size)
+	}
+
+	// Verify stale secrets are gone
+	agent.secretVersionsMu.RLock()
+	if _, exists := agent.secretVersions["active-secret"]; !exists {
+		t.Error("active-secret should still exist")
+	}
+	if _, exists := agent.secretVersions["stale-secret-1"]; exists {
+		t.Error("stale-secret-1 should be removed")
+	}
+	if _, exists := agent.secretVersions["stale-secret-2"]; exists {
+		t.Error("stale-secret-2 should be removed")
+	}
+	agent.secretVersionsMu.RUnlock()
+}
+
+// TestAgent_GetSecretVersionsMapSize returns correct map size
+func TestAgent_GetSecretVersionsMapSize(t *testing.T) {
+	agent := NewAgent(nil)
+
+	// Initially empty
+	if size := agent.GetSecretVersionsMapSize(); size != 0 {
+		t.Errorf("expected initial size 0, got %d", size)
+	}
+
+	// Add entries
+	agent.secretVersionsMu.Lock()
+	agent.secretVersions["secret1"] = "hash1"
+	agent.secretVersions["secret2"] = "hash2"
+	agent.secretVersions["secret3"] = "hash3"
+	agent.secretVersionsMu.Unlock()
+
+	// Verify size
+	if size := agent.GetSecretVersionsMapSize(); size != 3 {
+		t.Errorf("expected size 3, got %d", size)
+	}
+}
+
+// TestAgent_GetLastCleanupTime returns correct cleanup time
+func TestAgent_GetLastCleanupTime(t *testing.T) {
+	agent := NewAgent(nil)
+
+	// Initially should be zero time
+	if lastCleanup := agent.GetLastCleanupTime(); !lastCleanup.IsZero() {
+		t.Errorf("expected zero time initially, got %v", lastCleanup)
+	}
+
+	// Set lastCleanup time
+	now := time.Now()
+	agent.secretVersionsMu.Lock()
+	agent.lastCleanup = now
+	agent.secretVersionsMu.Unlock()
+
+	// Verify it's set
+	lastCleanup := agent.GetLastCleanupTime()
+	if lastCleanup.IsZero() {
+		t.Error("lastCleanup should not be zero after setting")
+	}
+	// Allow for small time difference due to clock resolution
+	if lastCleanup.Sub(now).Abs() > 10*time.Millisecond {
+		t.Errorf("expected lastCleanup ~%v, got %v", now, lastCleanup)
+	}
+}
+
+// TestAgent_CleanupConcurrency verifies cleanup is thread-safe
+func TestAgent_CleanupConcurrency(t *testing.T) {
+	agent := NewAgent(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Add initial entries
+	agent.secretVersionsMu.Lock()
+	for i := 0; i < 100; i++ {
+		agent.secretVersions[fmt.Sprintf("secret-%d", i)] = fmt.Sprintf("hash-%d", i)
+	}
+	agent.secretVersionsMu.Unlock()
+
+	done := make(chan bool, 2)
+
+	// Run cleanup goroutine
+	go func() {
+		agent.cleanupStaleSecrets(ctx)
+		done <- true
+	}()
+
+	// Concurrently poll and modify the map
+	go func() {
+		for i := 0; i < 20; i++ {
+			size := agent.GetSecretVersionsMapSize()
+			if size < 0 {
+				t.Error("map size should never be negative")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		done <- true
+	}()
+
+	// Wait for both to complete
+	<-time.After(150 * time.Millisecond)
+	cancel()
+	<-done
+	<-done
+}
+
+// TestAgent_CleanupWithMonitoredSecrets verifies cleanup preserves monitored secrets
+func TestAgent_CleanupWithMonitoredSecrets(t *testing.T) {
+	agent := NewAgent(nil)
+
+	// Add secrets to cache (these will be monitored)
+	cache := agent.GetCache()
+	seed := &resolver.AgentSeed{
+		ProjectName: "test-project",
+		SecretPool: map[string]string{
+			"secret-a": "value-a",
+			"secret-b": "value-b",
+			"secret-c": "value-c",
+		},
+		Services: make(map[string]resolver.ServiceSecrets),
+	}
+	cache.Seed(seed)
+
+	// Add entries to secretVersions map, including extras
+	agent.secretVersionsMu.Lock()
+	agent.secretVersions["secret-a"] = "hash-a"
+	agent.secretVersions["secret-b"] = "hash-b"
+	agent.secretVersions["secret-c"] = "hash-c"
+	agent.secretVersions["extra-secret"] = "hash-extra"
+	agent.secretVersions["another-extra"] = "hash-extra2"
+	agent.secretVersionsMu.Unlock()
+
+	if size := agent.GetSecretVersionsMapSize(); size != 5 {
+		t.Errorf("expected initial size 5, got %d", size)
+	}
+
+	// Run cleanup with short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	agent.cleanupStaleSecrets(ctx)
+
+	// After cleanup, should have 3 secrets (the monitored ones)
+	if size := agent.GetSecretVersionsMapSize(); size != 3 {
+		t.Errorf("expected size 3 after cleanup, got %d", size)
+	}
+
+	// Verify monitored secrets still exist
+	agent.secretVersionsMu.RLock()
+	for _, secret := range []string{"secret-a", "secret-b", "secret-c"} {
+		if _, exists := agent.secretVersions[secret]; !exists {
+			t.Errorf("monitored secret %s should exist", secret)
+		}
+	}
+	agent.secretVersionsMu.RUnlock()
 }
