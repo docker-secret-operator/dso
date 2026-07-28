@@ -10,7 +10,7 @@ Better planning comes from comparing estimates to reality.
 | Issue | Type | Estimated | Actual | Notes | Status |
 |-------|------|-----------|--------|-------|--------|
 | BUG-1 | Race Fix | 1-2h | 1.5h | Tickers map synchronization | ✅ Complete |
-| SEC-1 | Logging | 1d | ~1.5d | Redaction engine wiring across 2 commits: (1) initial wiring, found and reverted an over-redaction design flaw (key-based matching); (2) final external review round found 2 more genuine defects — sampling silently bypassed (Check() only tested Enabled(), never delegated to wrapped core), and 2 field types (Binary, ArrayMarshaler) unhandled. Neither would have surfaced without a checklist requiring concrete reproduction, not just code reading | ✅ Complete |
+| SEC-1 | Logging | 1d | ~2d | Redaction engine wiring across 3 commits: (1) initial wiring, found and reverted an over-redaction design flaw (key-based matching); (2) review round 2 found sampling silently bypassed and 2 field types (Binary, ArrayMarshaler) unhandled; (3) review round 3 (mandatory exhaustive field-type audit) found StringerType unhandled and exploitable via zap.Any(), contradicting an already-shipped SECURITY.md claim. 3 review rounds each found a genuinely different defect class — none would have surfaced without a checklist requiring concrete reproduction over code reading. Original 1-day estimate assumed "wire an existing engine in" was simple; the real work was closing gaps the wiring itself exposed | ✅ Complete |
 | SEC-2 | Security | 2d | [pending] | Plugin hash enforcement | ⏳ Not started |
 | SEC-3 | Security | 1d | [pending] | Plugin directory hardening | ⏳ Not started |
 | PRODUCT-1 | Product | Async | [pending] | Dashboard merge/archive decision | ⏳ Not started |

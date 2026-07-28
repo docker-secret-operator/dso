@@ -126,8 +126,23 @@ A final pre-merge review (external, checklist-driven) required verifying `redact
 
 Both defects were caught by a review process that demanded concrete reproduction (not just code reading) before accepting a "this works" claim — exactly the discipline that caught the earlier key-based over-redaction mistake.
 
+### Third review round: full field-type audit (commit b92f045)
+A mandatory final engineering review (external, exhaustive checklist covering every zap field type constructor) required explicit testing of `Stringer`, `Duration`, `Time`, `Namespace`, `Object`, `Array`, `Inline`, `Skip` — not just the types already handled. This found:
+
+- **Genuine defect (fixed)**: `zapcore.StringerType` — produced by both `zap.Stringer(key, v)` directly AND `zap.Any(key, v)` when `v` implements only `fmt.Stringer` (not `error`) — was unhandled. Reproduced concretely: both paths wrote the raw secret to output. Since `zap.Any()` is already relied upon (and documented in SECURITY.md) to cover struct redaction at 2 real call sites, this contradicted a shipped guarantee. Fixed by treating it like `ErrorType`: call `.String()`, redact, re-wrap as `StringType`.
+- **Deferred, documented (not fixed)**: `zapcore.InlineMarshalerType` (`zap.Inline`) — shares `zap.Object`'s `ObjectMarshaler` interface, but converting it to `ReflectType` would change its field-flattening encode behavior in a way not verified safe, and it has zero production call sites. Judged: fixing an untested behavior change for a type nothing uses yet is worse than documenting the gap and revisiting if a real call site appears.
+- **Confirmed safe, no change needed**: `Duration`, `Time`, `Namespace`, `Skip` — none carry string-like content that could hold a credential (verified their concrete `f.Interface`/`f.String` representations directly, not assumed).
+
+Additional verification performed this round (all passed, no code changes required):
+- Concurrency: 50 goroutines × 50 calls sharing one `redactingCore`, `-race` clean
+- Sampling: re-verified across production config, development config (confirmed `Sampling: nil` by default — no sampler to bypass), and the package's global `init()` logger
+- Bypass attempts: maps via `zap.Any`, custom `Error()` implementations, `fmt.Errorf` `%w`-wrapped custom errors, multiline messages — all redact correctly
+- Confirmed limitation (tested, not assumed): base64/hex-encoded secrets are NOT redacted — regex-based matching cannot see through encoding. This is now explicit, tested, and documented in SECURITY.md rather than an implicit gap
+
+This is the third round where the discipline of "reproduce before trusting" caught something the previous round's (already rigorous) review missed. Each round found genuinely different classes of defect (over-redaction design → sampling/field-type bypass → Stringer-specific type gap), suggesting the review process itself — not any single pass — is what makes this implementation trustworthy.
+
 ### Rollback Implications
-`git revert` the SEC-1 commit(s) (0198cc4 and f3252c1); validation = confirm `pkg/security.RedactionPatterns` is referenced only by its own tests again (reverts to the pre-SEC-1 baseline bypass state), and `TestRedaction_PreservesZapBehavior/sampling_is_preserved` fails (confirms the sampling fix was actually reverted).
+`git revert` the SEC-1 commits (0198cc4, f3252c1, b92f045, in reverse order); validation = confirm `pkg/security.RedactionPatterns` is referenced only by its own tests again (reverts to the pre-SEC-1 baseline bypass state), `TestRedaction_PreservesZapBehavior/sampling_is_preserved` fails (confirms the sampling fix was reverted), and `TestRedaction_StringerType` fails (confirms the Stringer fix was reverted).
 
 ---
 
