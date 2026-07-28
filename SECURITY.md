@@ -129,13 +129,21 @@ wrapper (`pkg/observability`), so message text, structured fields, and
 wrapped errors are all covered — not just direct `zap.Error()` calls.
 
 **Guaranteed redacted** (verified with tests, `pkg/observability/redaction_test.go`):
-- Log entry message text matching a known credential pattern
+- Log entry message text matching a known credential pattern, including
+  multi-line messages
 - `zap.String`, `zap.ByteString`, `zap.Binary` field values matching a pattern
-- `zap.Error` and wrapped error chains (`fmt.Errorf("...: %w", err)`)
-- `zap.Any`/`zap.Reflect` values, including nested struct fields and recovered
-  panic values, via JSON round-trip redaction
-- `zap.Strings`/array fields, per-element
+- `zap.Error` and wrapped error chains (`fmt.Errorf("...: %w", err)`),
+  including custom `error` implementations
+- `zap.Stringer` field values and any value passed to `zap.Any` that
+  implements only `fmt.Stringer` (not `error`) — verified during final
+  review that these resolve to a distinct `zapcore.StringerType`, not
+  `StringType`, and were bypassing redaction until fixed
+- `zap.Any`/`zap.Reflect` values, including nested struct fields, maps, and
+  recovered panic values, via JSON round-trip redaction
+- `zap.Strings`/array fields and `zap.Object`, per-element
 - Fields attached via `logger.With(...)` and `logger.Named(...)` child loggers
+- Sampled loggers (`zap.NewProductionConfig()`'s default sampling) —
+  verified the redaction wrapper does not disable rate-limiting
 
 **Intentionally NOT redacted** (by design, not oversight):
 - Field *names* alone (e.g. `zap.String("secret_name", "prod-db")`) — this
@@ -146,6 +154,13 @@ wrapped errors are all covered — not just direct `zap.Error()` calls.
   matching a credential pattern trigger redaction
 - Non-string field types that cannot carry credential text (`zap.Int`,
   `zap.Duration`, `zap.Bool`, `zap.Time`, etc.)
+- `zap.Inline(...)` (`InlineMarshalerType`): shares the same
+  `zapcore.ObjectMarshaler` interface as `zap.Object`, but converting it to
+  `ReflectType` (the mechanism used for `zap.Object`) would break its
+  field-flattening encode behavior in a way not verified safe. Has zero
+  production call sites today; if a future caller needs this, it should get
+  its own targeted fix and test, not be forced through the existing
+  `redactReflected` path untested
 
 **Requires developer discipline** (redaction is a safety net, not a substitute
 for care):
@@ -155,6 +170,11 @@ for care):
   Prefer field *names* that make review easy (`secret_name` for identifiers,
   never a field literally holding a raw credential value) over relying on
   pattern detection alone
+- **Encoded secrets are not redacted.** A credential that has been
+  base64-encoded, hex-encoded, or otherwise transformed before logging will
+  not match any pattern, since redaction operates on literal text — this was
+  explicitly tested and confirmed, not assumed. Never log an encoded
+  representation of a credential expecting redaction to catch it
 - The redaction pattern list (`pkg/security/redaction.go`) is a maintained
   but finite set (AWS/Vault/generic key=value/Bearer/OAuth/private-key/DB
   connection strings). A new provider's credential format not matching any

@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/docker-secret-operator/dso/pkg/security"
 	"go.uber.org/zap"
@@ -76,12 +77,16 @@ func (c *redactingCore) Write(entry zapcore.Entry, fields []zapcore.Field) error
 	return c.Core.Write(entry, c.redactFields(fields))
 }
 
-// redactFields redacts the value of every field that can carry a raw string
-// or error, covering the common zap field constructors used across the
-// codebase: zap.String, zap.Error, zap.Any(error), zap.Reflect, and
-// zap.ByteString. Non-string, non-error field types (numbers, bools,
-// durations, timestamps) are passed through unchanged since they cannot
-// carry secret material in this codebase's usage.
+// redactFields redacts the value of every field that can carry a raw string,
+// error, or arbitrary structured value: zap.String, zap.ByteString,
+// zap.Binary, zap.Error, zap.Stringer, zap.Any, zap.Reflect, zap.Strings/
+// zap.Ints/etc. (ArrayMarshalerType), and zap.Object (ObjectMarshalerType).
+// Field types that cannot carry credential text (Int, Bool, Duration, Time,
+// Namespace, Skip, etc.) pass through unchanged via the default case.
+// zap.Inline (InlineMarshalerType) is a known, documented gap: see
+// SECURITY.md's residual-risk section -- it shares ObjectMarshaler's
+// interface but converting it to ReflectType would break its field-
+// flattening encode behavior, and it has zero production call sites today.
 func (c *redactingCore) redactFields(fields []zapcore.Field) []zapcore.Field {
 	out := make([]zapcore.Field, len(fields))
 	for i, f := range fields {
@@ -138,6 +143,23 @@ func (c *redactingCore) redactField(f zapcore.Field) zapcore.Field {
 	case zapcore.ErrorType:
 		if err, ok := f.Interface.(error); ok {
 			f.Interface = errors.New(c.redactor.RedactError(err))
+		}
+		return f
+
+	case zapcore.StringerType:
+		// zap.Stringer(key, v) defers calling v.String() until encode time,
+		// storing the fmt.Stringer value itself in f.Interface (verified: it
+		// does NOT resolve to StringType immediately). Found during final
+		// review that zap.Any(key, v) ALSO routes any value implementing only
+		// fmt.Stringer (not error) to this same StringerType, not ReflectType
+		// -- reachable today via the same zap.Any() call sites already
+		// covered for structs (internal/events/backpressure.go,
+		// internal/agent/observability.go), so this is not a hypothetical
+		// gap. Handled the same way as ErrorType: call the interface's
+		// defining method, redact the resulting string, re-wrap as a plain
+		// StringType field.
+		if s, ok := f.Interface.(fmt.Stringer); ok {
+			return zapcore.Field{Key: f.Key, Type: zapcore.StringType, String: c.redactor.RedactString(s.String())}
 		}
 		return f
 

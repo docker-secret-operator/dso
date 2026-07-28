@@ -2,6 +2,8 @@ package observability
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -493,3 +495,69 @@ type discardSink struct{}
 
 func (d *discardSink) Write(p []byte) (int, error) { return len(p), nil }
 func (d *discardSink) Sync() error                 { return nil }
+
+// stringerLeak is a minimal fmt.Stringer implementation used to prove
+// StringerType redaction, found missing during final review.
+type stringerLeak struct{ secret string }
+
+func (s stringerLeak) String() string { return "token=" + s.secret }
+
+// TestRedaction_StringerType is a regression test for a defect found during
+// final review: zap.Stringer(key, v) defers calling v.String() until encode
+// time, storing the fmt.Stringer value itself (not a plain string) in
+// f.Interface -- this resolves to zapcore.StringerType, a distinct type from
+// StringType that the original switch did not handle. Critically,
+// zap.Any(key, v) ALSO routes any value implementing only fmt.Stringer (not
+// error) to this same StringerType, not ReflectType -- reachable today via
+// the same zap.Any() call sites already relied upon for struct redaction
+// (internal/events/backpressure.go, internal/agent/observability.go).
+func TestRedaction_StringerType(t *testing.T) {
+	logger, buf := newCapturingLogger(t)
+
+	t.Run("zap.Stringer field constructor", func(t *testing.T) {
+		buf.Reset()
+		logger.Info("cfg", zap.Stringer("v", stringerLeak{secret: "DIRECTSTRINGERLEAK999"}))
+		out := buf.String()
+		if strings.Contains(out, "DIRECTSTRINGERLEAK999") {
+			t.Errorf("SECRET LEAKED via zap.Stringer(): %s", out)
+		}
+	})
+
+	t.Run("zap.Any with a Stringer-only value", func(t *testing.T) {
+		buf.Reset()
+		logger.Info("cfg", zap.Any("v", stringerLeak{secret: "ANYSTRINGERLEAK789"}))
+		out := buf.String()
+		if strings.Contains(out, "ANYSTRINGERLEAK789") {
+			t.Errorf("SECRET LEAKED via zap.Any() on a Stringer-only value: %s", out)
+		}
+	})
+}
+
+// TestRedaction_KnownLimitations documents (and locks in the documentation
+// of, via SECURITY.md) two limitations found during final review that are
+// not bugs: regex-based redaction cannot see through encoding. These tests
+// exist to make the limitation explicit and testable, not to assert it will
+// ever be fixed within SEC-1's scope.
+func TestRedaction_KnownLimitations(t *testing.T) {
+	logger, buf := newCapturingLogger(t)
+
+	t.Run("base64-encoded secret is not redacted (documented limitation)", func(t *testing.T) {
+		buf.Reset()
+		encoded := base64.StdEncoding.EncodeToString([]byte("password=BASE64LEAK"))
+		logger.Info("payload: " + encoded)
+		out := buf.String()
+		if !strings.Contains(out, encoded) {
+			t.Skip("behavior changed: base64 payload is now redacted somehow; if intentional, update SECURITY.md")
+		}
+	})
+
+	t.Run("hex-encoded secret is not redacted (documented limitation)", func(t *testing.T) {
+		buf.Reset()
+		encoded := hex.EncodeToString([]byte("password=HEXLEAK"))
+		logger.Info("payload: " + encoded)
+		out := buf.String()
+		if !strings.Contains(out, encoded) {
+			t.Skip("behavior changed: hex payload is now redacted somehow; if intentional, update SECURITY.md")
+		}
+	})
+}
