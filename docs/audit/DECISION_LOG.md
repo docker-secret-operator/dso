@@ -180,10 +180,19 @@ Also discovered during verification: a separate, more mature verification engine
 - Performance: confirmed via `internal/providers/store.go`'s connection cache (`sync.Map`, 10-minute staleness window) that hash verification runs at most every ~10 minutes per provider, not per secret fetch — hashing a plugin binary at that frequency is not a performance concern
 - Security: confirmed a pre-existing (not introduced or worsened) check-then-execute TOCTOU window between hashing and exec; documented in SECURITY.md as a residual limitation rather than fixed, since closing it fully requires executing from an already-open fd rather than a re-resolved path — a larger change than this fix's scope
 - gosec: one new finding (G306, manifest file permissions) evaluated and deliberately kept at 0644 with a `#nosec` justification — tightening to 0600 would risk breaking hash verification for any deployment where the agent runs as a different user than `setup`, since the manifest holds no secrets (only plugin names + public-binary hashes) and must stay readable across that boundary, matching this codebase's existing 0755 convention for plugin binaries/directory
-- No second review round triggered: this single round found no new production-impacting defects requiring further investigation (unlike each of SEC-1's three rounds)
+- Self-review found no new production-impacting defects requiring further investigation before merge.
+
+### Independent final review round (commit [pending], amends 33e12be's scope)
+A separate, independent engineering review — deliberately verification-only, explicitly instructed not to redesign or add features — was performed before treating SEC-2 as production-ready. It reproduced one genuine, severe defect the self-review missed:
+
+**Docker deployment completely broken**: `Dockerfile` builds and `COPY`s plugin binaries directly into the image but never invokes `docker dso system setup` — the only path that generates a hash manifest. Every official container deployment would have failed to load any external provider plugin (`enforceHashVerification` rejecting with "cannot open hash manifest"), breaking the primary, most common deployment method entirely, not an edge case. Fixed with a `sha256sum`-based manifest-generation `RUN` step in the Dockerfile's final stage. Verified empirically, not just by code reading: ran an actual `docker build`, extracted the generated manifest via `docker run --entrypoint cat`, and independently cross-checked one hash via `docker run --entrypoint sha256sum` against the manifest entry — confirmed byte-identical.
+
+The review also reproduced (confirming, not discovering) the already-documented residual TOCTOU limitation by tracing the exact two separate `os.Open`/`exec.Command` path resolutions in `load.go`, and verified 5 additional fail-closed edge cases (unreadable/empty/corrupted/malformed-hash/directory-as-manifest) and 3 installer-lifecycle scenarios (reinstall determinism, plugin removal, plugin upgrade) not covered by the original test suite — all passed without needing further code changes.
+
+**Lesson**: the self-review checked the *installer's* manifest generation thoroughly but never checked whether the *other* production plugin-distribution path (the Docker image) also produced one. A review checklist item worth carrying forward to SEC-3 and beyond: **"does this change assume a single distribution path when the codebase has two (bootstrap installer + Docker image)?"**
 
 ### Rollback Implications
-`git revert`; validation = confirm `DSO_PLUGIN_HASH_MANIFEST` becomes optional again (unset env var + no manifest = successful load, matching pre-SEC-2 behavior).
+`git revert`; validation = confirm `DSO_PLUGIN_HASH_MANIFEST` becomes optional again (unset env var + no manifest = successful load, matching pre-SEC-2 behavior). For the Dockerfile fix specifically: confirm a freshly built image no longer contains `/usr/local/lib/dso/plugins/hashes.txt`.
 
 ---
 

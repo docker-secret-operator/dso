@@ -49,6 +49,20 @@ COPY --from=builder /app/plugins/ /usr/local/lib/dso/plugins/
 RUN chmod +x /usr/local/bin/docker-dso && \
     chmod +x /usr/local/lib/dso/plugins/*
 
+# [SEC-2] Generate the plugin hash manifest at build time. The image never
+# runs `docker dso system setup` (which normally writes this file), so
+# without this step plugin hash verification -- mandatory by default as of
+# SEC-2 -- would reject every plugin in this image with "cannot open hash
+# manifest", breaking the container as the primary deployment method.
+RUN cd /usr/local/lib/dso/plugins && \
+    { echo "# Plugin Hash Manifest (auto-generated at image build time)"; \
+      echo "# Format: plugin_name=sha256_hash"; \
+      echo ""; \
+      for f in dso-provider-*; do \
+        echo "$f=$(sha256sum "$f" | cut -d' ' -f1)"; \
+      done; \
+    } > hashes.txt
+
 # Switch to non-root user
 USER dso-user
 
