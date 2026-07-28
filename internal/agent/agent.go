@@ -31,13 +31,15 @@ type Agent struct {
 	readyOnce  sync.Once // Ensures Ready channel closes exactly once
 
 	// Polling and event reaction components
-	poller              *polling.SmartPoller
-	pollerMu            sync.RWMutex
-	secretVersions      map[string]string // Track last seen versions for change detection
-	secretVersionsMu    sync.RWMutex
-	tickerStopChans     map[string]chan struct{} // Signal channels for ticker goroutines
-	tickerStopMu        sync.Mutex               // Protect tickerStopChans map
-	lastCleanup         time.Time                // Track last cleanup time for stale secret entries
+	poller           *polling.SmartPoller
+	pollerMu         sync.RWMutex
+	secretVersions   map[string]string // Track last seen versions for change detection
+	secretVersionsMu sync.RWMutex
+	tickerStopChans  map[string]chan struct{} // Signal channels for ticker goroutines
+	tickerStopMu     sync.Mutex               // Protect tickerStopChans map
+	tickers          map[string]*time.Ticker  // Polling tickers for each secret
+	tickersMu        sync.Mutex               // Protect tickers map
+	lastCleanup      time.Time                // Track last cleanup time for stale secret entries
 }
 
 // NewAgent creates a new Agent daemon.
@@ -48,15 +50,16 @@ func NewAgent(docker *client.Client) *Agent {
 		logger = zap.Must(zap.NewDevelopment())
 	}
 	return &Agent{
-		cache:               NewCache(),
-		docker:              docker,
-		logger:              logger,
-		injected:            make(map[string]bool),
-		Ready:               make(chan struct{}),
-		readyOnce:           sync.Once{},
-		poller:              polling.NewSmartPoller(),
-		secretVersions:      make(map[string]string),
-		tickerStopChans:     make(map[string]chan struct{}),
+		cache:           NewCache(),
+		docker:          docker,
+		logger:          logger,
+		injected:        make(map[string]bool),
+		Ready:           make(chan struct{}),
+		readyOnce:       sync.Once{},
+		poller:          polling.NewSmartPoller(),
+		secretVersions:  make(map[string]string),
+		tickerStopChans: make(map[string]chan struct{}),
+		tickers:         make(map[string]*time.Ticker),
 	}
 }
 
@@ -274,22 +277,26 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 		a.tickerStopChans = make(map[string]chan struct{})
 		a.tickerStopMu.Unlock()
 
+		// Stop all tickers and clean up map
+		a.tickersMu.Lock()
+		for _, ticker := range a.tickers {
+			ticker.Stop()
+		}
+		a.tickers = make(map[string]*time.Ticker)
+		a.tickersMu.Unlock()
+
 		log.Println("✅ [DSO Agent] Main loop components cleaned up")
 	}()
 
-	// 4. Build secret tickers map
-	tickers := make(map[string]*time.Ticker)
-	tickersChan := make(chan string, 10) // Channel for poll events
+	// 4. Channel for poll events
+	tickersChan := make(chan string, 10)
 
 	defer func() {
-		for _, ticker := range tickers {
-			ticker.Stop()
-		}
 		close(tickersChan)
 	}()
 
 	// 5. Start ticker goroutines for each secret
-	go a.startPollingGoroutines(ctx, poller, tickers, tickersChan)
+	go a.startPollingGoroutines(ctx, poller, tickersChan)
 
 	// 5.5. Start cleanup goroutine to remove stale secret entries
 	go a.cleanupStaleSecrets(ctx)
@@ -346,7 +353,7 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 			poller.RecordPoll(secretName)
 
 			// Update interval for next poll
-			a.updateTicker(ctx, tickers, tickersChan, secretName, poller)
+			a.updateTicker(ctx, tickersChan, secretName, poller)
 		}
 
 		// Health check
@@ -360,11 +367,10 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 // Each secret gets its own ticker that fires at adaptive intervals based on recent change frequency.
 // Poll events are sent to tickersChan for processing in the main event loop.
 func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.SmartPoller,
-	tickers map[string]*time.Ticker, tickersChan chan<- string) {
+	tickersChan chan<- string) {
 
 	// Initial secret list
 	secrets := a.getSecretsToMonitor()
-	tickersMu := sync.Mutex{}
 
 	for _, secretName := range secrets {
 		interval := poller.GetNextInterval(secretName)
@@ -373,10 +379,12 @@ func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.Smar
 		// Create stop channel for this secret's goroutine
 		stopChan := make(chan struct{})
 
-		tickersMu.Lock()
-		tickers[secretName] = ticker
-		tickersMu.Unlock()
+		// Lock tickers map to add new ticker
+		a.tickersMu.Lock()
+		a.tickers[secretName] = ticker
+		a.tickersMu.Unlock()
 
+		// Lock stop channels map to add new stop channel
 		a.tickerStopMu.Lock()
 		a.tickerStopChans[secretName] = stopChan
 		a.tickerStopMu.Unlock()
@@ -403,9 +411,11 @@ func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.Smar
 // updateTicker adapts the polling interval for a secret based on recent change frequency.
 // It stops the old ticker and creates a new one with the interval from SmartPoller.
 // The adaptive interval uses: 5s for active changes, 30s for baseline, 5m for backoff.
-func (a *Agent) updateTicker(ctx context.Context, tickers map[string]*time.Ticker,
+// This method must be called with both tickersMu and tickerStopMu locked or held individually.
+func (a *Agent) updateTicker(ctx context.Context,
 	tickersChan chan<- string, secretName string, poller *polling.SmartPoller) {
 
+	// Lock stop channels to signal old goroutine and create new one
 	a.tickerStopMu.Lock()
 	// Signal old goroutine to exit immediately
 	if stopChan, exists := a.tickerStopChans[secretName]; exists {
@@ -417,14 +427,18 @@ func (a *Agent) updateTicker(ctx context.Context, tickers map[string]*time.Ticke
 	a.tickerStopChans[secretName] = newStopChan
 	a.tickerStopMu.Unlock()
 
+	// Get new interval for the secret
 	interval := poller.GetNextInterval(secretName)
 
-	if oldTicker, exists := tickers[secretName]; exists {
+	// Lock tickers map to replace old ticker with new one
+	a.tickersMu.Lock()
+	if oldTicker, exists := a.tickers[secretName]; exists {
 		oldTicker.Stop()
 	}
 
 	newTicker := time.NewTicker(interval)
-	tickers[secretName] = newTicker
+	a.tickers[secretName] = newTicker
+	a.tickersMu.Unlock()
 
 	// Start new ticker goroutine with new stop channel
 	go func(name string, t *time.Ticker, stop <-chan struct{}) {

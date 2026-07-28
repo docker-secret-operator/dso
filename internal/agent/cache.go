@@ -193,9 +193,9 @@ func (c *SecretCache) Close() {
 // It acts as the secure intermediary between the CLI and the Agent runtime.
 // Secrets are stored as []byte and zeroized when cleared.
 type Cache struct {
-	secrets       map[string][]byte    // hash → plaintext value
+	secrets       map[string][]byte // hash → plaintext value
 	projects      map[string]*resolver.AgentSeed
-	projectHashes map[string][]string  // project → []hash (reverse index for zeroization)
+	projectHashes map[string][]string // project → []hash (reverse index for zeroization)
 	mu            sync.RWMutex
 }
 
