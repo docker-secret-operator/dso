@@ -198,21 +198,37 @@ The review also reproduced (confirming, not discovering) the already-documented 
 
 ### Decision 4: SEC-3 — Plugin Directory Permissions in Container
 
-**Date**: [TBD]  
-**Status**: [Proposed]
+**Date**: 2026-07-28  
+**Status**: Implemented
 
 ### Context
-Plugin directory is currently writable by daemon user. Options:
+Plugin directory (and its contents) was `chown -R dso-user:dso-group` — the same identity the daemon runs as (`USER dso-user`). Verified empirically before designing a fix: a process running as `dso-user` could `rm` and recreate both a plugin binary and the SEC-2 hash manifest (exit code 0 for both), confirming a compromised daemon could substitute a malicious plugin and regenerate the manifest to match it, defeating SEC-2 entirely.
 
-1. **Root-owned, 0555** — Read-only for daemon user
-2. **Root-owned, 0750** — Writable only by root, readable by daemon
-3. **Mount read-only** — Docker volume mount as read-only
-4. **No change** — Accept current risk
+Options considered:
+1. **Root-owned, 0555** — Read-only for daemon user, no write bit for anyone including root
+2. **Root-owned, 0755** — Read+execute for daemon user (via "other" permission class), no write
+3. **Root-owned, 0750** — Writable only by root, readable only by root's group (would need `dso-user` added to a privileged group — more complex, no benefit over option 2)
+4. **Mount read-only** — Docker volume mount as read-only at deploy time
+5. **No change** — Accept current risk
 
 ### Decision
-**Chosen**: Root-owned, 0555 (read-only)
+**Chosen**: Root-owned, 0755 (option 2, not the originally-proposed 0555)
 
-**Rationale**: Simplest, no runtime mount complexity, prevents post-compromise persistence.
+### Rationale
+- **0555 vs 0755 makes no practical security difference**: root (UID 0) bypasses Unix permission-bit checks entirely regardless of the mode bits set — removing the owner-write bit (0555) doesn't stop root from writing, since root's bypass isn't gated by the file's permission bits at all. The originally-proposed 0555 would have implied a false sense of "even root can't write here," which isn't true. 0755 is the conventional default for directories elsewhere in this Dockerfile and communicates intent accurately: `dso-user` (falling into the "other" permission class, since it's neither the owner `root` nor in `root`'s group) gets read+execute but not write
+- **The critical fix is ownership, not permission bits**: if `dso-user` remained the *owner* even under a stricter mode like 0555, a compromised daemon (as `dso-user`) could simply `chmod` the directory back to writable, since `chmod` is a privilege of ownership independent of the file's current mode. Verified empirically: after the fix, `dso-user` attempting `chmod 777` on the directory fails with "Operation not permitted" (confirms ownership change, not just mode bits, is what closes the gap)
+- **Rejected "mount read-only at deploy time"**: pushes responsibility to operator configuration; the image should be secure by default without requiring extra flags
+- **Rejected "no change"**: leaves a confirmed, empirically-reproduced compromise-amplification path open
+
+### Verification (single review round, per the established stop rule)
+- Built the fixed image; confirmed via `docker run --user dso-user` that `rm`, file recreation, and `chmod` on the plugin directory/binaries/manifest all fail (`Permission denied`/`Operation not permitted`)
+- Confirmed no functional regression: the daemon (still running as `dso-user`) successfully loads a plugin end-to-end (`LOAD_RESULT: SUCCESS` — real subprocess launch, RPC handshake, hash verification all passing)
+- Confirmed bare-metal deployments are unaffected (systemd service already runs as `root`; installer's plugin directory already root-owned)
+- Confirmed via exhaustive grep that no runtime code path outside the (separate, root-run) bootstrap installer ever writes to the plugin directory — zero compatibility impact
+- No second review round triggered: single round found no new production-impacting defects
+
+### Rollback Implications
+`git revert`; validation = confirm `dso-user` regains write access to the plugin directory (reverting to the pre-SEC-3, insecure-but-original behavior).
 
 ---
 

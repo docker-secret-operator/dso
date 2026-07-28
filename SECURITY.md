@@ -221,6 +221,32 @@ from the manifest, or a hash mismatch all reject the plugin load.
   executing from an already-open, hash-verified file descriptor rather than
   a re-resolved path
 
+### Plugin Directory Ownership (Container) [SEC-3]
+
+The container image's plugin directory (`/usr/local/lib/dso/plugins`) and
+its contents are **root-owned**, not owned by the `dso-user` identity the
+daemon runs as. `dso-user` retains read+execute access (needed to run and
+hash-verify plugins) but has no write access.
+
+- **Threat addressed**: previously, the directory was `chown`-ed to
+  `dso-user:dso-group` — the same identity the daemon process runs as. If
+  the daemon were ever compromised (e.g. a future RCE), the attacker would
+  inherit write access to its own trusted plugin directory, letting them
+  overwrite a plugin binary *and* regenerate the SEC-2 hash manifest to
+  match their replacement — defeating SEC-2's verification entirely, since
+  the attacker would control both the malicious binary and the record used
+  to "verify" it
+- **Verified empirically** (not just by permission bits): confirmed a
+  process running as `dso-user` can no longer delete, overwrite, or
+  `chmod` the plugin directory or its contents — `chmod` specifically
+  fails because `dso-user` is no longer the *owner*, which is what matters;
+  an owner can always re-loosen permissions on their own files regardless
+  of current mode bits, so ownership (not just the permission bits) had to
+  change
+- **Bare-metal deployments are unaffected**: the systemd service already
+  runs the daemon as `root`, and the installer's plugin directory is
+  already root-owned — this was a container-specific gap
+
 ---
 
 ## Trust Boundaries
