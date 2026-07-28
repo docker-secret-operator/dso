@@ -12,6 +12,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/polling"
 	"github.com/docker-secret-operator/dso/internal/resolver"
 	"github.com/docker-secret-operator/dso/internal/util"
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -44,10 +45,16 @@ type Agent struct {
 
 // NewAgent creates a new Agent daemon.
 func NewAgent(docker *client.Client) *Agent {
-	// Initialize logger with fallback to development logger if production fails
-	logger, err := zap.NewProduction()
+	// Initialize logger via observability.NewLogger so output passes through
+	// the shared redaction core (SEC-1), with fallback to development config
+	// if production config fails. Both paths go through the same factory so
+	// neither can bypass redaction.
+	logger, err := observability.NewLogger("info", "json", true)
 	if err != nil {
-		logger = zap.Must(zap.NewDevelopment())
+		logger, err = observability.NewLogger("info", "console", false)
+		if err != nil {
+			logger = zap.NewNop()
+		}
 	}
 	return &Agent{
 		cache:           NewCache(),

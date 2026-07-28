@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/pkg/config"
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -205,9 +206,13 @@ type ApplyResult struct {
 func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error) {
 	startTime := time.Now()
 
-	// Create logger for the operation
-	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	// Create logger for the operation. SEC-1: routed through observability.NewLogger
+	// so output passes through the shared redaction core instead of a raw zap logger.
+	logger, err := observability.NewLogger("info", "console", false)
+	if err != nil {
+		logger = zap.NewNop()
+	}
+	defer func() { _ = logger.Sync() }()
 
 	// Try to connect to the running agent to trigger reconciliation
 	socketPath := "/run/dso/dso.sock"

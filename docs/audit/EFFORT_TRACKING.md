@@ -9,8 +9,8 @@ Better planning comes from comparing estimates to reality.
 
 | Issue | Type | Estimated | Actual | Notes | Status |
 |-------|------|-----------|--------|-------|--------|
-| BUG-1 | Race Fix | 1-2h | [pending] | Tickers map synchronization | ⏳ Not started |
-| SEC-1 | Logging | 1d | [pending] | Redaction engine wiring | ⏳ Not started |
+| BUG-1 | Race Fix | 1-2h | 1.5h | Tickers map synchronization | ✅ Complete |
+| SEC-1 | Logging | 1d | ~1d | Redaction engine wiring; found and reverted an over-redaction design flaw (key-based matching) before merge — the verification discipline caught a self-introduced regression, not the original bug | ✅ Complete |
 | SEC-2 | Security | 2d | [pending] | Plugin hash enforcement | ⏳ Not started |
 | SEC-3 | Security | 1d | [pending] | Plugin directory hardening | ⏳ Not started |
 | PRODUCT-1 | Product | Async | [pending] | Dashboard merge/archive decision | ⏳ Not started |

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
 )
 
@@ -23,7 +24,7 @@ type EventReactorImpl struct {
 	lastSeenMu sync.RWMutex
 
 	// Batching (5s window)
-	batchTicker *time.Ticker
+	batchTicker  *time.Ticker
 	batchTimeout time.Duration
 
 	// State management
@@ -82,7 +83,9 @@ func (pq *PriorityQueue) Pop() interface{} {
 
 // NewEventReactorImpl creates a new EventReactorImpl instance
 func NewEventReactorImpl(rotationTrigger RotationTrigger) *EventReactorImpl {
-	logger, err := zap.NewProduction()
+	// SEC-1: route through observability.NewLogger so output passes through
+	// the shared redaction core instead of a raw zap logger.
+	logger, err := observability.NewLogger("info", "json", true)
 	if err != nil {
 		logger = zap.NewNop()
 	}

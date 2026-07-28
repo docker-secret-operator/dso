@@ -33,6 +33,13 @@ func NewRedactionPatterns() *RedactionPatterns {
 			regexp.MustCompile(`(?i)[a-z][a-z0-9+\-.]*://[^:@/\s]+:[^@\s]{1,}@`),
 			// sk-style API keys (OpenAI, Anthropic, etc.)
 			regexp.MustCompile(`(?i)\bsk-[a-zA-Z0-9]{10,}\b`),
+			// Vault tokens: current format (hvs.<base62>) and legacy format (s.<base62>).
+			// These appear bare (not in key=value form) in Vault client error messages
+			// such as "failed to renew hvs.CAESIQ...: permission denied", which the
+			// generic key=value pattern above does not catch. Verified gap via
+			// TestVaultTokenGapCheck before adding (SEC-1).
+			regexp.MustCompile(`\bhvs\.[A-Za-z0-9_-]{10,}\b`),
+			regexp.MustCompile(`\bs\.[A-Za-z0-9]{20,}\b`),
 		},
 	}
 }

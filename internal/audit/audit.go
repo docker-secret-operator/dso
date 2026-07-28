@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +25,19 @@ var auditLogger *zap.Logger
 
 func InitAuditLogger(l *zap.Logger) {
 	if l == nil {
-		l, _ = zap.NewProduction()
+		// SEC-1: route through observability.NewLogger so audit output passes
+		// through the shared redaction core instead of a raw zap logger.
+		var err error
+		l, err = observability.NewLogger("info", "json", true)
+		if err != nil {
+			l = zap.NewNop()
+		}
+	} else {
+		// SEC-1: InitAuditLogger is exported, so a future caller could pass an
+		// externally-constructed logger that never went through
+		// observability.NewLogger. EnsureRedacted guarantees the same
+		// no-secrets-in-logs guarantee applies regardless of how l was built.
+		l = observability.EnsureRedacted(l)
 	}
 	auditLogger = l.Named("audit")
 }

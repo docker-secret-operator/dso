@@ -118,12 +118,15 @@ DSO agent communicates via Unix domain socket (`/run/dso/dso.sock`). Socket perm
 ### Log Redaction
 
 All DSO output passes through a redaction engine, masking:
-- API keys (`api_key=`, `sk-*`)
-- Tokens (`token=`, `authorization:`)
+- API keys (`api_key=`, `sk-*`, `AKIA*`)
+- Tokens (`token=`, `authorization:`, Bearer tokens, Vault tokens `hvs.*`/`s.*`)
 - Passwords and secrets
 - Provider credentials
 
-Secrets will not appear in logs, even when operations fail.
+Secrets will not appear in logs, even when operations fail. The redaction
+engine is wired into every logger construction path via a `zapcore.Core`
+wrapper (`pkg/observability`), so message text, structured fields, and
+wrapped errors are all covered — not just direct `zap.Error()` calls.
 
 ### Event Deduplication
 

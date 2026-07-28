@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **[BUG-1] Race condition in ticker map synchronization** — Fixed concurrent map writes panic
+  - Issue: `tickers` map in `runMainLoop()` accessed concurrently from `startPollingGoroutines`, `updateTicker`, and cleanup without synchronization
+  - Risk: `fatal error: concurrent map writes` under high-secret load
+  - Fix: Added `tickersMu sync.Mutex` to protect all map access
+  - Impact: Eliminates crash risk, enables safe operation at scale
+  - Testing: 10+ race detector iterations, zero races detected
+
+### Security
+
+- **[SEC-1] Log redaction engine wired into production logging** — Closed the gap where the documented "no secrets in logs" guarantee (`SECURITY.md`) was unimplemented
+  - Issue: `pkg/security`'s redaction engine (`RedactionPatterns`, `LoggingAuditValidator`) existed but was referenced only by its own tests; 5 independent logger-construction sites (`internal/agent`, `internal/events`, `internal/cli/apply.go`, `internal/audit`, plus `pkg/observability` itself) all built raw `zap.Logger` instances that never redacted output
+  - Fix: Added a `zapcore.Core` decorator (`pkg/observability/redaction.go`) wired in via `zap.WrapCore`, applied inside `observability.NewLogger()` and the package's global logger `init()`. Redirected all 4 bypass construction sites to the shared factory. Added `observability.EnsureRedacted()` so externally-constructed loggers (e.g. passed into `audit.InitAuditLogger`) can opt into the same guarantee
+  - Coverage: redacts the log entry message and every field (`zap.String`, `zap.Error`, `zap.Any` wrapping an error, `zap.ByteString`), including fields attached via `.With()`/`.Named()` child loggers
+  - Gap closed: added explicit patterns for bare Vault tokens (`hvs.*` current format, `s.*` legacy format) that the existing key=value-shaped regex did not catch — verified via a failing test before the pattern was added
+  - Correction made during review: an early draft applied field-*name*-based redaction (any key containing "secret" treated as sensitive) which would have redacted the ~30 call sites across `internal/agent`/`internal/server`/`internal/injector` that log a secret's *identifier* (e.g. `zap.String("secret_name", name)`) — this was reverted after finding zero evidence of any call site logging a raw credential *value* through a sensitively-named field. Only value-content pattern matching is applied; field names alone never trigger redaction
+  - Additional gap closed during security review: `zap.Any()`/`zap.Reflect()` fields carrying an arbitrary struct (not a string or error) resolve to `zapcore.ReflectType` and previously bypassed redaction entirely — reachable today via `internal/events/backpressure.go`'s `zap.Any("panic", r)` on recovered panic values. Fixed by round-tripping the value through JSON, applying the same pattern-based redaction to the marshaled text, then unmarshaling back so the encoder still emits structured output
+  - Testing: 10-case redaction matrix (AWS keys, Bearer tokens, password=value, Vault tokens, wrapped errors, structured fields, `.With()`/`.Named()` propagation, `zap.Any` with error, `zap.Any` with arbitrary struct), plus a dedicated regression test proving secret-identifier fields are *not* over-redacted, plus audit-log-specific tests proving `secret_name`/`container_id` survive for compliance while pattern-matching values still redact
+
+---
+
 ## [3.5.21] - 2026-07-21
 
 ### Added

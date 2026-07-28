@@ -86,8 +86,8 @@ Options:
 
 ### Decision 2: SEC-1 — Logging Redaction Strategy
 
-**Date**: [TBD]  
-**Status**: [Proposed]
+**Date**: 2026-07-28  
+**Status**: Implemented
 
 ### Context
 Redaction engine exists but is unwired. Need to decide implementation approach:
@@ -98,13 +98,28 @@ Redaction engine exists but is unwired. Need to decide implementation approach:
 4. **Custom logger wrapper** — Thin wrapper around zap that redacts automatically
 
 ### Considerations
-- **Call-site enforcement** is risky (developers will forget)
-- **Core wrapper** is transparent (all logs automatically redacted)
-- **Hook approach** is between the two
-- **Custom wrapper** requires changing all logger construction sites
+- **Call-site enforcement** is risky (developers will forget); also 112 existing `zap.Error()` call sites across 21 files would each need auditing
+- **Core wrapper** is transparent (all logs automatically redacted, including future code)
+- **Hook approach**: rejected — zap's `Hook` is documented for side-effects (metrics/counters), not for mutating written output; `WrapCore` is the documented mechanism for transformation
+- **Custom wrapper**: rejected — would require changing the type of every `logger *zap.Logger` struct field across ~15 files, a much larger diff than necessary
 
 ### Decision
-**Chosen**: [TBD — Will be decided during SEC-1 implementation]
+**Chosen**: Option 1 — `zapcore.Core` wrapper via `zap.WrapCore`, applied inside `observability.NewLogger()` (and the package's `init()`), plus redirecting the 4 direct `zap.NewProduction()`/`zap.NewDevelopment()` bypass sites to that shared factory.
+
+### Rationale
+- `zap.WrapCore` is zap's own documented extension point for this exact need
+- Wrapping at the Core level covers every field and message automatically, including ones added later via `.With()`/`.Named()`, without touching any of the 112 individual `zap.Error()` call sites
+- `pkg/security` (redaction patterns) and `pkg/observability` had zero internal imports before this change — confirmed no import cycle in either direction before adding the dependency
+
+### Critical correction made during implementation
+An early draft additionally redacted any field whose *key* contained a sensitive substring (via `security.ShouldLogField`), intended to catch values like `zap.String("db_password", "hunter2ultrasecret")` where the value itself carries no recognizable pattern. Before shipping, a repository-wide grep proved **zero production call sites** actually log a raw credential value through a sensitively-named field — but ~30 call sites across `internal/agent`, `internal/server`, and `internal/injector` legitimately use `zap.String("secret", secretName)` / `zap.String("secret_name", secretName)` to log a secret's *identifier*, not its value. Key-based redaction would have silently destroyed operational and audit visibility (see `internal/audit/audit.go`'s `secret_name` field, documented as "required for compliance") to guard against a threat with no evidence in this codebase. The key-based check was removed; only value-content pattern matching remains. `TestRedaction_DoesNotOverRedactSecretIdentifierFields` locks in the corrected behavior.
+
+### Trade-offs Accepted
+- Redaction happens on every log write (small CPU cost from regex matching); acceptable since logging is not a hot path in this codebase
+- A separate, older redaction utility (`pkg/observability.Redact`/`ShouldRedactKey`, used only by `internal/core/compose.go`'s `PrintRedactedCompose` for CLI env-var display) was found during review and left untouched — it already unconditionally redacts, is not a zap logging path, and is out of SEC-1's scope. Flagged as a candidate for a future consolidation task, not fixed here.
+
+### Rollback Implications
+`git revert` the SEC-1 commit(s); validation = confirm `pkg/security.RedactionPatterns` is referenced only by its own tests again (reverts to the pre-SEC-1 baseline bypass state).
 
 ---
 
@@ -152,8 +167,8 @@ Plugin directory is currently writable by daemon user. Options:
 
 ### Decision 5: BUG-1 — Ticker Synchronization Approach
 
-**Date**: [TBD]  
-**Status**: [Proposed]
+**Date**: 2026-07-28  
+**Status**: Implemented
 
 ### Context
 Tickers map needs synchronization. Options:
@@ -163,7 +178,30 @@ Tickers map needs synchronization. Options:
 3. **Refactor to goroutine channels** — Eliminate map entirely, use channels
 
 ### Decision
-**Chosen**: [TBD — Will depend on implementation details]
+**Chosen**: Option 1 — Add `tickersMu sync.Mutex` to Agent struct
+
+### Rationale
+- Matches existing pattern (`tickerStopMu` protecting `tickerStopChans`)
+- Simple, proven synchronization primitive (sync.Mutex)
+- No performance impact (lock duration microseconds)
+- Easy to verify with `-race` flag
+- Minimal critical sections (only map operations)
+
+### Trade-offs Accepted
+- Slightly more struct memory overhead (one mutex field)
+- Multiple mutexes (tickersMu + tickerStopMu) instead of one global lock
+- Trade-off justified: fine-grained locking enables better scalability
+
+### Implementation Details
+- Mutex acquired BEFORE any map operation
+- Released immediately after map operation completes
+- Slow operations (ticker creation, channel sends) done outside locks
+- Lock order consistent (tickerStopMu → tickersMu if both needed)
+
+### Verification
+- All 3 concurrent access points protected ✓
+- Race detector: 10+ iterations, zero races ✓
+- Regression tests: TestTickerMapRace, TestUpdateTickerConcurrency ✓
 
 ---
 
