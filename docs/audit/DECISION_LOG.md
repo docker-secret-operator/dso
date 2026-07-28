@@ -272,6 +272,39 @@ Tickers map needs synchronization. Options:
 
 ---
 
+### Decision 6: SEC-4 — Path Validation Symlink Scope
+
+**Date**: 2026-07-28  
+**Status**: Implemented
+
+### Context
+`pkg/config.IsSafePath` performs only lexical path resolution (`Clean`/`Abs`/`Rel`) with no `filepath.EvalSymlinks` call — confirmed by an already-existing test in this codebase (`TestIsSafePathSymlinkEscapeAttempt`) that created a real escaping symlink and only logged a warning (never asserted failure) when `IsSafePath` accepted it. The function has two branches: `baseDir == ""` (5 of 6 callers — config file, compose file, CLI import/export paths, all invoked directly by an already-privileged operator) and `baseDir != ""` (1 caller — `FileProvider`'s secrets directory, a genuine containment boundary).
+
+### Options
+1. **Fix both branches uniformly** — apply symlink resolution regardless of whether `baseDir` is empty
+2. **Fix only the `baseDir != ""` branch** — the one genuine privilege/containment boundary
+3. **Blindly call `filepath.EvalSymlinks` on the full resolved path** — simplest, but breaks any caller whose target may not exist yet
+
+### Decision
+**Chosen**: Option 2, implemented via a `rejectEscapingSymlink` helper covering the full path's parent-directory chain plus an explicit leaf-symlink check — not option 3's naive full-path resolution.
+
+### Rationale
+- The `baseDir == ""` callers are all CLI-invoked by an operator who already has whatever filesystem access their own account grants — following a symlink of their own choosing doesn't cross a privilege boundary the way it would for `FileProvider`, where `basePath` represents an admin-configured trust boundary that a *different*, potentially less-trusted request path (the local RPC socket) resolves secret names against
+- Option 3 was rejected after tracing `internal/cli/export.go`: it calls `os.Create(safePath)` on an output file that may not exist yet. `filepath.EvalSymlinks` requires every path component to exist, so applying it to the full path would break this legitimate case. Resolving only the *parent* directory (which the operation already requires to exist) avoids this while still catching an intermediate symlinked directory
+- The leaf-symlink check (via `os.Lstat`) reuses the exact convention `pkg/provider/load.go`'s `validatePluginPath` already established for plugin binaries — consistent with existing codebase idiom rather than inventing a new pattern
+
+### Verification (single review round, per the established stop rule)
+- Turned the existing toothless test into a real assertion; confirmed it fails without the fix and passes with it
+- 3 new tests: leaf-is-symlink rejection, new-file-creation tolerance, within-bounds symlink still allowed (proves the fix targets escapes, not symlinks generally)
+- Full repo `go test ./...`: all 6 real callers unaffected
+- Concurrency: 50×50 concurrent calls, 0 races (pure function, no shared state)
+- gosec: 0 new findings from the new code; 1 pre-existing unrelated finding (line 301, Docker socket check, untouched by this diff)
+
+### Rollback Implications
+`git revert`; validation = confirm `TestIsSafePathSymlinkEscapeAttempt` reverts to warning-only (no longer asserting failure) and the symlink escape succeeds again.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code

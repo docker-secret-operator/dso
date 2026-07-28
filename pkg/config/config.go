@@ -364,7 +364,54 @@ func IsSafePath(baseDir, userPath string) (string, error) {
 		return "", fmt.Errorf("path traversal detected: %s", userPath)
 	}
 
+	// [SEC-4] The checks above are purely lexical (Clean/Abs/Rel): they
+	// prevent literal ".." traversal but do not detect a symlink that
+	// resolves outside baseDir. baseDir represents a genuine trust
+	// boundary here (e.g. FileProvider's configured secrets directory) --
+	// unlike the baseDir=="" callers above, which are all CLI-invoked by an
+	// already-privileged operator and don't cross a privilege boundary by
+	// following a symlink of their own choosing.
+	if err := rejectEscapingSymlink(baseAbs, fullAbs); err != nil {
+		return "", err
+	}
+
 	return fullAbs, nil
+}
+
+// rejectEscapingSymlink defends against two symlink-based ways fullAbs could
+// resolve outside baseAbs despite passing the lexical containment check
+// above [SEC-4]:
+//  1. An intermediate directory component is a symlink pointing outside
+//     baseAbs. Resolved via the parent directory rather than the full path,
+//     since the full path's leaf component may not exist yet (e.g. an
+//     export command creating a new output file) -- filepath.EvalSymlinks
+//     requires every component to exist, so resolving just the parent
+//     tolerates a not-yet-created leaf while still catching a malicious
+//     intermediate symlink.
+//  2. The leaf itself already exists and is a symlink (e.g. planted inside
+//     an otherwise-legitimate secrets directory to redirect a read or write
+//     to an unintended file). Detected via Lstat, matching the same
+//     symlink-rejection convention pkg/provider/load.go's validatePluginPath
+//     already uses for plugin binaries. A nonexistent leaf (Lstat failing
+//     with "not exist") is not an error -- creating a new file is legitimate.
+func rejectEscapingSymlink(baseAbs, fullAbs string) error {
+	parent := filepath.Dir(fullAbs)
+	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
+		resolvedFull := filepath.Join(resolvedParent, filepath.Base(fullAbs))
+		rel, err := filepath.Rel(baseAbs, resolvedFull)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("path traversal detected: resolved path escapes base directory via a symlinked parent directory")
+		}
+	}
+	// If the parent doesn't exist (or EvalSymlinks otherwise fails), skip
+	// this check silently -- the subsequent file operation (open/create)
+	// will fail on its own with a clear "no such file or directory" error.
+
+	if info, err := os.Lstat(fullAbs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path is a symlink, refusing to follow: %s", fullAbs)
+	}
+
+	return nil
 }
 
 func pathWithinDir(path, dir string) bool {

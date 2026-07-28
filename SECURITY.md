@@ -247,6 +247,42 @@ hash-verify plugins) but has no write access.
   runs the daemon as `root`, and the installer's plugin directory is
   already root-owned — this was a container-specific gap
 
+### Path Validation Symlink Resolution [SEC-4]
+
+`pkg/config.IsSafePath` (used to validate config file paths, secret file
+paths, compose file paths, and CLI-supplied import/export paths) now
+detects symlinks that would resolve outside the intended base directory,
+in addition to its existing lexical (`..`-traversal) checks.
+
+- **Threat addressed**: previously, `IsSafePath` only performed lexical
+  path resolution (`filepath.Clean`/`Abs`/`Rel`) — it verified a path
+  didn't contain a literal `..` escape, but did not detect a symlink
+  planted inside an otherwise-trusted directory that resolves elsewhere.
+  Confirmed via an existing (but non-enforcing) test in this codebase: a
+  symlink inside a base directory pointing outside it was accepted with no
+  error prior to this fix
+- **Scope**: the fix applies specifically to callers that pass a non-empty
+  `baseDir` (a genuine containment boundary, e.g. `FileProvider`'s
+  configured secrets directory) — CLI-invoked callers that pass an empty
+  `baseDir` (config file, compose file, import/export paths) are not
+  affected, since those paths are chosen by an already-privileged operator
+  at the command line and don't cross a privilege boundary by following a
+  symlink of their own choosing
+- **Two checks added**: (1) the parent directory chain is resolved via
+  `filepath.EvalSymlinks` and re-verified against the base directory,
+  catching an intermediate symlinked directory; (2) the leaf path itself
+  is checked via `Lstat` and rejected if it is a symlink, matching the
+  same convention `pkg/provider/load.go`'s plugin-binary validation
+  already uses. A leaf that does not exist yet (e.g. a new export output
+  file) is not treated as an error
+- **Known limitation**: a check-then-open window remains between
+  `IsSafePath` returning success and the caller's subsequent
+  `os.Open`/`os.Create` call, during which a symlink could theoretically
+  be swapped in by an attacker who already has write access to the
+  directory being validated. This is the same class of inherent,
+  pre-existing limitation already documented for SEC-2's plugin hash
+  verification, not something this fix introduces or worsens
+
 ---
 
 ## Trust Boundaries

@@ -356,7 +356,11 @@ func TestIsSafePathWithRelativePaths(t *testing.T) {
 	}
 }
 
-// TestIsSafePathSymlinkEscapeAttempt rejects symlinks that escape
+// TestIsSafePathSymlinkEscapeAttempt is a SEC-4 regression test. It was
+// originally written as a warning-only test (t.Logf, never t.Error/t.Fatal)
+// -- confirmed by running it before the fix: it logged "Warning: IsSafePath
+// should probably reject symlinks..." and passed anyway, since err was nil.
+// Now asserts the rejection for real.
 func TestIsSafePathSymlinkEscapeAttempt(t *testing.T) {
 	dir := t.TempDir()
 	baseDir := filepath.Join(dir, "dso")
@@ -376,7 +380,81 @@ func TestIsSafePathSymlinkEscapeAttempt(t *testing.T) {
 
 	_, err := IsSafePath(baseDir, target)
 	if err == nil {
-		t.Logf("Warning: IsSafePath should probably reject symlinks that escape the base directory")
+		t.Fatal("SEC-4 REGRESSION: IsSafePath must reject a path that traverses a symlink escaping the base directory, but it returned no error")
+	}
+	t.Logf("correctly rejected: %v", err)
+}
+
+// TestIsSafePath_LeafIsSymlink is a SEC-4 regression test: a secret file
+// that exists but is itself a symlink (e.g. planted inside an
+// otherwise-legitimate secrets directory to redirect a read to an unintended
+// file) must be rejected even though the symlink's immediate location is
+// correctly inside baseDir.
+func TestIsSafePath_LeafIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "dso")
+	if err := os.Mkdir(baseDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	realSecret := filepath.Join(dir, "real-secret.txt")
+	if err := os.WriteFile(realSecret, []byte("actual content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	leafSymlink := filepath.Join(baseDir, "innocuous-name.json")
+	if err := os.Symlink(realSecret, leafSymlink); err != nil {
+		t.Skipf("Symlinks not supported: %v", err)
+	}
+
+	_, err := IsSafePath(baseDir, "innocuous-name.json")
+	if err == nil {
+		t.Fatal("SEC-4 REGRESSION: IsSafePath must reject a leaf path that is itself a symlink, but it returned no error")
+	}
+	t.Logf("correctly rejected: %v", err)
+}
+
+// TestIsSafePath_NewFileNotYetExisting confirms the SEC-4 fix does not
+// regress the legitimate "create a new file" case (e.g. internal/cli/
+// export.go's os.Create(safePath), where the target file does not exist
+// yet). filepath.EvalSymlinks requires every path component to exist, so
+// the fix must tolerate a nonexistent leaf without erroring.
+func TestIsSafePath_NewFileNotYetExisting(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "dso")
+	if err := os.Mkdir(baseDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	safePath, err := IsSafePath(baseDir, "brand-new-output-file.txt")
+	if err != nil {
+		t.Fatalf("expected success validating a not-yet-existing file path, got: %v", err)
+	}
+	if safePath == "" {
+		t.Fatal("expected a non-empty resolved path")
+	}
+}
+
+// TestIsSafePath_SymlinkedParentDirNotEscaping confirms a symlinked
+// intermediate directory that stays WITHIN baseDir is still allowed --
+// the fix must reject escapes, not symlinks in general.
+func TestIsSafePath_SymlinkedParentDirNotEscaping(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "dso")
+	realSubdir := filepath.Join(baseDir, "real-subdir")
+	if err := os.MkdirAll(realSubdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A symlink inside baseDir pointing to another directory ALSO inside baseDir.
+	linkedSubdir := filepath.Join(baseDir, "linked-subdir")
+	if err := os.Symlink(realSubdir, linkedSubdir); err != nil {
+		t.Skipf("Symlinks not supported: %v", err)
+	}
+
+	_, err := IsSafePath(baseDir, filepath.Join("linked-subdir", "file.txt"))
+	if err != nil {
+		t.Fatalf("expected success for a symlink that stays within baseDir, got: %v", err)
 	}
 }
 
