@@ -10,7 +10,7 @@ Better planning comes from comparing estimates to reality.
 | Issue | Type | Estimated | Actual | Notes | Status |
 |-------|------|-----------|--------|-------|--------|
 | BUG-1 | Race Fix | 1-2h | 1.5h | Tickers map synchronization | ✅ Complete |
-| SEC-1 | Logging | 1d | ~1d | Redaction engine wiring; found and reverted an over-redaction design flaw (key-based matching) before merge — the verification discipline caught a self-introduced regression, not the original bug | ✅ Complete |
+| SEC-1 | Logging | 1d | ~1.5d | Redaction engine wiring across 2 commits: (1) initial wiring, found and reverted an over-redaction design flaw (key-based matching); (2) final external review round found 2 more genuine defects — sampling silently bypassed (Check() only tested Enabled(), never delegated to wrapped core), and 2 field types (Binary, ArrayMarshaler) unhandled. Neither would have surfaced without a checklist requiring concrete reproduction, not just code reading | ✅ Complete |
 | SEC-2 | Security | 2d | [pending] | Plugin hash enforcement | ⏳ Not started |
 | SEC-3 | Security | 1d | [pending] | Plugin directory hardening | ⏳ Not started |
 | PRODUCT-1 | Product | Async | [pending] | Dashboard merge/archive decision | ⏳ Not started |
