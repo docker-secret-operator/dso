@@ -51,11 +51,18 @@ func (c *redactingCore) With(fields []zapcore.Field) zapcore.Core {
 	}
 }
 
-// Check delegates to the wrapped core's level-enabled logic, then registers
-// this core (not the raw wrapped core) as the one to call Write on, so
-// redaction is not skipped by zap's fast-path optimizations.
+// Check delegates the logging decision to the wrapped core using a throwaway
+// CheckedEntry, then — only if the wrapped core would log the entry —
+// registers THIS core (not the wrapped one) on the real ce, so Write() still
+// redacts. A naive `if c.Enabled(level) { ce.AddCore(entry, c) }` (checking
+// only the level) would silently bypass zap's sampling: zapcore's sampler
+// implements its rate-limiting decision inside Check(), not Enabled(), so
+// skipping the delegation call disables sampling entirely for any sampled
+// core wrapped by this decorator. Verified: zap.NewProductionConfig()
+// (used throughout this codebase) enables sampling by default
+// (Initial:100, Thereafter:100), so this matters in production.
 func (c *redactingCore) Check(entry zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
-	if c.Enabled(entry.Level) {
+	if downstream := c.Core.Check(entry, nil); downstream != nil {
 		return ce.AddCore(entry, c)
 	}
 	return ce
@@ -102,11 +109,31 @@ func (c *redactingCore) redactField(f zapcore.Field) zapcore.Field {
 		f.String = c.redactor.RedactString(f.String)
 		return f
 
-	case zapcore.ByteStringType:
+	case zapcore.ByteStringType, zapcore.BinaryType:
+		// zap.ByteString and zap.Binary both carry a plain []byte in
+		// f.Interface (verified: zap.Binary's field.Interface is []uint8,
+		// identical representation to ByteStringType), so both are handled
+		// identically via direct pattern matching on the byte content.
 		if b, ok := f.Interface.([]byte); ok {
 			f.Interface = []byte(c.redactor.RedactString(string(b)))
 		}
 		return f
+
+	case zapcore.ArrayMarshalerType, zapcore.ObjectMarshalerType:
+		// zap.Strings/zap.Ints/etc. (ArrayMarshalerType) and zap.Object
+		// (ObjectMarshalerType) wrap values in zap's own private marshaler
+		// types (e.g. zap.stringArray), not plain slices/structs, so they
+		// can't be pattern-matched directly. Verified that json.Marshal
+		// correctly serializes these wrapper types via reflection (they are
+		// just named slice/struct types underneath), and that zap's JSON
+		// encoder renders ReflectType fields via encoding/json regardless of
+		// the concrete type — so converting to ReflectType with the
+		// redacted, round-tripped value re-encodes correctly.
+		// Real production call site: zap.Strings("secrets", secretList) in
+		// internal/watcher/controller.go and others logs lists of secret
+		// *names* (identifiers, safe by this codebase's convention), but
+		// this closes the type for any future caller logging real values.
+		return zapcore.Field{Key: f.Key, Type: zapcore.ReflectType, Interface: c.redactReflected(f.Interface)}
 
 	case zapcore.ErrorType:
 		if err, ok := f.Interface.(error); ok {

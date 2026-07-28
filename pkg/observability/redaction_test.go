@@ -2,10 +2,12 @@ package observability
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -118,6 +120,27 @@ func TestRedaction_Matrix(t *testing.T) {
 			},
 			mustNotAppear: []string{"hvs.CAESIQSTRUCTLEAK123456"},
 		},
+		{
+			// zap.Binary resolves to zapcore.BinaryType, a distinct type from
+			// ByteStringType that was not handled until this review found the gap.
+			name: "zap.Binary field",
+			log: func(l *zap.Logger) {
+				l.Info("payload", zap.Binary("data", []byte("token=BINARYLEAK123456")))
+			},
+			mustNotAppear: []string{"BINARYLEAK123456"},
+		},
+		{
+			// zap.Strings resolves to zapcore.ArrayMarshalerType, wrapping a
+			// private zap.stringArray type — not handled until this review
+			// found the gap. Real call sites (internal/watcher/controller.go)
+			// use this for secret *name* lists, but a value-carrying element
+			// must still be redacted if one is ever passed.
+			name: "zap.Strings field with a pattern-matching element",
+			log: func(l *zap.Logger) {
+				l.Info("batch", zap.Strings("items", []string{"safe-name", "password=ARRAYLEAK789"}))
+			},
+			mustNotAppear: []string{"ARRAYLEAK789"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -169,6 +192,19 @@ func TestRedaction_DoesNotOverRedactSecretIdentifierFields(t *testing.T) {
 			}
 		})
 	}
+
+	// zap.Strings("secrets", secretList) at internal/watcher/controller.go
+	// and elsewhere logs lists of secret *names*, not values. Confirms the
+	// ArrayMarshalerType handling added during final review does not
+	// over-redact identifier lists the same way StringType handling doesn't.
+	t.Run("zap.Strings with identifier values is preserved", func(t *testing.T) {
+		buf.Reset()
+		logger.Info("tracking", zap.Strings("secrets", []string{"db-password", "api-token-name"}))
+		out := buf.String()
+		if !strings.Contains(out, "db-password") || !strings.Contains(out, "api-token-name") {
+			t.Errorf("legitimate secret-name list was over-redacted: %s", out)
+		}
+	})
 }
 
 // TestRedaction_PreservesZapBehavior verifies the Core wrapper is a transparent
@@ -227,6 +263,71 @@ func TestRedaction_PreservesZapBehavior(t *testing.T) {
 			t.Errorf("level filtering broken: warn message was suppressed")
 		}
 	})
+
+	// Regression test for a defect found during final review: an earlier
+	// Check() implementation only tested c.Enabled(level) before registering
+	// itself as the Write target, which silently bypasses zapcore's sampler
+	// (zapcore.NewSamplerWithOptions / zap.Config.Sampling) — its rate-limit
+	// decision lives inside Check(), not Enabled(). zap.NewProductionConfig(),
+	// used throughout this codebase, enables sampling by default
+	// (Initial:100, Thereafter:100), so this is a real production concern,
+	// not a hypothetical one.
+	t.Run("sampling is preserved, not bypassed", func(t *testing.T) {
+		buf.Reset()
+		inner := zapcore.NewCore(
+			zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+			zapcore.AddSync(buf),
+			zapcore.DebugLevel,
+		)
+		// Allow only 2 identical log lines per (long) tick, then drop the rest.
+		sampled := zapcore.NewSamplerWithOptions(inner, time.Hour, 2, 0)
+		wrapped := newRedactingCore(sampled)
+		l := zap.New(wrapped)
+
+		for i := 0; i < 20; i++ {
+			l.Info("repeated message")
+		}
+		_ = l.Sync()
+
+		lines := strings.Count(buf.String(), "\n")
+		if lines > 3 {
+			t.Errorf("sampling was bypassed: wrote %d lines for 20 identical calls under a sampler configured for ~2; "+
+				"Check() must delegate to the wrapped core's Check(), not just Enabled()", lines)
+		}
+		if lines == 0 {
+			t.Errorf("sampling suppressed everything: expected ~2 lines to pass through, got 0")
+		}
+	})
+
+	// Caller information and stack traces are attached to the zapcore.Entry
+	// by the *zap.Logger itself (via runtime.Caller / debug.Stack) before
+	// Check()/Write() are ever invoked. redactingCore.Write() only rewrites
+	// entry.Message and the field slice — it never touches entry.Caller or
+	// entry.Stack — so both must survive unchanged through the wrapper.
+	t.Run("caller information and stack traces survive unchanged", func(t *testing.T) {
+		buf.Reset()
+		encoderCfg := zap.NewProductionEncoderConfig()
+		core := zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderCfg),
+			zapcore.AddSync(buf),
+			zapcore.DebugLevel,
+		)
+		wrapped := newRedactingCore(core)
+		l := zap.New(wrapped, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+
+		l.Error("failure with token=STACKTRACELEAKCHECK999")
+
+		out := buf.String()
+		if !strings.Contains(out, `"caller":"observability/redaction_test.go`) {
+			t.Errorf("caller info missing or altered: %s", out)
+		}
+		if !strings.Contains(out, `"stacktrace":`) {
+			t.Errorf("stacktrace missing: %s", out)
+		}
+		if strings.Contains(out, "STACKTRACELEAKCHECK999") {
+			t.Errorf("secret leaked via unredacted path: %s", out)
+		}
+	})
 }
 
 // TestNewLogger_AppliesRedaction verifies the actual public factory (used by
@@ -245,3 +346,150 @@ func TestNewLogger_AppliesRedaction(t *testing.T) {
 	l.Info("smoke test", zap.String("token", "AKIASMOKETESTVALUE01"))
 	_ = l.Sync()
 }
+
+// TestRedactReflected_SafetyProperties verifies the JSON round-trip used for
+// zap.Any/zap.Reflect/zap.Strings/zap.Object cannot panic, crash, or hang,
+// regardless of what is logged. Each subtest is expected to complete without
+// panicking and without leaking a secret if one happens to be present.
+func TestRedactReflected_SafetyProperties(t *testing.T) {
+	core := newRedactingCore(zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		zapcore.AddSync(&bytes.Buffer{}),
+		zapcore.DebugLevel,
+	)).(*redactingCore)
+
+	t.Run("cyclic pointer struct does not panic or hang", func(t *testing.T) {
+		type node struct {
+			Name string
+			Next *node
+		}
+		a := &node{Name: "a"}
+		b := &node{Name: "b"}
+		a.Next = b
+		b.Next = a // cycle
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = core.redactReflected(a) // must not panic
+		}()
+		select {
+		case <-done:
+			// completed without hanging or panicking
+		case <-time.After(5 * time.Second):
+			t.Fatal("redactReflected hung on a cyclic struct (encoding/json should detect the cycle and return an error, not loop)")
+		}
+	})
+
+	t.Run("unsupported types (chan, func) do not panic", func(t *testing.T) {
+		unsupported := []interface{}{
+			make(chan int),
+			func() {},
+			map[string]interface{}{"nested": make(chan int)},
+		}
+		for _, v := range unsupported {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("redactReflected panicked on %T: %v", v, r)
+					}
+				}()
+				_ = core.redactReflected(v)
+			}()
+		}
+	})
+
+	t.Run("nil value does not panic", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("redactReflected panicked on nil: %v", r)
+			}
+		}()
+		result := core.redactReflected(nil)
+		if result != nil {
+			t.Errorf("expected nil to round-trip as nil, got %v", result)
+		}
+	})
+
+	t.Run("preserves non-sensitive nested data", func(t *testing.T) {
+		type inner struct {
+			ContainerID string
+			Attempt     int
+		}
+		type outer struct {
+			Stage  string
+			Detail inner
+		}
+		v := outer{Stage: "rotate", Detail: inner{ContainerID: "abc123", Attempt: 3}}
+		result := core.redactReflected(v)
+		b, _ := json.Marshal(result)
+		out := string(b)
+		if !strings.Contains(out, "abc123") || !strings.Contains(out, "rotate") || !strings.Contains(out, "3") {
+			t.Errorf("non-sensitive nested data was altered: %s", out)
+		}
+	})
+
+	t.Run("redacts sensitive value nested inside a struct", func(t *testing.T) {
+		type payload struct {
+			Reason string
+			Detail string
+		}
+		v := payload{Reason: "auth failed", Detail: "password=NESTEDPAYLOADLEAK123"}
+		result := core.redactReflected(v)
+		b, _ := json.Marshal(result)
+		if strings.Contains(string(b), "NESTEDPAYLOADLEAK123") {
+			t.Errorf("secret nested inside a struct was not redacted: %s", b)
+		}
+	})
+}
+
+// BenchmarkRedaction_StringField and BenchmarkRedaction_ReflectField give a
+// baseline for the per-log-call cost the redaction wrapper adds, since every
+// production log entry now passes through it.
+func BenchmarkRedaction_StringField(b *testing.B) {
+	core := newRedactingCore(zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		zapcore.AddSync(&discardSink{}),
+		zapcore.DebugLevel,
+	))
+	l := zap.New(core)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Info("rotation completed", zap.String("secret", "db-password"), zap.Int("attempt", 1))
+	}
+}
+
+func BenchmarkRedaction_ReflectField(b *testing.B) {
+	core := newRedactingCore(zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		zapcore.AddSync(&discardSink{}),
+		zapcore.DebugLevel,
+	))
+	l := zap.New(core)
+	type payload struct {
+		Reason string
+		Detail string
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Info("event", zap.Any("payload", payload{Reason: "test", Detail: "value"}))
+	}
+}
+
+func BenchmarkNoRedaction_StringField(b *testing.B) {
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		zapcore.AddSync(&discardSink{}),
+		zapcore.DebugLevel,
+	)
+	l := zap.New(core)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Info("rotation completed", zap.String("secret", "db-password"), zap.Int("attempt", 1))
+	}
+}
+
+type discardSink struct{}
+
+func (d *discardSink) Write(p []byte) (int, error) { return len(p), nil }
+func (d *discardSink) Sync() error                 { return nil }

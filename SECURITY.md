@@ -128,6 +128,40 @@ engine is wired into every logger construction path via a `zapcore.Core`
 wrapper (`pkg/observability`), so message text, structured fields, and
 wrapped errors are all covered — not just direct `zap.Error()` calls.
 
+**Guaranteed redacted** (verified with tests, `pkg/observability/redaction_test.go`):
+- Log entry message text matching a known credential pattern
+- `zap.String`, `zap.ByteString`, `zap.Binary` field values matching a pattern
+- `zap.Error` and wrapped error chains (`fmt.Errorf("...: %w", err)`)
+- `zap.Any`/`zap.Reflect` values, including nested struct fields and recovered
+  panic values, via JSON round-trip redaction
+- `zap.Strings`/array fields, per-element
+- Fields attached via `logger.With(...)` and `logger.Named(...)` child loggers
+
+**Intentionally NOT redacted** (by design, not oversight):
+- Field *names* alone (e.g. `zap.String("secret_name", "prod-db")`) — this
+  codebase's own convention uses `secret`/`secret_name` as an *identifier*
+  field at ~30 call sites; key-based redaction was evaluated and rejected
+  after confirming it would break operational and compliance audit logging
+  with zero evidence of a real value-leaking call site. Only field *values*
+  matching a credential pattern trigger redaction
+- Non-string field types that cannot carry credential text (`zap.Int`,
+  `zap.Duration`, `zap.Bool`, `zap.Time`, etc.)
+
+**Requires developer discipline** (redaction is a safety net, not a substitute
+for care):
+- A secret value logged in a field whose content does not match any known
+  pattern (e.g. a random 8-character internal ID that happens to double as a
+  credential in some external system) will not be caught by regex matching.
+  Prefer field *names* that make review easy (`secret_name` for identifiers,
+  never a field literally holding a raw credential value) over relying on
+  pattern detection alone
+- The redaction pattern list (`pkg/security/redaction.go`) is a maintained
+  but finite set (AWS/Vault/generic key=value/Bearer/OAuth/private-key/DB
+  connection strings). A new provider's credential format not matching any
+  existing pattern would not be redacted until a pattern is added — treat
+  this the same way as adding a new provider plugin: check whether its error
+  messages need a new redaction pattern
+
 ### Event Deduplication
 
 TTL-based cache prevents repeated processing of same event, reducing the exposure window for secrets in agent RAM.
