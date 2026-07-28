@@ -63,6 +63,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Concurrency verified: 50 goroutines × 50 calls, 0 races (pure function, no shared state)
   - Residual, pre-existing limitation documented (not introduced by this fix): a check-then-open window remains between `IsSafePath` returning success and the caller's subsequent file operation — the same class of limitation already documented for SEC-2's plugin hash verification
 
+### Testing
+
+- **[QUALITY-1] `internal/proxy` test coverage raised from 5.9% to 86.6%** — closed the gap where the TCP reverse-proxy's request-routing core (`registry.go`, `router.go`) had zero test coverage despite sitting on the security-sensitive connection path
+  - Added `registry_test.go`, `router_test.go`, `docker_helpers_test.go`, `server_test.go`, and `manager_more_test.go` — 27 test functions total, no production code changed
+  - `registry.go`, `router.go`, `docker_helpers.go` now at 100% coverage; `manager.go` fully covered except `ScanAndRegister` (requires a real `*client.Client`, deliberately left uncovered rather than building Docker-client mocking infrastructure for one thin orchestration function); `server.go` at ~90%+ across all functions
+  - Includes a genuine end-to-end integration test: a real TCP client connects through the proxy to a real TCP echo backend, confirming the full pipeline (`Bind` → `acceptLoop` → `handleConn` → `Router.Next` → dial → `pipe`) works and the backend's request counter increments correctly
+  - Includes explicit concurrency tests: `Registry` (20 concurrent goroutines mutating/reading) and `Router` (20×50 = 1000 concurrent `Next()` calls) — both verified with `-race`, zero races
+  - Includes a real (not simulated) verification of `Manager.SwapBackend`'s deferred-removal behavior: the old backend is confirmed to actually disappear from the registry after the 5-second drain window, via polling rather than a blind sleep
+  - Two pre-existing issues found while reading previously-untested code (neither fixed here — out of scope for a coverage-only change, both flagged as separate follow-ups): `Manager.SwapBackend`'s deferred-removal goroutine has no context/stop channel tied to `Manager.Stop()` (already known as BUG-4 from the original audit); `Router.Next()`'s round-robin index calculation has a gosec-flagged `uint64`→`int` overflow that could theoretically panic after ~9.2 quintillion requests to a single `Router` instance (practically unreachable, but a legitimate, cheap-to-fix finding)
+
 ---
 
 ## [3.5.21] - 2026-07-21

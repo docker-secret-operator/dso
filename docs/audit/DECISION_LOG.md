@@ -305,6 +305,39 @@ Tickers map needs synchronization. Options:
 
 ---
 
+### Decision 7: QUALITY-1 — Proxy Test Coverage Scope
+
+**Date**: 2026-07-28  
+**Status**: Implemented
+
+### Context
+`internal/proxy` (the TCP reverse proxy behind zero-downtime secret rotation) measured at 5.9% test coverage, with `registry.go` and `router.go` — the actual request-routing core — at 0% across every function. The original audit specifically named these two files as the priority ("treat <10% coverage on a proxy layer as merge-blocking").
+
+### Options
+1. **Cover everything to ~100%**, including `ScanAndRegister` (requires a real or heavily-mocked `*client.Client` from the Docker SDK) and every edge branch in `server.go`'s error-retry paths
+2. **Cover the named priority files fully, plus what's reasonably testable without new mocking infrastructure** — `registry.go`, `router.go`, `docker_helpers.go` to 100%; `manager.go` and `server.go` using real TCP listeners (no Docker daemon needed for most of their logic)
+3. **Cover only the two explicitly-named files** and stop there
+
+### Decision
+**Chosen**: Option 2.
+
+### Rationale
+- `client.Client` in the Docker SDK version used here is a concrete struct, not an interface — building a fake/mock for `ScanAndRegister` alone would require either a real Docker daemon in CI or a nontrivial HTTP-transport-level fake, disproportionate effort for one thin orchestration function that mostly calls already-tested primitives (`ParseHostPorts`, `extractContainerIP`, `EnsurePort`, `RegisterContainer`)
+- `manager.go` and `server.go`'s remaining logic (port binding, connection accept/pipe, backend swap) is fully testable with real `net.Listen` TCP listeners and no Docker dependency at all — there was no reason to leave this untested just because `ScanAndRegister` is harder
+- This produced 86.6% overall coverage (100% on the two files the audit specifically named) without inventing disproportionate test infrastructure for the one function that genuinely needs it
+
+### Two findings surfaced, deliberately not fixed here
+While reading previously-untested code (a natural consequence of writing tests for it), two pre-existing issues were confirmed via `git diff` to be untouched by this change and were flagged as separate follow-ups rather than fixed inline, per the discipline of keeping a coverage-only change to coverage-only:
+1. `Manager.SwapBackend`'s deferred-removal goroutine (`time.Sleep(5*time.Second)`, no context/stop channel) — already identified as BUG-4 in the original audit
+2. `Router.Next()`'s `int(n)%len(active)` — a gosec-flagged `uint64`→`int` overflow, confirmed practically unreachable (~9.2 quintillion requests) but a legitimate, cheap fix for a future item
+
+One test (`TestManager_SwapBackend_DeferredRemoval`) deliberately verifies the *correctness* of the deferred removal (it does eventually happen) via polling rather than a blind sleep, without touching or working around the goroutine-lifecycle gap itself — confirming the removal logic works when the process stays alive, which is a distinct question from whether the goroutine survives a *shutdown* mid-drain (BUG-4's actual concern).
+
+### Rollback Implications
+Pure test-only addition — no production code changed. "Rollback" here is simply removing the new test files; there is no behavior to revert.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code
