@@ -148,8 +148,8 @@ This is the third round where the discipline of "reproduce before trusting" caug
 
 ### Decision 3: SEC-2 — Plugin Hash Verification Default
 
-**Date**: [TBD]  
-**Status**: [Proposed]
+**Date**: 2026-07-28  
+**Status**: Implemented
 
 ### Context
 Hash verification is currently optional (env var gated). Need to decide default behavior:
@@ -157,14 +157,33 @@ Hash verification is currently optional (env var gated). Need to decide default 
 1. **Fail Closed** (Recommended): Require manifest, reject unsigned plugins
 2. **Fail Open** (Current): Manifest optional, unsigned plugins allowed
 
+Also discovered during verification: a separate, more mature verification engine (`internal/providers.PluginVerifier`, fail-closed-by-default design, has `CreateHashManifest` tooling) exists but has zero callers anywhere — identical structural pattern to SEC-1's unwired redaction engine.
+
 ### Trade-offs
 - **Fail Closed**: More secure, but blocks deployment if manifest missing
 - **Fail Open**: More backward-compatible, but weaker security posture
+- **Wire in existing `PluginVerifier`** vs. **fix `pkg/provider/load.go`'s inline logic**: `PluginVerifier` is more full-featured (mutex-protected registry, manifest generation) but wiring it in crosses a `pkg/`→`internal/` layering boundary and requires touching `internal/providers/store.go`'s call site. Fixing `load.go` directly (where `exec.Command` actually runs) is smaller and keeps the fix at the exact execution boundary
 
 ### Recommendation
-**Chosen**: Fail Closed
+**Chosen**: Fail Closed, implemented directly in `pkg/provider/load.go` (not by wiring in `PluginVerifier`)
 
-**Rationale**: Security by default. Users explicitly opting out of verification (if allowed) is better than silent bypass.
+**Rationale**: Security by default — an absent manifest is now a failure, not silent acceptance. Kept in `load.go` because that's the actual point where the subprocess is exec'd; wiring in the separate `PluginVerifier` class would be a larger, cross-package refactor for no functional gain over a contained fix. `PluginVerifier` remains dead code, flagged in the final report as a follow-up candidate for consolidation, not removed (removing unused-but-working code that a future effort might want was judged out of scope for a security fix).
+
+### Design Details
+- Default manifest path: `<plugin_dir>/hashes.txt` (no env var required to activate)
+- `DSO_PLUGIN_HASH_MANIFEST` changes from an on/off switch to a path override
+- New, single escape hatch: `DSO_PLUGIN_SKIP_HASH_VERIFY=1` — explicit, always logs a loud warning when used
+- Installer (`internal/bootstrap/provider_plugins.go`) now regenerates the manifest for every plugin present after each `setup` run, so standard installs need no manual manifest management
+
+### Verification (single review round, per the SEC-1-derived stop rule)
+- Concurrency: 50 concurrent `enforceHashVerification` calls, 0 races (no shared mutable state — pure filesystem reads)
+- Performance: confirmed via `internal/providers/store.go`'s connection cache (`sync.Map`, 10-minute staleness window) that hash verification runs at most every ~10 minutes per provider, not per secret fetch — hashing a plugin binary at that frequency is not a performance concern
+- Security: confirmed a pre-existing (not introduced or worsened) check-then-execute TOCTOU window between hashing and exec; documented in SECURITY.md as a residual limitation rather than fixed, since closing it fully requires executing from an already-open fd rather than a re-resolved path — a larger change than this fix's scope
+- gosec: one new finding (G306, manifest file permissions) evaluated and deliberately kept at 0644 with a `#nosec` justification — tightening to 0600 would risk breaking hash verification for any deployment where the agent runs as a different user than `setup`, since the manifest holds no secrets (only plugin names + public-binary hashes) and must stay readable across that boundary, matching this codebase's existing 0755 convention for plugin binaries/directory
+- No second review round triggered: this single round found no new production-impacting defects requiring further investigation (unlike each of SEC-1's three rounds)
+
+### Rollback Implications
+`git revert`; validation = confirm `DSO_PLUGIN_HASH_MANIFEST` becomes optional again (unset env var + no manifest = successful load, matching pre-SEC-2 behavior).
 
 ---
 

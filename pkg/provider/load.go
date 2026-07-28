@@ -18,6 +18,22 @@ import (
 	"github.com/hashicorp/go-plugin"
 )
 
+// defaultManifestFileName is the hash manifest DSO looks for inside the plugin
+// directory when DSO_PLUGIN_HASH_MANIFEST is not set [SEC-2]. Colocating it
+// with the plugins it verifies means a standard install (which now writes
+// this file automatically, see internal/bootstrap/provider_plugins.go) needs
+// no extra configuration for verification to be active.
+const defaultManifestFileName = "hashes.txt"
+
+// skipHashVerification reports whether the operator has explicitly opted out
+// of plugin hash verification via DSO_PLUGIN_SKIP_HASH_VERIFY [SEC-2]. This is
+// the only supported bypass; unlike the pre-SEC-2 default, an absent manifest
+// is treated as a failure, not silent acceptance.
+func skipHashVerification() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("DSO_PLUGIN_SKIP_HASH_VERIFY")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 // validatePluginPath performs security checks on plugin path to prevent command injection (CWE-78)
 func validatePluginPath(path string) error {
 	// 1. Check if path is absolute
@@ -145,6 +161,39 @@ func verifyBinaryHash(manifestPath, pluginPath string) error {
 	return nil
 }
 
+// enforceHashVerification is the SEC-2 policy gate: hash verification is
+// mandatory by default (fail closed). DSO_PLUGIN_HASH_MANIFEST overrides the
+// manifest path for non-standard layouts; it no longer acts as an on/off
+// switch. DSO_PLUGIN_SKIP_HASH_VERIFY is the sole, explicit escape hatch for
+// bring-up/emergency use and always logs loudly when used, since silently
+// accepting an unverified plugin binary is exactly the gap SEC-2 closes.
+// Extracted from LoadProvider so this policy can be unit-tested directly:
+// validatePluginPath's hardcoded system-directory allowlist makes it
+// impractical to drive LoadProvider end-to-end for an external plugin in a
+// unit test without writing to a real system directory.
+func enforceHashVerification(pluginDir, providerName, pluginName, pluginPath string) error {
+	if skipHashVerification() {
+		fmt.Printf("[DSO] WARNING: hash verification for plugin %s SKIPPED via DSO_PLUGIN_SKIP_HASH_VERIFY (path: %s)\n", pluginName, pluginPath)
+		return nil
+	}
+
+	manifestPath := os.Getenv("DSO_PLUGIN_HASH_MANIFEST")
+	if manifestPath == "" {
+		manifestPath = filepath.Join(filepath.Clean(pluginDir), defaultManifestFileName)
+	}
+
+	if err := verifyBinaryHash(manifestPath, pluginPath); err != nil {
+		return fmt.Errorf(
+			"plugin %s failed hash verification: %w\n"+
+				"  Manifest: %s\n"+
+				"  Fix: sudo docker dso system setup --providers %s (regenerates the manifest)\n"+
+				"  Escape hatch (not recommended): DSO_PLUGIN_SKIP_HASH_VERIFY=1",
+			pluginName, err, manifestPath, providerName,
+		)
+	}
+	return nil
+}
+
 // LoadProvider dynamically executes the provider binary and dispenses the RPC client
 func LoadProvider(providerName string, providerConfig map[string]string) (api.SecretProvider, *plugin.Client, error) {
 	// 1. Check for native local backends first
@@ -188,13 +237,10 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
 	}
 
-	// Hash verification: if DSO_PLUGIN_HASH_MANIFEST is set, the binary must be listed
-	// in the manifest and its SHA256 must match exactly. Unset = verification skipped
-	// (backward-compatible default for deployments that don't yet maintain a manifest).
-	if manifestPath := os.Getenv("DSO_PLUGIN_HASH_MANIFEST"); manifestPath != "" {
-		if err := verifyBinaryHash(manifestPath, pluginPath); err != nil {
-			return nil, nil, fmt.Errorf("plugin %s failed hash verification: %w", pluginName, err)
-		}
+	// Hash verification [SEC-2]: mandatory by default (fail closed). See
+	// enforceHashVerification for details.
+	if err := enforceHashVerification(pluginDir, providerName, pluginName, pluginPath); err != nil {
+		return nil, nil, err
 	}
 
 	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.
