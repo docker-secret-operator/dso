@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/client"
 )
 
@@ -420,6 +421,65 @@ func TestContainerListener_Stop(t *testing.T) {
 
 	// Give it time to close the channel
 	time.Sleep(200 * time.Millisecond)
+}
+
+// TestResolveLabelAction locks in the Docker-event -> DSO-action mapping that
+// decides which rotation path fires. This had zero coverage when the code was
+// migrated off the deprecated events.Message.Status field onto .Action; the
+// two are equal for container-type events, and this table pins the resulting
+// behavior so a future change to either field can't silently stop rotation
+// from triggering.
+func TestResolveLabelAction(t *testing.T) {
+	tests := []struct {
+		name         string
+		dockerAction events.Action
+		wasTracked   bool
+		want         Action
+	}{
+		// Explicit start always means create, tracked or not.
+		{"start_untracked", "start", false, ActionLabelCreate},
+		{"start_tracked", "start", true, ActionLabelCreate},
+
+		// A container we weren't tracking yet is a create regardless of action.
+		{"update_untracked", "update", false, ActionLabelCreate},
+		{"die_untracked", "die", false, ActionLabelCreate},
+
+		// Teardown actions on an already-tracked container mean remove.
+		{"stop_tracked", "stop", true, ActionLabelRemove},
+		{"die_tracked", "die", true, ActionLabelRemove},
+
+		// Everything else on a tracked container is an update.
+		{"update_tracked", "update", true, ActionLabelUpdate},
+		{"rename_tracked", "rename", true, ActionLabelUpdate},
+		{"empty_action_tracked", "", true, ActionLabelUpdate},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveLabelAction(tt.dockerAction, tt.wasTracked)
+			if got != tt.want {
+				t.Errorf("resolveLabelAction(%q, wasTracked=%v) = %v, want %v",
+					tt.dockerAction, tt.wasTracked, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolveLabelAction_MatchesStatusField documents the equivalence this
+// migration relied on: for container-type events the Docker daemon populates
+// Message.Status with the same string as Message.Action, so reading the
+// non-deprecated field cannot change the outcome.
+func TestResolveLabelAction_MatchesStatusField(t *testing.T) {
+	for _, a := range []events.Action{"start", "stop", "die", "update", "rename"} {
+		// Referencing the deprecated Status field is the whole point of this
+		// test -- it asserts the equivalence the migration depended on, so it
+		// has to read both fields.
+		msg := events.Message{Type: events.ContainerEventType, Action: a, Status: string(a)} //nolint:staticcheck // SA1019: deliberate, see comment
+		fromStatus := resolveLabelAction(events.Action(msg.Status), true)                    //nolint:staticcheck // SA1019: deliberate, see comment
+		if got := resolveLabelAction(msg.Action, true); got != fromStatus {
+			t.Errorf("action %q: mapping from .Action (%v) differs from .Status (%v)", a, got, fromStatus)
+		}
+	}
 }
 
 // TestContainerListener_RestartAfterStop is a regression test for REL-5:

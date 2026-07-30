@@ -77,6 +77,19 @@ func (p *AWSProvider) GetSecret(name string) (map[string]string, error) {
 		data = map[string]string{"value": *result.SecretString}
 	}
 
+	// A secret body of literal `null` or `{}` unmarshals successfully but
+	// leaves data nil/empty. Rejecting it here does two things: it stops an
+	// empty secret being injected into containers as if the fetch succeeded,
+	// and it prevents the tag loop below from panicking with "assignment to
+	// entry in nil map" (which would kill the plugin process and tear down
+	// the RPC connection).
+	if len(data) == 0 {
+		return nil, fmt.Errorf(
+			"AWS secret '%s' decoded to no key/value pairs (body was %q)\n  Fix: store the secret as a JSON object or a non-empty string",
+			name, *result.SecretString,
+		)
+	}
+
 	// Attach AWS resource tags as _TAG_<key> metadata fields (non-blocking).
 	descInput := &secretsmanager.DescribeSecretInput{SecretId: &name}
 	if descResult, err := p.client.DescribeSecret(context.TODO(), descInput); err == nil && descResult.Tags != nil {

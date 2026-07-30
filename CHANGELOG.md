@@ -8,7 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–21) and `docs/audit/2026-07-29-fresh-audit.md`.
+Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–26) and `docs/audit/2026-07-29-fresh-audit.md`.
+
+### Security
+
+- **[SEC-8]** Providers no longer silently deliver **empty secrets** as if the fetch had succeeded. A secret body of literal JSON `null` or `{}` decodes without error into a nil/empty map, and the `env` backend returned `(empty, nil)` for an unset variable — the agent then counted it as success, cached it, and injected a blank value into containers, potentially overwriting a good cached secret on rotation. All four plugins plus the `file` and `env` backends now error instead. **Breaking:** setups that were unknowingly receiving an empty secret will now fail loudly.
+- **[SEC-8]** Fixed a **plugin crash** in the AWS provider: a secret whose body was `null` produced a nil map, and merging resource tags into it panicked with `assignment to entry in nil map`, killing the plugin process and tearing down the RPC connection.
+- **[SEC-9]** Vault plugin: secret names are validated so a `..` path segment can no longer **escape the configured KV mount** (`../../sys/policy/root` previously read any path the token was authorized for); cleartext `http` is now rejected for non-loopback addresses, since the Vault token travels as a request header (**breaking** for remote-Vault-over-http setups — use `https` or a loopback agent); added the nil-client guard the other three plugins already had (Vault panicked instead of erroring); and nested KV values are re-encoded as JSON instead of being mangled into Go debug syntax (`map[a:1]`).
+- **[SEC-10]** Fixed plugin environment sanitization silently breaking **every documented credential path**. `sanitizeEnv` passed only `PATH`, so `AWS_ACCESS_KEY_ID`, `AZURE_CLIENT_SECRET`, the `HUAWEI_*` vars the Huawei plugin reads via `os.Getenv`, and `HOME` (for `~/.aws/credentials`) never reached the plugin — an operator following the documented `/etc/dso/agent.env` setup got unauthenticated calls. Replaced with a **per-provider allow-list**, so credentials work while the daemon's other environment (including `DSO_MASTER_KEY` and other backends' credentials) still stays out of the subprocess.
+
+### Fixed
+
+- **[REL-2 completion]** The original REL-2 fix was incomplete: `GetProvider` captured `LastHealthy` under the mutex for its comparison but the "connection may be stale" log line three lines later re-read it **unlocked** — the same race. The original regression test missed it because it never entered the stale branch. Fixed, with a test that forces that branch (confirmed failing against the pre-fix code).
+- **[LINT-1]** Reverted a behavior change that rode along in the previous lint pass: `internal/cli/doctor.go`'s `padLeft` started *using* an ineffectual variable instead of deleting it, altering `docker dso doctor` output despite that commit claiming no behavior change. Restored byte-identical output (verified differentially) and recorded the pre-existing box-misalignment as a `TODO` rather than fixing it silently.
 
 ### Added
 

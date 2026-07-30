@@ -154,6 +154,26 @@ func DetectLabelChanges(before, after map[string]string) map[string]string {
 	return changed
 }
 
+// resolveLabelAction maps a Docker container event action to the label action
+// DSO emits. Extracted from handleEvent so this mapping is unit-testable
+// without a live Docker daemon: it drives which rotation path fires, and it
+// reads `event.Action` (the current field) rather than the deprecated
+// `event.Status`. For container-type events the Docker daemon sets Status to
+// the same string as Action, so the two are equivalent here.
+//
+// Callers only reach this when at least one relevant label actually changed,
+// which is why "not previously tracked" alone implies a create.
+func resolveLabelAction(dockerAction events.Action, wasTracked bool) Action {
+	switch {
+	case dockerAction == "start" || !wasTracked:
+		return ActionLabelCreate
+	case dockerAction == "stop" || dockerAction == "die":
+		return ActionLabelRemove
+	default:
+		return ActionLabelUpdate
+	}
+}
+
 // isRelevantLabel checks if a label key is relevant to DSO
 func isRelevantLabel(key string) bool {
 	return key == "secret" || key == "rotation-strategy" || strings.HasPrefix(key, "dso.")
@@ -255,15 +275,7 @@ func (cl *ContainerListener) handleEvent(event events.Message) {
 
 	// Emit event if there were changes
 	if len(changed) > 0 {
-		// Determine the action based on the event type
-		var action Action
-		if event.Action == "start" || (!wasTracked && len(changed) > 0) {
-			action = ActionLabelCreate
-		} else if event.Action == "stop" || event.Action == "die" {
-			action = ActionLabelRemove
-		} else {
-			action = ActionLabelUpdate
-		}
+		action := resolveLabelAction(event.Action, wasTracked)
 
 		labelEvent := &ContainerLabelEvent{
 			ContainerID: containerID,

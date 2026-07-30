@@ -10,6 +10,11 @@ dist/
 docker-dso
 dso-cli
 dso-provider-*
+# ...but the above is meant for built plugin *binaries*, and it also matches
+# the plugin source directories (cmd/plugins/dso-provider-<name>/), which made
+# new source files there silently un-addable. The existing main.go files were
+# only tracked because they predate the rule. Re-include the source dirs.
+!cmd/plugins/dso-provider-*/
 dso-test
 
 # Test outputs

@@ -88,6 +88,16 @@ func (p *AzureProvider) GetSecret(name string) (map[string]string, error) {
 		return map[string]string{"value": *resp.Value}, nil
 	}
 
+	// A secret body of literal `null` or `{}` unmarshals successfully but
+	// yields nil/empty, which would otherwise be injected into containers as
+	// an empty secret while the fetch reported success.
+	if len(data) == 0 {
+		return nil, fmt.Errorf(
+			"azure secret '%s' decoded to no key/value pairs\n  Fix: store the secret as a JSON object or a non-empty string",
+			name,
+		)
+	}
+
 	return data, nil
 }
 

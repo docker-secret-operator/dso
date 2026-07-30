@@ -47,6 +47,16 @@ func (p *FileProvider) GetSecret(name string) (map[string]string, error) {
 		return map[string]string{"value": string(content)}, nil
 	}
 
+	// A file containing literal `null` or `{}` unmarshals successfully but
+	// yields nil/empty, which would otherwise be injected into containers as
+	// an empty secret while the fetch reported success.
+	if len(data) == 0 {
+		return nil, fmt.Errorf(
+			"secret file %s decoded to no key/value pairs\n  Fix: the file must contain a non-empty JSON object, or non-JSON content to be used verbatim",
+			path,
+		)
+	}
+
 	return data, nil
 }
 

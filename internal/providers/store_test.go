@@ -121,6 +121,47 @@ func TestGetProvider_ConcurrentWithMarkProviderHealthy(t *testing.T) {
 	wg.Wait()
 }
 
+// TestGetProvider_StaleBranch_ConcurrentWithMarkProviderHealthy covers the
+// gap the original REL-2 test left: it seeded LastHealthy with time.Now(), so
+// the staleness branch never executed and its second, unlocked read of
+// entry.LastHealthy (in the "connection may be stale" log line) was never
+// exercised. Seeding a stale timestamp forces that branch, reproducing the
+// leftover race under -race before the fix.
+func TestGetProvider_StaleBranch_ConcurrentWithMarkProviderHealthy(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	manager := NewSecretStoreManager(logger)
+
+	// Older than the 10-minute staleness threshold, so GetProvider takes the
+	// stale path. Kill() on a zero-value plugin.Client returns early (no
+	// runner), so this is safe without a real subprocess.
+	manager.store.Store("prov1", &StoreEntry{
+		Client:      &plugin.Client{},
+		LastHealthy: time.Now().Add(-30 * time.Minute),
+		MaxFailures: 5,
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Re-seed a stale entry so later iterations keep hitting the
+			// stale branch even after it deletes the entry.
+			manager.store.Store("prov1", &StoreEntry{
+				Client:      &plugin.Client{},
+				LastHealthy: time.Now().Add(-30 * time.Minute),
+				MaxFailures: 5,
+			})
+			_, _ = manager.GetProvider("prov1", config.ProviderConfig{})
+		}()
+		go func() {
+			defer wg.Done()
+			manager.MarkProviderHealthy("prov1")
+		}()
+	}
+	wg.Wait()
+}
+
 func TestMarkProviderFailure(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	manager := NewSecretStoreManager(logger)

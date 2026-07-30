@@ -51,7 +51,7 @@ func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.Provid
 		if time.Since(lastHealthy) > 10*time.Minute {
 			s.logger.Warn("Provider connection may be stale, reconnecting",
 				zap.String("provider", providerName),
-				zap.Duration("lastHealthy", time.Since(entry.LastHealthy)))
+				zap.Duration("lastHealthy", time.Since(lastHealthy)))
 			entry.Client.Kill()
 			s.store.Delete(providerName)
 			// Fall through to reinitialize

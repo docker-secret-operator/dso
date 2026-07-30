@@ -92,11 +92,79 @@ func isValidProviderName(name string) bool {
 	return true
 }
 
-// sanitizeEnv returns a safe environment for plugin execution
-func sanitizeEnv() []string {
-	return []string{
+// providerEnvAllowList maps a provider name to the environment variables its
+// plugin is permitted to inherit from the daemon.
+//
+// Background: sanitizeEnv originally passed ONLY PATH, which is safe but was
+// silently incompatible with the authentication methods every plugin
+// documents. The AWS plugin advertises AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY,
+// Azure advertises AZURE_CLIENT_ID/SECRET/TENANT_ID, and the Huawei plugin
+// calls os.Getenv("HUAWEI_ACCESS_KEY") directly -- all of which always saw ""
+// because the daemon stripped them. Operators following the documented
+// EnvironmentFile (/etc/dso/agent.env) setup got unauthenticated calls.
+//
+// The fix keeps the sanitizing intent -- the plugin still does NOT inherit the
+// daemon's full environment, so DSO's own master key, other providers'
+// credentials, and unrelated host secrets stay out of the subprocess -- but
+// passes through the specific variables that provider needs. The list is
+// per-provider on purpose: the AWS plugin has no reason to see AZURE_* .
+var providerEnvAllowList = map[string][]string{
+	"aws": {
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+		"AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
+		"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+		"AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+		"AWS_EC2_METADATA_DISABLED",
+	},
+	"azure": {
+		"AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
+		"AZURE_CLIENT_CERTIFICATE_PATH", "AZURE_FEDERATED_TOKEN_FILE",
+		"AZURE_AUTHORITY_HOST", "AZURE_KEY_VAULT_URL",
+		"MSI_ENDPOINT", "IDENTITY_ENDPOINT", "IDENTITY_HEADER",
+	},
+	"huawei": {
+		"HUAWEI_ACCESS_KEY", "HUAWEI_SECRET_KEY",
+		"HUAWEI_SECURITY_TOKEN", "HUAWEI_REGION", "HUAWEI_PROJECT_ID",
+	},
+	"vault": {
+		"VAULT_ADDR", "VAULT_TOKEN", "VAULT_NAMESPACE",
+		"VAULT_CACERT", "VAULT_CAPATH", "VAULT_CLIENT_CERT", "VAULT_CLIENT_KEY",
+	},
+}
+
+// commonPluginEnvAllowList is passed through for every provider. HOME is
+// required for file-based credential caches (~/.aws/credentials, az login);
+// the proxy and TLS-bundle variables are needed for plugins running behind an
+// egress proxy or with a private CA.
+var commonPluginEnvAllowList = []string{
+	"HOME",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "no_proxy",
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
+}
+
+// sanitizeEnv returns a minimal environment for plugin execution: a fixed
+// PATH, plus only those variables allow-listed for providerName that are
+// actually set in the daemon's environment. The daemon's other environment
+// variables are deliberately NOT inherited.
+func sanitizeEnv(providerName string) []string {
+	envs := []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 	}
+
+	pass := func(keys []string) {
+		for _, k := range keys {
+			if v, ok := os.LookupEnv(k); ok {
+				envs = append(envs, k+"="+v)
+			}
+		}
+	}
+
+	pass(commonPluginEnvAllowList)
+	pass(providerEnvAllowList[providerName])
+
+	return envs
 }
 
 // verifyBinaryHash checks pluginPath's SHA256 against the manifest at manifestPath.
@@ -253,7 +321,7 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	// This is a plugin-based architecture where the command must be dynamic.
 	fmt.Printf("[DSO] Using %s provider plugin: %s\n", strings.ToUpper(providerName), pluginPath)
 	cmd := exec.Command(pluginPath) // #nosec G702 G204
-	cmd.Env = sanitizeEnv()
+	cmd.Env = sanitizeEnv(providerName)
 
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: Handshake,

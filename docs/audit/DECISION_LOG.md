@@ -845,6 +845,188 @@ Three files touched: `pkg/config/config.go` (new `ProxyConfig` field, additive/b
 
 ---
 
+### Decision 22: LINT-1 — Reverting a Behavior Change That Rode Along in the Lint Pass
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+An independent code review of the 402-finding lint pass found that one hunk was **not** behavior-preserving, contrary to that commit's stated "no behavior change intended". `internal/cli/doctor.go`'s `padLeft` had an `ineffassign` finding on a `padding` variable that was computed and never used. Instead of deleting the dead computation, the fix started *using* it (`s + strings.Repeat(" ", padding) + " |"`), which changes `docker dso doctor` output. The reviewer further noted the new version doesn't even fix the underlying box misalignment — it just misaligns differently, and emits an ASCII `|` inside a box drawn with `│` (U+2502).
+
+### Decision
+Reverted to a true no-op: deleted the dead `padding` computation and restored the original return value (`s + " |"`, byte-identical to the original `s + " " + "|"`). Documented the pre-existing misalignment as a `TODO` on the function rather than silently fixing it, since correcting it means changing `padLeft`'s contract and `printText`'s format strings together.
+
+### Rationale
+- A commit that claims "no behavior change" must actually mean it, or the claim stops being load-bearing for reviewers. Fixing the alignment is a legitimate change — it just needs to be its own deliberate commit with test coverage, not a side effect of satisfying a linter.
+- Proved equivalence rather than asserting it: ran both the original and replacement implementations over 7 inputs (empty, short, exactly-at-boundary, longer-than-boundary, zero/one length) and confirmed byte-identical output in all cases.
+
+### Verification
+- Differential test of old vs. new `padLeft` across 7 inputs: identical in every case.
+- `golangci-lint run` (real config): 0 issues — the `ineffassign` finding stays fixed.
+- `go build`/`go vet`/`gofmt` clean; `internal/cli` suite passes under `-race`.
+
+### Rollback Implications
+One file (`internal/cli/doctor.go`), plus removal of the now-unneeded `strings` import. Trivial revert.
+
+---
+
+### Decision 23: REL-2 (Completion) — A Second, Unlocked Read the Original Fix Missed
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+The same code review found that Decision 18's REL-2 fix was **incomplete**. `GetProvider` correctly captured `entry.LastHealthy` under `entry.mu` for the staleness comparison, but three lines later the "Provider connection may be stale, reconnecting" log line re-read `entry.LastHealthy` *unlocked* — the exact race the fix was written to eliminate.
+
+The original REL-2 regression test did not catch this because it seeded `LastHealthy: time.Now()`, so the staleness branch containing the racy log line never executed.
+
+### Decision
+Used the already-captured `lastHealthy` local in the log line. Added `TestGetProvider_StaleBranch_ConcurrentWithMarkProviderHealthy`, which seeds a timestamp older than the 10-minute threshold to force the stale branch, and re-seeds the entry inside the loop so later iterations keep reaching it after the branch deletes it.
+
+### Rationale
+- The lesson recorded for future audit work: a concurrency fix's regression test must exercise **every branch that touches the shared field**, not just the branch that motivated the fix. Branch coverage, not line coverage, is the relevant standard for race tests.
+- `plugin.Client.Kill()` returns early when `runner == nil`, so a zero-value `&plugin.Client{}` makes the stale branch (which calls `Kill()`) safely reachable in a unit test without a real subprocess.
+
+### Verification
+- **Confirmed the new test fails against the pre-fix code**: temporarily restoring the unlocked read reproduced `WARNING: DATA RACE` at `store.go:54` and failed the test; restoring the fix made it pass. This is the evidence that the test is not toothless.
+- `go test -race ./internal/providers/`: passes, 0 races.
+
+### Rollback Implications
+Two files (`internal/providers/store.go`, `internal/providers/store_test.go`). Reverting restores a real data race.
+
+---
+
+### Decision 24: SEC-8 — Provider Plugins and Local Backends Could Inject Empty Secrets
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+A fresh audit of previously-unreviewed code (`cmd/plugins/*`, `pkg/api`, `pkg/backend`, `pkg/provider`, `pkg/schema` — never covered by the 2026-07-29 pass) found several ways a *successful-looking* fetch could yield an empty secret, which the agent then treats as success, caches, and injects into containers:
+
+1. `pkg/backend/env`: an unset variable returned `(empty map, nil error)`. A typo'd or unexported variable name was indistinguishable from success.
+2. A secret whose body is the literal JSON `null` or `{}` unmarshals **without error** into a nil/empty map. Verified empirically: `json.Unmarshal([]byte("null"), &m)` returns `nil` error and leaves `m == nil`. Affected AWS, Azure, Huawei, and the `file` backend. The `{"value": raw}` fallback only runs on unmarshal *error*, which these inputs don't produce.
+3. Worse, in the AWS plugin the resulting nil map then reached `data["_TAG_"+*tag.Key] = *tag.Value`, which **panics** (`assignment to entry in nil map`), killing the plugin process and tearing down the RPC connection. Trigger: any AWS secret whose value is literal `null` that also carries at least one resource tag.
+
+Confirmed the downstream blast radius directly: `internal/agent/server.go` on the `err == nil` path increments `SecretRequestsTotal{"success"}`, writes an audit record with status `success`, and calls `s.Cache.Set(cacheKey, data)` — so a rotation cycle can overwrite a previously-good cached secret with nothing.
+
+### Decision
+- `env` backend: switched `os.Getenv` → `os.LookupEnv` and return an actionable error when the variable is **unset**. A variable explicitly set to the empty string is still honored, since that is a deliberate operator choice and `LookupEnv` is what distinguishes the two.
+- All four external plugins + `file` backend: after a successful JSON decode, reject `len(data) == 0` with an error naming the secret and suggesting the fix. In the AWS plugin this guard is placed *before* the tag-merge loop, so it also removes the nil-map panic.
+- `env`'s `WatchSecret` previously discarded the error (`data, _ := p.GetSecret(name)`) and emitted an update with nil `Data`. It now populates the long-unused `api.SecretUpdate.Error` field instead, so consumers can distinguish a failure from a legitimately empty secret.
+
+### Rationale
+- "Fail closed" is the established convention in this codebase for secret material (see SEC-2's mandatory hash verification): silently delivering an empty credential is strictly worse than a loud error, because the failure surfaces later as a confusing application-level auth error instead of at the fetch.
+- This also makes the six providers **consistent**: every one now errors on a missing/empty secret. Previously `env` was the sole outlier, which meant callers could not code against a single contract.
+- `len(data) == 0` (rather than checking `data == nil` only) covers both the `null` (nil map) and `{}` (non-nil, zero-length) cases with one condition.
+
+### Verification
+- Empirically confirmed the root cause before fixing: a scratch program showed `null` → `err=nil, m==nil`, `{}` → `err=nil, len=0`, and that assigning into the resulting nil map panics.
+- `go build ./...`, `go vet ./...`, `gofmt`: clean. `golangci-lint`: 0 issues. `gosec`: 0 issues.
+- Full `go test ./...`: all 29 packages pass. `-race` clean across `pkg/backend`, `pkg/provider`, `cmd/plugins`.
+
+### Rollback Implications
+Five files: `pkg/backend/env/env.go`, `pkg/backend/file/file.go`, and the AWS/Azure/Huawei plugin `main.go`s. **This is an intentional behavior change**: configurations that were silently receiving an empty secret will now fail loudly. That is the point — but it means an operator relying (knowingly or not) on the old empty-secret behavior will see a new error. Reverting restores the silent-empty-secret and AWS panic behaviors.
+
+---
+
+### Decision 25: SEC-9 — Vault Plugin: Mount Escape, Cleartext Token, and Missing Init Guard
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+The same fresh audit found four issues in `cmd/plugins/dso-provider-vault`, which had never been reviewed:
+
+1. **Mount escape**: `path := fmt.Sprintf("%s/data/%s", p.mount, cleanName)` interpolated the secret name from `dso.yaml` with no validation. A name like `../../sys/policy/root` or `../../../transit/keys/x` traverses out of the configured KV mount, so a secret entry could read any path the token is authorized for — defeating the implicit expectation that `mount` bounds the provider's reach.
+2. **Cleartext token**: `address` defaulted to `http://127.0.0.1:8200` and any configured value was accepted with no scheme check. Since the token is sent as an `X-Vault-Token` header on every request, a plain `http://vault.internal:8200` exposes it to anyone on the network path.
+3. **Missing nil-client guard**: every other provider returns a "not initialized" error if `GetSecret` is reached before `Init`; Vault nil-dereferenced `p.client.Logical()` and **panicked the plugin process**. `ProviderRPCServer.GetSecret` exposes this method over RPC with no ordering enforcement.
+4. **Non-scalar value mangling**: nested KV values were flattened with `fmt.Sprintf("%v", v)`, turning a JSON object into Go debug syntax (`map[a:1]`) and injecting *that* as the secret value.
+
+### Options Considered (for the cleartext issue)
+1. **Require `https` unconditionally.** Rejected: breaks the documented default (`http://127.0.0.1:8200`) and every local-development and Vault-Agent-sidecar setup, where traffic never leaves the host.
+2. **Permit `http` only for loopback hosts; require `https` otherwise.** Chosen — it targets the actual risk (token crossing a network) while leaving the legitimate loopback case working, so no existing valid deployment breaks.
+3. Warn instead of erroring. Rejected: a warning in a daemon log is not a control, and this codebase's convention for credential exposure is to fail closed.
+
+### Decision
+- Added `validateVaultSecretName`, rejecting empty names, absolute paths, and any `..` path segment. Deliberately does **not** reject `/` in general, since nested KV paths (`app/db/password`) are a normal Vault convention.
+- Added a defense-in-depth check that `path.Clean(vaultPath)` still carries the `<mount>/data/` prefix, so no traversal form slips past the segment check.
+- Added `requireSecureVaultAddr` (Option 2 above), called from `Init`.
+- Added the missing nil-client guard.
+- Replaced `fmt.Sprintf("%v", v)` with a type switch: strings pass through, nil becomes `""`, and everything else is re-encoded with `json.Marshal`.
+- Added an empty-result guard for consistency with Decision 24, and a `--version` flag, which the other three plugins already had and which `docker dso system doctor`/`setup` use for plugin health validation.
+
+### Verification
+Six new tests in `cmd/plugins/dso-provider-vault/main_test.go`, all passing:
+- `TestValidateVaultSecretName_RejectsMountEscape` — 7 traversal/absolute/empty forms rejected.
+- `TestValidateVaultSecretName_AllowsLegitimateNames` — 5 nested paths still accepted, proving the fix targets traversal and not slashes.
+- `TestRequireSecureVaultAddr` — 5 permitted (loopback http + https) vs. 5 rejected (remote http, bad schemes), including the built-in default.
+- `TestGetSecret_UninitializedClientDoesNotPanic` — asserts an error, with an explicit `recover()` so a regression reports as a panic failure rather than crashing the run.
+- `TestInit_RejectsCleartextRemoteAddr` — confirms the guard is reachable from the real entry point, not just in isolation.
+- `TestInit_RequiresToken` — confirms the new address validation doesn't mask the pre-existing token requirement.
+
+`golangci-lint` 0 issues, `gosec` 0 issues, `-race` clean.
+
+### Rollback Implications
+Two files (`main.go`, new `main_test.go`) in the Vault plugin only; no other provider or the daemon is affected. **Intentional behavior change**: a deployment currently pointing at a remote Vault over cleartext `http` will now fail to initialize. That is the security fix working as designed; the migration is to switch to `https` or a loopback Vault Agent.
+
+---
+
+### Decision 26: SEC-10 — Plugin Env Sanitization Was Silently Breaking All Documented Credential Paths
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+`pkg/provider/load.go`'s `sanitizeEnv()` returned exactly one variable — `PATH` — and `cmd.Env = sanitizeEnv()` gave the plugin subprocess nothing else. The intent (don't leak the daemon's environment into a plugin) is sound, but it was over-broad to the point of breaking documented functionality:
+
+- The AWS plugin's own doc comment advertises `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`.
+- The Azure plugin advertises `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_TENANT_ID`.
+- The Huawei plugin calls `os.Getenv("HUAWEI_ACCESS_KEY")`, `HUAWEI_SECRET_KEY`, `HUAWEI_SECURITY_TOKEN`, and `HUAWEI_REGION` **directly** — all of which always returned `""`.
+- No `HOME`, so `~/.aws/credentials` and `az login` caches were unreachable.
+
+Its own doc even names `/etc/dso/agent.env` as the `EnvironmentFile` mechanism. So an operator following the documented Huawei IAM-Agency setup would get a credential built from empty strings. Only IMDS-based AWS auth worked, and only by accident. The code and the documentation could not both be right.
+
+### Options Considered
+1. **Pass the daemon's full environment through** (`os.Environ()`).
+   - Rejected: abandons the security property entirely. The plugin subprocess would see `DSO_MASTER_KEY`, every other provider's credentials, and any unrelated host secret — a real escalation path for a compromised or malicious plugin binary.
+2. **Fix the documentation instead**, declaring config-file credentials the only supported path.
+   - Rejected: it would mean deleting a genuinely useful and conventional auth mechanism (env/IMDS/CLI-cache chains are the *standard* way cloud SDKs authenticate), and the Huawei plugin's code would still need changing since it reads env directly.
+3. **Per-provider allow-list pass-through.** Chosen.
+
+### Decision
+`sanitizeEnv` now takes the provider name and passes through only:
+- a fixed `PATH` (unchanged — still never inherited),
+- a common set (`HOME`, proxy vars, `SSL_CERT_FILE`/`SSL_CERT_DIR`) needed by any provider behind an egress proxy or private CA,
+- the credential variables allow-listed for **that specific provider**.
+
+Variables that are allow-listed but unset are omitted entirely rather than passed as empty strings.
+
+### Rationale
+- Scoping per-provider rather than using one shared list is deliberate least-privilege: the AWS plugin has no reason to see `AZURE_CLIENT_SECRET`, so a compromised plugin cannot harvest a different backend's credentials. This is strictly stronger than the obvious "one list for everything" fix.
+- Omitting unset variables matters more than it looks: passing an empty `AWS_PROFILE` would *shadow* a credential the SDK chain could otherwise have resolved via instance metadata, converting a working setup into a broken one.
+- The core security property is preserved and now **tested explicitly** rather than assumed.
+
+### Verification
+Seven new tests in `pkg/provider/load_env_test.go`, all passing:
+- `TestSanitizeEnv_AlwaysSetsFixedPath` — sets a hostile `PATH` and confirms the fixed default still wins.
+- `TestSanitizeEnv_PassesProviderCredentials` — the regression test: 6 credential vars across 4 providers now reach the plugin.
+- `TestSanitizeEnv_IsPerProviderLeastPrivilege` — each provider is confirmed **not** to receive the other three's secrets.
+- `TestSanitizeEnv_DoesNotLeakUnrelatedDaemonEnv` — `DSO_MASTER_KEY` and other host secrets stay out, for all providers including an unknown one. This is the property the original one-line `sanitizeEnv` provided, now pinned by a test.
+- `TestSanitizeEnv_OmitsUnsetVariables`, `TestSanitizeEnv_PassesCommonVars`, `TestSanitizeEnv_UnknownProviderGetsNoCredentials`.
+
+`golangci-lint` 0 issues, `gosec` 0 issues, full suite + `-race` clean.
+
+### Rollback Implications
+One production file (`pkg/provider/load.go`) plus a new test file. The change is a **widening** of what plugins can see, so it cannot break a working deployment — it can only make a previously-broken documented path start working. Reverting re-breaks env-var and `HOME`-based credentials for all four providers.
+
+### Known Remaining Gaps (recorded, not fixed here)
+The same audit surfaced two issues deliberately left open rather than bundled in:
+- **`SecretProviderWithContext` is dead code.** `pkg/api/plugin.go` declares it and `internal/agent/trigger.go` type-asserts for it with a comment claiming shutdown cancels in-flight calls, but **nothing implements it** — `ProviderRPC` has only the non-context `GetSecret`, and the plugins pass `context.TODO()`. So the assertion always fails and `t.ctx` cancellation cannot interrupt a hung cloud call. The socket/REST path is protected by an external 30s timeout in `server.go`; the trigger/rotation path is not. Fixing this properly means adding a context-aware method across the RPC boundary and all four plugins — a real change deserving its own design, not a drive-by.
+- **Provider interface divergence in `WatchSecret` first-delivery.** AWS/Azure/Huawei send an initial value immediately; Vault/`file`/`env` only send on the first tick, so a consumer waiting for an initial value stalls for a full interval on half the providers.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code
