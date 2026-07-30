@@ -7,8 +7,9 @@ import (
 )
 
 // RepairConfiguration handles repairs for configuration-related doctor checks:
-//   DSO-DOCTOR-007 (config file missing) — Destructive, requires confirmation
-//   DSO-DOCTOR-008 (config empty or invalid YAML) — Destructive, requires confirmation
+//
+//	DSO-DOCTOR-007 (config file missing) — Destructive, requires confirmation
+//	DSO-DOCTOR-008 (config empty or invalid YAML) — Destructive, requires confirmation
 type RepairConfiguration struct {
 	configPath string
 	provider   string

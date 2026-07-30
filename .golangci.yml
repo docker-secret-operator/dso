@@ -1,3 +1,10 @@
 version: 2
 run:
   timeout: 5m
+linters:
+  exclusions:
+    paths:
+      # Vendored third-party code (an npm package's bundled Go binding), not
+      # DSO's own source -- new Go toolchain versions can surface new
+      # analysis suggestions here that have nothing to do with this repo.
+      - web/node_modules

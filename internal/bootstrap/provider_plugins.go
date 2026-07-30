@@ -64,6 +64,10 @@ func (ppi *ProviderPluginInstaller) InstallProviderPlugins(ctx context.Context, 
 	}
 
 	// Ensure plugin directory exists
+	// #nosec G301 -- 0755 is deliberate: the "dso" group must be able to read+
+	// execute plugin binaries here without sudo (README's Non-Root Operation
+	// feature); SEC-2/SEC-3 already hardened write access via ownership, not
+	// this read/execute bit
 	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		return fmt.Errorf("failed to create plugin directory %s: %w", pluginDir, err)
 	}
@@ -144,6 +148,9 @@ func (ppi *ProviderPluginInstaller) writeHashManifest(pluginDir string) error {
 
 // hashFile returns the lowercase hex SHA256 of the file at path.
 func hashFile(path string) (string, error) {
+	// #nosec G304 -- path comes from os.ReadDir(pluginDir) filtered to
+	// "dso-provider-*" entries (see caller) -- DSO's own plugin directory
+	// listing, not attacker/remote input
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -192,6 +199,9 @@ func (ppi *ProviderPluginInstaller) buildAndInstallPlugin(ctx context.Context, p
 	ppi.logger.Info("Building provider plugin from source", "provider", provider)
 
 	// Build the plugin binary
+	// #nosec G204 -- fixed command ("go build"); pluginBinary/cmdDir are
+	// derived from the operator-supplied --provider flag on a build-from-source
+	// path only reachable when running from source, not a released binary
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", pluginBinary, fmt.Sprintf("./%s", cmdDir))
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -201,11 +211,16 @@ func (ppi *ProviderPluginInstaller) buildAndInstallPlugin(ctx context.Context, p
 	}
 
 	// Make it executable
+	// #nosec G302 -- this is a compiled binary that must be executable to be
+	// launched via go-plugin's RPC handshake, not a sensitive data file;
+	// G302's 0600-or-less guidance doesn't apply to intentionally-executable artifacts
 	if err := os.Chmod(pluginBinary, 0755); err != nil {
 		return fmt.Errorf("failed to chmod plugin binary: %w", err)
 	}
 
 	// Validate plugin works (smoke test)
+	// #nosec G204 -- pluginBinary is the file this same function just built
+	// in the line above, not external input
 	testCmd := exec.CommandContext(ctx, pluginBinary, "--version")
 	if err := testCmd.Run(); err != nil {
 		ppi.logger.Warn("Provider plugin smoke test failed, but continuing",

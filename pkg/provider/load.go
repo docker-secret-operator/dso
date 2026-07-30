@@ -103,6 +103,11 @@ func sanitizeEnv() []string {
 // Manifest format: one "name=sha256hex" entry per line; lines starting with '#' are comments.
 // Returns an error if the plugin is not listed or its hash does not match.
 func verifyBinaryHash(manifestPath, pluginPath string) error {
+	// #nosec G304,G703 -- manifestPath is either DSO_PLUGIN_HASH_MANIFEST (an
+	// operator-controlled env var, the documented SEC-2 override) or a fixed
+	// default path; pluginPath was already validated by validatePluginPath
+	// (directory allowlist + symlink checks, SEC-2/SEC-4) before LoadProvider
+	// ever calls into this function
 	f, err := os.Open(manifestPath)
 	if err != nil {
 		return fmt.Errorf("cannot open hash manifest %s: %w", manifestPath, err)
@@ -143,6 +148,7 @@ func verifyBinaryHash(manifestPath, pluginPath string) error {
 		return fmt.Errorf("plugin %s not found in hash manifest %s", pluginName, manifestPath)
 	}
 
+	// #nosec G304 -- pluginPath already validated by validatePluginPath (see comment above)
 	bin, err := os.Open(pluginPath)
 	if err != nil {
 		return fmt.Errorf("cannot open plugin binary for hashing: %w", err)

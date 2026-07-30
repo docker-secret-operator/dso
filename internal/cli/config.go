@@ -63,6 +63,9 @@ Examples:
 }
 
 func showConfig(configPath string) error {
+	// #nosec G304 -- configPath comes from ResolveConfig(), DSO's own config
+	// path resolution; this is a local CLI tool reading a file with the
+	// invoking operator's own OS permissions, not a remote privilege boundary
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config file %s: %w", configPath, err)
@@ -247,6 +250,8 @@ func validateConfigFile(configPath string) error {
 	}
 
 	// Read file
+	// #nosec G304 -- configPath comes from ResolveConfig()/CLI flag; local CLI
+	// tool reading with the invoking operator's own OS permissions
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %w", err)

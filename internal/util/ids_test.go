@@ -9,8 +9,8 @@ func TestShortID(t *testing.T) {
 	}{
 		{"", ""},
 		{"abc", "abc"},
-		{"123456789012", "123456789012"},        // exactly 12 — returned as-is
-		{"1234567890123", "123456789012"},        // 13 chars — truncated to 12
+		{"123456789012", "123456789012"},               // exactly 12 — returned as-is
+		{"1234567890123", "123456789012"},              // 13 chars — truncated to 12
 		{"abcdefghijklmnopqrstuvwxyz", "abcdefghijkl"}, // long ID
 	}
 	for _, tc := range cases {

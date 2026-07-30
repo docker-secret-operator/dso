@@ -1,0 +1,21 @@
+# govulncheck allowlist
+#
+# One vulnerability ID (as reported by `govulncheck -format json`, field
+# `finding.osv`) per line. Blank lines and lines starting with `#` are
+# ignored. CI (.github/workflows/ci.yml, "Security Scan" job) fails the
+# build if govulncheck reports a reachable vulnerability whose ID is NOT
+# listed here.
+#
+# Only add an entry here if the vulnerability is reachable from DSO's own
+# code (govulncheck already filters to "called" findings) AND has no
+# available fix (`Fixed in: N/A` in `govulncheck`'s text output). If a fix
+# becomes available, remove the entry and upgrade the dependency instead of
+# leaving it here — re-check this list whenever `go.mod`'s `github.com/docker/docker`
+# version changes, and periodically otherwise (e.g. each release).
+#
+# All three entries below are in github.com/docker/docker@v28.5.2+incompatible,
+# confirmed via `govulncheck ./...` on 2026-07-29 to have no fix available
+# upstream at that time.
+GO-2026-4883
+GO-2026-4887
+GO-2026-5668

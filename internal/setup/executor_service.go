@@ -86,31 +86,34 @@ func (e *ServiceExecutor) executeOne(ctx context.Context, op *ServiceChange, tx 
 
 // ─── Real systemctl helpers ───────────────────────────────────────────────────
 
+// #nosec G204 -- name in all systemctl* helpers below comes from the setup
+// engine's own locally-generated InstallPlan (Detect->Plan), always DSO's own
+// service unit name, never remote/attacker input
 func systemctlEnable(ctx context.Context, name string) error {
 	return exec.CommandContext(ctx, "systemctl", "enable", name).Run()
 }
 
 func systemctlStart(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "start", name).Run()
+	return exec.CommandContext(ctx, "systemctl", "start", name).Run() // #nosec G204
 }
 
 func systemctlStop(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "stop", name).Run()
+	return exec.CommandContext(ctx, "systemctl", "stop", name).Run() // #nosec G204
 }
 
 func systemctlDisable(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "disable", name).Run()
+	return exec.CommandContext(ctx, "systemctl", "disable", name).Run() // #nosec G204
 }
 
 // systemctlIsEnabled returns true when systemctl reports the service as enabled.
 // A non-zero exit code (service not found, not enabled) is treated as false, not an error.
 func systemctlIsEnabled(name string) (bool, error) {
-	err := exec.Command("systemctl", "is-enabled", "--quiet", name).Run()
+	err := exec.Command("systemctl", "is-enabled", "--quiet", name).Run() // #nosec G204
 	return err == nil, nil
 }
 
 // systemctlIsActive returns true when systemctl reports the service as running.
 func systemctlIsActive(name string) (bool, error) {
-	err := exec.Command("systemctl", "is-active", "--quiet", name).Run()
+	err := exec.Command("systemctl", "is-active", "--quiet", name).Run() // #nosec G204
 	return err == nil, nil
 }

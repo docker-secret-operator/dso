@@ -164,10 +164,10 @@ func TestSmartPolling_IntervalAdaptationTimeline(t *testing.T) {
 
 	// Timeline of states and expected intervals without real time waits
 	timeline := []struct {
-		label        string
-		action       func()
+		label           string
+		action          func()
 		timeSinceChange time.Duration
-		expectedNext time.Duration
+		expectedNext    time.Duration
 	}{
 		{"start", func() {}, 0, 30 * time.Second}, // Unknown secret
 		{"after change", func() { sp.RecordChange(secretName) }, 0, 5 * time.Second},

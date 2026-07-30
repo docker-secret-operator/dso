@@ -3,15 +3,15 @@
 // The strategy decision engine analyzes container configurations and recommends
 // an optimal rotation strategy for secret rotation. Two strategies are supported:
 //
-// 1. ROLLING STRATEGY (Zero-Downtime)
-//    Starts a new container with updated secrets while the old one is still running,
-//    then gracefully cuts over traffic. Requires high score (>= 70) indicating the
-//    container can handle parallel execution safely.
+//  1. ROLLING STRATEGY (Zero-Downtime)
+//     Starts a new container with updated secrets while the old one is still running,
+//     then gracefully cuts over traffic. Requires high score (>= 70) indicating the
+//     container can handle parallel execution safely.
 //
-// 2. RESTART STRATEGY (Brief Downtime)
-//    Stops the old container and starts a new one with updated secrets. Used when
-//    score is < 70, indicating the container has characteristics incompatible with
-//    rolling updates (e.g., fixed port bindings, restart policies).
+//  2. RESTART STRATEGY (Brief Downtime)
+//     Stops the old container and starts a new one with updated secrets. Used when
+//     score is < 70, indicating the container has characteristics incompatible with
+//     rolling updates (e.g., fixed port bindings, restart policies).
 //
 // Strategy Selection Scoring System:
 //
@@ -25,15 +25,15 @@
 // Scoring Factors (Penalties):
 //
 //   - Fixed Port Binding (-50):     Containers listening on fixed ports cannot
-//                                   run in parallel without port conflicts
+//     run in parallel without port conflicts
 //   - Explicit Container Name (-20): Docker enforces unique container names;
-//                                   explicit names prevent scaling to 2 instances
+//     explicit names prevent scaling to 2 instances
 //   - Restart Always Policy (-20):   restart:always may restart the old container
-//                                   during rotation, causing conflicts
+//     during rotation, causing conflicts
 //   - No Health Check (-10):        Lack of health checks prevents safe cutover
-//                                   validation and rollback decisions
+//     validation and rollback decisions
 //   - Stateful Workload (-20):      Stateful containers risk data corruption
-//                                   when multiple instances run in parallel
+//     when multiple instances run in parallel
 //
 // Example Scores:
 //   - Stateless web service (no issues):           Score 100 → Rolling
@@ -60,40 +60,42 @@ type StrategyDecision struct {
 // rotation strategy (rolling vs restart) for secret rotation.
 //
 // Input:
-//   result: An AnalysisResult from the container analyzer containing:
-//     - HasFixedPortBinding: Container listens on fixed ports (prevents parallel scaling)
-//     - HasContainerName: Explicit container name specified (prevents scaling)
-//     - HasRestartAlways: Restart policy set to "always" (risk of unexpected restarts)
-//     - HasHealthCheck: Container defines a health check (enables safe cutover)
-//     - IsStateful: Container identified as stateful (risk of data corruption)
-//     - FixedPorts: List of fixed port bindings (for detailed reporting)
-//     - ContainerName: Name of the container being analyzed
+//
+//	result: An AnalysisResult from the container analyzer containing:
+//	  - HasFixedPortBinding: Container listens on fixed ports (prevents parallel scaling)
+//	  - HasContainerName: Explicit container name specified (prevents scaling)
+//	  - HasRestartAlways: Restart policy set to "always" (risk of unexpected restarts)
+//	  - HasHealthCheck: Container defines a health check (enables safe cutover)
+//	  - IsStateful: Container identified as stateful (risk of data corruption)
+//	  - FixedPorts: List of fixed port bindings (for detailed reporting)
+//	  - ContainerName: Name of the container being analyzed
 //
 // Output:
-//   StrategyDecision struct containing:
-//     - Strategy: "rolling" (score >= 70) or "restart" (score < 70)
-//     - Score: Numeric score (0-100) indicating suitability for rolling updates
-//     - Reason: Human-readable explanation of score and penalties applied
-//     - Report: Formatted analysis report combining analyzer findings and strategy decision
+//
+//	StrategyDecision struct containing:
+//	  - Strategy: "rolling" (score >= 70) or "restart" (score < 70)
+//	  - Score: Numeric score (0-100) indicating suitability for rolling updates
+//	  - Reason: Human-readable explanation of score and penalties applied
+//	  - Report: Formatted analysis report combining analyzer findings and strategy decision
 //
 // Example Usage:
 //
-//   // Analyze a container
-//   result := analyzer.AnalyzeContainer(container)
+//	// Analyze a container
+//	result := analyzer.AnalyzeContainer(container)
 //
-//   // Decide rotation strategy
-//   decision := strategy.DecideStrategy(result)
+//	// Decide rotation strategy
+//	decision := strategy.DecideStrategy(result)
 //
-//   if decision.Strategy == "rolling" {
-//     // Perform zero-downtime rotation
-//     executeRollingRotation(container, decision)
-//   } else {
-//     // Perform restart rotation (brief downtime)
-//     executeRestartRotation(container, decision)
-//   }
+//	if decision.Strategy == "rolling" {
+//	  // Perform zero-downtime rotation
+//	  executeRollingRotation(container, decision)
+//	} else {
+//	  // Perform restart rotation (brief downtime)
+//	  executeRestartRotation(container, decision)
+//	}
 //
-//   // Print detailed analysis report
-//   fmt.Println(decision.Report)
+//	// Print detailed analysis report
+//	fmt.Println(decision.Report)
 func DecideStrategy(result analyzer.AnalysisResult) StrategyDecision {
 	score := 100
 	var reasons []string

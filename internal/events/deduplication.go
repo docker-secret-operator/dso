@@ -1,7 +1,7 @@
 package events
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -37,23 +37,25 @@ type EventFingerprint string
 // Fingerprint includes container ID and action, but NOT timestamp
 // This allows deduplication of identical events replayed during reconnect
 func ComputeFingerprint(msg events.Message) EventFingerprint {
-	// Use MD5 hash of (containerID + action)
-	// This captures the semantic identity of the event
+	// Hash of (containerID + action) captures the semantic identity of the
+	// event. This is a cache key, not a security boundary -- sha256 is used
+	// only because it carries no "weak cryptographic primitive" ambiguity for
+	// future readers, not because collision-resistance matters here.
 	data := fmt.Sprintf("%s:%s", msg.Actor.ID, msg.Action)
-	hash := md5.Sum([]byte(data))
+	hash := sha256.Sum256([]byte(data))
 	return EventFingerprint(hex.EncodeToString(hash[:]))
 }
 
 // DedupCache provides short-lived event deduplication
 // Prevents replay amplification during daemon restarts
 type DedupCache struct {
-	mu        sync.RWMutex
-	cache     map[EventFingerprint]time.Time // fingerprint -> expiration time
-	ttl       time.Duration
-	maxSize   int
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	doneCh    chan struct{}
+	mu       sync.RWMutex
+	cache    map[EventFingerprint]time.Time // fingerprint -> expiration time
+	ttl      time.Duration
+	maxSize  int
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	doneCh   chan struct{}
 }
 
 // NewDedupCache creates a new deduplication cache

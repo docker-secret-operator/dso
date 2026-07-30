@@ -6,9 +6,10 @@ import (
 )
 
 // RepairPermissions handles repairs for permission-related doctor checks:
-//   DSO-DOCTOR-004 (socket world-readable) — Moderate, requires confirmation
-//   DSO-DOCTOR-005 (config world-readable) — Safe, auto-applied
-//   DSO-DOCTOR-009 (config overly permissive) — Safe, auto-applied
+//
+//	DSO-DOCTOR-004 (socket world-readable) — Moderate, requires confirmation
+//	DSO-DOCTOR-005 (config world-readable) — Safe, auto-applied
+//	DSO-DOCTOR-009 (config overly permissive) — Safe, auto-applied
 type RepairPermissions struct {
 	socketPath string
 	configPath string

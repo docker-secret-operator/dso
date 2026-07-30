@@ -87,7 +87,7 @@ func (s *Server) Unbind(listenPort int) error {
 		return fmt.Errorf("proxy: port %d not bound", listenPort)
 	}
 	close(pl.done)
-	pl.listener.Close()
+	_ = pl.listener.Close()
 	delete(s.listeners, listenPort)
 	s.log.Info("proxy: port unbound", zap.Int("port", listenPort))
 	return nil
@@ -100,7 +100,7 @@ func (s *Server) Close() {
 
 	for port, pl := range s.listeners {
 		close(pl.done)
-		pl.listener.Close()
+		_ = pl.listener.Close()
 		delete(s.listeners, port)
 	}
 	s.log.Info("proxy: all ports closed")
@@ -112,7 +112,7 @@ func (s *Server) CloseGraceful(timeout time.Duration) error {
 	s.mu.Lock()
 	for port, pl := range s.listeners {
 		close(pl.done)
-		pl.listener.Close()
+		_ = pl.listener.Close()
 		delete(s.listeners, port)
 	}
 	s.mu.Unlock()
@@ -170,7 +170,7 @@ func (s *Server) acceptLoop(pl *portListener) {
 func (s *Server) handleConn(client net.Conn) {
 	defer func() {
 		s.activeConns.Done()
-		client.Close()
+		_ = client.Close()
 	}()
 
 	backend, err := s.router.Next()
@@ -203,12 +203,12 @@ func pipe(a, b net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		io.Copy(b, a) //nolint:errcheck
+		_, _ = io.Copy(b, a)
 		closeWrite(b)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(a, b) //nolint:errcheck
+		_, _ = io.Copy(a, b)
 		closeWrite(a)
 	}()
 	wg.Wait()
@@ -219,8 +219,8 @@ func closeWrite(conn net.Conn) {
 		CloseWrite() error
 	}
 	if hc, ok := conn.(halfCloser); ok {
-		hc.CloseWrite() //nolint:errcheck
+		_ = hc.CloseWrite()
 	} else {
-		conn.Close() //nolint:errcheck
+		_ = conn.Close()
 	}
 }

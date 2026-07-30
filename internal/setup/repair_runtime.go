@@ -8,8 +8,9 @@ import (
 )
 
 // RepairRuntime handles repairs for runtime-related doctor checks:
-//   DSO-DOCTOR-012 (runtime directory missing) — Safe, auto-applied
-//   DSO-DOCTOR-013 (stale lock files) — Moderate, requires confirmation
+//
+//	DSO-DOCTOR-012 (runtime directory missing) — Safe, auto-applied
+//	DSO-DOCTOR-013 (stale lock files) — Moderate, requires confirmation
 type RepairRuntime struct {
 	runtimeDir string
 	mkdir      func(string, os.FileMode) error

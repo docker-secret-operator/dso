@@ -59,7 +59,7 @@ func (cd *CloudDetector) DetectCloudProvider(ctx context.Context) (*CloudProvide
 // detectAWS detects AWS using IMDSv2 (token-based approach)
 func (cd *CloudDetector) detectAWS(ctx context.Context) *CloudProviderInfo {
 	const (
-		tokenURL    = "http://169.254.169.254/latest/api/token"
+		tokenURL    = "http://169.254.169.254/latest/api/token" // #nosec G101 -- IMDSv2 endpoint URL, not a credential
 		metadataURL = "http://169.254.169.254/latest/meta-data/instance-id"
 	)
 

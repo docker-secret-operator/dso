@@ -150,6 +150,8 @@ func (pm *PermissionManager) addUserToDSOGroup(uid int) error {
 	}
 
 	// Use usermod to add user to dso group
+	// #nosec G204 -- fixed command name; u.Username comes from user.LookupId,
+	// an OS-validated existing account, not attacker/remote input
 	cmd := exec.Command("usermod", "-aG", "dso", u.Username)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to add user to dso group: %w", err)
@@ -181,6 +183,8 @@ func (pm *PermissionManager) ConfigureNonRootAccess(invokerUID int) error {
 	username := u.Username
 
 	// Add user to dso group
+	// #nosec G204 -- fixed command name; username comes from user.LookupId,
+	// an OS-validated existing account, not attacker/remote input
 	cmd := exec.Command("usermod", "-aG", "dso", username)
 	if err := cmd.Run(); err != nil {
 		pm.logger.Warn("Could not add user to dso group",
@@ -191,6 +195,8 @@ func (pm *PermissionManager) ConfigureNonRootAccess(invokerUID int) error {
 	}
 
 	// Add user to docker group (if exists)
+	// #nosec G204 -- fixed command name; username comes from user.LookupId,
+	// an OS-validated existing account, not attacker/remote input
 	cmd = exec.Command("usermod", "-aG", "docker", username)
 	if err := cmd.Run(); err != nil {
 		pm.logger.Warn("Could not add user to docker group (group may not exist)",

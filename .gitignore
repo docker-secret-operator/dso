@@ -84,3 +84,5 @@ web/
 ui-dist/
 internal/webui/
 docs/audit
+.claude/
+.claude*

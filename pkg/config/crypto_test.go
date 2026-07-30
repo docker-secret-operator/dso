@@ -226,7 +226,7 @@ func TestDecryptProviderConfig_WriteBack(t *testing.T) {
 	cfg := &Config{
 		Providers: map[string]ProviderConfig{
 			"p1": {
-				Type: "vault",
+				Type:   "vault",
 				Config: map[string]string{"token": want},
 				Auth:   AuthConfig{Params: map[string]string{"pass": want}},
 			},

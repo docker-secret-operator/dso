@@ -208,6 +208,8 @@ func (st *StateTracker) persistState() error {
 
 func (st *StateTracker) loadStates() error {
 	stateFile := filepath.Join(st.stateDir, "rotations.json")
+	// #nosec G304 -- filename is a fixed literal; st.stateDir is a config-time
+	// value set at agent construction, not per-request input
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {

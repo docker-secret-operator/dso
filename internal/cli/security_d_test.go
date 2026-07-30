@@ -68,11 +68,11 @@ func TestValidateLoopbackURL_Loopback(t *testing.T) {
 
 func TestValidateLoopbackURL_NonLoopback(t *testing.T) {
 	nonLoopback := []string{
-		"http://169.254.169.254",          // AWS metadata endpoint
-		"http://10.0.0.1:8471",            // internal network
-		"http://192.168.1.1:8471",         // LAN
-		"ftp://127.0.0.1:8471",            // wrong scheme
-		"not-a-url",                       // unparseable
+		"http://169.254.169.254",  // AWS metadata endpoint
+		"http://10.0.0.1:8471",    // internal network
+		"http://192.168.1.1:8471", // LAN
+		"ftp://127.0.0.1:8471",    // wrong scheme
+		"not-a-url",               // unparseable
 	}
 	for _, addr := range nonLoopback {
 		if err := validateLoopbackURL(addr); err == nil {

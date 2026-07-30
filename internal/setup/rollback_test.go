@@ -12,62 +12,62 @@ import (
 
 func completedDirOp(id, path string, before, after *DirSnapshot) TxOperation {
 	op := TxOperation{
-		Sequence:  1,
-		OperID:    id,
-		Type:      "directory_create",
-		Target:    path,
-		Status:    StatusCompleted,
-		Before:    before,
-		After:     after,
+		Sequence:   1,
+		OperID:     id,
+		Type:       "directory_create",
+		Target:     path,
+		Status:     StatusCompleted,
+		Before:     before,
+		After:      after,
 		Reversible: true,
-		StartedAt: time.Now(),
-		EndedAt:   time.Now(),
+		StartedAt:  time.Now(),
+		EndedAt:    time.Now(),
 	}
 	return op
 }
 
 func completedFileOp(id, path string, before, after *FileSnapshot) TxOperation {
 	return TxOperation{
-		Sequence:  1,
-		OperID:    id,
-		Type:      "file_create",
-		Target:    path,
-		Status:    StatusCompleted,
-		Before:    before,
-		After:     after,
+		Sequence:   1,
+		OperID:     id,
+		Type:       "file_create",
+		Target:     path,
+		Status:     StatusCompleted,
+		Before:     before,
+		After:      after,
 		Reversible: true,
-		StartedAt: time.Now(),
-		EndedAt:   time.Now(),
+		StartedAt:  time.Now(),
+		EndedAt:    time.Now(),
 	}
 }
 
 func completedPermOp(id, path string, before, after *PermSnapshot) TxOperation {
 	return TxOperation{
-		Sequence:  1,
-		OperID:    id,
-		Type:      "permission_change",
-		Target:    path,
-		Status:    StatusCompleted,
-		Before:    before,
-		After:     after,
+		Sequence:   1,
+		OperID:     id,
+		Type:       "permission_change",
+		Target:     path,
+		Status:     StatusCompleted,
+		Before:     before,
+		After:      after,
 		Reversible: true,
-		StartedAt: time.Now(),
-		EndedAt:   time.Now(),
+		StartedAt:  time.Now(),
+		EndedAt:    time.Now(),
 	}
 }
 
 func completedServiceOp(id, name string, before, after *ServiceSnapshot) TxOperation {
 	return TxOperation{
-		Sequence:  1,
-		OperID:    id,
-		Type:      "service_enable",
-		Target:    name,
-		Status:    StatusCompleted,
-		Before:    before,
-		After:     after,
+		Sequence:   1,
+		OperID:     id,
+		Type:       "service_enable",
+		Target:     name,
+		Status:     StatusCompleted,
+		Before:     before,
+		After:      after,
 		Reversible: true,
-		StartedAt: time.Now(),
-		EndedAt:   time.Now(),
+		StartedAt:  time.Now(),
+		EndedAt:    time.Now(),
 	}
 }
 
@@ -607,8 +607,8 @@ func TestRollback_SkipsNonReversibleOps(t *testing.T) {
 	// Op that failed (Reversible=false) must be skipped.
 	tx := txWithOps(TxOperation{
 		Sequence: 1, OperID: "DIR-001", Type: "directory_create", Target: "/dir",
-		Before:    &DirSnapshot{Existed: false},
-		Status:    StatusFailed,
+		Before:     &DirSnapshot{Existed: false},
+		Status:     StatusFailed,
 		Reversible: false,
 	})
 

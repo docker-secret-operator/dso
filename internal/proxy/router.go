@@ -32,7 +32,13 @@ func (r *Router) Next() (*Backend, error) {
 	}
 
 	n := r.counter.Add(1) - 1
-	b := &active[int(n)%len(active)]
+	// Compute the modulo in uint64 space before narrowing to int for the
+	// slice index -- converting the (unbounded, ever-growing) counter value
+	// itself to int first could overflow into a negative number on a 64-bit
+	// platform, and active[negative] panics. The modulo result is always
+	// < len(active), which safely fits in an int.
+	idx := int(n % uint64(len(active))) // #nosec G115 -- result is always < len(active), which fits in an int; see comment above
+	b := &active[idx]
 
 	// Increment the per-backend request counter in the registry.
 	r.registry.incrRequests(b.ID)

@@ -141,20 +141,48 @@ jobs:
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
 
       - name: Run gosec
+        # Blocking: all pre-existing findings have been fixed or explicitly
+        # suppressed inline with #nosec + a justification (verified case by
+        # case, not blanket rule exclusions). A new, unsuppressed finding now
+        # fails the build. -exclude-dir=web skips vendored third-party code
+        # (an npm package's bundled Go binding under web/node_modules), not
+        # DSO's own source -- kept in sync with .golangci.yml's exclusion.
         run: |
           GOPATH=$(go env GOPATH)
-          $GOPATH/bin/gosec -severity medium -confidence medium -no-fail ./...
-          echo "✅ gosec scan completed"
+          $GOPATH/bin/gosec -severity medium -confidence medium -exclude-dir=web ./...
+          echo "✅ gosec scan completed (0 findings)"
 
       - name: Run govulncheck
-        # continue-on-error: govulncheck exits non-zero when vulnerabilities with
-        # no available fix exist (e.g. GO-2026-5746 in docker/docker, Fixed in: N/A).
-        # We still want the scan to run and its output to be visible in CI logs.
-        continue-on-error: true
+        # Blocking: fails if govulncheck reports a reachable ("called") vulnerability
+        # whose OSV ID is not explicitly listed in .govulncheck-allowlist.txt. That
+        # file is reserved for vulnerabilities with no available fix upstream (e.g.
+        # GO-2026-5668 in docker/docker, Fixed in: N/A) -- anything fixable should be
+        # resolved by upgrading the dependency, not allowlisted.
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          $(go env GOPATH)/bin/govulncheck ./...
-          echo "✅ govulncheck scan completed"
+          GOVULNCHECK=$(go env GOPATH)/bin/govulncheck
+
+          "$GOVULNCHECK" -format json ./... > govulncheck-report.json || true
+
+          REACHABLE=$(jq -r 'select(.finding.trace[0].function != null) | .finding.osv' govulncheck-report.json | sort -u)
+          echo "── govulncheck: vulnerabilities reachable from DSO's own code ──"
+          echo "$REACHABLE"
+          ALLOWLIST=$(grep -vE '^\s*(#|$)' .govulncheck-allowlist.txt)
+
+          UNLISTED=""
+          for id in $REACHABLE; do
+            if ! grep -qxF "$id" <<< "$ALLOWLIST"; then
+              UNLISTED="$UNLISTED $id"
+            fi
+          done
+
+          if [ -n "$UNLISTED" ]; then
+            echo "❌ govulncheck found reachable vulnerabilities not in .govulncheck-allowlist.txt:$UNLISTED"
+            echo "   Upgrade the affected dependency. If no fix is available upstream, add the ID to"
+            echo "   .govulncheck-allowlist.txt with a justification instead of ignoring this failure."
+            exit 1
+          fi
+          echo "✅ govulncheck: no unlisted reachable vulnerabilities"
 
   # ── DCO Check ─────────────────────────────────────────────────────────────
   dco:

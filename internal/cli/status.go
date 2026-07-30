@@ -136,9 +136,9 @@ func (s *Status) watchStatus() error {
 
 		systemStatus := s.gatherStatus()
 		if s.JSON {
-			s.printJSON(systemStatus)
+			_ = s.printJSON(systemStatus)
 		} else {
-			s.printText(systemStatus)
+			_ = s.printText(systemStatus)
 		}
 
 		fmt.Println()
@@ -194,6 +194,8 @@ func (s *Status) gatherRuntime() RuntimeStatus {
 	stateFile := filepath.Join(dsoDir, "state", "runtime.json")
 	startTime := time.Now().Add(-2 * time.Hour) // Default assumption
 
+	// #nosec G304 -- filename is a fixed literal; dsoDir is a resolved config
+	// directory, not per-request input
 	if data, err := os.ReadFile(stateFile); err == nil {
 		var state map[string]interface{}
 		if err := json.Unmarshal(data, &state); err == nil {

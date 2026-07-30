@@ -51,7 +51,7 @@ type InstallPlan struct {
 	ConfigYAML string
 
 	DryRun      bool
-	ResumeToken string            // non-empty when resuming a prior run
+	ResumeToken string // non-empty when resuming a prior run
 	Metadata    map[string]string
 }
 
@@ -272,9 +272,9 @@ const (
 	CodeNoCloudProviderDetected = "no_cloud_provider_detected"
 	CodeAWSCredentialsMissing   = "aws_credentials_missing"
 	CodeAWSConnectivityFailed   = "aws_connectivity_failed"
-	CodeVaultCredentialsMissing = "vault_credentials_missing"
+	CodeVaultCredentialsMissing = "vault_credentials_missing" // #nosec G101 -- diagnostic error-code string, not a credential
 	CodeVaultConnectivityFailed = "vault_connectivity_failed"
-	CodeAzureCredentialsMissing = "azure_credentials_missing"
+	CodeAzureCredentialsMissing = "azure_credentials_missing" // #nosec G101 -- diagnostic error-code string, not a credential
 	CodeAzureConnectivityFailed = "azure_connectivity_failed"
 
 	// Existing installation
@@ -287,11 +287,11 @@ const (
 // a Severity field (rather than separate Errors/Warnings/Suggestions slices)
 // lets Doctor and Repair route by Category without unwrapping multiple collections.
 type ValidationIssue struct {
-	Severity  ValidationSeverity
-	Category  ValidationCategory
-	Code      string   // one of the Code* constants above
-	Message   string   // human-readable explanation
-	Recovery  []string // ordered fix steps; populated for SeverityError only
+	Severity ValidationSeverity
+	Category ValidationCategory
+	Code     string   // one of the Code* constants above
+	Message  string   // human-readable explanation
+	Recovery []string // ordered fix steps; populated for SeverityError only
 }
 
 // ValidationResult summarises the validator's findings.

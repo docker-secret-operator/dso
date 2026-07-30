@@ -160,6 +160,9 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 			args = append(args, "--enable-nonroot")
 		}
 
+		// #nosec G204 -- self re-invocation via sudo; args are DSO's own fixed
+		// flags plus a value from its own cloud-provider auto-detection
+		// (small closed enum: aws/azure/vault/huawei), not remote input
 		cmd := exec.Command("sudo", args...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -237,6 +240,7 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 		fmt.Println("🚀 Starting DSO agent...")
 
 		// 1. Backup the custom config we just generated so bootstrap doesn't overwrite it with the default template
+		// #nosec G304 -- configPath is the path this same setup run just wrote via createConfigFile, not external input
 		configData, readErr := os.ReadFile(configPath)
 		if readErr != nil {
 			fmt.Printf("⚠ Warning: could not back up existing config at %s: %v — proceeding without backup\n", configPath, readErr)
@@ -267,6 +271,10 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 			}
 		}
 
+		// #nosec G204 -- bootstrapArgs[0] is this same binary re-invoking
+		// itself; remaining args are DSO's own flags plus values from its own
+		// local cloud-metadata auto-detection during this setup run, not
+		// remote/attacker input
 		bootstrapCmd := exec.Command(bootstrapArgs[0], bootstrapArgs[1:]...)
 		bootstrapCmd.Stdout = os.Stdout
 		bootstrapCmd.Stderr = os.Stderr
@@ -277,7 +285,13 @@ func runSetupWizard(ctx context.Context, logger bootstrap.Logger, mode, provider
 
 		// 3. Restore the user's custom config layout (with secrets: {})
 		if len(configData) > 0 {
-			if writeErr := os.WriteFile(configPath, configData, 0664); writeErr != nil {
+			// 0640: owner read/write, "dso" group read-only (Non-Root Operation),
+			// no world access and no group-write (tightened from 0664)
+			// #nosec G304,G306,G703 -- configPath is this same setup run's own
+			// generated config path (see createConfigFile), not remote/attacker
+			// input; 0640 (not 0600) is deliberate so the "dso" group can read
+			// it per README's Non-Root Operation feature
+			if writeErr := os.WriteFile(configPath, configData, 0640); writeErr != nil {
 				fmt.Printf("❌ Error: failed to restore your config to %s: %v\n", configPath, writeErr)
 				fmt.Println("  Your custom config was backed up in memory but could not be written back.")
 				fmt.Printf("  To restore manually, re-edit %s with your secrets configuration.\n", configPath)
@@ -410,12 +424,17 @@ func createConfigFile(mode, provider string) (string, error) {
 		return "", fmt.Errorf("insufficient permissions for %s", configPath)
 	}
 
+	// #nosec G301 -- 0755 is deliberate for /etc/dso: the "dso" group must be
+	// able to read config here without sudo (README's Non-Root Operation feature)
 	if err := os.MkdirAll(dir, 0755); err != nil && mode == "agent" {
 		return "", fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	// Write config file
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+	// Write config file. 0640: owner read/write, "dso" group read-only
+	// (Non-Root Operation), no world access (tightened from 0644)
+	// #nosec G306 -- 0640 (not 0600) is deliberate so the "dso" group can read
+	// this file per README's Non-Root Operation feature
+	if err := os.WriteFile(configPath, []byte(configContent), 0640); err != nil {
 		return "", fmt.Errorf("failed to write config file: %w", err)
 	}
 

@@ -170,6 +170,9 @@ func StartMetricsServer(ctx context.Context, addr string, logger *zap.Logger) fu
 	}()
 
 	// Drain on context cancellation.
+	// #nosec G118 -- this goroutine only runs after ctx.Done(), so deriving the
+	// shutdown timeout from ctx would give Shutdown() zero grace period. A
+	// fresh Background() context is required.
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

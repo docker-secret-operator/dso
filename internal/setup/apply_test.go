@@ -41,11 +41,11 @@ func errWriteFile(_ string, _ []byte, _ os.FileMode) error { return errors.New("
 func errChmod(_ string, _ os.FileMode) error { return errors.New("chmod failed") }
 
 // noop service / group hooks
-func noopBoolHook(_ string) (bool, error) { return false, nil }
+func noopBoolHook(_ string) (bool, error)           { return false, nil }
 func noopCtxHook(_ context.Context, _ string) error { return nil }
-func noopGroupHook(_ string) error { return nil }
-func noopMemberHook(_, _ string) error { return nil }
-func noopGroupExists(_ string) (bool, error) { return false, nil }
+func noopGroupHook(_ string) error                  { return nil }
+func noopMemberHook(_, _ string) error              { return nil }
+func noopGroupExists(_ string) (bool, error)        { return false, nil }
 
 // ─── DirectoryExecutor ────────────────────────────────────────────────────────
 

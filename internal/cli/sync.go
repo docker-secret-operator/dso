@@ -100,6 +100,9 @@ func syncCommand(cmd *cobra.Command, args []string) error {
 
 // verifyAgentRunning checks if agent socket is accessible
 func verifyAgentRunning(socketPath string) error {
+	// #nosec G704 -- this dials the "unix" network (a local socket file), not
+	// a remote host:port; a Unix domain socket dial cannot reach an internal
+	// network resource, so SSRF does not apply regardless of socketPath's origin
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	if err != nil {
 		return err

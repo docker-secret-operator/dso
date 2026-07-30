@@ -175,6 +175,6 @@ func probeHTTPEndpoint(ctx context.Context, url string) error {
 	if err != nil {
 		return fmt.Errorf("cannot reach %s: %w", url, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }

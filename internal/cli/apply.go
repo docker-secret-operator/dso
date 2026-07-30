@@ -294,6 +294,9 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 
 // triggerAgentSync triggers reconciliation via the agent socket
 func triggerAgentSync(socketPath string, timeout time.Duration) error {
+	// #nosec G704 -- this dials the "unix" network (a local socket file), not
+	// a remote host:port; a Unix domain socket dial cannot reach an internal
+	// network resource, so SSRF does not apply regardless of socketPath's origin
 	conn, err := net.DialTimeout("unix", socketPath, timeout)
 	if err != nil {
 		return err

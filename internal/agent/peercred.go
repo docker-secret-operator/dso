@@ -41,6 +41,21 @@ type peerIdentity struct {
 // /etc/passwd and /etc/group directly and does not consult NSS sources such as
 // LDAP/SSSD. Users defined only in those sources will fail to resolve here and
 // be denied — a fail-closed outcome, never an escalation.
+// resolveAuditUser converts an already-authenticated peer UID into a
+// human-readable identity for the audit log (AUDIT-1). Falls back to a
+// "uid:<n>" form rather than failing the request if the UID doesn't resolve
+// to a local account -- the same fail-closed/NSS caveat as peerAuthorized
+// above applies to lookup, but here a lookup miss should degrade the audit
+// record, not block an already-authorized secret fetch.
+func resolveAuditUser(p peerIdentity) string {
+	uidStr := strconv.FormatUint(uint64(p.uid), 10)
+	u, err := user.LookupId(uidStr)
+	if err != nil {
+		return "uid:" + uidStr
+	}
+	return u.Username
+}
+
 func peerAuthorized(p peerIdentity, selfUID int, dsoGID int) bool {
 	if p.uid == 0 || int(p.uid) == selfUID {
 		return true

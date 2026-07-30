@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"math"
 	"sync"
 	"testing"
 )
@@ -107,6 +108,35 @@ func TestRouter_Next(t *testing.T) {
 			t.Errorf("expected routing to switch to 'new' immediately after draining 'old', got %s", b.ID)
 		}
 	})
+}
+
+// TestRouter_Next_CounterNearOverflow is a regression test for a gosec
+// G115-flagged integer overflow: Next() used to convert the (unbounded,
+// ever-growing) uint64 counter to int *before* taking the modulo. Once the
+// counter passed math.MaxInt64, that conversion produced a negative int,
+// and active[negative] panics. Fixed by taking the modulo in uint64 space
+// first, then narrowing only the already-bounded (< len(active)) result.
+func TestRouter_Next_CounterNearOverflow(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.Add(Backend{ID: "a", Addr: "10.0.0.1:80"})
+	_ = reg.Add(Backend{ID: "b", Addr: "10.0.0.2:80"})
+	_ = reg.Add(Backend{ID: "c", Addr: "10.0.0.3:80"})
+	r := NewRouter(reg)
+
+	// Set the internal counter to just below its uint64 max so the very
+	// next Add(1) wraps past math.MaxInt64 -- exactly the value that would
+	// have converted to a negative int under the old code.
+	r.counter.Store(math.MaxUint64 - 1)
+
+	for i := 0; i < 10; i++ {
+		b, err := r.Next()
+		if err != nil {
+			t.Fatalf("unexpected error near counter overflow: %v", err)
+		}
+		if b == nil {
+			t.Fatal("expected a non-nil backend near counter overflow")
+		}
+	}
 }
 
 // TestRouter_ConcurrentNext verifies the router's lock-free hot path (atomic

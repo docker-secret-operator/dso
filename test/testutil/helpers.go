@@ -24,10 +24,10 @@ func NewTempVault(t testing.TB) *TempVault {
 
 	// Set up temporary home directory
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	_ = os.Setenv("HOME", tmpDir)
 
 	t.Cleanup(func() {
-		os.Setenv("HOME", oldHome)
+		_ = os.Setenv("HOME", oldHome)
 	})
 
 	// Initialize vault
@@ -199,13 +199,13 @@ func NewFileTestHelper(t testing.TB) *FileTestHelper {
 func (fth *FileTestHelper) WriteFile(relPath, content string) string {
 	fullPath := filepath.Join(fth.TempDir, relPath)
 
-	// Create directory if needed
+	// Create directory if needed. Test-only temp directory -- least-privilege default.
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		fth.t.Fatalf("Failed to create directory %s: %v", dir, err)
 	}
 
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(content), 0600); err != nil {
 		fth.t.Fatalf("Failed to write file %s: %v", fullPath, err)
 	}
 
@@ -216,6 +216,7 @@ func (fth *FileTestHelper) WriteFile(relPath, content string) string {
 func (fth *FileTestHelper) ReadFile(relPath string) string {
 	fullPath := filepath.Join(fth.TempDir, relPath)
 
+	// #nosec G304 -- test-only helper scoped to fth.TempDir, not attacker/remote input
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
 		fth.t.Fatalf("Failed to read file %s: %v", fullPath, err)

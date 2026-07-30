@@ -34,6 +34,8 @@ func checkPath(path string) (string, string) {
 
 // validateChecksum checks if a file matches the expected hash
 func validateChecksum(filepath, expectedHash string) error {
+	// #nosec G304 -- local CLI installer helper operating on a locally-resolved
+	// build/install path, run with the invoking operator's own OS permissions
 	file, err := os.Open(filepath)
 	if err != nil {
 		return fmt.Errorf("cannot open file: %w", err)
@@ -55,13 +57,15 @@ func validateChecksum(filepath, expectedHash string) error {
 
 // copyFile copies a file from src to dst
 func copyFile(src, dst string) error {
+	// #nosec G304 -- local CLI installer helper operating on locally-resolved
+	// build/install paths, run with the invoking operator's own OS permissions
 	source, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
 
-	destination, err := os.Create(dst)
+	destination, err := os.Create(dst) // #nosec G304 -- see comment above
 	if err != nil {
 		return err
 	}
@@ -175,6 +179,10 @@ func setupProviders(ctx context.Context, providers []string) error {
 	fmt.Printf("Installing provider plugins to: %s\n\n", pluginDir)
 
 	// Create plugin directory
+	// #nosec G301 -- 0755 is deliberate: the "dso" group must be able to read+
+	// execute plugin binaries here without sudo (README's Non-Root Operation
+	// feature); SEC-2/SEC-3 already hardened write access via ownership, not
+	// this read/execute bit
 	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		return fmt.Errorf("failed to create plugin directory: %w", err)
 	}
@@ -232,12 +240,18 @@ func buildAndInstallProvider(ctx context.Context, provider string, pluginDir str
 	}
 
 	// Build the plugin
+	// #nosec G204 -- fixed command ("go build"); pluginBinary/cmdDir are
+	// derived from the operator-supplied --provider flag on a build-from-source
+	// developer path, not attacker/remote input
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", pluginBinary, fmt.Sprintf("./%s", cmdDir))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
 	// Make executable
+	// #nosec G302 -- this is a compiled binary that must be executable to be
+	// launched via go-plugin's RPC handshake, not a sensitive data file;
+	// G302's 0600-or-less guidance doesn't apply to intentionally-executable artifacts
 	if err := os.Chmod(pluginBinary, 0755); err != nil {
 		return fmt.Errorf("chmod failed: %w", err)
 	}

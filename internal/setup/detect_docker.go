@@ -30,6 +30,8 @@ func detectDocker(ctx context.Context, cfg DetectorConfig) (DockerInfo, []Detect
 	vCtx, cancel := context.WithTimeout(ctx, cfg.DockerTimeout)
 	defer cancel()
 
+	// #nosec G204 -- info.BinaryPath is resolved via OS binary lookup during
+	// detection, not attacker/remote input
 	out, err := exec.CommandContext(vCtx, info.BinaryPath, "version", "--format", "{{.Server.Version}}").Output()
 	if err == nil {
 		info.Version = strings.TrimSpace(string(out))

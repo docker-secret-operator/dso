@@ -12,7 +12,7 @@ import (
 type DirectoryRollback struct {
 	emitter   *Emitter
 	stat      func(string) (os.FileInfo, error)
-	removeDir func(string) error        // default: os.Remove (fails if non-empty)
+	removeDir func(string) error // default: os.Remove (fails if non-empty)
 	chmod     func(string, os.FileMode) error
 	chown     func(string, string) error
 }

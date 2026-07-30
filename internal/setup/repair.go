@@ -37,14 +37,14 @@ const (
 // RepairAction is a single remediation step generated from a DoctorCheck.
 // IDs are stable — referenced by documentation and support responses.
 type RepairAction struct {
-	ID                  string
-	IssueID             string         // DoctorCheck.ID this action addresses
-	Category            DoctorCategory
-	Description         string
-	RiskLevel           RepairRisk
+	ID                   string
+	IssueID              string // DoctorCheck.ID this action addresses
+	Category             DoctorCategory
+	Description          string
+	RiskLevel            RepairRisk
 	RequiresConfirmation bool
-	Status              RepairStatus
-	Err                 error // non-nil when Status == RepairStatusFailed
+	Status               RepairStatus
+	Err                  error // non-nil when Status == RepairStatusFailed
 }
 
 // RepairPlan holds all repair actions derived from a DoctorResult.
@@ -329,14 +329,14 @@ func repairStatusTag(s RepairStatus) string {
 // RenderJSON produces structured JSON output for programmatic consumption.
 func (r *RepairResult) RenderJSON() (string, error) {
 	type jsonAction struct {
-		ID                  string `json:"id"`
-		IssueID             string `json:"issue_id"`
-		Category            string `json:"category"`
-		Description         string `json:"description"`
-		RiskLevel           string `json:"risk_level"`
+		ID                   string `json:"id"`
+		IssueID              string `json:"issue_id"`
+		Category             string `json:"category"`
+		Description          string `json:"description"`
+		RiskLevel            string `json:"risk_level"`
 		RequiresConfirmation bool   `json:"requires_confirmation"`
-		Status              string `json:"status"`
-		Error               string `json:"error,omitempty"`
+		Status               string `json:"status"`
+		Error                string `json:"error,omitempty"`
 	}
 	type jsonSummary struct {
 		Total    int `json:"total"`

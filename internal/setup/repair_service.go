@@ -8,9 +8,10 @@ import (
 )
 
 // RepairService handles repairs for service-related doctor checks:
-//   DSO-DOCTOR-015 (unit file missing) — Moderate, requires confirmation
-//   DSO-DOCTOR-016 (service not enabled) — Moderate, requires confirmation
-//   DSO-DOCTOR-017 (service not active) — Moderate, requires confirmation
+//
+//	DSO-DOCTOR-015 (unit file missing) — Moderate, requires confirmation
+//	DSO-DOCTOR-016 (service not enabled) — Moderate, requires confirmation
+//	DSO-DOCTOR-017 (service not active) — Moderate, requires confirmation
 type RepairService struct {
 	serviceName  string
 	unitFilePath string

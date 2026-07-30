@@ -20,6 +20,8 @@ func detectSystemd(ctx context.Context, cfg DetectorConfig) (SystemdInfo, []Dete
 	vCtx, cancel := context.WithTimeout(ctx, cfg.SystemdTimeout)
 	defer cancel()
 
+	// #nosec G204 -- info.BinaryPath is resolved via OS binary lookup during
+	// detection (path, above), not attacker/remote input
 	out, err := exec.CommandContext(vCtx, info.BinaryPath, "--version").Output()
 	if err != nil {
 		return info, []DetectionWarning{{

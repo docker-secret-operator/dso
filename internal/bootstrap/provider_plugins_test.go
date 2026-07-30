@@ -29,7 +29,7 @@ func TestBuildAndInstallPlugin_UnknownProvider(t *testing.T) {
 // TestBuildAndInstallPlugin_KnownProviders verifies the four known providers pass
 // the allowlist check (they will fail later due to missing source, which is fine).
 func TestBuildAndInstallPlugin_KnownProviders(t *testing.T) {
-	ppi := NewProviderPluginInstaller(nopLogger{},false)
+	ppi := NewProviderPluginInstaller(nopLogger{}, false)
 	for _, p := range []string{"aws", "azure", "vault", "huawei"} {
 		err := ppi.buildAndInstallPlugin(context.Background(), p, t.TempDir())
 		if err != nil && strings.Contains(err.Error(), "unknown provider") {
@@ -40,7 +40,7 @@ func TestBuildAndInstallPlugin_KnownProviders(t *testing.T) {
 
 // TestInstallProviderPlugins_DryRun verifies dry-run mode never touches disk.
 func TestInstallProviderPlugins_DryRun(t *testing.T) {
-	ppi := NewProviderPluginInstaller(nopLogger{},true)
+	ppi := NewProviderPluginInstaller(nopLogger{}, true)
 	err := ppi.InstallProviderPlugins(context.Background(), []string{"aws", "vault"})
 	if err != nil {
 		t.Fatalf("dry-run should never fail: %v", err)
@@ -49,7 +49,7 @@ func TestInstallProviderPlugins_DryRun(t *testing.T) {
 
 // TestInstallProviderPlugins_Empty confirms no-op for empty provider list.
 func TestInstallProviderPlugins_Empty(t *testing.T) {
-	ppi := NewProviderPluginInstaller(nopLogger{},false)
+	ppi := NewProviderPluginInstaller(nopLogger{}, false)
 	if err := ppi.InstallProviderPlugins(context.Background(), nil); err != nil {
 		t.Fatalf("empty provider list should not fail: %v", err)
 	}

@@ -290,49 +290,49 @@ func TestRedactString(t *testing.T) {
 	rp := NewRedactionPatterns()
 
 	tests := []struct {
-		name      string
-		input     string
+		name             string
+		input            string
 		shouldNotContain string
 	}{
 		{
-			name:                "generic_api_key",
-			input:               "api_key=super_secret_key_12345",
-			shouldNotContain:    "super_secret_key_12345",
+			name:             "generic_api_key",
+			input:            "api_key=super_secret_key_12345",
+			shouldNotContain: "super_secret_key_12345",
 		},
 		{
-			name:                "vault_token",
-			input:               "vault_token: s.xxxxxxxxxxxxxxxx",
-			shouldNotContain:    "s.xxxxxxxxxxxxxxxx",
+			name:             "vault_token",
+			input:            "vault_token: s.xxxxxxxxxxxxxxxx",
+			shouldNotContain: "s.xxxxxxxxxxxxxxxx",
 		},
 		{
-			name:                "postgres_url_password",
-			input:               "postgresql://user:MySecureP@ssw0rd@localhost:5432/mydb",
-			shouldNotContain:    "MySecureP@ssw0rd",
+			name:             "postgres_url_password",
+			input:            "postgresql://user:MySecureP@ssw0rd@localhost:5432/mydb",
+			shouldNotContain: "MySecureP@ssw0rd",
 		},
 		{
-			name:                "aws_access_key",
-			input:               "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
-			shouldNotContain:    "AKIAIOSFODNN7EXAMPLE",
+			name:             "aws_access_key",
+			input:            "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+			shouldNotContain: "AKIAIOSFODNN7EXAMPLE",
 		},
 		{
-			name:                "bearer_token",
-			input:               "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-			shouldNotContain:    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+			name:             "bearer_token",
+			input:            "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+			shouldNotContain: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
 		},
 		{
-			name:                "docker_password",
-			input:               `{"auth": "dXNlcm5hbWU6cGFzc3dvcmQ="}`,
-			shouldNotContain:    "dXNlcm5hbWU6cGFzc3dvcmQ=",
+			name:             "docker_password",
+			input:            `{"auth": "dXNlcm5hbWU6cGFzc3dvcmQ="}`,
+			shouldNotContain: "dXNlcm5hbWU6cGFzc3dvcmQ=",
 		},
 		{
-			name:                "database_password",
-			input:               "password=MyDatabasePassword123!",
-			shouldNotContain:    "MyDatabasePassword123!",
+			name:             "database_password",
+			input:            "password=MyDatabasePassword123!",
+			shouldNotContain: "MyDatabasePassword123!",
 		},
 		{
-			name:                "sk_style_api_key",
-			input:               "sk-abcd1234efgh5678ijkl9012",
-			shouldNotContain:    "sk-abcd1234efgh5678ijkl9012",
+			name:             "sk_style_api_key",
+			input:            "sk-abcd1234efgh5678ijkl9012",
+			shouldNotContain: "sk-abcd1234efgh5678ijkl9012",
 		},
 	}
 
@@ -358,24 +358,24 @@ func TestRedactError(t *testing.T) {
 	rp := NewRedactionPatterns()
 
 	tests := []struct {
-		name               string
-		errMsg             string
-		shouldNotContain   string
+		name             string
+		errMsg           string
+		shouldNotContain string
 	}{
 		{
-			name:              "secret_in_error",
-			errMsg:            "connection failed with secret: my_super_secret_value_xyz",
-			shouldNotContain:  "my_super_secret_value_xyz",
+			name:             "secret_in_error",
+			errMsg:           "connection failed with secret: my_super_secret_value_xyz",
+			shouldNotContain: "my_super_secret_value_xyz",
 		},
 		{
-			name:              "password_in_error",
-			errMsg:            "authentication failed: password=MySecretPassword123",
-			shouldNotContain:  "MySecretPassword123",
+			name:             "password_in_error",
+			errMsg:           "authentication failed: password=MySecretPassword123",
+			shouldNotContain: "MySecretPassword123",
 		},
 		{
-			name:              "api_key_in_error",
-			errMsg:            "API request failed with key sk-1234567890abcdefghij",
-			shouldNotContain:  "sk-1234567890abcdefghij",
+			name:             "api_key_in_error",
+			errMsg:           "API request failed with key sk-1234567890abcdefghij",
+			shouldNotContain: "sk-1234567890abcdefghij",
 		},
 	}
 
@@ -406,9 +406,9 @@ func TestRedactError(t *testing.T) {
 // TestShouldLogField verifies sensitive field detection
 func TestShouldLogField(t *testing.T) {
 	tests := []struct {
-		name       string
-		fieldName  string
-		shouldLog  bool
+		name      string
+		fieldName string
+		shouldLog bool
 	}{
 		// Sensitive fields that should NOT be logged
 		{name: "password", fieldName: "password", shouldLog: false},
@@ -449,31 +449,31 @@ func TestShouldLogField(t *testing.T) {
 // TestRedactStructFields verifies struct field redaction
 func TestRedactStructFields(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         map[string]interface{}
-		checkFields   map[string]interface{}
+		name        string
+		input       map[string]interface{}
+		checkFields map[string]interface{}
 	}{
 		{
 			name: "mixed_sensitivity",
 			input: map[string]interface{}{
-				"container_id":  "abc123",
-				"password":      "SecretPassword",
-				"status":        "running",
-				"api_key":       "sk-xyz789",
-				"hostname":      "localhost",
-				"secret":        "my_secret_value",
-				"port":          8080,
-				"vault_token":   "s.xxxxx",
+				"container_id": "abc123",
+				"password":     "SecretPassword",
+				"status":       "running",
+				"api_key":      "sk-xyz789",
+				"hostname":     "localhost",
+				"secret":       "my_secret_value",
+				"port":         8080,
+				"vault_token":  "s.xxxxx",
 			},
 			checkFields: map[string]interface{}{
-				"container_id":  "abc123",         // Should be preserved
-				"password":      "[REDACTED]",     // Should be redacted
-				"status":        "running",        // Should be preserved
-				"api_key":       "[REDACTED]",     // Should be redacted
-				"hostname":      "localhost",      // Should be preserved
-				"secret":        "[REDACTED]",     // Should be redacted
-				"port":          8080,             // Should be preserved
-				"vault_token":   "[REDACTED]",     // Should be redacted
+				"container_id": "abc123",     // Should be preserved
+				"password":     "[REDACTED]", // Should be redacted
+				"status":       "running",    // Should be preserved
+				"api_key":      "[REDACTED]", // Should be redacted
+				"hostname":     "localhost",  // Should be preserved
+				"secret":       "[REDACTED]", // Should be redacted
+				"port":         8080,         // Should be preserved
+				"vault_token":  "[REDACTED]", // Should be redacted
 			},
 		},
 	}

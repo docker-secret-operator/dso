@@ -139,7 +139,7 @@ func (beq *BoundedEventQueue) worker(ctx context.Context, id int) {
 			}()
 
 			// Update queue depth
-			depth := int32(len(beq.queue))
+			depth := int32(len(beq.queue)) // #nosec G115 -- len is bounded by beq.queue's fixed channel capacity (maxQueueSize), never attacker-influenced
 			EventQueueDepth.Set(float64(depth))
 			// Update max depth if current depth is greater
 			for currentMax := atomic.LoadInt32(&beq.maxDepth); depth > currentMax; currentMax = atomic.LoadInt32(&beq.maxDepth) {
@@ -164,7 +164,7 @@ func (beq *BoundedEventQueue) reportMetrics(ctx context.Context) {
 		case <-beq.stopCh:
 			return
 		case <-ticker.C:
-			depth := int32(len(beq.queue))
+			depth := int32(len(beq.queue)) // #nosec G115 -- len is bounded by beq.queue's fixed channel capacity (maxQueueSize), never attacker-influenced
 			maxDepth := atomic.LoadInt32(&beq.maxDepth)
 			active := atomic.LoadInt32(&beq.activeWorkers)
 			utilization := float64(active) / float64(beq.numWorkers) * 100
@@ -228,7 +228,7 @@ func (beq *BoundedEventQueue) Stop() {
 // GetStats returns current queue statistics for operational insight
 func (beq *BoundedEventQueue) GetStats() map[string]interface{} {
 	return map[string]interface{}{
-		"queue_depth":     int32(len(beq.queue)),
+		"queue_depth":     int32(len(beq.queue)), // #nosec G115 -- bounded by fixed channel capacity, see other occurrences above
 		"max_queue_size":  beq.maxQueueSize,
 		"active_workers":  atomic.LoadInt32(&beq.activeWorkers),
 		"total_workers":   beq.numWorkers,

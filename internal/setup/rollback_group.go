@@ -61,9 +61,13 @@ func (r *groupRollback) rollback(_ context.Context, op *TxOperation) error {
 }
 
 func groupDelOS(name string) error {
+	// #nosec G204 -- name comes from the local InstallPlan being rolled
+	// back (the same plan that created it), not remote/attacker input
 	return exec.Command("groupdel", name).Run()
 }
 
 func removeMemberOS(group, username string) error {
+	// #nosec G204 -- group/username come from the local InstallPlan/OS-validated
+	// account being rolled back, not remote/attacker input
 	return exec.Command("gpasswd", "--delete", username, group).Run()
 }

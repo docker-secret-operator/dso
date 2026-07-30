@@ -14,8 +14,9 @@ func main() {
 	// Target directory for generated CLI docs
 	docsDir := "./docs/cli-reference"
 
-	// Ensure the target directory exists and is clean
-	if err := os.MkdirAll(docsDir, 0755); err != nil {
+	// Ensure the target directory exists and is clean. Dev-time doc generation
+	// script, not a runtime path -- least-privilege default.
+	if err := os.MkdirAll(docsDir, 0750); err != nil {
 		log.Fatalf("Failed to create docs directory: %v", err)
 	}
 

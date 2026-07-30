@@ -107,8 +107,10 @@ func (fs *FilesystemOps) SafeWriteFile(ctx context.Context, path string, content
 		return nil
 	}
 
-	// Create parent directory if needed
-	if err := os.MkdirAll(filepath.Dir(validPath), 0755); err != nil {
+	// Create parent directory if needed. Least-privilege default (owner+group
+	// only); callers that need a broader directory mode should use
+	// SafeCreateDirectory with an explicit perm instead.
+	if err := os.MkdirAll(filepath.Dir(validPath), 0750); err != nil {
 		return ErrFileWrite("filesystem", validPath, err)
 	}
 
@@ -120,7 +122,7 @@ func (fs *FilesystemOps) SafeWriteFile(ctx context.Context, path string, content
 	defer os.Remove(tmpFile.Name())
 
 	if _, err := tmpFile.Write(content); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return ErrFileWrite("filesystem", validPath, err)
 	}
 
@@ -278,7 +280,7 @@ func (b *BootstrapLockOps) Acquire(ctx context.Context, timeout time.Duration) (
 		if err == nil {
 			// Write PID to lock file
 			fmt.Fprintf(file, "%d", os.Getpid())
-			file.Close()
+			_ = file.Close()
 
 			b.logger.Info("Lock acquired", "path", b.lockPath)
 			return &BootstrapLock{

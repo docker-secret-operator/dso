@@ -125,9 +125,13 @@ func getGroupMembersOS(name string) ([]string, error) {
 }
 
 func groupAddOS(name string) error {
+	// #nosec G204 -- name comes from GroupChange.Name, generated locally by
+	// the setup engine's own InstallPlan (Detect->Plan), not remote/attacker input
 	return exec.Command("groupadd", name).Run()
 }
 
 func groupAddMemberOS(group, username string) error {
+	// #nosec G204 -- group comes from the local InstallPlan (see groupAddOS);
+	// username comes from an OS-validated existing account, not remote/attacker input
 	return exec.Command("usermod", "-aG", group, username).Run()
 }

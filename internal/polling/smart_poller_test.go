@@ -205,9 +205,9 @@ func TestSmartPoller_IntervalTransition(t *testing.T) {
 	// We can't directly test the time-based transitions without mocking time.Now(),
 	// but we can verify that CalculateInterval returns correct values at specific points
 	testCases := []struct {
-		name        string
-		duration    time.Duration
-		expected    time.Duration
+		name     string
+		duration time.Duration
+		expected time.Duration
 	}{
 		{"30 seconds", 30 * time.Second, 5 * time.Second},
 		{"1 minute", 1 * time.Minute, 5 * time.Second},
@@ -285,9 +285,9 @@ func TestSmartPoller_ConcurrentHeavyLoad(t *testing.T) {
 // Tests 119s, 120s, 121s, 599s, 600s, 601s
 func TestSmartPoller_BoundaryExact(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		timeSince time.Duration
-		expected time.Duration
+		expected  time.Duration
 	}{
 		{"119s (just under 2m)", 119 * time.Second, 5 * time.Second},
 		{"120s (exactly 2m)", 120 * time.Second, 30 * time.Second},

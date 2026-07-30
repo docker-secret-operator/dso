@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/audit"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -67,7 +68,17 @@ func (s *AgentServer) GetEvents(req *api.AgentRequest, resp *api.AgentResponse) 
 	return nil
 }
 
+// GetSecret is the net/rpc-registered entry point used by the Unix-socket IPC
+// path. It is overridden per-connection by agentConn.GetSecret (see below),
+// which supplies the real, SO_PEERCRED-authenticated caller identity for
+// audit attribution; this exported method (reachable directly, not via RPC,
+// from StartDriverServer's HTTP path -- ServeHTTP has no peer-credential
+// concept of its own) attributes audit entries to that distinct caller instead.
 func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) error {
+	return s.getSecret(req, resp, "docker-secret-driver")
+}
+
+func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, auditUser string) error {
 	cacheKey := fmt.Sprintf("%s:%s", req.Provider, req.Secret)
 
 	// fast path cache
@@ -75,6 +86,7 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 		s.Logger.Debug("Cache hit", zap.String("secret", req.Secret))
 		observability.SecretCacheHitsTotal.WithLabelValues(req.Secret).Inc()
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "success").Inc()
+		audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "success")
 		resp.Data = data
 		return nil
 	}
@@ -111,6 +123,7 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	if err != nil {
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
 		observability.BackendFailuresTotal.WithLabelValues(req.Provider, "load_fail").Inc()
+		audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "failed")
 		resp.Error = err.Error()
 		return err
 	}
@@ -141,6 +154,7 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 		timer.Observe(time.Since(start).Seconds())
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
 		observability.BackendFailuresTotal.WithLabelValues(req.Provider, "timeout").Inc()
+		audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "failed")
 		resp.Error = "provider timed out after 30s"
 		return fmt.Errorf("provider timed out fetching secret %q", req.Secret)
 	}
@@ -149,15 +163,36 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 	if err != nil {
 		observability.SecretRequestsTotal.WithLabelValues(req.Provider, "error").Inc()
 		observability.BackendFailuresTotal.WithLabelValues(req.Provider, "fetch_fail").Inc()
+		audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "failed")
 		resp.Error = err.Error()
 		return err
 	}
 
 	observability.SecretRequestsTotal.WithLabelValues(req.Provider, "success").Inc()
+	audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "success")
 
 	s.Cache.Set(cacheKey, data)
 	resp.Data = data
 	return nil
+}
+
+// agentConn is the net/rpc receiver registered for one accepted IPC
+// connection. net/rpc dispatches calls by reflecting on a single registered
+// receiver value with no per-call hook for connection-scoped data, so there is
+// no way to thread a connection's SO_PEERCRED-authenticated peer identity into
+// a shared *AgentServer's GetSecret. Instead, each connection gets its own
+// *rpc.Server and its own agentConn value (AUDIT-1 follow-up): *AgentServer is
+// embedded so every other RPC method (GetEvents, and any added later) is
+// promoted unchanged, and only GetSecret is overridden here to attribute audit
+// log entries to this connection's real, already-authorized caller instead of
+// a fixed placeholder.
+type agentConn struct {
+	*AgentServer
+	auditUser string
+}
+
+func (c *agentConn) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) error {
+	return c.getSecret(req, resp, c.auditUser)
 }
 
 // StartSocketServer starts the internal IPC RPC server on a Unix domain socket.
@@ -170,7 +205,9 @@ func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) 
 //
 // SEC-C2: every accepted connection's peer credentials (PID/UID/GID) are read via
 // SO_PEERCRED, authorized against a least-privilege policy, and recorded in the
-// audit log before the connection is served.
+// audit log before the connection is served. AUDIT-1: the resolved identity is
+// also attributed to every audit_event this connection's GetSecret calls emit
+// (see agentConn above), rather than a fixed placeholder.
 func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCache, store *providers.SecretStoreManager, logger *zap.Logger, cfg *config.Config) (*AgentServer, func(), error) {
 	server := &AgentServer{
 		Cache:  cache,
@@ -183,9 +220,9 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 		return nil, nil, fmt.Errorf("failed to prepare socket path %s: %w", socketPath, err)
 	}
 
-	if err := rpc.RegisterName("Agent", server); err != nil {
-		return nil, nil, fmt.Errorf("failed to register RPC service: %w", err)
-	}
+	// Note: no process-wide rpc.RegisterName here. Each connection registers
+	// its own agentConn on its own *rpc.Server in the accept loop below, so
+	// GetSecret can carry that connection's authenticated peer identity.
 
 	// Pre-bind check: is there another agent already running?
 	if _, err := os.Stat(socketPath); err == nil {
@@ -295,7 +332,9 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 				continue
 			}
 
-			// SEC-C2: authenticate and audit the peer before serving.
+			// SEC-C2: authenticate and audit the peer before serving. AUDIT-1:
+			// connUser also becomes this connection's audit-log identity.
+			var connUser string
 			peer, perr := readPeerIdentity(conn)
 			switch {
 			case errors.Is(perr, errPeerCredUnsupported):
@@ -304,6 +343,7 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 				// the code had before SEC-C2). Production runs on Linux where the
 				// full check applies.
 				logger.Warn("Peer credential check unsupported on this platform; relying on socket file permissions")
+				connUser = "unknown(peer-cred-unsupported)"
 			case perr != nil:
 				logger.Warn("Rejecting IPC connection: cannot read peer credentials",
 					zap.Error(perr))
@@ -321,6 +361,7 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 					zap.Int32("peer_pid", peer.pid),
 					zap.Uint32("peer_uid", peer.uid),
 					zap.Uint32("peer_gid", peer.gid))
+				connUser = resolveAuditUser(peer)
 			}
 
 			connMu.Lock()
@@ -333,7 +374,7 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 			connMu.Unlock()
 
 			wg.Add(1)
-			go func(c net.Conn) {
+			go func(c net.Conn, auditUser string) {
 				defer wg.Done()
 				defer func() {
 					connMu.Lock()
@@ -341,8 +382,16 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 					connMu.Unlock()
 					_ = c.Close()
 				}()
-				rpc.ServeConn(c)
-			}(conn)
+				// Per-connection *rpc.Server + agentConn: see the agentConn doc
+				// comment above for why this can't be the shared, process-wide
+				// registration net/rpc normally uses.
+				connServer := rpc.NewServer()
+				if err := connServer.RegisterName("Agent", &agentConn{AgentServer: server, auditUser: auditUser}); err != nil {
+					logger.Error("Failed to register per-connection RPC service", zap.Error(err))
+					return
+				}
+				connServer.ServeConn(c)
+			}(conn, connUser)
 		}
 	}()
 
@@ -465,6 +514,9 @@ func StartDriverServer(ctx context.Context, socketPath string, cache *SecretCach
 	}()
 
 	// Drain on context cancellation.
+	// #nosec G118 -- this goroutine only runs after ctx.Done(), so deriving the
+	// shutdown timeout from ctx would make it immediately Done too, giving
+	// Shutdown() zero grace period. A fresh Background() context is required.
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

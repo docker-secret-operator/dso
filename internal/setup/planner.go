@@ -359,7 +359,10 @@ type opCounter struct {
 	groups   int
 }
 
-func (c *opCounter) nextDir() string     { c.dirs++; return fmt.Sprintf("DIR-%03d", c.dirs) }
-func (c *opCounter) nextFile() string    { c.files++; return fmt.Sprintf("FILE-%03d", c.files) }
-func (c *opCounter) nextService() string { c.services++; return fmt.Sprintf("SERVICE-%03d", c.services) }
-func (c *opCounter) nextGroup() string   { c.groups++; return fmt.Sprintf("GROUP-%03d", c.groups) }
+func (c *opCounter) nextDir() string  { c.dirs++; return fmt.Sprintf("DIR-%03d", c.dirs) }
+func (c *opCounter) nextFile() string { c.files++; return fmt.Sprintf("FILE-%03d", c.files) }
+func (c *opCounter) nextService() string {
+	c.services++
+	return fmt.Sprintf("SERVICE-%03d", c.services)
+}
+func (c *opCounter) nextGroup() string { c.groups++; return fmt.Sprintf("GROUP-%03d", c.groups) }

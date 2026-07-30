@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
+	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )

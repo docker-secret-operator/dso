@@ -75,6 +75,8 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 	// 2. Get secret value (prompt if not provided)
 	if injectOpts.Value == "" {
 		fmt.Printf("Secret value for '%s': ", injectOpts.Secret)
+		// #nosec G115 -- os.Stdin.Fd() is a real OS file descriptor (always a
+		// small, non-negative int in practice); term.ReadPassword requires an int
 		valueBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
 			return fmt.Errorf("failed to read secret value: %w", err)

@@ -300,7 +300,7 @@ func NewUpCmd() *cobra.Command {
 					os.Exit(1)
 				}
 				defer func() {
-					tmpFile.Close() // Close file before removing
+					_ = tmpFile.Close() // Close file before removing
 					_ = os.Remove(tmpFile.Name())
 				}()
 

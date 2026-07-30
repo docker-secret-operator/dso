@@ -324,6 +324,8 @@ func (p *InteractivePrompter) PromptSecureInput(prompt string) (string, error) {
 	fmt.Fprint(p.stdout, prompt)
 
 	// Read password without echo
+	// #nosec G115 -- os.Stdin.Fd() is a real OS file descriptor (always a
+	// small, non-negative int in practice); term.ReadPassword requires an int
 	bytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	if err != nil {
 		return "", ErrInteractivePrompt("prompts", err)

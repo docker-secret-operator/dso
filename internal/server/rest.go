@@ -239,7 +239,7 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 	// via response timing. The endpoint is reachable from external systems, so a
 	// byte-by-byte short-circuiting comparison is a directly exploitable timing
 	// oracle. crypto/subtle.ConstantTimeCompare is already the project-wide pattern
-	// (see internal/auth/auth.go, pkg/provider/plugin_verifier.go).
+	// (see internal/auth/auth.go, pkg/provider/load.go).
 	authHeader := r.Header.Get("Authorization")
 	expectedToken := "Bearer " + s.Config.Agent.Watch.Webhook.AuthToken
 	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
@@ -499,6 +499,9 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 	}()
 
 	// Return shutdown function that closes server on context cancellation
+	// #nosec G118 -- this goroutine only runs after ctx.Done(), so deriving the
+	// shutdown timeout from ctx would give Shutdown() zero grace period. A
+	// fresh Background() context is required.
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

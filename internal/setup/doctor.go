@@ -50,7 +50,7 @@ const (
 // DoctorCheck is the result of a single diagnostic check.
 // IDs are stable — referenced by documentation, Repair, and support responses.
 type DoctorCheck struct {
-	ID          string         // e.g. "DSO-DOCTOR-001" — never changes between releases
+	ID          string // e.g. "DSO-DOCTOR-001" — never changes between releases
 	Category    DoctorCategory
 	Severity    DoctorSeverity // only meaningful for WARN / FAIL
 	Status      DoctorStatus

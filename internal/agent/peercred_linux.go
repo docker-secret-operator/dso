@@ -22,6 +22,8 @@ func readPeerIdentity(conn net.Conn) (peerIdentity, error) {
 	var cred *unix.Ucred
 	var credErr error
 	ctrlErr := raw.Control(func(fd uintptr) {
+		// #nosec G115 -- fd is a real OS socket file descriptor (always a
+		// small, non-negative int in practice); GetsockoptUcred requires an int
 		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
 	})
 	if ctrlErr != nil {

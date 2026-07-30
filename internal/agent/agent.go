@@ -272,9 +272,9 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 	// 3. Cleanup on exit
 	defer func() {
 		if listener != nil {
-			listener.Stop()
+			_ = listener.Stop()
 		}
-		reactor.Stop(ctx)
+		_ = reactor.Stop(ctx)
 
 		// Close all ticker stop channels to signal goroutines to exit
 		a.tickerStopMu.Lock()
