@@ -18,7 +18,7 @@ func TestExecProbeStructure(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping ExecProbe test")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -38,7 +38,7 @@ func TestExecProbeCleanupOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping test")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -71,7 +71,7 @@ func TestExecProbeCleanupOnError(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping test")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

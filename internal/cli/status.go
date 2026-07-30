@@ -226,14 +226,8 @@ func (s *Status) gatherProviders() []ProviderStatus {
 		{Name: "azure", Status: "disabled", Message: "not configured"},
 	}
 
-	// Check if any providers are actually configured
-	homeDir, _ := os.UserHomeDir()
-	configPath := filepath.Join(homeDir, ".dso", "config.yaml")
-
-	if _, err := os.Stat(configPath); err == nil {
-		// Config exists, could parse it to get real provider status
-		// For now, keep defaults
-	}
+	// TODO: if a config file exists, parse it to report real provider status
+	// instead of the hardcoded defaults above.
 
 	return providers
 }

@@ -188,7 +188,7 @@ secrets:
 
 	// Write to temp file
 	tmpDir, _ := os.MkdirTemp(".", "dso-test-")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	cfgPath := filepath.Join(tmpDir, "dso.yaml")
 	_ = os.WriteFile(cfgPath, []byte(configData), 0600)
 

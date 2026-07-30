@@ -136,19 +136,19 @@ func (pch *ProviderConfigHandler) ValidateProviderCredentials(providerType strin
 
 	case "azure":
 		if config["vault_url"] == "" {
-			return fmt.Errorf("Azure requires vault_url")
+			return fmt.Errorf("azure requires vault_url")
 		}
 		return nil
 
 	case "huawei":
 		if config["project_id"] == "" {
-			return fmt.Errorf("Huawei requires project_id")
+			return fmt.Errorf("huawei requires project_id")
 		}
 		return nil
 
 	case "vault":
 		if config["address"] == "" {
-			return fmt.Errorf("Vault requires address")
+			return fmt.Errorf("vault requires address")
 		}
 		// Token can be provided via environment variable
 		return nil

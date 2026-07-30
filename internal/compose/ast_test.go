@@ -361,7 +361,7 @@ func TestGetMapValueWithSpecialCharacters(t *testing.T) {
 
 			result := GetMapValue(node, keyName)
 			if result == nil {
-				t.Error("Failed to get key with special characters")
+				t.Fatal("Failed to get key with special characters")
 			}
 
 			if result.Value != "test-value" {

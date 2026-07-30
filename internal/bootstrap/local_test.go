@@ -24,8 +24,8 @@ func TestLocalBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 		t.Fatal("NewLocalBootstrapper returned nil")
 	}
 
-	// This should NOT panic, even though opts.Context.Value("config_path") returns nil
-	// The old code would panic: configPath = opts.Context.Value("config_path").(string)
+	// This should NOT panic, even though opts.Context.Value(ConfigPathContextKey) returns nil
+	// The old code would panic: configPath = opts.Context.Value(ConfigPathContextKey).(string)
 	ctx := context.Background()
 
 	// We expect this to fail validation or other error, but NOT to panic
@@ -44,7 +44,7 @@ func TestLocalBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 func TestLocalBootstrapWithValidContextPath(t *testing.T) {
 	logger := &MockLogger{}
 	testPath := "/custom/local/path/dso.yaml"
-	ctx := context.WithValue(context.Background(), "config_path", testPath)
+	ctx := context.WithValue(context.Background(), ConfigPathContextKey, testPath)
 
 	opts := &BootstrapOptions{
 		Mode:           ModeLocal,
@@ -64,7 +64,7 @@ func TestLocalBootstrapWithValidContextPath(t *testing.T) {
 
 	retrievedPath := defaultPath
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				retrievedPath = path
 			}
@@ -100,7 +100,7 @@ func TestLocalBootstrapWithNilContext(t *testing.T) {
 
 	configPath := expectedDefault
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 			}
@@ -115,7 +115,7 @@ func TestLocalBootstrapWithNilContext(t *testing.T) {
 // TestLocalBootstrapWithInvalidTypeInContext verifies wrong type is safely ignored
 func TestLocalBootstrapWithInvalidTypeInContext(t *testing.T) {
 	// Store a slice instead of string - tests type assertion safety
-	ctx := context.WithValue(context.Background(), "config_path", []string{"invalid"})
+	ctx := context.WithValue(context.Background(), ConfigPathContextKey, []string{"invalid"})
 
 	opts := &BootstrapOptions{
 		Mode:           ModeLocal,
@@ -133,7 +133,7 @@ func TestLocalBootstrapWithInvalidTypeInContext(t *testing.T) {
 
 	configPath := expectedDefault
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 			}

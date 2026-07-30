@@ -33,7 +33,6 @@ type Agent struct {
 
 	// Polling and event reaction components
 	poller           *polling.SmartPoller
-	pollerMu         sync.RWMutex
 	secretVersions   map[string]string // Track last seen versions for change detection
 	secretVersionsMu sync.RWMutex
 	tickerStopChans  map[string]chan struct{} // Signal channels for ticker goroutines
@@ -112,7 +111,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		maxConsecutiveAttempts = 20              // Exit after 20 failed attempts
 	)
 
-	reconnectDelay := initialReconnectDelay
+	var reconnectDelay time.Duration
 	consecutiveFailures := 0
 	totalReconnectAttempts := 0
 

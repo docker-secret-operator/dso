@@ -188,7 +188,7 @@ func (s *Server) handleConn(client net.Conn) {
 			zap.Error(err))
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	s.log.Debug("proxy: connection established",
 		zap.String("client", client.RemoteAddr().String()),

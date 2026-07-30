@@ -12,7 +12,7 @@ func TestFileProvider_GetSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	p := &FileProvider{basePath: tempDir}
 

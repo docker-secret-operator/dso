@@ -174,7 +174,7 @@ func TestDisplaySyncResults_ProducesOutput(t *testing.T) {
 
 	displaySyncResults(result, 1*time.Second)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	output, _ := io.ReadAll(r)

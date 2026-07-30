@@ -35,8 +35,8 @@ func (m *MockAgent) GetEvents(req *api.AgentRequest, resp *api.AgentResponse) er
 func startMockServer(t *testing.T) string {
 	f, _ := os.CreateTemp("/tmp", "dso-test-*.sock")
 	socketPath := f.Name()
-	f.Close()
-	os.Remove(socketPath)
+	_ = f.Close()
+	_ = os.Remove(socketPath)
 
 	server := rpc.NewServer()
 	err := server.RegisterName("Agent", &MockAgent{})
@@ -60,7 +60,7 @@ func startMockServer(t *testing.T) string {
 	}()
 
 	t.Cleanup(func() {
-		listener.Close()
+		_ = listener.Close()
 	})
 
 	return socketPath
@@ -182,7 +182,7 @@ func TestNewAgentClientWithTimeout_ZeroTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if client.requestTimeout == 0 {
 		t.Fatal("expected non-zero timeout after normalisation")
 	}
@@ -202,7 +202,7 @@ func TestAgentClient_GetEvents_ClosedConn(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Close the underlying RPC connection so the next call returns an error
-	client.client.Close()
+	_ = client.client.Close()
 	_, err = client.GetEvents()
 	if err == nil {
 		t.Fatal("expected error after connection close")
@@ -215,7 +215,7 @@ func TestAgentClient_FetchSecretWithContext_WithDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Provide a context that already has a deadline — skips the internal WithTimeout branch
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

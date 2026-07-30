@@ -50,7 +50,7 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 				t.Fatalf("Encrypt failed: %v", err)
 			}
 
-			if ciphertext == nil || len(ciphertext) == 0 {
+			if len(ciphertext) == 0 {
 				t.Fatal("Ciphertext is empty")
 			}
 
@@ -140,7 +140,7 @@ func TestMasterKeyGeneration(t *testing.T) {
 	// Keys should be valid hex
 	for _, k := range []string{key1, key2} {
 		for _, ch := range k {
-			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 				t.Errorf("Key contains non-hex character: %c", ch)
 			}
 		}
@@ -153,8 +153,8 @@ func TestVaultInitDefault(t *testing.T) {
 
 	// Temporarily override home directory
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	err := InitDefault()
 	if err != nil {
@@ -196,8 +196,8 @@ func TestVaultInitDefault(t *testing.T) {
 func TestVaultLoadDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	// Initialize vault
 	if err := InitDefault(); err != nil {
@@ -227,8 +227,8 @@ func TestVaultLoadDefault(t *testing.T) {
 func TestVaultSetAndGet(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -260,8 +260,8 @@ func TestVaultSetAndGet(t *testing.T) {
 func TestVaultSetInvalidProject(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -297,8 +297,8 @@ func TestVaultSetInvalidProject(t *testing.T) {
 func TestVaultGetNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -316,8 +316,8 @@ func TestVaultGetNotFound(t *testing.T) {
 func TestVaultList(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -366,8 +366,8 @@ func TestVaultList(t *testing.T) {
 func TestVaultSetBatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -402,8 +402,8 @@ func TestVaultSetBatch(t *testing.T) {
 func TestVaultPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -436,8 +436,8 @@ func TestVaultPersistence(t *testing.T) {
 func TestVaultChecksumValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -475,8 +475,8 @@ func TestVaultChecksumValidation(t *testing.T) {
 func TestVaultConcurrentAccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -514,8 +514,8 @@ func TestVaultConcurrentAccess(t *testing.T) {
 func TestVaultMetadataTracking(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -549,8 +549,8 @@ func TestVaultMetadataTracking(t *testing.T) {
 func TestVaultVersioning(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -567,15 +567,15 @@ func TestVaultVersioning(t *testing.T) {
 func TestVaultMarshalling(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
 	}
 
 	v, _ := LoadDefault()
-	v.Set("app", "secret", "value")
+	_ = v.Set("app", "secret", "value")
 
 	// Marshal vault
 	data, err := json.Marshal(v.store)
@@ -603,8 +603,8 @@ func TestVaultMarshalling(t *testing.T) {
 func TestVaultFilePermissionsPreserved(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -632,8 +632,8 @@ func TestVaultFilePermissionsPreserved(t *testing.T) {
 func TestVaultDirPermissionsPreserved(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	if err := InitDefault(); err != nil {
 		t.Fatalf("InitDefault failed: %v", err)
@@ -653,10 +653,10 @@ func TestVaultDirPermissionsPreserved(t *testing.T) {
 // TestGetVaultDir_NoHome verifies getVaultDir fails when HOME is not set
 func TestGetVaultDir_NoHome(t *testing.T) {
 	oldHome := os.Getenv("HOME")
-	os.Unsetenv("HOME")
+	_ = os.Unsetenv("HOME")
 	defer func() {
 		if oldHome != "" {
-			os.Setenv("HOME", oldHome)
+			_ = os.Setenv("HOME", oldHome)
 		}
 	}()
 
@@ -670,13 +670,13 @@ func TestGetVaultDir_NoHome(t *testing.T) {
 func TestGetMasterKey_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	_ = os.Setenv("HOME", tmpDir)
 	defer func() {
 		if oldHome != "" {
-			os.Setenv("HOME", oldHome)
+			_ = os.Setenv("HOME", oldHome)
 		}
 	}()
-	os.Unsetenv("DSO_MASTER_KEY")
+	_ = os.Unsetenv("DSO_MASTER_KEY")
 
 	_, err := getMasterKey()
 	if err == nil {
@@ -688,23 +688,23 @@ func TestGetMasterKey_NotFound(t *testing.T) {
 func TestLoadDefault_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	_ = os.Setenv("HOME", tmpDir)
 	defer func() {
 		if oldHome != "" {
-			os.Setenv("HOME", oldHome)
+			_ = os.Setenv("HOME", oldHome)
 		}
 	}()
 
-	InitDefault()
+	_ = InitDefault()
 
 	vaultPath := filepath.Join(tmpDir, ".dso", "vault.enc")
 
 	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	os.Setenv("DSO_MASTER_KEY", key)
-	defer os.Unsetenv("DSO_MASTER_KEY")
+	_ = os.Setenv("DSO_MASTER_KEY", key)
+	defer func() { _ = os.Unsetenv("DSO_MASTER_KEY") }()
 
 	cipher, _ := Encrypt([]byte("{invalid-json"), key)
-	os.WriteFile(vaultPath, cipher, 0600)
+	_ = os.WriteFile(vaultPath, cipher, 0600)
 
 	_, err := LoadDefault()
 	if err == nil {

@@ -106,12 +106,12 @@ secrets: []
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	masterKey := make([]byte, 32)
 	cfg, err := LoadConfigWithDecryption(filepath.Base(f.Name()), masterKey)
@@ -137,12 +137,12 @@ secrets: []
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	cfg, err := LoadConfigWithDecryption(filepath.Base(f.Name()), nil)
 	if err != nil {

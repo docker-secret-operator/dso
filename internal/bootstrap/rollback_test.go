@@ -160,10 +160,8 @@ func TestTransactionWithContextCancellation(t *testing.T) {
 	tx := NewTransactionExecutor(logger)
 
 	op := NewSimpleOperation("op", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		<-ctx.Done()
+		return ctx.Err()
 	})
 
 	tx.AddOperation(op, func(ctx context.Context) error {

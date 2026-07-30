@@ -40,7 +40,7 @@ func validateChecksum(filepath, expectedHash string) error {
 	if err != nil {
 		return fmt.Errorf("cannot open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, file); err != nil {
@@ -63,13 +63,13 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 
 	destination, err := os.Create(dst) // #nosec G304 -- see comment above
 	if err != nil {
 		return err
 	}
-	defer destination.Close()
+	defer func() { _ = destination.Close() }()
 
 	if _, err := io.Copy(destination, source); err != nil {
 		return err

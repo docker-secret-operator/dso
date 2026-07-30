@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 
 	"go.uber.org/zap"
@@ -12,9 +11,8 @@ import (
 type CacheLimiter struct {
 	maxCacheSize     int64 // Maximum total cache size in bytes
 	maxSecretSize    int64 // Maximum size for a single secret in bytes
-	currentCacheSize int64 // Current cache size in bytes
+	currentCacheSize int64 // Current cache size in bytes, accessed via sync/atomic
 	logger           *zap.Logger
-	mu               sync.RWMutex
 }
 
 // NewCacheLimiter creates a cache limiter with specified limits

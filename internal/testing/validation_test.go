@@ -286,7 +286,7 @@ func measureLatency(ctx context.Context, operation func(context.Context) error, 
 
 			for j := 0; j < opsPerWorker; j++ {
 				start := time.Now()
-				operation(ctx)
+				_ = operation(ctx)
 				latency := time.Since(start)
 
 				mu.Lock()
@@ -310,7 +310,7 @@ func CheckTimeoutBehavior(t *testing.T, operation func(context.Context) error, m
 	case <-ctx.Done():
 		timedOut = true
 	default:
-		operation(ctx)
+		_ = operation(ctx)
 	}
 
 	if !timedOut && ctx.Err() != nil {

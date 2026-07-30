@@ -29,15 +29,6 @@ func TestSecretStoreManager_GetProvider_ConfigMapping(t *testing.T) {
 	// It will error out but cover the mapping lines
 }
 
-// Dummy type for the mock client to avoid nil panic
-type dummyClient struct {
-	plugin.Client
-}
-
-func (d *dummyClient) Kill() {
-	// do nothing
-}
-
 func TestShutdown_WithEntries(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	manager := NewSecretStoreManager(logger)

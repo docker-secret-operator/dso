@@ -287,21 +287,6 @@ func validateConfigFile(configPath string) error {
 		return fmt.Errorf("invalid runtime.mode: %s (expected 'local' or 'agent')", mode)
 	}
 
-	// Validate providers section (optional)
-	if config.Providers != nil {
-		if local, ok := config.Providers["local"].(map[string]interface{}); ok {
-			if path, ok := local["path"]; ok {
-				pathStr := fmt.Sprintf("%v", path)
-				// Expand ~ to home directory for checking
-				if strings.HasPrefix(pathStr, "~") {
-					homeDir, _ := os.UserHomeDir()
-					pathStr = strings.Replace(pathStr, "~", homeDir, 1)
-					// Don't fail if path doesn't exist yet - it may be created by bootstrap
-				}
-			}
-		}
-	}
-
 	// Validate agent section (optional)
 	if config.Agent != nil {
 		if cache, ok := config.Agent["cache"].(map[string]interface{}); ok {

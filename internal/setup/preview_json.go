@@ -156,12 +156,7 @@ func toJSONPlan(plan InstallPlan) jsonPlan {
 		})
 	}
 	for _, g := range plan.Groups {
-		jp.Groups = append(jp.Groups, jsonGroup{
-			ID:        g.ID,
-			Name:      g.Name,
-			Operation: g.Operation,
-			Users:     g.Users,
-		})
+		jp.Groups = append(jp.Groups, jsonGroup(g))
 	}
 
 	return jp

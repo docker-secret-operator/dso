@@ -164,7 +164,7 @@ func TestRESTServer_HandleEvents_WithLimit(t *testing.T) {
 	server.ServeHTTP(w, req)
 
 	var events []Event
-	json.NewDecoder(w.Body).Decode(&events)
+	_ = json.NewDecoder(w.Body).Decode(&events)
 
 	if len(events) > 3 {
 		t.Errorf("Expected at most 3 events, got %d", len(events))
@@ -194,7 +194,7 @@ func TestRESTServer_HandleEvents_WithSeverity(t *testing.T) {
 	server.ServeHTTP(w, req)
 
 	var events []Event
-	json.NewDecoder(w.Body).Decode(&events)
+	_ = json.NewDecoder(w.Body).Decode(&events)
 
 	for _, ev := range events {
 		if ev["status"] != "error" {

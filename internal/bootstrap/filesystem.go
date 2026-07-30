@@ -119,7 +119,7 @@ func (fs *FilesystemOps) SafeWriteFile(ctx context.Context, path string, content
 	if err != nil {
 		return ErrFileWrite("filesystem", validPath, err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.Write(content); err != nil {
 		_ = tmpFile.Close()
@@ -279,7 +279,7 @@ func (b *BootstrapLockOps) Acquire(ctx context.Context, timeout time.Duration) (
 		file, err := os.OpenFile(b.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
 			// Write PID to lock file
-			fmt.Fprintf(file, "%d", os.Getpid())
+			_, _ = fmt.Fprintf(file, "%d", os.Getpid())
 			_ = file.Close()
 
 			b.logger.Info("Lock acquired", "path", b.lockPath)

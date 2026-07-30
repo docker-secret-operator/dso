@@ -35,8 +35,8 @@ func TestParseURIPath(t *testing.T) {
 
 func TestResolveCompose(t *testing.T) {
 	tv := testutil.NewTempVault(t)
-	tv.Vault.Set("myproj", "db_pass", "secret1")
-	tv.Vault.Set("myproj", "db_cert", "secret2")
+	_ = tv.Vault.Set("myproj", "db_pass", "secret1")
+	_ = tv.Vault.Set("myproj", "db_cert", "secret2")
 	yamlContent := `
 services:
   web:
@@ -69,7 +69,7 @@ services:
 
 func TestResolveComposeWithSequenceEnv(t *testing.T) {
 	tv := testutil.NewTempVault(t)
-	tv.Vault.Set("myproj", "db_pass", "secret1")
+	_ = tv.Vault.Set("myproj", "db_pass", "secret1")
 	yamlContent := `
 services:
   web:

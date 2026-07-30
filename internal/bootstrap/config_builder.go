@@ -90,7 +90,7 @@ func (cb *ConfigBuilder) WithAzureProvider(name, vaultURL string) *ConfigBuilder
 		return cb
 	}
 	if vaultURL == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Azure vault URL cannot be empty"))
+		cb.errors = append(cb.errors, fmt.Errorf("azure vault URL cannot be empty"))
 		return cb
 	}
 
@@ -111,11 +111,11 @@ func (cb *ConfigBuilder) WithHuaweiProvider(name, region, projectID string) *Con
 		return cb
 	}
 	if region == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Huawei region cannot be empty"))
+		cb.errors = append(cb.errors, fmt.Errorf("huawei region cannot be empty"))
 		return cb
 	}
 	if projectID == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Huawei project ID cannot be empty"))
+		cb.errors = append(cb.errors, fmt.Errorf("huawei project ID cannot be empty"))
 		return cb
 	}
 
@@ -137,11 +137,11 @@ func (cb *ConfigBuilder) WithVaultProvider(name, address, token string) *ConfigB
 		return cb
 	}
 	if address == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Vault address cannot be empty"))
+		cb.errors = append(cb.errors, fmt.Errorf("vault address cannot be empty"))
 		return cb
 	}
 	if token == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Vault token cannot be empty"))
+		cb.errors = append(cb.errors, fmt.Errorf("vault token cannot be empty"))
 		return cb
 	}
 
@@ -163,7 +163,7 @@ func (cb *ConfigBuilder) WithVaultProviderConfig(name string, cfg map[string]str
 		return cb
 	}
 	if cfg == nil || cfg["address"] == "" {
-		cb.errors = append(cb.errors, fmt.Errorf("Vault config must contain 'address'"))
+		cb.errors = append(cb.errors, fmt.Errorf("vault config must contain 'address'"))
 		return cb
 	}
 
@@ -289,18 +289,18 @@ func (cb *ConfigBuilder) Validate() error {
 			}
 		case "azure":
 			if providerCfg.Config == nil || providerCfg.Config["vault_url"] == "" {
-				return fmt.Errorf("Azure provider '%s' requires vault_url in config", providerName)
+				return fmt.Errorf("azure provider '%s' requires vault_url in config", providerName)
 			}
 		case "huawei":
 			if providerCfg.Region == "" {
-				return fmt.Errorf("Huawei provider '%s' requires region", providerName)
+				return fmt.Errorf("huawei provider '%s' requires region", providerName)
 			}
 			if providerCfg.Config == nil || providerCfg.Config["project_id"] == "" {
-				return fmt.Errorf("Huawei provider '%s' requires project_id in config", providerName)
+				return fmt.Errorf("huawei provider '%s' requires project_id in config", providerName)
 			}
 		case "vault":
 			if providerCfg.Config == nil || providerCfg.Config["address"] == "" {
-				return fmt.Errorf("Vault provider '%s' requires address in config", providerName)
+				return fmt.Errorf("vault provider '%s' requires address in config", providerName)
 			}
 		}
 	}

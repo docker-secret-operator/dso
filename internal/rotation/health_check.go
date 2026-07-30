@@ -14,7 +14,6 @@ import (
 func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	hasHealthCheck := false
-	healthCheckConfirmed := false
 	// Tracks consecutive "running" polls when there is no health check defined.
 	// We wait for two consecutive clean polls (~4s apart) before declaring healthy,
 	// so we don't declare success on a container that immediately crashes.
@@ -41,7 +40,6 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 			hasHealthCheck = true
 			switch inspect.State.Health.Status {
 			case "healthy":
-				healthCheckConfirmed = true
 				return nil
 			case "unhealthy":
 				return fmt.Errorf("container became unhealthy during rotation")
@@ -65,8 +63,10 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 		}
 	}
 
-	// CRITICAL: If we have a health check defined, only accept "healthy" status
-	if hasHealthCheck && !healthCheckConfirmed {
+	// CRITICAL: If we have a health check defined, only accept "healthy" status.
+	// (If it had reached "healthy", we'd have returned nil already inside the
+	// loop above, so reaching this line at all means it never did.)
+	if hasHealthCheck {
 		return fmt.Errorf("rotation timed out after %v - container has health check but never reached healthy state", timeout)
 	}
 

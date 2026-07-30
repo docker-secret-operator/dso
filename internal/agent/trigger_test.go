@@ -27,8 +27,8 @@ func createTestTempDirs(t *testing.T) (lockDir, stateDir string) {
 	}
 
 	t.Cleanup(func() {
-		os.RemoveAll(lockDir)
-		os.RemoveAll(stateDir)
+		_ = os.RemoveAll(lockDir)
+		_ = os.RemoveAll(stateDir)
 	})
 
 	return lockDir, stateDir
@@ -487,7 +487,7 @@ func TestTriggerEngine_ConcurrentStartAndStop(t *testing.T) {
 
 	// Start and stop concurrently
 	go func() {
-		engine.StartAll()
+		_ = engine.StartAll()
 		done <- true
 	}()
 

@@ -257,9 +257,9 @@ func (cl *ContainerListener) handleEvent(event events.Message) {
 	if len(changed) > 0 {
 		// Determine the action based on the event type
 		var action Action
-		if event.Status == "start" || (!wasTracked && len(changed) > 0) {
+		if event.Action == "start" || (!wasTracked && len(changed) > 0) {
 			action = ActionLabelCreate
-		} else if event.Status == "stop" || event.Status == "die" {
+		} else if event.Action == "stop" || event.Action == "die" {
 			action = ActionLabelRemove
 		} else {
 			action = ActionLabelUpdate

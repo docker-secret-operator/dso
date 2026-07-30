@@ -98,7 +98,7 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Docker: %w", err)
 	}
-	defer dockerClient.Close()
+	defer func() { _ = dockerClient.Close() }()
 
 	// 4. Find container
 	fmt.Printf("[DSO] Locating container '%s'...\n", injectOpts.Container)

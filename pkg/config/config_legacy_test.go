@@ -90,7 +90,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	badYaml := filepath.Join(tmpDir, "bad.yaml")
-	os.WriteFile(badYaml, []byte("invalid: yaml: :"), 0644)
+	_ = os.WriteFile(badYaml, []byte("invalid: yaml: :"), 0644)
 
 	_, err = LoadConfig(badYaml)
 	if err == nil {
@@ -114,7 +114,7 @@ secrets:
 	if err == nil && s.Rotation.Strategy != "signal" {
 		// If the above failed to use the custom unmarshaler, try wrapping in a node
 		var node yaml.Node
-		yaml.Unmarshal([]byte(yamlContent), &node)
+		_ = yaml.Unmarshal([]byte(yamlContent), &node)
 		// ... actually let's just test via the Config unmarshaler
 	}
 }

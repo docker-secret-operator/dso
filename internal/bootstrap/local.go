@@ -55,7 +55,7 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 
 	// Safely retrieve config path from context if provided
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 				lb.logger.Debug("Using config path from context", "path", configPath)
@@ -221,7 +221,7 @@ func (lb *LocalBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 	}
 
 	// Configure secrets
-	if opts.Secrets != nil && len(opts.Secrets) > 0 {
+	if len(opts.Secrets) > 0 {
 		// Secrets provided via options
 		for _, secret := range opts.Secrets {
 			builder.WithSecret(secret.Name, secret.Provider, secret.Mappings)

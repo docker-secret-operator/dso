@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -26,7 +25,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func getBaseInspect() container.InspectResponse {
 	return container.InspectResponse{
-		ContainerJSONBase: &types.ContainerJSONBase{
+		ContainerJSONBase: &container.ContainerJSONBase{
 			Name:       "/my-container",
 			HostConfig: &container.HostConfig{},
 			State:      &container.State{Running: true},
@@ -35,7 +34,7 @@ func getBaseInspect() container.InspectResponse {
 			Image: "nginx",
 			Env:   []string{"EXISTING=true"},
 		},
-		NetworkSettings: &types.NetworkSettings{
+		NetworkSettings: &container.NetworkSettings{
 			Networks: map[string]*network.EndpointSettings{
 				"bridge": {},
 			},

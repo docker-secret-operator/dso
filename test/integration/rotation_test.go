@@ -36,7 +36,7 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start test container: %v", err)
 	}
-	defer testContainer.Terminate(ctx)
+	defer func() { _ = testContainer.Terminate(ctx) }()
 
 	containerID := testContainer.GetContainerID()
 	t.Logf("Started test container: %s", containerID[:12])
@@ -46,7 +46,7 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Create rotation strategy
 	logger, _ := zap.NewProduction()
@@ -111,7 +111,7 @@ func TestRotation_Concurrent_MultipleContainers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	logger, _ := zap.NewProduction()
 	rs := rotation.NewRollingStrategyWithLogger(cli, logger)
@@ -168,7 +168,7 @@ func TestRotation_HealthCheck_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start test container: %v", err)
 	}
-	defer testContainer.Terminate(ctx)
+	defer func() { _ = testContainer.Terminate(ctx) }()
 
 	containerID := testContainer.GetContainerID()
 
@@ -177,7 +177,7 @@ func TestRotation_HealthCheck_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	logger, _ := zap.NewProduction()
 	rs := rotation.NewRollingStrategyWithLogger(cli, logger)
@@ -219,7 +219,7 @@ func TestRotation_EventDriven_Detection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start test container: %v", err)
 	}
-	defer testContainer.Terminate(startCtx)
+	defer func() { _ = testContainer.Terminate(startCtx) }()
 
 	containerID := testContainer.GetContainerID()
 
@@ -228,7 +228,7 @@ func TestRotation_EventDriven_Detection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Create a fresh context for operations
 	opCtx, opCancel := context.WithTimeout(context.Background(), 20*time.Second)

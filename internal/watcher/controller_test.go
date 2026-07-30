@@ -12,7 +12,6 @@ import (
 	"time"
 
 	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
-	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -728,9 +727,9 @@ func newMockController(t *testing.T, handler http.Handler) *ReloaderController {
 
 // minimalInspect returns a ContainerJSON with just enough fields populated for
 // executeSimpleRestart to succeed (name, config, hostconfig, network settings).
-func minimalInspect(name, id string) dockertypes.ContainerJSON {
-	return dockertypes.ContainerJSON{
-		ContainerJSONBase: &dockertypes.ContainerJSONBase{
+func minimalInspect(name, id string) container.InspectResponse {
+	return container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
 			ID:         id,
 			Name:       "/" + name,
 			HostConfig: &container.HostConfig{},
@@ -738,7 +737,7 @@ func minimalInspect(name, id string) dockertypes.ContainerJSON {
 		Config: &container.Config{
 			Env: []string{"EXISTING=old"},
 		},
-		NetworkSettings: &dockertypes.NetworkSettings{
+		NetworkSettings: &container.NetworkSettings{
 			Networks: map[string]*network.EndpointSettings{},
 		},
 	}
@@ -782,7 +781,7 @@ func TestExecuteRollback_AllAttemptsFail(t *testing.T) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/start"):
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"message":"start failed"}`))
+			_, _ = w.Write([]byte(`{"message":"start failed"}`))
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/rename"):
@@ -810,7 +809,7 @@ func TestExecuteRollback_SucceedsOnThirdAttempt(t *testing.T) {
 			n := atomic.AddInt32(&startCalls, 1)
 			if n < 3 {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"message":"not yet"}`))
+				_, _ = w.Write([]byte(`{"message":"not yet"}`))
 			} else {
 				w.WriteHeader(http.StatusNoContent)
 			}
@@ -853,13 +852,13 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 		switch {
 		case strings.Contains(p, "/containers/"+origID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(inspectJSON)
+			_, _ = w.Write(inspectJSON)
 		case strings.Contains(p, "/rename"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/create"):
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			w.Write(createJSON)
+			_, _ = w.Write(createJSON)
 		case strings.Contains(p, "/containers/"+origID+"/stop"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/"+newID+"/start"):
@@ -891,7 +890,7 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 func TestExecuteSimpleRestart_InspectFailure(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"message":"daemon error"}`))
+		_, _ = w.Write([]byte(`{"message":"daemon error"}`))
 	})
 
 	rc := newMockController(t, handler)
@@ -919,18 +918,18 @@ func TestExecuteSimpleRestart_StartFailureRollsBack(t *testing.T) {
 		switch {
 		case strings.Contains(p, "/containers/"+origID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(inspectJSON)
+			_, _ = w.Write(inspectJSON)
 		case strings.Contains(p, "/rename"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/create"):
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			w.Write(createJSON)
+			_, _ = w.Write(createJSON)
 		case strings.Contains(p, "/containers/"+origID+"/stop"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/"+newID+"/start"):
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"message":"oom"}`))
+			_, _ = w.Write([]byte(`{"message":"oom"}`))
 		case strings.Contains(p, "/containers/"+newID) && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/"+origID+"/start"):

@@ -112,7 +112,7 @@ func verifyBinaryHash(manifestPath, pluginPath string) error {
 	if err != nil {
 		return fmt.Errorf("cannot open hash manifest %s: %w", manifestPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	pluginName := filepath.Base(pluginPath)
 	expectedHash := ""
@@ -153,7 +153,7 @@ func verifyBinaryHash(manifestPath, pluginPath string) error {
 	if err != nil {
 		return fmt.Errorf("cannot open plugin binary for hashing: %w", err)
 	}
-	defer bin.Close()
+	defer func() { _ = bin.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, bin); err != nil {

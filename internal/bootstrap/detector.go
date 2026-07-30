@@ -107,7 +107,7 @@ func (cd *CloudDetector) getIMDSv2Token(ctx context.Context, tokenURL string) (s
 	if err != nil {
 		return "", fmt.Errorf("token request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("token request returned status %d", resp.StatusCode)
@@ -138,7 +138,7 @@ func (cd *CloudDetector) fetchAWSMetadata(ctx context.Context, metadataURL, toke
 	if err != nil {
 		return "", fmt.Errorf("metadata request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("metadata request returned status %d", resp.StatusCode)
@@ -178,7 +178,7 @@ func (cd *CloudDetector) detectAzure(ctx context.Context) *CloudProviderInfo {
 		cd.logger.Debug("Azure metadata request failed", "error", err.Error())
 		return &CloudProviderInfo{Detected: false}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		cd.logger.Debug("Azure metadata returned non-200 status", "status", resp.StatusCode)
@@ -236,7 +236,7 @@ func (cd *CloudDetector) detectHuawei(ctx context.Context) *CloudProviderInfo {
 		cd.logger.Debug("Huawei metadata request failed", "error", err.Error())
 		return &CloudProviderInfo{Detected: false}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		cd.logger.Debug("Huawei metadata returned non-200 status", "status", resp.StatusCode)

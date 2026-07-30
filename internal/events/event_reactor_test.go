@@ -82,8 +82,8 @@ func TestEventReactorImpl_Deduplication_1sWindow(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Send same secret twice within 1s
 	event := SecretChangeEvent{
@@ -124,21 +124,21 @@ func TestEventReactorImpl_PriorityOrdering(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Enqueue in order: Low, High, Critical
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "low",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "high",
 		Severity:   SeverityHigh,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "critical",
 		Severity:   SeverityCritical,
 		Timestamp:  time.Now(),
@@ -181,8 +181,8 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Enqueue 7 events at time 0
 	for i := 1; i <= 7; i++ {
@@ -222,8 +222,8 @@ func TestEventReactorImpl_ProcessContainerEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Container event with secret labels
 	event := ContainerLabelEvent{
@@ -257,8 +257,8 @@ func TestEventReactorImpl_IsHealthy(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Initially unhealthy (no events)
 	if reactor.IsHealthy() {
@@ -293,8 +293,8 @@ func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
@@ -338,21 +338,21 @@ func TestEventReactorImpl_CallbackError_Continues(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Queue events, one will fail
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "ok-1",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "fail-secret",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
 	})
-	reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+	_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 		SecretName: "ok-2",
 		Severity:   SeverityNormal,
 		Timestamp:  time.Now(),
@@ -397,7 +397,7 @@ func TestEventReactorImpl_MultipleStartCalls(t *testing.T) {
 
 	time.Sleep(6 * time.Second)
 
-	reactor.Stop(context.Background())
+	_ = reactor.Stop(context.Background())
 
 	finalCount := atomic.LoadInt32(&callCount)
 	if finalCount < 1 {
@@ -415,8 +415,8 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	event := SecretChangeEvent{
 		SecretName: "my-secret",
@@ -466,8 +466,8 @@ func TestEventReactorImpl_EmptyEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Process empty event (zero values are valid for value types)
 	emptySecretEvent := SecretChangeEvent{}
@@ -499,12 +499,12 @@ func TestEventReactorImpl_QueueMaxBatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	reactor.Start(ctx)
-	defer reactor.Stop(context.Background())
+	_ = reactor.Start(ctx)
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Enqueue 12 events
 	for i := 1; i <= 12; i++ {
-		reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
+		_ = reactor.ProcessSecretEvent(context.Background(), SecretChangeEvent{
 			SecretName: fmt.Sprintf("secret-%d", i),
 			Severity:   SeverityNormal,
 			Timestamp:  time.Now(),

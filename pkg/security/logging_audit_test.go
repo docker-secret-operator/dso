@@ -292,11 +292,6 @@ func TestLoggingAuditValidator_GetRedactedErrorMessage(t *testing.T) {
 	if len(redacted) == 0 {
 		t.Error("Redacted message is empty")
 	}
-
-	// Check that the password is redacted
-	if redacted != err.Error() {
-		// Successfully redacted different output
-	}
 }
 
 func TestLoggingAuditValidator_GetRedactedString(t *testing.T) {

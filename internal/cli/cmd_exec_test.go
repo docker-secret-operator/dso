@@ -14,11 +14,11 @@ func TestRootHelp(t *testing.T) {
 
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r)
 	os.Stdout = oldStdout
 
 	if !bytes.Contains(buf.Bytes(), []byte("Usage:")) {
@@ -33,11 +33,11 @@ func TestVersionOutput(t *testing.T) {
 
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"version"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r)
 	os.Stdout = oldStdout
 
 	if !bytes.Contains(buf.Bytes(), []byte("Version: "+Version)) {
@@ -55,26 +55,26 @@ func TestUpHelp(t *testing.T) {
 
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"up", "--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = oldStderr
 }
 
 func TestDownHelp(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"down", "--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 }
 
 func TestLogsHelp(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"logs", "--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 }
 
 func TestSystemHelp(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"system", "--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 }

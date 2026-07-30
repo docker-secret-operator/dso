@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// contextKey is a private type for context values set/read within this
+// package, so they can never collide with a same-named string key set by an
+// unrelated package sharing the same context.Context.
+type contextKey string
+
+// ConfigPathContextKey is the context key used to pass an explicit config
+// file path through a context.Context (see agent.go/local.go's Bootstrap).
+const ConfigPathContextKey contextKey = "config_path"
+
 // BootstrapMode represents the mode of DSO operation
 type BootstrapMode string
 
@@ -161,12 +170,6 @@ type BootstrapLock struct {
 	Path       string
 	AcquiredAt time.Time
 	owner      string
-}
-
-// BootstrapTransaction represents a sequence of bootstrap operations
-type BootstrapTransaction struct {
-	operations []Operation
-	rollbacks  []RollbackFunc
 }
 
 // Operation represents a single bootstrap step

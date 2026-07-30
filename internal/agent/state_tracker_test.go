@@ -95,7 +95,7 @@ func TestStateTracker_LoadExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 
 	pending := st2.GetPendingRotations()
 	_ = pending // in_progress too fresh, but loadStates was exercised
@@ -105,7 +105,7 @@ func TestStateTracker_CleanupNoOp(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	dir := t.TempDir()
 	st, _ := NewStateTracker(dir, logger)
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// CleanupOldStates on empty tracker — should be no-op
 	if err := st.CleanupOldStates(time.Hour); err != nil {

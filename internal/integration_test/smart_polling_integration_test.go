@@ -34,7 +34,7 @@ func TestSmartPolling_EndToEnd(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Simulate 3 secrets
 	secrets := []string{"db-password", "api-key", "oauth-token"}
@@ -171,7 +171,7 @@ func TestSmartPolling_ContainerEventsIntegration(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Simulate container events with secret labels
 	containerEvent := events.ContainerLabelEvent{
@@ -225,7 +225,7 @@ func TestSmartPolling_BatchingUnderLoad(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Enqueue 5 events rapidly (within 1 second) with unique names to avoid deduplication
 	baseTime := time.Now()
@@ -279,7 +279,7 @@ func TestSmartPolling_Deduplication(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	secretName := "dedup-secret"
 
@@ -411,7 +411,7 @@ func TestSmartPolling_ConcurrentPollingAndEvents(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	var wg sync.WaitGroup
 	numSecrets := 10
@@ -492,7 +492,7 @@ func TestSmartPolling_LoadTest(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Monitor baseline memory and goroutines
 	var startMem runtime.MemStats
@@ -611,7 +611,7 @@ func TestSmartPolling_StressTest(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Stress: 50 rapid changes with unique secrets (each gets unique name to avoid dedup)
 	numEvents := 50
@@ -717,7 +717,7 @@ func TestSmartPolling_LatencyValidation(t *testing.T) {
 	if err := reactor.Start(ctx); err != nil {
 		t.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	// Emit events and measure time to batch processing
 	numEvents := 5
@@ -795,7 +795,7 @@ func BenchmarkSmartPolling_FullCycle(b *testing.B) {
 	if err := reactor.Start(ctx); err != nil {
 		b.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	b.ResetTimer()
 
@@ -840,7 +840,7 @@ func BenchmarkSmartPolling_ConcurrentLoad(b *testing.B) {
 	if err := reactor.Start(ctx); err != nil {
 		b.Fatalf("failed to start reactor: %v", err)
 	}
-	defer reactor.Stop(context.Background())
+	defer func() { _ = reactor.Stop(context.Background()) }()
 
 	numGoroutines := 10
 	opsPerGoroutine := b.N / numGoroutines
@@ -864,9 +864,9 @@ func BenchmarkSmartPolling_ConcurrentLoad(b *testing.B) {
 					Severity:   events.SeverityNormal,
 					Timestamp:  time.Now(),
 				}
-				if err := reactor.ProcessSecretEvent(ctx, event); err != nil {
-					// Ignore errors in benchmark
-				}
+				// Errors are ignored in this benchmark -- it measures
+				// throughput, not per-event success.
+				_ = reactor.ProcessSecretEvent(ctx, event)
 				sp.RecordPoll(secretName)
 			}
 		}(g)

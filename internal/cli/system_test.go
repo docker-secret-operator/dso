@@ -66,7 +66,7 @@ func TestCopyFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
 	dst := filepath.Join(dir, "dst")
-	os.WriteFile(src, []byte("data"), 0644)
+	_ = os.WriteFile(src, []byte("data"), 0644)
 
 	err := copyFile(src, dst)
 	if err != nil {

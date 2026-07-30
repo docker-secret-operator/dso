@@ -231,7 +231,6 @@ func TestHub_BroadcastWithMultipleEvents(t *testing.T) {
 		case <-client.send:
 			receivedCount++
 		case <-time.After(100 * time.Millisecond):
-			break
 		}
 	}
 
@@ -591,7 +590,6 @@ func TestHub_MultipleSequentialBroadcasts(t *testing.T) {
 		case <-client.send:
 			received++
 		default:
-			break
 		}
 	}
 

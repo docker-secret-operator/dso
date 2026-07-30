@@ -164,10 +164,10 @@ func TestStartSocketServer_AuditLogsRealPeerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to dial agent socket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := rpc.NewClient(conn)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	req := &api.AgentRequest{Provider: "vault", Secret: "db_password"}
 	resp := &api.AgentResponse{}

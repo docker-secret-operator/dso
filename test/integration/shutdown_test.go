@@ -13,7 +13,7 @@ import (
 
 func TestGracefulShutdown_WithSecretsInCache(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	// Create cache with secrets
 	cache := agent.NewSecretCache(1 * time.Minute)
@@ -44,7 +44,7 @@ func TestGracefulShutdown_WithSecretsInCache(t *testing.T) {
 
 func TestGracefulShutdown_RESTServerShutdown(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(1 * time.Minute)
 	defer cache.Close()
@@ -79,7 +79,7 @@ func TestGracefulShutdown_RESTServerShutdown(t *testing.T) {
 
 func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(5 * time.Minute)
 	defer cache.Close()
@@ -123,7 +123,7 @@ func TestGracefulShutdown_SignalHandling(t *testing.T) {
 	// We can't actually send signals in unit tests, but we can verify the mechanism exists
 
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	// Create a parent context like signal.NotifyContext would
 	ctx, cancel := context.WithCancel(context.Background())

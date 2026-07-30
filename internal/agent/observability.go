@@ -100,9 +100,10 @@ func (rt *RotationTracer) Summary() map[string]interface{} {
 
 	for _, event := range rt.events {
 		stages = append(stages, event.Stage)
-		if event.Level == "error" {
+		switch event.Level {
+		case "error":
 			errorCount++
-		} else if event.Level == "warn" {
+		case "warn":
 			warnCount++
 		}
 	}
@@ -243,7 +244,7 @@ func (plm *ProviderLatencyMonitor) GetStats(provider string) map[string]interfac
 
 	// Calculate statistics
 	var total time.Duration
-	var min, max time.Duration = latencies[0], latencies[0]
+	min, max := latencies[0], latencies[0]
 
 	for _, lat := range latencies {
 		total += lat

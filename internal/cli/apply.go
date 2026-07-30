@@ -153,7 +153,7 @@ func computeApplyPlan(cfg *config.Config) (*ApplyPlan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Docker: %w", err)
 	}
-	defer dockerClient.Close()
+	defer func() { _ = dockerClient.Close() }()
 
 	// For now, return a simple plan that will update all secrets
 	// In a full implementation, this would compare current state vs desired state
@@ -246,7 +246,7 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 			result.ErrorMessage = fmt.Sprintf("Failed to connect to Docker: %v", err)
 			return result, fmt.Errorf("docker connection failed: %w", err)
 		}
-		defer dockerClient.Close()
+		defer func() { _ = dockerClient.Close() }()
 
 		// Create agent client
 		agentClient, err := injector.NewAgentClient(socketPath)
@@ -301,7 +301,7 @@ func triggerAgentSync(socketPath string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send simple sync request
 	_, err = conn.Write([]byte("SYNC\n"))

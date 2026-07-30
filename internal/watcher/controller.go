@@ -97,7 +97,7 @@ func (r *ReloaderController) daemonEventLoop(ctx context.Context) {
 	filterArgs.Add("event", "die")
 	filterArgs.Add("event", "stop")
 
-	reconnectDelay := time.Second
+	var reconnectDelay time.Duration
 	maxReconnectDelay := 30 * time.Second
 
 	// Start periodic reconciliation (every 10 minutes)
@@ -134,7 +134,6 @@ func (r *ReloaderController) daemonEventLoop(ctx context.Context) {
 				r.Logger.Error("Docker Events stream error", zap.Error(err), zap.Duration("nextRetry", reconnectDelay))
 				observability.BackendFailuresTotal.WithLabelValues("docker_events", "stream_error").Inc()
 				streamActive = false
-				break
 			case msg := <-msgCh:
 				streamActive = true
 				// Enqueue event with backpressure protection

@@ -98,7 +98,7 @@ func (pm *PermissionManager) ensureDSOGroup() (int, error) {
 
 	// Use groupadd to create the group with a specific GID
 	// Try GID 1001 first, then fallback to system-assigned GID
-	cmd := fmt.Sprintf("groupadd -g 1001 dso 2>/dev/null || groupadd dso")
+	cmd := "groupadd -g 1001 dso 2>/dev/null || groupadd dso"
 	if err := runSystemCommand(cmd); err != nil {
 		return 0, fmt.Errorf("failed to create dso group: %w", err)
 	}

@@ -497,12 +497,3 @@ func TestRedactStructFields(t *testing.T) {
 func errMsg(msg string) error {
 	return errors.New(msg)
 }
-
-// errWithMsg is a simple error implementation for testing
-type errWithMsg struct {
-	message string
-}
-
-func (e *errWithMsg) Error() string {
-	return e.message
-}

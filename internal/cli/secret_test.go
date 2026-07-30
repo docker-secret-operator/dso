@@ -11,7 +11,7 @@ func TestParseKey(t *testing.T) {
 	}
 
 	p, path, err = parseKey("path")
-	if err != nil {
+	if err != nil || p != "global" || path != "path" {
 		t.Fatal("parseKey default failed")
 	}
 

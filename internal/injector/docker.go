@@ -76,7 +76,7 @@ func (d *DockerInjector) SignalContainers(ctx context.Context, secretName string
 	defer d.mu.Unlock()
 
 	if d.cli == nil {
-		return fmt.Errorf("Docker client not initialized")
+		return fmt.Errorf("docker client not initialized")
 	}
 
 	// Filter for containers that opted into signaling for this secret

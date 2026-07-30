@@ -169,8 +169,8 @@ invalid yaml content: [unclosed list
 	}
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	_, err = LoadConfig("invalid.yaml")
 	if err == nil {
@@ -182,8 +182,8 @@ invalid yaml content: [unclosed list
 func TestLoadConfigMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	_, err := LoadConfig("nonexistent.yaml")
 	if err == nil {
@@ -202,8 +202,8 @@ func TestLoadConfigEmptyFile(t *testing.T) {
 	}
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, err := LoadConfig("empty.yaml")
 	if err == nil {
@@ -239,8 +239,8 @@ secrets:
 	}
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, err := LoadConfig("valid.yaml")
 	if err != nil {
@@ -276,13 +276,13 @@ logging:
 	}
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	// Set environment variable
 	oldLevel := os.Getenv("DSO_LOG_LEVEL")
-	os.Setenv("DSO_LOG_LEVEL", "debug")
-	defer os.Setenv("DSO_LOG_LEVEL", oldLevel)
+	_ = os.Setenv("DSO_LOG_LEVEL", "debug")
+	defer func() { _ = os.Setenv("DSO_LOG_LEVEL", oldLevel) }()
 
 	cfg, err := LoadConfig("override.yaml")
 	if err != nil {
@@ -320,8 +320,8 @@ secrets:
 	}
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, err := LoadConfig("minimal.yaml")
 	if err != nil {
@@ -366,8 +366,8 @@ func TestIsSafePathSymlinkEscapeAttempt(t *testing.T) {
 	baseDir := filepath.Join(dir, "dso")
 	escapeDir := filepath.Join(dir, "escape")
 
-	os.Mkdir(baseDir, 0755)
-	os.Mkdir(escapeDir, 0755)
+	_ = os.Mkdir(baseDir, 0755)
+	_ = os.Mkdir(escapeDir, 0755)
 
 	// Create a symlink that points outside
 	symlinkPath := filepath.Join(baseDir, "evil-link")
@@ -495,7 +495,7 @@ secrets:
     mappings:
       key: VAL
 `
-	os.WriteFile(v1File, []byte(v1Content), 0644)
+	_ = os.WriteFile(v1File, []byte(v1Content), 0644)
 
 	v2File := filepath.Join(dir, "v2.yaml")
 	v2Content := `providers:
@@ -511,11 +511,11 @@ secrets:
     mappings:
       key: VAL
 `
-	os.WriteFile(v2File, []byte(v2Content), 0644)
+	_ = os.WriteFile(v2File, []byte(v2Content), 0644)
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	// Both should load without error
 	cfg1, err1 := LoadConfig("v1.yaml")
@@ -543,11 +543,11 @@ func TestConfigRequiresProviders(t *testing.T) {
   level: info
 secrets: []
 `
-	os.WriteFile(tempFile, []byte(yamlContent), 0644)
+	_ = os.WriteFile(tempFile, []byte(yamlContent), 0644)
 
 	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, err := LoadConfig("noproviders.yaml")
 	if err == nil {

@@ -23,10 +23,11 @@ type StoreEntry struct {
 	MaxFailures int
 }
 
+// SecretStoreManager needs no mutex of its own: store is a sync.Map, and each
+// StoreEntry carries its own mu guarding its mutable health fields (REL-2).
 type SecretStoreManager struct {
 	logger *zap.Logger
 	store  sync.Map
-	mu     sync.RWMutex
 }
 
 func NewSecretStoreManager(logger *zap.Logger) *SecretStoreManager {

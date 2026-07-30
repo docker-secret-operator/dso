@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
@@ -31,7 +30,7 @@ func TestInjectOneFile_Success(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping integration test: cannot create docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -44,7 +43,7 @@ func TestInjectOneFile_Success(t *testing.T) {
 }
 
 func TestInjectOneFile_Timeout(t *testing.T) {
-	execCreateResponse := types.IDResponse{ID: "mock-exec-id"}
+	execCreateResponse := container.ExecCreateResponse{ID: "mock-exec-id"}
 	b1, _ := json.Marshal(execCreateResponse)
 
 	execInspectResponse := container.ExecInspect{

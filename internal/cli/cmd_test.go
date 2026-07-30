@@ -85,7 +85,7 @@ func TestNewValidateCmd(t *testing.T) {
 	cmd.SetOut(b)
 	cmd.SetErr(b)
 	cmd.SetArgs([]string{"--help"})
-	cmd.Execute()
+	_ = cmd.Execute()
 }
 
 func TestNewUpCmd(t *testing.T) {

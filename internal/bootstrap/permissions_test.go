@@ -57,8 +57,10 @@ func TestPermissionManagerWithNilContext(t *testing.T) {
 	logger := &MockLogger{}
 	pm := NewPermissionManager(logger, true) // Safe with dryRun=true
 
-	// Passing nil context should not panic
-	err := pm.SetupBootstrapPermissions(nil, 1000, 1000)
+	// Passing nil context should not panic. The nil is the entire point of
+	// this regression test -- substituting context.TODO() (as SA1012 would
+	// otherwise suggest) would stop exercising the nil-guard being verified.
+	err := pm.SetupBootstrapPermissions(nil, 1000, 1000) //nolint:staticcheck // SA1012: nil context is deliberate here
 
 	// Error is expected due to dryRun and nil context, but no panic
 	t.Logf("SetupBootstrapPermissions with nil context: %v", err)

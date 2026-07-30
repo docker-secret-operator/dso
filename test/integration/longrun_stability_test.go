@@ -28,7 +28,7 @@ func TestLongRunStability_72Hours(t *testing.T) {
 	// }
 
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(1 * time.Minute)
 	defer cache.Close()
@@ -122,7 +122,7 @@ StabilityLoop:
 // TestCacheCleanupStability tests cache cleanup over time
 func TestCacheCleanupStability(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(100 * time.Millisecond) // Short TTL for testing
 	defer cache.Close()
@@ -172,7 +172,7 @@ func TestCacheCleanupStability(t *testing.T) {
 // TestConcurrentAccessStability tests cache under sustained concurrent access
 func TestConcurrentAccessStability(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(1 * time.Minute)
 	defer cache.Close()
@@ -222,7 +222,7 @@ func TestConcurrentAccessStability(t *testing.T) {
 // TestMemoryZeroization tests that secrets are properly zeroized
 func TestMemoryZeroization(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache := agent.NewSecretCache(1 * time.Hour) // Long TTL
 
@@ -254,7 +254,7 @@ func TestMemoryZeroization(t *testing.T) {
 // TestEventProcessingStability tests event queue stability under load
 func TestEventProcessingStability(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	// Note: Would need to implement BoundedEventQueue test helper
 	// This is a placeholder for the event stability test
@@ -273,7 +273,7 @@ func getMemStats() runtime.MemStats {
 // TestRecoveryAfterCrash simulates crash and recovery scenarios
 func TestRecoveryAfterCrash(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	cache1 := agent.NewSecretCache(1 * time.Minute)
 

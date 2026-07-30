@@ -12,12 +12,12 @@ func TestDetectMode(t *testing.T) {
 		t.Fatal("expected local/flag")
 	}
 
-	os.Setenv("DSO_MODE", "cloud")
+	_ = os.Setenv("DSO_MODE", "cloud")
 	mode, reason = detectMode("", "")
 	if mode != "cloud" || reason != "env" {
 		t.Fatal("expected cloud/env")
 	}
-	os.Unsetenv("DSO_MODE")
+	_ = os.Unsetenv("DSO_MODE")
 
 	mode, _ = detectMode("", "missing.yaml")
 	if mode != "cloud" {
@@ -36,12 +36,12 @@ func TestGetProjectName(t *testing.T) {
 		t.Fatal("expected myproj2")
 	}
 
-	os.Setenv("COMPOSE_PROJECT_NAME", "myproj3")
+	_ = os.Setenv("COMPOSE_PROJECT_NAME", "myproj3")
 	name = getProjectName([]string{})
 	if name != "myproj3" {
 		t.Fatal("expected myproj3")
 	}
-	os.Unsetenv("COMPOSE_PROJECT_NAME")
+	_ = os.Unsetenv("COMPOSE_PROJECT_NAME")
 
 	name = getProjectName([]string{})
 	dir, _ := os.Getwd()

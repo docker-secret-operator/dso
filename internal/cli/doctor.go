@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -339,5 +340,5 @@ func padLeft(s string, length int) string {
 	if padding < 0 {
 		padding = 0
 	}
-	return s + " " + "|"
+	return s + strings.Repeat(" ", padding) + " |"
 }

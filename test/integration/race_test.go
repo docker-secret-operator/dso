@@ -27,13 +27,13 @@ func TestRace_ContainerClone_ConcurrentMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Pull image
 	reader, err := cli.ImagePull(ctx, "docker.io/library/alpine:latest", image.PullOptions{})
 	if err == nil {
-		io.Copy(io.Discard, reader)
-		reader.Close()
+		_, _ = io.Copy(io.Discard, reader)
+		_ = reader.Close()
 	}
 
 	// Create a base container for testing
@@ -52,7 +52,7 @@ func TestRace_ContainerClone_ConcurrentMutations(t *testing.T) {
 		t.Fatalf("Failed to create test container: %v", err)
 	}
 
-	defer cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	defer func() { _ = cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true}) }()
 
 	// Simulate concurrent config mutations (what would happen without defensive copy)
 	numGoroutines := 10
@@ -154,13 +154,13 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Pull image
 	reader, err := cli.ImagePull(ctx, "docker.io/library/alpine:latest", image.PullOptions{})
 	if err == nil {
-		io.Copy(io.Discard, reader)
-		reader.Close()
+		_, _ = io.Copy(io.Discard, reader)
+		_ = reader.Close()
 	}
 
 	// Clean up any leftover containers from prior runs with these fixed names.
@@ -182,7 +182,7 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	defer cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	defer func() { _ = cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true}) }()
 
 	// Test sequential rename operations (what atomic swap does)
 	baseName := "atomic-test"
@@ -203,7 +203,7 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 		t.Fatalf("Failed to start new container: %v", err)
 	}
 
-	defer cli.ContainerRemove(ctx, newResp.ID, container.RemoveOptions{Force: true})
+	defer func() { _ = cli.ContainerRemove(ctx, newResp.ID, container.RemoveOptions{Force: true}) }()
 
 	// Step 2: Perform the atomic swap
 	// This is what would happen in actual rotation

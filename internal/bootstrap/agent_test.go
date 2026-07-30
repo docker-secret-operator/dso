@@ -45,8 +45,8 @@ func TestAgentBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 		t.Fatal("NewAgentBootstrapper returned nil - should create successfully")
 	}
 
-	// This should NOT panic, even though opts.Context.Value("config_path") returns nil
-	// The old code would panic here: configPath := opts.Context.Value("config_path").(string)
+	// This should NOT panic, even though opts.Context.Value(ConfigPathContextKey) returns nil
+	// The old code would panic here: configPath := opts.Context.Value(ConfigPathContextKey).(string)
 	ctx := context.Background()
 
 	// We expect this to fail validation or other error, but NOT to panic
@@ -67,7 +67,7 @@ func TestAgentBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 func TestAgentBootstrapWithValidContextPath(t *testing.T) {
 	logger := &MockLogger{}
 	testPath := "/custom/path/dso.yaml"
-	ctx := context.WithValue(context.Background(), "config_path", testPath)
+	ctx := context.WithValue(context.Background(), ConfigPathContextKey, testPath)
 
 	opts := &BootstrapOptions{
 		Mode:           ModeAgent,
@@ -84,7 +84,7 @@ func TestAgentBootstrapWithValidContextPath(t *testing.T) {
 	// Extract the context path safely - this tests the defensive check
 	retrievedPath := "/etc/dso/dso.yaml" // default
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				retrievedPath = path
 			}
@@ -117,7 +117,7 @@ func TestAgentBootstrapWithNilContext(t *testing.T) {
 	// This is the defensive pattern: check if context is nil before using it
 	configPath := "/etc/dso/dso.yaml"
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 			}
@@ -132,7 +132,7 @@ func TestAgentBootstrapWithNilContext(t *testing.T) {
 // TestAgentBootstrapWithInvalidTypeInContext verifies wrong type is safely ignored
 func TestAgentBootstrapWithInvalidTypeInContext(t *testing.T) {
 	// Store an integer instead of string - tests type assertion safety
-	ctx := context.WithValue(context.Background(), "config_path", 12345)
+	ctx := context.WithValue(context.Background(), ConfigPathContextKey, 12345)
 
 	opts := &BootstrapOptions{
 		Mode:           ModeAgent,
@@ -147,7 +147,7 @@ func TestAgentBootstrapWithInvalidTypeInContext(t *testing.T) {
 	// This should safely ignore the invalid type and use default
 	configPath := "/etc/dso/dso.yaml"
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 			}

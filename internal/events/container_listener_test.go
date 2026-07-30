@@ -296,7 +296,7 @@ func TestNewContainerListener(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 
@@ -322,7 +322,7 @@ func TestContainerListener_Events_ReturnsReadOnlyChannel(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	eventsCh := listener.Events()
@@ -345,7 +345,7 @@ func TestContainerListener_Start_Success(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -365,7 +365,7 @@ func TestContainerListener_Start_Success(t *testing.T) {
 	}
 
 	// Clean up
-	listener.Stop()
+	_ = listener.Stop()
 }
 
 func TestContainerListener_Start_AlreadyStarted(t *testing.T) {
@@ -373,7 +373,7 @@ func TestContainerListener_Start_AlreadyStarted(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
@@ -393,7 +393,7 @@ func TestContainerListener_Start_AlreadyStarted(t *testing.T) {
 		t.Fatal("Expected error when starting already-started listener")
 	}
 
-	listener.Stop()
+	_ = listener.Stop()
 }
 
 func TestContainerListener_Stop(t *testing.T) {
@@ -401,7 +401,7 @@ func TestContainerListener_Stop(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -431,7 +431,7 @@ func TestContainerListener_RestartAfterStop(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 
@@ -449,7 +449,7 @@ func TestContainerListener_RestartAfterStop(t *testing.T) {
 	if err := listener.Start(ctx2); err != nil {
 		t.Fatalf("Start() after Stop() should succeed on a stopped listener, got: %v", err)
 	}
-	defer listener.Stop()
+	defer func() { _ = listener.Stop() }()
 
 	// The new watchEvents goroutine must be able to emit on a fresh
 	// eventsChan (the previous one was closed by the first watchEvents exit).
@@ -468,7 +468,7 @@ func TestContainerListener_StopWithoutStart(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 
@@ -484,7 +484,7 @@ func TestContainerListener_ConcurrentOperations(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -538,7 +538,7 @@ func TestContainerListener_ConcurrentOperations(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(400 * time.Millisecond)
-		listener.Stop()
+		_ = listener.Stop()
 	}()
 
 	wg.Wait()
@@ -549,7 +549,7 @@ func TestContainerListener_InitializeContainers(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 
@@ -574,7 +574,7 @@ func TestContainerListener_InitializeContainers(t *testing.T) {
 		t.Errorf("lastLabels should have been initialized by initializeContainers()")
 	}
 
-	listener.Stop()
+	_ = listener.Stop()
 }
 
 func TestContainerListener_LabelChangeDetection(t *testing.T) {
@@ -712,7 +712,7 @@ func TestContainerListener_DockerAPIError(t *testing.T) {
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -725,18 +725,17 @@ func TestContainerListener_DockerAPIError(t *testing.T) {
 
 	// The watchEvents method should handle errors gracefully
 	// and return cleanly when the context is cancelled
-	listener.Stop()
+	_ = listener.Stop()
 
 	// Verify that Stop completed and eventsChan is closed
 	// by attempting to read from it after Stop()
 	time.Sleep(100 * time.Millisecond)
 
 	select {
-	case event, ok := <-listener.Events():
-		if ok && event != nil {
-			// Event received, that's okay
-		}
-		// Channel should eventually be closed by watchEvents
+	case _, ok := <-listener.Events():
+		// Either an event or a closed channel (ok == false) is fine here;
+		// this is just verifying the read doesn't hang or panic.
+		_ = ok
 	case <-time.After(500 * time.Millisecond):
 		// Timeout is fine
 	}

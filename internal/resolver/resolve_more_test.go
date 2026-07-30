@@ -9,7 +9,7 @@ import (
 
 func TestResolveComposeWithCommandString(t *testing.T) {
 	tv := testutil.NewTempVault(t)
-	tv.Vault.Set("myproj", "db_cert", "secret2")
+	_ = tv.Vault.Set("myproj", "db_cert", "secret2")
 	yamlContent := `
 services:
   web:
@@ -29,7 +29,7 @@ services:
 
 func TestResolveComposeWithCommandSequence(t *testing.T) {
 	tv := testutil.NewTempVault(t)
-	tv.Vault.Set("myproj", "db_cert", "secret2")
+	_ = tv.Vault.Set("myproj", "db_cert", "secret2")
 	yamlContent := `
 services:
   web:

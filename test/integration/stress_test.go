@@ -55,7 +55,7 @@ func TestStress_ConcurrentRotations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	logger, _ := zap.NewProduction()
 	rs := rotation.NewRollingStrategyWithLogger(cli, logger)
@@ -178,10 +178,10 @@ func TestStress_ConcurrentCacheAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				key := fmt.Sprintf("secret-%d", j%100)
-				_, exists := cache.Get(key)
-				if !exists {
-					// Expected - may not exist
-				}
+				// Existence is not asserted here: under concurrent read/write
+				// stress, a key may or may not exist yet -- this loop is
+				// exercising Get() for races/panics, not checking hit rate.
+				_, _ = cache.Get(key)
 				mu.Lock()
 				successCount++
 				mu.Unlock()

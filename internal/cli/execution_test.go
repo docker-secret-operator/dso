@@ -10,10 +10,10 @@ import (
 func TestSecretExecutionCoverage(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
-	vault.InitDefault()
+	_ = vault.InitDefault()
 
 	// 1. Secret List (Empty)
 	cmd := NewRootCmd()
@@ -26,7 +26,7 @@ func TestSecretExecutionCoverage(t *testing.T) {
 
 	// 3. Env Import
 	envFile := filepath.Join(tmpDir, "test.env")
-	os.WriteFile(envFile, []byte("K=V"), 0644)
+	_ = os.WriteFile(envFile, []byte("K=V"), 0644)
 	cmd = NewRootCmd()
 	cmd.SetArgs([]string{"env", "import", envFile, "myproj"})
 	_ = cmd.Execute()

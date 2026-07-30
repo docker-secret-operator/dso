@@ -344,10 +344,8 @@ func TestInjectCmd_EmptyInit(t *testing.T) {
 		t.Error("Empty options should have zero values")
 	}
 
-	// Mount should default via command
-	if opts.Mount != "" {
-		// Mount defaults via command flags, not struct
-	}
+	// Mount defaults via command flags, not the zero-value struct, so no
+	// assertion on opts.Mount here.
 }
 
 // TestInjectCmd_OutputFormats produces appropriate messages

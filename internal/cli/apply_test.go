@@ -221,7 +221,7 @@ func TestDisplayApplyPlan_ProducesOutput(t *testing.T) {
 
 	displayApplyPlan(plan)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	output, _ := io.ReadAll(r)
@@ -295,7 +295,7 @@ func TestDisplayApplyResult_ProducesOutput(t *testing.T) {
 
 	displayApplyResult(result)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	output, _ := io.ReadAll(r)
@@ -338,13 +338,10 @@ func TestComputeApplyPlan_DockerOptional(t *testing.T) {
 		Providers: make(map[string]config.ProviderConfig),
 	}
 
-	// This should not panic even if Docker is unavailable
-	plan, err := computeApplyPlan(cfg)
-
-	// We expect either success or graceful failure
-	if plan != nil || err != nil {
-		// Both outcomes are acceptable
-	}
+	// This should not panic even if Docker is unavailable. Both a computed
+	// plan and a graceful failure are acceptable outcomes here; the only
+	// thing this test guards against is a panic.
+	_, _ = computeApplyPlan(cfg)
 }
 
 // TestApplyResult_ZeroValues handles no updates

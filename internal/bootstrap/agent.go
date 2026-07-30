@@ -121,7 +121,7 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 
 	// Check if context has config_path set (defensive check)
 	if opts.Context != nil {
-		if val := opts.Context.Value("config_path"); val != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
 			if path, ok := val.(string); ok && path != "" {
 				configPath = path
 			}
@@ -284,7 +284,7 @@ func (ab *AgentBootstrapper) collectConfiguration(ctx context.Context, opts *Boo
 	}
 
 	// Configure secrets (if provided via options, otherwise skip for manual configuration)
-	if opts.Secrets != nil && len(opts.Secrets) > 0 {
+	if len(opts.Secrets) > 0 {
 		// Secrets provided via options (e.g., from CI/CD)
 		for _, secret := range opts.Secrets {
 			builder.WithSecret(secret.Name, secret.Provider, secret.Mappings)

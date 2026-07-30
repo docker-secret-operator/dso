@@ -452,7 +452,7 @@ func TestComputeHash_GeneratesSHA256(t *testing.T) {
 
 	// Should be hex (no special chars except 0-9a-f)
 	for _, c := range hash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("Invalid hex character in hash: %c", c)
 		}
 	}

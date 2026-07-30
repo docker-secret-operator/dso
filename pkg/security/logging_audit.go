@@ -72,10 +72,11 @@ func (lav *LoggingAuditValidator) AuditErrorLogging(err error, context string) *
 
 // AuditPanicPath validates that panic recovery doesn't expose secrets in stack traces
 func (lav *LoggingAuditValidator) AuditPanicPath() *LoggingAuditResult {
+	// Safety net: this function doesn't panic itself, but if isSafeForLogging
+	// or a future change to it ever did, we don't want that to crash the
+	// caller of an audit/validation helper.
 	defer func() {
-		if r := recover(); r != nil {
-			// Panic was caught - stack trace captured
-		}
+		_ = recover()
 	}()
 
 	result := &LoggingAuditResult{Safe: true}

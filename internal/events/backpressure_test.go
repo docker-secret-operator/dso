@@ -13,7 +13,7 @@ import (
 
 func TestBoundedEventQueue_EnqueueDequeue(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	processedCount := int32(0)
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -53,7 +53,7 @@ func TestBoundedEventQueue_EnqueueDequeue(t *testing.T) {
 
 func TestBoundedEventQueue_QueueOverflow(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	// Slow handler that takes 100ms per event
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -95,7 +95,7 @@ func TestBoundedEventQueue_QueueOverflow(t *testing.T) {
 
 func TestBoundedEventQueue_WorkerUtilization(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	processedCount := int32(0)
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -137,7 +137,7 @@ func TestBoundedEventQueue_WorkerUtilization(t *testing.T) {
 
 func TestBoundedEventQueue_ConcurrentEnqueue(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	processedCount := int32(0)
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -181,7 +181,7 @@ func TestBoundedEventQueue_ConcurrentEnqueue(t *testing.T) {
 
 func TestBoundedEventQueue_ContextCancellation(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	processedCount := int32(0)
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -228,7 +228,7 @@ func TestBoundedEventQueue_ContextCancellation(t *testing.T) {
 
 func TestBoundedEventQueue_PanicRecovery(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	callCount := int32(0)
 	handler := func(ctx context.Context, msg events.Message) error {
@@ -281,7 +281,7 @@ func TestBoundedEventQueue_MaxQueueSizeEnforced_Skipped(t *testing.T) {
 // times does not panic (L2 regression test).
 func TestBoundedEventQueue_Stop_Idempotent(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	handler := func(ctx context.Context, msg events.Message) error { return nil }
 
@@ -307,7 +307,7 @@ func TestBoundedEventQueue_Stop_Idempotent(t *testing.T) {
 // calls from multiple goroutines do not cause a data race or panic.
 func TestBoundedEventQueue_Stop_ConcurrentSafe(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	handler := func(ctx context.Context, msg events.Message) error { return nil }
 
@@ -330,7 +330,7 @@ func TestBoundedEventQueue_Stop_ConcurrentSafe(t *testing.T) {
 
 func TestBoundedEventQueue_StatsReporting(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	handler := func(ctx context.Context, msg events.Message) error {
 		return nil

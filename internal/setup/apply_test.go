@@ -715,11 +715,6 @@ func TestGroupExecutor_UnknownOp_FailsOp(t *testing.T) {
 
 // ─── Applier ──────────────────────────────────────────────────────────────────
 
-// testApplier creates an Applier wired to noop executors (no OS side effects).
-func testApplierNoop() *Applier {
-	return newApplier(&Emitter{})
-}
-
 func TestApplier_EmptyPlan_ReturnsCompleted(t *testing.T) {
 	a := newApplier(&Emitter{})
 	plan := &InstallPlan{ID: "plan-001", Mode: ModeLocal}
