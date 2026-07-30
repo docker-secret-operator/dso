@@ -32,7 +32,6 @@ type Agent struct {
 	readyOnce  sync.Once // Ensures Ready channel closes exactly once
 
 	// Polling and event reaction components
-	poller           *polling.SmartPoller
 	secretVersions   map[string]string // Track last seen versions for change detection
 	secretVersionsMu sync.RWMutex
 	tickerStopChans  map[string]chan struct{} // Signal channels for ticker goroutines
@@ -62,7 +61,6 @@ func NewAgent(docker *client.Client) *Agent {
 		injected:        make(map[string]bool),
 		Ready:           make(chan struct{}),
 		readyOnce:       sync.Once{},
-		poller:          polling.NewSmartPoller(),
 		secretVersions:  make(map[string]string),
 		tickerStopChans: make(map[string]chan struct{}),
 		tickers:         make(map[string]*time.Ticker),
@@ -246,7 +244,15 @@ func (a *Agent) inject(ctx context.Context, containerID string, serviceSecrets r
 // It integrates SmartPoller, ContainerListener, and EventReactor to replace
 // fixed polling with adaptive event-driven rotation.
 func (a *Agent) runMainLoop(ctx context.Context) error {
-	// 1. Initialize components
+	// 1. Initialize components.
+	//
+	// The poller is owned by this loop, which is the only thing that uses it.
+	// NewAgent previously also built one into an Agent.poller field that
+	// nothing ever read -- a dead allocation that the `unused` linter cannot
+	// flag, because assigning a field counts as using it. That field has been
+	// removed rather than wired up here: keeping it would leave a shadowing
+	// trap (a local named `poller` silently overriding the field) that is not
+	// unit-testable without a live Docker daemon and secret config.
 	poller := polling.NewSmartPoller()
 
 	// Create listener only if Docker client is available

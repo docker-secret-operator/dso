@@ -1022,8 +1022,86 @@ One production file (`pkg/provider/load.go`) plus a new test file. The change is
 
 ### Known Remaining Gaps (recorded, not fixed here)
 The same audit surfaced two issues deliberately left open rather than bundled in:
-- **`SecretProviderWithContext` is dead code.** `pkg/api/plugin.go` declares it and `internal/agent/trigger.go` type-asserts for it with a comment claiming shutdown cancels in-flight calls, but **nothing implements it** — `ProviderRPC` has only the non-context `GetSecret`, and the plugins pass `context.TODO()`. So the assertion always fails and `t.ctx` cancellation cannot interrupt a hung cloud call. The socket/REST path is protected by an external 30s timeout in `server.go`; the trigger/rotation path is not. Fixing this properly means adding a context-aware method across the RPC boundary and all four plugins — a real change deserving its own design, not a drive-by.
-- **Provider interface divergence in `WatchSecret` first-delivery.** AWS/Azure/Huawei send an initial value immediately; Vault/`file`/`env` only send on the first tick, so a consumer waiting for an initial value stalls for a full interval on half the providers.
+- **`SecretProviderWithContext` is dead code.** → **Now fixed, see Decision 28.**
+- **Provider interface divergence in `WatchSecret` first-delivery.** AWS/Azure/Huawei send an initial value immediately; Vault/`file`/`env` only send on the first tick, so a consumer waiting for an initial value stalls for a full interval on half the providers. Still open.
+
+---
+
+### Decision 27: CLEAN-4 — Removing a Dead `Agent.poller` Field Rather Than Wiring It Up
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+Code review flagged that `NewAgent` assigned a `SmartPoller` into an `Agent.poller` field, while `runMainLoop` created a **second, local** `poller := polling.NewSmartPoller()` that shadowed it and was used for all actual polling. The field was therefore written but never read: the constructor's poller, and any adaptive-interval state that would have accumulated through it, was silently discarded.
+
+This is invisible to the `unused` linter, which treats assigning a field as using it — confirmed empirically: with the shadowing bug in place, `golangci-lint` still reported 0 issues.
+
+### Options Considered
+1. **Wire it up** — change `runMainLoop` to `poller := a.poller`, making the field meaningful and leaving one instance.
+   - Pros: preserves the constructor's evident intent; the Agent "owns" its poller.
+   - Cons: **leaves the trap in place.** A future local variable named `poller` would shadow the field again, and — critically — the invariant is *not unit-testable*: `runMainLoop` needs a live Docker daemon and secret configuration to drive, so there is no cheap test that fails if the shadowing returns.
+2. **Delete the field** and keep the loop-local poller, which is the only thing that ever used it.
+   - Pros: removes the dead allocation *and* the shadowing trap by construction — there is no field left to shadow, so no invariant needs guarding.
+   - Cons: the Agent no longer holds a reference to its poller. Nothing needs one (verified: zero readers), so this is YAGNI, not a loss.
+
+### Decision
+Chose Option 2. Deleted the `poller` field and its constructor initialization; `runMainLoop` keeps its local instance, now with a comment recording why the field was removed rather than wired.
+
+### Rationale
+- Eliminating a class of bug beats testing for it. Option 1 would have required a guard that (as discovered below) could not actually be written.
+- **A toothless test was written and then discarded during this work, which is why the decision changed.** The first attempt at Option 1 included `TestAgent_PollerIsSharedNotShadowed`, which asserted that `a.poller` retained state. Verified against the reintroduced bug: **the test still passed**, because it only exercised the field directly and never went through `runMainLoop` — precisely the "warning-only test" anti-pattern that `docs/audit/TEST-1-BACKLOG.md` exists to eliminate. Rather than ship a test that looks like a guard but isn't, the field was removed so no guard is needed.
+
+### Verification
+- Confirmed the linter cannot catch the original bug: with the shadowing restored, `golangci-lint run ./internal/agent/` reported 0 issues.
+- Confirmed the candidate test was toothless: it passed with the bug reintroduced. Test deleted rather than kept.
+- `go build`/`go vet`/`gofmt` clean; `golangci-lint` 0 issues; `internal/agent` suite passes under `-race`.
+
+### Rollback Implications
+One production file (`internal/agent/agent.go`): a struct field and one constructor line removed, plus a comment. No behavior change — the polling loop used the local instance both before and after.
+
+---
+
+### Decision 28: REL-6 — Making Context Cancellation Actually Work Across the Plugin RPC Boundary
+
+**Date**: 2026-07-30  
+**Status**: Implemented (client-side cancellation; server-side deadline propagation deliberately deferred)
+
+### Context
+`pkg/api/plugin.go` declared an optional `SecretProviderWithContext` interface, and `internal/agent/trigger.go` type-asserted for it in two places with comments stating that "agent shutdown cancels in-flight AWS calls immediately." **Nothing implemented it.** `ProviderRPC` exposed only the non-context `GetSecret`, so both assertions always failed and every fetch silently took the blocking path.
+
+Consequence: a provider that stopped responding could block the rotation path indefinitely, and the agent's own root context could not interrupt it. The socket/REST path happened to be protected by an external 30 s `context.WithTimeout` in `internal/agent/server.go`; the trigger/rotation path had no such wrapper. So the documented cancellation guarantee was entirely fictional on the path where it mattered most.
+
+### Options Considered
+1. **Implement `GetSecretWithContext` on each of the four plugin binaries.**
+   - Rejected as the primary fix: the plugins run in separate processes behind `net/rpc`. Adding the method plugin-side does nothing for the daemon unless the *client* stub (`ProviderRPC`) also exposes it, and the daemon only ever holds `ProviderRPC`. It would also require shipping four rebuilt binaries to fix a daemon-side defect.
+2. **Implement it on `ProviderRPC`.** Chosen. `SecretProviderPlugin.Client` returns `&ProviderRPC{...}`, and `LoadProvider`'s `Dispense("provider")` result is exactly that — so one implementation fixes cancellation for **all four external plugins at once**, with no plugin rebuild and no wire-format change.
+3. **Change the RPC arguments to carry a deadline** so the plugin bounds its own SDK call server-side.
+   - Deferred, not rejected. This is the more complete fix, but it changes the gob-encoded argument type from `string` to a struct, which breaks compatibility with any already-installed plugin binary. Given plugins are SHA256-pinned (SEC-2) and shipped with the release, it is feasible — but it is a wire-protocol change that deserves its own versioned rollout, not a bundle with a daemon-side bug fix.
+
+### Decision
+Implemented `ProviderRPC.GetSecretWithContext` using `rpc.Client.Go` (asynchronous dispatch) and a `select` racing `call.Done` against `ctx.Done()`. A context that is already done short-circuits before dispatching, so a shutting-down agent starts no new remote work.
+
+### Rationale and Accepted Trade-off
+- `net/rpc` has no cancellation concept, so this **cannot abort the remote work** — it unblocks the *caller*. The abandoned call is reaped by `net/rpc`'s own read loop when the plugin eventually replies, and the plugin process is killed on shutdown regardless. Unblocking the daemon is the actual bug being fixed; the residual is a briefly-orphaned in-flight call, which is strictly better than a wedged rotation loop.
+- Deliberately did **not** add `GetSecretWithContext` to the local `file`/`env` backends. Their work is a local `os.ReadFile`/`os.Getenv`, not a network call, and honoring a context there would mean wrapping a non-cancellable syscall in the same goroutine dance for no practical benefit. The assertion in `trigger.go` correctly falls back to `GetSecret` for them.
+
+### Verification
+Six new tests in `pkg/provider/provider_context_test.go`, exercising a **real** `net/rpc` client/server pair over `net.Pipe` (not a stand-in), all passing:
+- `TestGetSecretWithContext_CancellationUnblocksCaller` — a plugin that blocks forever; the context is cancelled only *after* the plugin is confirmed inside `GetSecret`, so this tests interrupting a genuinely in-flight call. Asserts `context.Canceled` and prompt return.
+- `TestGetSecretWithContext_DeadlineUnblocksCaller` — honors a 150 ms deadline against a never-returning plugin (observed: returns in 0.15 s instead of blocking).
+- `TestGetSecretWithContext_AlreadyCancelledDoesNotDispatch`, `_HappyPath`, `_PropagatesProviderError` (a real provider error must not be misreported as a context error).
+- `TestTriggerStyleAssertionNowSucceeds` — reproduces `trigger.go`'s exact assertion against the value the daemon actually holds, proving the context-aware branch is now selected rather than silently skipped.
+
+Plus **compile-time** assertions (`var _ api.SecretProviderWithContext = (*ProviderRPC)(nil)`). **Confirmed these catch the regression**: deleting the method fails the build with `*ProviderRPC does not implement api.SecretProviderWithContext (missing method GetSecretWithContext)` — a stronger guard than a runtime test, since the defect cannot be reintroduced without breaking compilation.
+
+`golangci-lint` 0 issues, `gosec` 0 issues, full suite (29 packages) passes, `-race` clean.
+
+### Rollback Implications
+One production file (`pkg/provider/provider.go`, additive method) plus a new test file. No wire-format or plugin change, so no compatibility risk in either direction. Reverting restores un-cancellable fetches on the rotation path.
+
+### Follow-up Still Open
+Server-side deadline propagation (Option 3 above): the plugin currently has no idea the daemon gave up, so its own SDK call continues to completion. Worth doing as a versioned protocol change.
 
 ---
 

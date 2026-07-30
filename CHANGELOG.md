@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–26) and `docs/audit/2026-07-29-fresh-audit.md`.
+Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–28) and `docs/audit/2026-07-29-fresh-audit.md`.
 
 ### Security
 
@@ -19,6 +19,8 @@ Full rationale, options considered, and verification detail for every entry belo
 
 ### Fixed
 
+- **[REL-6] Context cancellation now actually works across the plugin RPC boundary.** `api.SecretProviderWithContext` was declared and `internal/agent/trigger.go` type-asserted for it — with a comment claiming agent shutdown cancels in-flight calls — but **nothing implemented it**, so both assertions always failed and every fetch took the blocking path. A provider that stopped responding could block the rotation path indefinitely (the socket/REST path was covered by an external 30s timeout; rotation was not). Implemented `GetSecretWithContext` on `ProviderRPC`, which fixes all four external plugins at once with no plugin rebuild or wire change. Guarded by compile-time assertions, so the method cannot be removed without breaking the build. Server-side deadline propagation remains a documented follow-up.
+- **[CLEAN-4]** Removed a dead `Agent.poller` field: the constructor allocated a `SmartPoller` into it, while `runMainLoop` created a **second, local** one and used that for all polling — so the field was written but never read, and the constructor's poller was silently discarded. Invisible to the `unused` linter, which counts a field write as a use. Deleted the field rather than wiring it up, since that removes the shadowing trap entirely (see `DECISION_LOG.md` Decision 27 — including a toothless test that was written, caught passing against the reintroduced bug, and discarded).
 - **[REL-2 completion]** The original REL-2 fix was incomplete: `GetProvider` captured `LastHealthy` under the mutex for its comparison but the "connection may be stale" log line three lines later re-read it **unlocked** — the same race. The original regression test missed it because it never entered the stale branch. Fixed, with a test that forces that branch (confirmed failing against the pre-fix code).
 - **[LINT-1]** Reverted a behavior change that rode along in the previous lint pass: `internal/cli/doctor.go`'s `padLeft` started *using* an ineffectual variable instead of deleting it, altering `docker dso doctor` output despite that commit claiming no behavior change. Restored byte-identical output (verified differentially) and recorded the pre-existing box-misalignment as a `TODO` rather than fixing it silently.
 
