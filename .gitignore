@@ -34,6 +34,7 @@ PHASE_*.md
 CODE_VALIDATION_SUMMARY.md
 COMPILATION_FIXES_SUMMARY.md
 COMPREHENSIVE_ANALYSIS.md
+docs/audit/COMPREHENSIVE_REVIEW.md
 PRODUCTION_HARDENING_SUMMARY.txt
 
 # Temporary/Patch files
@@ -82,3 +83,4 @@ scripts/bump-version.sh
 web/
 ui-dist/
 internal/webui/
+docs/audit
