@@ -1,6 +1,12 @@
 version: "2"
 run:
   timeout: 5m
+issues:
+  # Report every finding. golangci-lint otherwise caps output at 50 per
+  # linter and 3 per identical message, which silently understates the real
+  # count -- CI reported "109 issues" for what was actually 402.
+  max-issues-per-linter: 0
+  max-same-issues: 0
 linters:
   exclusions:
     paths:
