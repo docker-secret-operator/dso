@@ -302,6 +302,12 @@ func (r *EventReactorImpl) dequeueBatch(maxSize int) []*QueuedEvent {
 	return batch
 }
 
+// lastSeenEvictionAge bounds how long a secret name is remembered in
+// r.lastSeen after its dedup window has expired. Without this, r.lastSeen
+// grows for every distinct secret name ever seen over the daemon's lifetime
+// and is never trimmed, unlike the sibling DedupCache (REL-3).
+const lastSeenEvictionAge = 1 * time.Minute
+
 // deduplicateSecret checks if a secret has been seen in the last 1 second
 // Returns true if the event should be processed (not a duplicate)
 // Returns false if the event is a duplicate and should be skipped
@@ -322,6 +328,15 @@ func (r *EventReactorImpl) deduplicateSecret(secretName string) bool {
 
 	// Not a duplicate or window expired, record this event
 	r.lastSeen[secretName] = now
+
+	// Opportunistically evict long-stale entries (REL-3) -- piggybacks on an
+	// existing write under the lock we already hold, no extra goroutine needed.
+	for name, seen := range r.lastSeen {
+		if now.Sub(seen) > lastSeenEvictionAge {
+			delete(r.lastSeen, name)
+		}
+	}
+
 	return true
 }
 

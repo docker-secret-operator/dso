@@ -202,6 +202,9 @@ func validateLoopbackURL(raw string) error {
 }
 
 func fetchEvents(url string) []map[string]interface{} {
+	// #nosec G107 -- every caller of fetchEvents passes a URL built from
+	// apiAddr after runAPILogs has already called validateLoopbackURL,
+	// which resolves the host and rejects anything but a loopback address.
 	resp, err := http.Get(url) //nolint:noctx — short CLI helper, no streaming
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Cannot reach agent API at %s: %v\033[0m\n", url, err)
@@ -218,7 +221,12 @@ func fetchEvents(url string) []map[string]interface{} {
 	}
 
 	var events []map[string]interface{}
-	_ = json.Unmarshal(body, &events)
+	if err := json.Unmarshal(body, &events); err != nil {
+		// QUAL-1: previously ignored, so a malformed API response looked
+		// identical to "no events" from the operator's perspective.
+		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Malformed response from agent API at %s: %v\033[0m\n", url, err)
+		return nil
+	}
 	return events
 }
 

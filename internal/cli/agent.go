@@ -108,6 +108,14 @@ func NewAgentCmd() *cobra.Command {
 			// with the dso.host_ports label and binds their ports immediately so traffic
 			// is never interrupted during secret rotation.
 			proxyManager := dsoProxy.NewManager(logger)
+			if len(cfg.Proxy.AllowedHostPorts) > 0 {
+				// SEC-7 full fix: cross-check container-declared host ports
+				// against an operator-supplied allow-list before ScanAndRegister
+				// (and any later EnsurePort call) binds anything.
+				if err := proxyManager.SetAllowedHostPorts(cfg.Proxy.AllowedHostPorts); err != nil {
+					logger.Fatal("Invalid proxy.allowed_host_ports configuration", zap.Error(err))
+				}
+			}
 			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
 			proxyManager.ScanAndRegister(scanCtx, dockerCli)
 			scanCancel()
@@ -198,7 +206,7 @@ func NewAgentCmd() *cobra.Command {
 				logger.Warn("Proxy drain timeout during shutdown", zap.Error(err))
 			}
 			if dockerCli != nil {
-				dockerCli.Close()
+				_ = dockerCli.Close()
 			}
 
 			// Step 4: Cleanup sockets

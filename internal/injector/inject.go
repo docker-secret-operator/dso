@@ -5,12 +5,20 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
+
+// validFileName restricts secret file names to characters that are safe to
+// interpolate into the shell command built by buildInjectCmd. Names come from
+// resolver.ServiceSecrets, which derives them from compose service names —
+// untrusted input from the compose file — so this is the last line of
+// defense against shell injection (SEC-6), not just path traversal.
+var validFileName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // InjectFiles writes secret files into the container's live filesystem using
 // docker exec with stdin delivery. This correctly targets tmpfs mounts which
@@ -34,6 +42,11 @@ func injectOneFile(ctx context.Context, cli *client.Client, containerID, fileNam
 	fileName = filepath.Base(fileName)
 	if fileName == "" || fileName == "." || strings.ContainsRune(fileName, '/') {
 		return fmt.Errorf("invalid secret file name %q: must be a plain filename with no path components", fileName)
+	}
+	// Reject shell metacharacters — fileName is interpolated unquoted into a
+	// shell command below (SEC-6: compose service names are untrusted input).
+	if !validFileName.MatchString(fileName) {
+		return fmt.Errorf("invalid secret file name %q: only letters, digits, '.', '_', '-' are allowed", fileName)
 	}
 
 	destPath := "/run/secrets/dso/" + fileName
@@ -62,7 +75,7 @@ func injectOneFile(ctx context.Context, cli *client.Client, containerID, fileNam
 	if _, err := fmt.Fprintf(resp.Conn, "%s\n", encoded); err != nil {
 		return fmt.Errorf("failed to write secret to stdin for %s: %w", fileName, err)
 	}
-	resp.CloseWrite()
+	_ = resp.CloseWrite()
 
 	// Poll for exec exit.
 	deadline := time.Now().Add(5 * time.Second)

@@ -36,6 +36,42 @@ func TestEventReactorImpl_ProcessSecretEvent_Enqueue(t *testing.T) {
 	reactor.mu.Unlock()
 }
 
+// TestEventReactorImpl_LastSeenEviction is a regression test for REL-3:
+// r.lastSeen previously had no eviction policy (unlike the sibling
+// DedupCache), so it grew for every distinct secret name ever seen over the
+// daemon's lifetime. This verifies deduplicateSecret opportunistically evicts
+// entries older than lastSeenEvictionAge while keeping recent ones.
+func TestEventReactorImpl_LastSeenEviction(t *testing.T) {
+	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+		return nil
+	})
+
+	reactor.lastSeenMu.Lock()
+	reactor.lastSeen["stale-secret-1"] = time.Now().Add(-2 * lastSeenEvictionAge)
+	reactor.lastSeen["stale-secret-2"] = time.Now().Add(-2 * lastSeenEvictionAge)
+	reactor.lastSeen["fresh-secret"] = time.Now()
+	reactor.lastSeenMu.Unlock()
+
+	// Any call to deduplicateSecret piggybacks an eviction sweep.
+	reactor.deduplicateSecret("trigger-sweep")
+
+	reactor.lastSeenMu.Lock()
+	defer reactor.lastSeenMu.Unlock()
+
+	if _, exists := reactor.lastSeen["stale-secret-1"]; exists {
+		t.Error("expected stale-secret-1 to be evicted, but it is still present")
+	}
+	if _, exists := reactor.lastSeen["stale-secret-2"]; exists {
+		t.Error("expected stale-secret-2 to be evicted, but it is still present")
+	}
+	if _, exists := reactor.lastSeen["fresh-secret"]; !exists {
+		t.Error("expected fresh-secret to be retained, but it was evicted")
+	}
+	if _, exists := reactor.lastSeen["trigger-sweep"]; !exists {
+		t.Error("expected trigger-sweep to be recorded by deduplicateSecret")
+	}
+}
+
 // TestEventReactorImpl_Deduplication_1sWindow tests that duplicate events within 1s are deduplicated
 func TestEventReactorImpl_Deduplication_1sWindow(t *testing.T) {
 	callCount := int32(0)

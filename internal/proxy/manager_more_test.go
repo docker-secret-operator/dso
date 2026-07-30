@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -30,6 +31,104 @@ func TestManager_EnsurePort(t *testing.T) {
 	realPort := m.server.Bindings()[0].ListenPort
 	if err := m.EnsurePort(realPort, 80); err != nil {
 		t.Fatalf("expected idempotent EnsurePort to succeed, got: %v", err)
+	}
+}
+
+// TestPortAllowList_NilAllowsEverything confirms the zero-value / default
+// (no allow-list configured) behavior is unrestricted, matching pre-SEC-7-
+// full-fix behavior.
+func TestPortAllowList_NilAllowsEverything(t *testing.T) {
+	var al *portAllowList
+	for _, p := range []int{1, 80, 1024, 8080, 65535} {
+		if !al.allows(p) {
+			t.Errorf("nil allow-list should allow port %d", p)
+		}
+	}
+}
+
+func TestNewPortAllowList_ExactPorts(t *testing.T) {
+	al, err := newPortAllowList([]string{"8080", "9000"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.allows(8080) || !al.allows(9000) {
+		t.Error("expected configured exact ports to be allowed")
+	}
+	if al.allows(8081) {
+		t.Error("expected unconfigured port to be rejected")
+	}
+}
+
+func TestNewPortAllowList_Range(t *testing.T) {
+	al, err := newPortAllowList([]string{"3000-4000"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.allows(3000) || !al.allows(3500) || !al.allows(4000) {
+		t.Error("expected ports within the range to be allowed")
+	}
+	if al.allows(2999) || al.allows(4001) {
+		t.Error("expected ports outside the range to be rejected")
+	}
+}
+
+func TestNewPortAllowList_MixedEntries(t *testing.T) {
+	al, err := newPortAllowList([]string{"8080", "3000-4000"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.allows(8080) || !al.allows(3500) {
+		t.Error("expected both exact port and range entries to apply")
+	}
+	if al.allows(9999) {
+		t.Error("expected port outside both entries to be rejected")
+	}
+}
+
+func TestNewPortAllowList_Empty(t *testing.T) {
+	al, err := newPortAllowList(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if al != nil {
+		t.Error("expected empty entries to yield a nil allow-list (no restriction)")
+	}
+}
+
+func TestNewPortAllowList_InvalidEntries(t *testing.T) {
+	invalid := []string{"not-a-port", "0", "70000", "4000-3000", "-5"}
+	for _, entry := range invalid {
+		if _, err := newPortAllowList([]string{entry}); err == nil {
+			t.Errorf("expected error for invalid allow-list entry %q", entry)
+		}
+	}
+}
+
+// TestManager_EnsurePort_RejectsPortOutsideAllowList is a regression test for
+// SEC-7's full fix: EnsurePort must reject a host port outside an
+// operator-configured allow-list, and SetAllowedHostPorts(nil) must restore
+// the default unrestricted behavior.
+func TestManager_EnsurePort_RejectsPortOutsideAllowList(t *testing.T) {
+	m := NewManager(testLogger(t))
+	defer func() { _ = m.Stop(time.Second) }()
+
+	if err := m.SetAllowedHostPorts([]string{"8080"}); err != nil {
+		t.Fatalf("SetAllowedHostPorts failed: %v", err)
+	}
+
+	if err := m.EnsurePort(9090, 80); err == nil {
+		t.Fatal("expected EnsurePort to reject a port outside the allow-list")
+	}
+	if err := m.EnsurePort(8080, 80); err != nil {
+		t.Fatalf("expected EnsurePort to accept an allow-listed port, got: %v", err)
+	}
+
+	// Clearing the allow-list restores unrestricted behavior.
+	if err := m.SetAllowedHostPorts(nil); err != nil {
+		t.Fatalf("SetAllowedHostPorts(nil) failed: %v", err)
+	}
+	if err := m.EnsurePort(9090, 80); err != nil {
+		t.Fatalf("expected EnsurePort to accept any port once allow-list is cleared, got: %v", err)
 	}
 }
 
@@ -204,5 +303,59 @@ func TestManager_SwapBackend_OldAlreadyGoneIsTolerated(t *testing.T) {
 	}
 	if _, ok := m.registry.Get("new"); !ok {
 		t.Fatal("expected new backend to be registered despite old backend being absent")
+	}
+}
+
+// TestManager_Stop_TerminatesSwapBackendDrainGoroutine is a regression test
+// for BUG-4: SwapBackend's deferred-removal goroutine used to be a bare
+// `go func() { time.Sleep(5*time.Second); ... }()` with no context or stop
+// channel tied to Manager.Stop, so it could keep running -- and touching
+// m.registry -- for up to 5s after Stop returned. Stop must now cancel and
+// wait for it instead of leaving it to run out its drain window.
+func TestManager_Stop_TerminatesSwapBackendDrainGoroutine(t *testing.T) {
+	m := NewManager(testLogger(t))
+
+	if err := m.RegisterContainer("old", "10.0.0.1", 80, 80); err != nil {
+		t.Fatal(err)
+	}
+	before := runtime.NumGoroutine()
+
+	if err := m.SwapBackend("old", "new", "10.0.0.2", 80, 8080); err != nil {
+		t.Fatal(err)
+	}
+
+	stopStart := time.Now()
+	if err := m.Stop(time.Second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed := time.Since(stopStart); elapsed >= 4*time.Second {
+		t.Fatalf("Stop took %v -- expected the SwapBackend drain goroutine to be cancelled, not waited out", elapsed)
+	}
+
+	// m.wg.Wait() inside Stop guarantees the drain goroutine has already
+	// exited by the time Stop returns. Allow a brief settle window for Go
+	// runtime bookkeeping -- well short of the old 5s drain window -- so
+	// this test fails fast against the pre-fix leak rather than passing by
+	// luck on a slow CI runner.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		if runtime.NumGoroutine() <= before {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutine count still elevated 300ms after Stop returned (before=%d after=%d) -- SwapBackend's drain goroutine leaked past Stop",
+				before, runtime.NumGoroutine())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestManager_Stop_NoPendingSwap confirms Stop still works normally (no
+// panic, no deadlock) when there is no in-flight SwapBackend drain
+// goroutine -- cancel/wg.Wait must be safe no-ops in that case.
+func TestManager_Stop_NoPendingSwap(t *testing.T) {
+	m := NewManager(testLogger(t))
+	if err := m.Stop(time.Second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

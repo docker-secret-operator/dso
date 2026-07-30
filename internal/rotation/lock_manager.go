@@ -24,9 +24,22 @@ type FileLock struct {
 	fds map[string]*os.File // logical lock name -> open file holding the flock
 }
 
+// lockEntry pairs a key's mutex with a reference count of goroutines
+// currently holding or waiting on it (REL-4). The count is what makes it safe
+// to ever remove a key from LockManager.locks: without it, a goroutine that
+// already read this *lockEntry out of the map (and is polling entry.mu) could
+// still lock it after a concurrent ReleaseLock deletes the map entry, while a
+// third goroutine simultaneously creates a brand-new entry for the same key
+// — two goroutines then hold "the lock" for the same key at once. Deleting
+// only when count reaches zero (no outstanding references) rules that out.
+type lockEntry struct {
+	mu    sync.Mutex
+	count int
+}
+
 // LockManager manages locks for containers during rotation.
 type LockManager struct {
-	locks    map[string]*sync.Mutex
+	locks    map[string]*lockEntry
 	acquired map[string]bool // tracks which keys are currently locked
 	mu       sync.Mutex
 	fileLock *FileLock
@@ -35,7 +48,7 @@ type LockManager struct {
 // NewLockManager creates a new lock manager with optional file-based distributed locking.
 func NewLockManager(lockDir string, logger *zap.Logger) (*LockManager, error) {
 	lm := &LockManager{
-		locks:    make(map[string]*sync.Mutex),
+		locks:    make(map[string]*lockEntry),
 		acquired: make(map[string]bool),
 	}
 
@@ -62,14 +75,16 @@ func NewLockManager(lockDir string, logger *zap.Logger) (*LockManager, error) {
 // mutex that was never unlocked. TryLock never blocks, so nothing is leaked.
 func (lm *LockManager) AcquireLock(containerID string, timeout time.Duration) error {
 	lm.mu.Lock()
-	mutex, exists := lm.locks[containerID]
+	entry, exists := lm.locks[containerID]
 	if !exists {
-		mutex = &sync.Mutex{}
-		lm.locks[containerID] = mutex
+		entry = &lockEntry{}
+		lm.locks[containerID] = entry
 	}
+	entry.count++
 	lm.mu.Unlock()
 
-	if !tryLockWithTimeout(mutex, timeout) {
+	if !tryLockWithTimeout(&entry.mu, timeout) {
+		lm.releaseEntryRef(containerID, entry)
 		return fmt.Errorf("failed to acquire lock for container %s within %v", containerID, timeout)
 	}
 
@@ -81,14 +96,30 @@ func (lm *LockManager) AcquireLock(containerID string, timeout time.Duration) er
 	if lm.fileLock != nil {
 		if err := lm.fileLock.AcquireLock(containerID, timeout); err != nil {
 			lm.mu.Lock()
-			mutex.Unlock()
 			delete(lm.acquired, containerID)
 			lm.mu.Unlock()
+			entry.mu.Unlock()
+			lm.releaseEntryRef(containerID, entry)
 			return err
 		}
 	}
 
 	return nil
+}
+
+// releaseEntryRef decrements entry's reference count and removes it from
+// lm.locks once nobody else references it (REL-4). Guarded by identity
+// comparison so it never deletes a different, newer entry that has since
+// replaced this one under the same key.
+func (lm *LockManager) releaseEntryRef(containerID string, entry *lockEntry) {
+	lm.mu.Lock()
+	entry.count--
+	if entry.count == 0 {
+		if cur, ok := lm.locks[containerID]; ok && cur == entry {
+			delete(lm.locks, containerID)
+		}
+	}
+	lm.mu.Unlock()
 }
 
 // tryLockWithTimeout attempts to lock mu, polling with a bounded backoff until the
@@ -119,16 +150,32 @@ func tryLockWithTimeout(mu *sync.Mutex, timeout time.Duration) bool {
 func (lm *LockManager) ReleaseLock(containerID string) {
 	lm.mu.Lock()
 	wasAcquired := lm.acquired[containerID]
+	var entry *lockEntry
 	if wasAcquired {
-		if mutex, exists := lm.locks[containerID]; exists {
-			mutex.Unlock()
-		}
+		entry = lm.locks[containerID]
 		delete(lm.acquired, containerID)
 	}
 	lm.mu.Unlock()
 
+	if entry != nil {
+		entry.mu.Unlock()
+	}
+
 	if wasAcquired && lm.fileLock != nil {
 		lm.fileLock.ReleaseLock(containerID)
+	}
+
+	if entry != nil {
+		// Drop the entry once nobody else references it, otherwise lm.locks
+		// grows for every distinct key ever locked over the daemon's
+		// lifetime and is never trimmed (REL-4). Ref-counted rather than an
+		// unconditional delete: a concurrent AcquireLock may already hold a
+		// reference to this same entry and be waiting on entry.mu, so
+		// removing it from the map while that reference is still live would
+		// let a third goroutine allocate a *different* lockEntry for the
+		// same key and acquire it concurrently with the waiter — breaking
+		// mutual exclusion.
+		lm.releaseEntryRef(containerID, entry)
 	}
 }
 
@@ -150,6 +197,9 @@ func sanitizeLockName(name string) string {
 func (fl *FileLock) AcquireLock(containerID string, timeout time.Duration) error {
 	lockFile := filepath.Join(fl.lockDir, fmt.Sprintf("%s.lock", sanitizeLockName(containerID)))
 
+	// #nosec G304 -- containerID is already sanitized by sanitizeLockName
+	// above (strips "/", "\", the OS path separator, and ".."), so lockFile
+	// cannot escape fl.lockDir
 	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
@@ -157,6 +207,8 @@ func (fl *FileLock) AcquireLock(containerID string, timeout time.Duration) error
 
 	deadline := time.Now().Add(timeout)
 	for {
+		// #nosec G115 -- f.Fd() is a real OS file descriptor (always a small,
+		// non-negative int in practice); unix.Flock requires an int argument
 		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			// Acquired. Record the holding PID for operator visibility.
@@ -196,6 +248,7 @@ func (fl *FileLock) ReleaseLock(containerID string) {
 		return
 	}
 
+	// #nosec G115 -- f.Fd() is a real OS file descriptor, see comment above
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_UN); err != nil {
 		fl.logger.Warn("Failed to release flock", zap.String("container_id", containerID), zap.Error(err))
 	}

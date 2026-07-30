@@ -21,8 +21,8 @@ type ContainerListener struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	lastLabels map[string]map[string]string // containerID -> labels snapshot
-	mu         sync.RWMutex                  // Protect lastLabels
-	wg         sync.WaitGroup                // Track watchEvents goroutine completion
+	mu         sync.RWMutex                 // Protect lastLabels
+	wg         sync.WaitGroup               // Track watchEvents goroutine completion
 }
 
 // NewContainerListener creates a new ContainerListener with the given Docker client
@@ -61,27 +61,45 @@ func (cl *ContainerListener) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops listening for Docker events gracefully
+// Stop stops listening for Docker events gracefully. The listener can be
+// Start()ed again afterward (REL-5): ctx/cancel are reset, and eventsChan/
+// stopChan are recreated since watchEvents closes eventsChan on exit.
 func (cl *ContainerListener) Stop() error {
 	if cl.cancel != nil {
 		cl.cancel()
 	}
 
-	// Signal the watch loop to stop
+	// Best-effort signal in case watchEvents is somehow still waiting on
+	// stopChan rather than cl.ctx.Done() (belt-and-suspenders; cancel() above
+	// is what actually stops it). Non-blocking: once cl.cancel() fires,
+	// watchEvents exits via its ctx.Done() case and nothing is left to
+	// receive here, so a blocking send with a timeout previously stalled
+	// every Stop() call for the full timeout window for no benefit.
 	select {
 	case cl.stopChan <- struct{}{}:
-	case <-time.After(100 * time.Millisecond):
-		// Timeout, move on
+	default:
 	}
 
 	// Wait for watchEvents goroutine to exit (it will close eventsChan)
 	cl.wg.Wait()
+
+	cl.ctx = nil
+	cl.cancel = nil
+	// eventsChan is guarded by cl.mu (unlike ctx/cancel/stopChan) because,
+	// unlike those, it's read concurrently by the public Events() method,
+	// which callers may legitimately call while Stop() is running.
+	cl.mu.Lock()
+	cl.eventsChan = make(chan *ContainerLabelEvent, 10)
+	cl.mu.Unlock()
+	cl.stopChan = make(chan struct{})
 
 	return nil
 }
 
 // Events returns a read-only channel for ContainerLabelEvent emissions
 func (cl *ContainerListener) Events() <-chan *ContainerLabelEvent {
+	cl.mu.RLock()
+	defer cl.mu.RUnlock()
 	return cl.eventsChan
 }
 

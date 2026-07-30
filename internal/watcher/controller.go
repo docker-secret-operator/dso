@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/analyzer"
-	"github.com/docker-secret-operator/dso/internal/util"
+	"github.com/docker-secret-operator/dso/internal/audit"
 	"github.com/docker-secret-operator/dso/internal/core"
 	eventqueue "github.com/docker-secret-operator/dso/internal/events"
 	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/strategy"
+	"github.com/docker-secret-operator/dso/internal/util"
 	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/api/types/container"
@@ -532,8 +533,51 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 	r.Logger.Info("Initial container population complete", zap.Int("count", registered))
 }
 
-func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string) error {
+// resolveSecretProvider returns the configured provider name for secretName,
+// for audit attribution. Mirrors the same provider-resolution fallback
+// (explicit sec.Provider, else the sole configured provider) already used
+// inline elsewhere in this file when building rotation env vars.
+func (r *ReloaderController) resolveSecretProvider(secretName string) string {
+	if r.Config == nil {
+		return ""
+	}
+	for _, sec := range r.Config.Secrets {
+		if sec.Name != secretName {
+			continue
+		}
+		if sec.Provider != "" {
+			return sec.Provider
+		}
+		for name := range r.Config.Providers {
+			return name
+		}
+	}
+	return ""
+}
+
+// TriggerReload identifies containers using secretName and rotates them. Some
+// strategies (rolling, restart, compose) run their actual work in detached
+// goroutines so TriggerReload can return quickly; onComplete (if non-nil) is
+// invoked exactly once, after every one of those detached goroutines has
+// finished, with the first error encountered (nil if all succeeded). This
+// lets callers (e.g. StateTracker.CompleteRotation in agent/trigger.go) mark
+// rotation state based on the real outcome instead of TriggerReload's early
+// return (REL-1 fix).
+func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string, onComplete func(err error)) error {
 	matchedCount := 0
+	var asyncWG sync.WaitGroup
+	var asyncMu sync.Mutex
+	var asyncFirstErr error
+	recordAsyncErr := func(err error) {
+		if err == nil {
+			return
+		}
+		asyncMu.Lock()
+		if asyncFirstErr == nil {
+			asyncFirstErr = err
+		}
+		asyncMu.Unlock()
+	}
 	// Step 1: Identify all affected containers and their strategies
 	type restartJob struct {
 		target      *TargetContainer
@@ -692,11 +736,17 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}
 
 			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
+			auditProvider := r.resolveSecretProvider(secretName)
 
 			// CQ-C4: pass target and releaseLock as explicit arguments so the
 			// goroutine holds a stable, independent reference rather than capturing
-			// the sync.Map range variable by reference.
-			go func(tc *TargetContainer, release func(), newEnvs map[string]string, hTimeout time.Duration) {
+			// the sync.Map range variable by reference. secretName/auditProvider are
+			// read-only for the remainder of TriggerReload, so capturing them
+			// directly would be safe too, but passing them explicitly keeps this
+			// goroutine's inputs self-contained, matching the existing convention.
+			asyncWG.Add(1)
+			go func(tc *TargetContainer, release func(), newEnvs map[string]string, hTimeout time.Duration, secret, provider string) {
+				defer asyncWG.Done()
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
 						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", util.ShortID(tc.ID)))
@@ -705,7 +755,12 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				err := rs.Execute(ctx, tc.ID, newEnvs, hTimeout)
 				release()
+				recordAsyncErr(err)
 				if err != nil {
+					// AUDIT-3: compliance trail for "secret X was rotated into
+					// container Y" -- this is the point where the rolling
+					// (blue-green) rotation's real, final outcome is known.
+					audit.Log(ctx, "rotate", "system", provider, secret, tc.ID, "failed")
 					r.Logger.Error("Rolling rotation failed, triggering fallback restart", zap.Error(err))
 					if r.Server != nil {
 						if as, ok := r.Server.(interface{ Emit(string) }); ok {
@@ -716,8 +771,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs); ferr != nil {
 						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
 					}
+					return
 				}
-			}(target, releaseLock, rollingEnvs, healthTimeout)
+				audit.Log(ctx, "rotate", "system", provider, secret, tc.ID, "success")
+			}(target, releaseLock, rollingEnvs, healthTimeout, secretName, auditProvider)
 
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
@@ -733,12 +790,19 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// arguments (shadowing the sync.Map range variables) so this goroutine
 			// operates on stable, independent values even if the Targets map entry
 			// is concurrently deleted or replaced.
+			asyncWG.Add(1)
 			go func(target *TargetContainer, releaseLock func(), serviceName string) {
+				defer asyncWG.Done()
+				finish := func(err error) {
+					recordAsyncErr(err)
+					releaseLock()
+				}
+
 				// 1. Inspect original container
 				inspect, err := r.cli.ContainerInspect(ctx, target.ID)
 				if err != nil {
 					r.Logger.Error("Failed to inspect container for restart", zap.Error(err))
-					releaseLock()
+					finish(err)
 					return
 				}
 
@@ -786,7 +850,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// 3. Rename old to clear path
 				if err := r.cli.ContainerRename(ctx, target.ID, tempOldName); err != nil {
 					r.Logger.Error("Failed to rename original container", zap.Error(err))
-					releaseLock()
+					finish(err)
 					return
 				}
 
@@ -819,7 +883,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				if err != nil {
 					r.Logger.Error("Failed to create new container, rolling back name", zap.Error(err))
 					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
-					releaseLock()
+					finish(err)
 					return
 				}
 
@@ -875,7 +939,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
 					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
-					releaseLock()
+					finish(err)
 					return
 				}
 
@@ -891,7 +955,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					r.Logger.Error("New container unhealthy, rolling back with retries", zap.Error(err))
 					_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
 					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
-					releaseLock()
+					finish(err)
 					return
 				}
 
@@ -909,7 +973,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Inject.Path))
 							_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
 							r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
-							releaseLock()
+							finish(err)
 							return
 						}
 					}
@@ -945,7 +1009,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
 				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
 				r.degraded.Delete(serviceName)
-				releaseLock()
+				finish(nil)
 			}(target, releaseLock, serviceName)
 		} else {
 			// If we skipped all strategies (e.g. signal), release lock immediately
@@ -962,7 +1026,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 		r.Logger.Info("Triggering de-duplicated Docker Compose rotation", zap.String("path", path))
 
+		asyncWG.Add(1)
 		go func(p string, t *TargetContainer, pi map[string]string, rl func()) {
+			defer asyncWG.Done()
 			RecordDSOAction(filepath.Base(filepath.Dir(p)))
 
 			if r.Server != nil {
@@ -974,6 +1040,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// Pass pre-injected secrets directly — avoids calling back into the agent socket (deadlock fix)
 			err := core.RunComposeUpWithEnv(p, []string{"-d", "--remove-orphans"}, "", false, pi)
 			rl()
+			recordAsyncErr(err)
 
 			if err != nil {
 				r.Logger.Error("Background rotation failed", zap.Error(err))
@@ -1019,6 +1086,17 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 	}
 
 	r.Logger.Info(fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName))
+
+	if onComplete != nil {
+		go func() {
+			asyncWG.Wait()
+			asyncMu.Lock()
+			err := asyncFirstErr
+			asyncMu.Unlock()
+			onComplete(err)
+		}()
+	}
+
 	return nil
 }
 

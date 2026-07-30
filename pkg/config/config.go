@@ -82,6 +82,17 @@ type AgentConfig struct {
 	Rotation        RotationConfigV2 `yaml:"rotation"`
 }
 
+// ProxyConfig configures the DSO proxy's host-port binding behavior.
+type ProxyConfig struct {
+	// AllowedHostPorts is an optional operator-supplied allow-list of host
+	// ports the proxy may bind (SEC-7 full fix). Entries may be an exact
+	// port ("8080") or an inclusive range ("3000-4000"). Any container can
+	// set its own dso.host_ports label, so without this the proxy binds
+	// whatever unprivileged port a container's label claims. Unset/empty
+	// (the default) preserves prior behavior: any port >= 1024 is allowed.
+	AllowedHostPorts []string `yaml:"allowed_host_ports,omitempty"`
+}
+
 type SecretMapping struct {
 	Name     string            `yaml:"name"`
 	Provider string            `yaml:"provider,omitempty"`
@@ -96,6 +107,7 @@ type Config struct {
 	Agent     AgentConfig               `yaml:"agent"`
 	Defaults  DefaultsConfig            `yaml:"defaults,omitempty"`
 	Logging   LoggingConfig             `yaml:"logging,omitempty"`
+	Proxy     ProxyConfig               `yaml:"proxy,omitempty"`
 	Secrets   []SecretMapping           `yaml:"secrets"`
 
 	// Legacy fields for backward compatibility detection
@@ -298,6 +310,10 @@ func (c *Config) Validate() error {
 	}
 	// Only check file system paths, not network addresses
 	if !strings.HasPrefix(dockerSocket, "unix://") && !strings.HasPrefix(dockerSocket, "tcp://") {
+		// #nosec G703 -- dockerSocket comes from DOCKER_HOST, an operator-set
+		// environment variable (standard Docker CLI/SDK convention), not
+		// remote/attacker input; this is a read-only existence check (os.Stat),
+		// not file content access
 		if _, err := os.Stat(dockerSocket); err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("docker socket not accessible at %s: file does not exist", dockerSocket)

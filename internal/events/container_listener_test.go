@@ -72,7 +72,7 @@ func TestHasRelevantLabels_MixedRelevantAndIrrelevant(t *testing.T) {
 
 func TestHasRelevantLabels_DSO_Prefix_Partial(t *testing.T) {
 	labels := map[string]string{
-		"dso": "not-a-prefix",  // This should NOT match
+		"dso": "not-a-prefix", // This should NOT match
 		"app": "web",
 	}
 	if HasRelevantLabels(labels) {
@@ -82,11 +82,11 @@ func TestHasRelevantLabels_DSO_Prefix_Partial(t *testing.T) {
 
 func TestHasRelevantLabels_AllRelevantTypes(t *testing.T) {
 	labels := map[string]string{
-		"secret":             "aws-key",
-		"rotation-strategy":  "rolling",
-		"dso.owner":          "team-a",
-		"dso.env":            "prod",
-		"app":                "web",
+		"secret":            "aws-key",
+		"rotation-strategy": "rolling",
+		"dso.owner":         "team-a",
+		"dso.env":           "prod",
+		"app":               "web",
 	}
 	if !HasRelevantLabels(labels) {
 		t.Fatal("expected true when all relevant label types are present")
@@ -420,6 +420,47 @@ func TestContainerListener_Stop(t *testing.T) {
 
 	// Give it time to close the channel
 	time.Sleep(200 * time.Millisecond)
+}
+
+// TestContainerListener_RestartAfterStop is a regression test for REL-5:
+// Stop() previously never reset cl.ctx, so Start()'s "already started" guard
+// (which only checks cl.ctx != nil) permanently rejected any Start() call
+// after the first Stop(), even though the listener was fully stopped.
+func TestContainerListener_RestartAfterStop(t *testing.T) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Skip("Docker not available, skipping container listener tests")
+	}
+	defer cli.Close()
+
+	listener := NewContainerListener(cli)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+	if err := listener.Start(ctx1); err != nil {
+		t.Fatalf("first Start() failed: %v", err)
+	}
+	if err := listener.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if err := listener.Start(ctx2); err != nil {
+		t.Fatalf("Start() after Stop() should succeed on a stopped listener, got: %v", err)
+	}
+	defer listener.Stop()
+
+	// The new watchEvents goroutine must be able to emit on a fresh
+	// eventsChan (the previous one was closed by the first watchEvents exit).
+	select {
+	case _, ok := <-listener.Events():
+		if !ok {
+			t.Fatal("Events() channel is already closed after restart")
+		}
+	case <-time.After(50 * time.Millisecond):
+		// No event yet, that's fine -- we only need the channel to be open.
+	}
 }
 
 func TestContainerListener_StopWithoutStart(t *testing.T) {

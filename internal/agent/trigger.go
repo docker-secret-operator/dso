@@ -135,7 +135,7 @@ func (t *TriggerEngine) SetLimitCache(lc *LimitEnforcingCache) {
 func (t *TriggerEngine) Stop() {
 	t.cancel()
 	if t.StateTracker != nil {
-		t.StateTracker.Close()
+		_ = t.StateTracker.Close()
 	}
 	t.Logger.Info("Trigger engine stopped")
 }
@@ -282,23 +282,36 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			}
 		}
 
-		// Note: The Reloader internally handles the strategy logic (restart/signal)
-		if err := t.Reloader.TriggerReload(ctx, secretName); err != nil {
+		// Note: The Reloader internally handles the strategy logic (restart/signal).
+		// Some strategies rotate containers in detached goroutines that outlive
+		// TriggerReload's return, so rotation state is only marked complete/failed
+		// once onComplete fires with the real, final outcome (REL-1 fix) rather
+		// than immediately after TriggerReload returns.
+		onComplete := func(asyncErr error) {
+			if asyncErr != nil {
+				t.Logger.Warn("Rotation failed after async completion", zap.String("secret", secretName), zap.Error(asyncErr))
+				t.secretHashes.Delete(cacheKey)
+				if t.StateTracker != nil {
+					_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
+				}
+				return
+			}
+			if t.StateTracker != nil {
+				if err := t.StateTracker.CompleteRotation(providerName, secretName, originalContainerIDs); err != nil {
+					t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
+				}
+			}
+		}
+
+		if err := t.Reloader.TriggerReload(ctx, secretName, onComplete); err != nil {
 			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
 			// Remove the cached hash so the next poll retries the rotation instead
 			// of treating this failed attempt as a successful "no change" baseline.
 			t.secretHashes.Delete(cacheKey)
 			if t.StateTracker != nil {
-				t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
+				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 			}
 			return
-		}
-
-		// Mark rotation as complete
-		if t.StateTracker != nil {
-			if err := t.StateTracker.CompleteRotation(providerName, secretName, originalContainerIDs); err != nil {
-				t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
-			}
 		}
 	}()
 }

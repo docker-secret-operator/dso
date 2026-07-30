@@ -39,8 +39,15 @@ func NewSecretStoreManager(logger *zap.Logger) *SecretStoreManager {
 func (s *SecretStoreManager) GetProvider(providerName string, pCfg config.ProviderConfig) (api.SecretProvider, error) {
 	if val, ok := s.store.Load(providerName); ok {
 		entry := val.(*StoreEntry)
+		// LastHealthy is mutated under entry.mu by MarkProviderHealthy/
+		// MarkProviderFailure, so it must be read under the same lock here
+		// (REL-2) rather than accessed directly, which the race detector
+		// flags as a data race against those concurrent writers.
+		entry.mu.Lock()
+		lastHealthy := entry.LastHealthy
+		entry.mu.Unlock()
 		// Check if connection is stale (no successful use in 10 minutes)
-		if time.Since(entry.LastHealthy) > 10*time.Minute {
+		if time.Since(lastHealthy) > 10*time.Minute {
 			s.logger.Warn("Provider connection may be stale, reconnecting",
 				zap.String("provider", providerName),
 				zap.Duration("lastHealthy", time.Since(entry.LastHealthy)))

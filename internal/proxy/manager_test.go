@@ -46,6 +46,44 @@ func TestParseHostPorts(t *testing.T) {
 			label: "bad,worse,:,",
 			want:  nil,
 		},
+		// SEC-7 regression: dso.host_ports is attacker-influenceable (any
+		// container can set its own labels), so privileged/out-of-range host
+		// ports must be rejected rather than silently bound.
+		{
+			name:  "privileged host port is rejected",
+			label: "22:22",
+			want:  nil,
+		},
+		{
+			name:  "privileged host port among valid entries is dropped, others kept",
+			label: "22:22,8080:80",
+			want:  []PortMap{{HostPort: 8080, ContainerPort: 80}},
+		},
+		{
+			name:  "host port 1024 boundary is allowed",
+			label: "1024:1024",
+			want:  []PortMap{{HostPort: 1024, ContainerPort: 1024}},
+		},
+		{
+			name:  "host port 1023 boundary is rejected",
+			label: "1023:1023",
+			want:  nil,
+		},
+		{
+			name:  "out-of-range host port is rejected",
+			label: "70000:80",
+			want:  nil,
+		},
+		{
+			name:  "out-of-range container port is rejected",
+			label: "8080:70000",
+			want:  nil,
+		},
+		{
+			name:  "negative ports are rejected",
+			label: "-1:80",
+			want:  nil,
+		},
 	}
 
 	for _, tt := range tests {

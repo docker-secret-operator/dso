@@ -165,7 +165,12 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 
 	// Step 1: Pre-compute which services are managed by DSO so that non-DSO
 	// services receive no labels, port-stripping, or env injection.
-	absPath, _ := filepath.Abs(filename)
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		// QUAL-2: previously ignored, silently corrupting the
+		// dso.compose.path label and project name derived from absPath below.
+		return fmt.Errorf("failed to resolve absolute path for compose file %s: %w", filename, err)
+	}
 	managedServices := make(map[string]bool)
 	if cfg != nil {
 		for name, svcRaw := range parsed.Services {
@@ -457,6 +462,12 @@ func PrintRedactedCompose(p *ComposeFile) {
 		redacted.Services[name] = newSvc
 	}
 
-	d, _ := yaml.Marshal(&redacted)
+	d, err := yaml.Marshal(&redacted)
+	if err != nil {
+		// QUAL-3: previously ignored, silently printing nothing instead of
+		// surfacing a compose-parsing problem during --debug.
+		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Failed to render redacted compose for debug output: %v\033[0m\n", err)
+		return
+	}
 	fmt.Println(string(d))
 }

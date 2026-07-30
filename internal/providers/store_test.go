@@ -1,10 +1,12 @@
 package providers
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/docker-secret-operator/dso/pkg/config"
+	"github.com/hashicorp/go-plugin"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -86,6 +88,37 @@ func TestMarkProviderHealthy(t *testing.T) {
 
 	// Should not panic for unknown provider
 	manager.MarkProviderHealthy("unknown")
+}
+
+// TestGetProvider_ConcurrentWithMarkProviderHealthy is a regression test for
+// REL-2: GetProvider used to read entry.LastHealthy directly, racing against
+// MarkProviderHealthy/MarkProviderFailure writing it under entry.mu. Under
+// `go test -race` this reproduces as a real data race before the fix (both
+// read entry.LastHealthy while a concurrent MarkProviderHealthy call writes
+// it) and is clean after (GetProvider now takes entry.mu for the read).
+func TestGetProvider_ConcurrentWithMarkProviderHealthy(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	manager := NewSecretStoreManager(logger)
+
+	manager.store.Store("prov1", &StoreEntry{
+		Client:      &plugin.Client{}, // zero value: Exited() returns false without a real subprocess
+		LastHealthy: time.Now(),
+		MaxFailures: 5,
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = manager.GetProvider("prov1", config.ProviderConfig{})
+		}()
+		go func() {
+			defer wg.Done()
+			manager.MarkProviderHealthy("prov1")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestMarkProviderFailure(t *testing.T) {

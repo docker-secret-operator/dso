@@ -1,16 +1,73 @@
 package core
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/docker-secret-operator/dso/pkg/config"
 )
 
+// captureStdoutStderr redirects os.Stdout and os.Stderr for the duration of
+// fn and returns what was written to each.
+func captureStdoutStderr(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+
+	origOut, origErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stderr pipe: %v", err)
+	}
+	os.Stdout, os.Stderr = wOut, wErr
+
+	fn()
+
+	_ = wOut.Close()
+	_ = wErr.Close()
+	os.Stdout, os.Stderr = origOut, origErr
+
+	outBytes, _ := io.ReadAll(rOut)
+	errBytes, _ := io.ReadAll(rErr)
+	return string(outBytes), string(errBytes)
+}
+
+func TestPrintRedactedCompose_HappyPath(t *testing.T) {
+	cf := &ComposeFile{
+		Services: map[string]interface{}{
+			"web": map[string]interface{}{
+				"image": "nginx",
+				"environment": map[string]interface{}{
+					"DB_PASSWORD": "s3cret",
+				},
+			},
+		},
+	}
+
+	stdout, stderr := captureStdoutStderr(t, func() {
+		PrintRedactedCompose(cf)
+	})
+
+	if stderr != "" {
+		t.Errorf("expected no stderr output on success, got: %s", stderr)
+	}
+	if strings.Contains(stdout, "s3cret") {
+		t.Errorf("expected secret value to be redacted, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "web:") {
+		t.Errorf("expected redacted compose output to contain the service, got: %s", stdout)
+	}
+}
+
 func TestParsePortEntry(t *testing.T) {
 	tests := []struct {
-		input         string
-		expectedHost  string
-		expectedCont  string
+		input        string
+		expectedHost string
+		expectedCont string
 	}{
 		{"3306", "", "3306"},
 		{"3306/tcp", "", "3306"},

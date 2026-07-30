@@ -29,6 +29,30 @@ func TestLockManager_AcquireRelease_InMemory(t *testing.T) {
 	lm.ReleaseLock("svc-a")
 }
 
+// TestLockManager_ReleaseLock_RemovesMapEntry is a regression test for REL-4:
+// lm.locks entries were never removed after ReleaseLock, so the map grew for
+// every distinct key ever locked over the daemon's lifetime.
+func TestLockManager_ReleaseLock_RemovesMapEntry(t *testing.T) {
+	lm, err := NewLockManager("", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewLockManager: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		key := "container-" + string(rune('a'+i))
+		if err := lm.AcquireLock(key, time.Second); err != nil {
+			t.Fatalf("acquire %s failed: %v", key, err)
+		}
+		lm.ReleaseLock(key)
+	}
+
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	if len(lm.locks) != 0 {
+		t.Errorf("expected lm.locks to be empty after all keys released, got %d entries: %v", len(lm.locks), lm.locks)
+	}
+}
+
 func TestLockManager_Contention_TimesOut(t *testing.T) {
 	lm, err := NewLockManager("", zap.NewNop())
 	if err != nil {

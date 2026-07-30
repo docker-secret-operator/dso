@@ -338,6 +338,513 @@ Pure test-only addition — no production code changed. "Rollback" here is simpl
 
 ---
 
+### Decision 8: BUG-4 — `Manager.SwapBackend` Drain-Goroutine Lifecycle
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+QUALITY-1 confirmed and deliberately deferred this: `SwapBackend`'s deferred-removal step (waits 5s, then removes the drained backend from the registry) ran in a bare `go func() { time.Sleep(5*time.Second); ... }()` with no `context` or stop channel tied to `Manager.Stop`. `Stop` only closed the server's listeners — it had no way to know these goroutines existed, let alone cancel or wait for them, so one could keep running and mutating `m.registry` for up to 5 seconds after `Stop` returned.
+
+### Options
+1. **Bound the goroutine to a Manager-lifetime context + WaitGroup**, cancel and wait for it inside `Stop`
+2. **Track pending removals in a slice/map and cancel via a shared "stopped" flag checked in a loop** — functionally equivalent to option 1 but reinvents what `context.Context` already provides
+3. **Leave it unfixed** and only document the limitation
+
+### Decision
+**Chosen**: Option 1.
+
+### Rationale
+- `context.Context` + `sync.WaitGroup` is the idiomatic Go pattern for exactly this shape of problem (bound a background goroutine's lifetime to its owner's, let the owner wait for clean shutdown) — no need to hand-roll a flag/polling mechanism
+- Racing `time.After(5*time.Second)` against `ctx.Done()` in a `select` means the fix costs nothing in the common case (Manager stays up, the timer fires normally, behavior is unchanged) and only changes behavior during shutdown, which is exactly the gap being closed
+- On cancellation the goroutine skips the registry removal rather than trying to still perform it — correct, because `Manager.Stop` being called means the whole proxy (and its registry) is being torn down; there is nothing left to usefully clean up
+- No public API changed: `NewManager`, `SwapBackend`, and `Stop` all keep their existing signatures
+
+### Verification (single review round, per the established stop rule)
+- Reproduced empirically before fixing: reverted `manager.go` only (kept the new test), ran `TestManager_Stop_TerminatesSwapBackendDrainGoroutine` — failed as expected (`goroutine count still elevated 300ms after Stop returned`)
+- Restored the fix, same test passes, and now returns in ~0ms instead of needing the 300ms settle window
+- Full `internal/proxy` suite re-run under `-race`: clean, coverage 86.6% → 86.9%
+- `go build ./...`, `gofmt`, `go vet`, `golangci-lint`, `gosec`, `govulncheck` all run against the changed files: zero new findings introduced by this diff (the pre-existing `router.go` G115 finding, `server.go` G104/errcheck findings, and stdlib/dependency CVEs from `govulncheck` are all unrelated to `manager.go` and unchanged by this change)
+
+### Rollback Implications
+Single-file production change (`internal/proxy/manager.go`) plus a test-only addition. Revert is a straightforward single-commit revert; no data, schema, or API compatibility impact.
+
+---
+
+### Decision 9: AUDIT-1 — Wiring `internal/audit` Into a Real Call Site
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+The comprehensive review (`docs/audit/COMPREHENSIVE_REVIEW.md`, Phase 3/7) found `internal/audit` — a fully built, SEC-1-hardened, unit-tested compliance logger — had zero production callers. This was flagged as worse than ordinary dead code: `AuditEvent`'s own doc comment says "required for compliance," and the SEC-1 changelog entry documents hardening this exact package, so a reader would reasonably assume secret access is audited when it isn't.
+
+### Options
+1. **Delete `internal/audit`** — remove the unused feature entirely
+2. **Wire it into every secret-touching call site** (rotation, injection, CLI `secret get/set`, agent fetch) in one pass
+3. **Wire it into the single highest-value, lowest-risk call site** — the agent's `GetSecret` RPC handler, which every secret fetch passes through regardless of caller — and explicitly scope out the rest as follow-ups
+
+### Decision
+**Chosen**: Option 3.
+
+### Rationale
+- The user only asked "what is this for, and wire it in if needed" — not to redesign the audit surface across the whole codebase. `AgentServer.GetSecret` (`internal/agent/server.go`) is the one RPC method every secret-fetch path (`fetch`, `inject`, `apply`, `up`, `compose`, `sync`) already funnels through, so wiring it there gets the majority of compliance value from a single, well-tested, contained change rather than a multi-package sweep
+- Deleting it (Option 1) would have been defensible too, but the feature is well-built and the "required for compliance" framing in its own doc comment suggests it was intentional, not accidental scaffolding — wiring it in is the more conservative choice given ambiguity about intent
+- Full multi-site wiring (Option 2) would have touched `internal/rotation`, `internal/watcher`, and `internal/cli` in the same change — a materially larger diff spanning packages with different data shapes available (e.g., rotation events don't naturally carry a "provider" the same way a fetch does), better done as its own separately-reviewed change
+- **Known, documented limitation accepted rather than solved here**: the `user` field is recorded as the fixed value `"agent"`. Real per-caller attribution requires the connecting peer's authenticated OS UID (already captured at socket-accept time via SEC-C2's `readPeerIdentity`) to be threaded through `net/rpc`'s per-call dispatch, which doesn't naturally support passing connection-scoped data into method calls. Solving this properly means changing the RPC transport (a custom `ServerCodec` or moving off `net/rpc`'s built-in dispatch) — out of proportion for "wire in an existing `Log()` call." Tracked as a follow-up rather than silently left unmentioned
+
+### Verification (single review round, per the established stop rule)
+- Reproduced empirically before fixing: reverted `server.go` only (kept the new tests), confirmed both new tests fail against pre-fix code (`expected audit log to contain "event":"secret_fetch", got: ` — empty, because nothing was logged)
+- Restored the fix, both tests pass; confirmed the audit record never contains the fetched secret's plaintext value
+- Full `internal/agent` suite re-run under `-race`: clean. `internal/audit`'s own existing test suite re-run unchanged and still passing
+- `go build ./...`, `gofmt`, `go vet`, `golangci-lint`, `gosec` run against the changed files: zero new findings introduced (the pre-existing G118/G304/G104 findings elsewhere in `server.go`/`trigger.go`/`agent.go` are all outside this diff's line ranges, confirmed via `git diff`)
+
+### Rollback Implications
+Two-file production change (`internal/agent/server.go` adds the wiring, no other production files touched) plus a new test file. Revert is a straightforward single-commit revert; `internal/audit` itself is unchanged, so reverting only removes the call sites, not the underlying (already-tested) logging capability.
+
+---
+
+### Decision 10: CLEAN-1 — Dead Code Removal (`internal/runtime`, `plugin_verifier.go`, `internal/webui`)
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+The comprehensive review flagged three items as delete candidates: `internal/runtime` (test-only, zero importers), `internal/providers/plugin_verifier.go` (superseded by SEC-2's `pkg/provider/load.go`, zero callers, previously flagged as `task_9228adcc` and left unactioned), and `internal/webui` (believed to be an orphaned Next.js build artifact). The user asked to proceed on the first two and explicitly asked to investigate the third rather than delete it blind, since `feature/web-ui` also touches web UI code.
+
+### Verification (re-run before touching anything, per the standing discipline)
+- `internal/runtime`: re-confirmed via `grep -rl "internal/runtime" --include="*.go" .` — zero results. Still dead
+- `plugin_verifier.go`: a `grep` for "plugin_verifier" initially surfaced a hit in `internal/server/rest.go:242` — investigated before deleting, and found it to be a **stale comment** referencing a nonexistent path (`pkg/provider/plugin_verifier.go`, never a real file) rather than an actual caller. `PluginVerifier`'s exported methods have zero real Go-code callers outside its own package/test. Still dead
+- `internal/webui`: this is where the investigation changed the plan. `git log main -- internal/webui` returns **empty** — main's own commit history has never touched this path. The three commits that built a full web UI (`embed.go`, `proxy.go`, `server.go`, `server_test.go`, ~150 assets) exist only on `feature/web-ui` (and two other unrelated branches, `advanced-platform`/`intelligence-pack`) — `git merge-base --is-ancestor` confirms none of them are ancestors of `main`. The single file physically present in `main`'s working tree (`internal/webui/assets/_next/static/chunks/app/secrets/page-5a9abdf1eec286d0.js`) is **not tracked by git at all**: `git ls-tree -r main` shows nothing for this path, and `.gitignore:84` excludes `internal/webui/` outright. The filename doesn't even match anything in `feature/web-ui`'s current tree (different content hash, different page). Conclusion: this was stray, gitignored local working-tree cruft — most likely left behind by a local build or an unclean branch switch at some point — with zero relationship to `feature/web-ui`'s real (and currently unmerged) web UI work
+
+### Decision
+Deleted `internal/runtime` and `internal/providers/plugin_verifier.go`/`plugin_verifier_test.go` as tracked, committed changes. Corrected the stale comment in `rest.go` that referenced the deleted file's (already-wrong) old path. Removed the stray `internal/webui` file from the working tree directly (`rm -rf`, not `git rm` — git was never tracking it, so there is no commit for this specific removal and no effect on `feature/web-ui`'s eventual merge). `.gitignore`'s `internal/webui/` rule was deliberately left in place, since it's still relevant to `feature/web-ui`'s unresolved merge/archive decision (PRODUCT-1).
+
+### Rationale
+- Nothing here required a design trade-off — both `internal/runtime` and `plugin_verifier.go` were unambiguously dead (zero importers, confirmed twice now across two review passes)
+- The `internal/webui` question wasn't "is this safe to delete" in isolation — it was "does deleting this interact with the still-open `feature/web-ui` branch decision." It doesn't: main's copy was never part of main's history, so removing it doesn't touch, complicate, or foreclose PRODUCT-1's eventual merge/archive decision on `feature/web-ui` in any way
+- Left the `plugin_verifier.go` deletion's follow-up task (`task_9228adcc`) resolved by this change rather than leaving a stale chip pointing at now-deleted files
+
+### Verification
+- `go build ./...`: clean
+- `go vet ./...`: clean
+- Full `go test ./... -short`: all packages pass, `internal/runtime` and `internal/providers/plugin_verifier*` no longer appear in the package list
+- `gofmt`, `golangci-lint`, `gosec` on the touched packages (`internal/providers`, `internal/server`): zero new findings; all pre-existing findings elsewhere in those packages confirmed unrelated to this diff
+
+### Rollback Implications
+`internal/runtime`/`plugin_verifier.go` deletions are a normal single-commit revert (git history preserves the files). The `internal/webui` cleanup has no git footprint to roll back — it never was one.
+
+---
+
+### Decision 11: SEC-5 — Making `gosec`/`govulncheck` Blocking, Enabling SBOM
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+CI's `gosec` ran with `-no-fail` and `govulncheck` ran with `continue-on-error: true` — both flagged in the comprehensive review as a real gap: DSO's two automated security scanners could not, in practice, fail a build. Before touching CI config, ran both scanners repo-wide to measure the actual gap: 84 pre-existing `gosec` findings and 22 reachable `govulncheck` vulnerabilities.
+
+### Options considered
+1. **Flip the flags off immediately** — would have made CI permanently red on unrelated pre-existing findings, including 3 `govulncheck` findings in `docker/docker` with no available fix (`Fixed in: N/A`) — not actually achievable, and a bad first impression of "blocking" security tooling
+2. **Blanket rule/path exclusions** (e.g., `-exclude=G204,G304,...` or excluding whole packages) — technically makes the gate pass, but also silently exempts *future* findings of those types, defeating the point of making the gate blocking in the first place
+3. **Triage every finding individually** (fix, tighten, or suppress with a specific, verified justification) and only then flip the flags, plus build an allowlist mechanism for the handful of genuinely unfixable `govulncheck` findings
+
+### Decision
+**Chosen**: Option 3, for both tools.
+
+### Rationale
+- **`govulncheck`**: re-scanning showed 19 of 22 findings were fixable by version bumps alone (14 Go-stdlib CVEs fixable by bumping the toolchain to `go1.25.12`; 4 dependency CVEs fixable via `go get`) — the "unfixable" framing in the old CI comment (citing a single CVE, `GO-2026-5746`) was stale; most of the backlog was never actually unfixable, just never revisited. Bumped the toolchain and 4 dependencies, verified the full test suite still passes under `-race`, and built a small `jq`-based CI script (`.govulncheck-allowlist.txt` + inline logic in `ci.yml`) that only allowlists the 3 vulnerabilities confirmed to have no upstream fix (`GO-2026-4883`, `GO-2026-4887`, `GO-2026-5668`, all `github.com/docker/docker`), scoped to *reachable* findings only (govulncheck's own `trace[0].function` field) so a genuinely new, fixable vulnerability still fails the build
+- **`gosec`**: rejected blanket exclusion specifically because several of the 84 findings' rule categories (`G304` file-inclusion, `G204` subprocess-exec) are exactly the categories most worth catching in a secrets-management tool — excluding them wholesale would blind the gate to the exact class of bug it exists to catch. Went finding-by-finding instead: 22 unchecked-error discards fixed with the idiomatic `_ = ` (satisfies gosec and `golangci-lint`'s `errcheck` simultaneously), a real integer-overflow panic in `Router.Next()` fixed properly (not suppressed) with a reproduction test proving the pre-fix code actually panics, an MD5→SHA-256 swap for a non-security hash (removes ambiguity, not a real vulnerability fix), 3 permission-bit tightenings where no broader-access requirement existed, and 57 suppressions — each with an inline comment naming the specific reason (already-validated by SEC-2/SEC-4, sanitized by an existing function, a CLI tool operating within the invoking user's own permissions, a Unix-socket dial structurally incapable of SSRF, etc.), not a generic "false positive" comment
+- **Version-pinning discipline**: local triage initially used `gosec@latest` (v2.28.0); before declaring the gate green, re-verified against CI's actually-pinned `v2.25.0`, which caught 5 *additional* findings (`uintptr`→`int` file-descriptor conversions) the newer version doesn't flag — confirming the gate is checked against what CI will actually run, not just what was convenient locally
+- **SBOM**: this was already fully scaffolded (`syft` installed in `release.yml`) and only commented out in `.goreleaser.yml` — enabling it was a one-line-block change, not new infrastructure
+
+### Verification (single review round, per the established stop rule)
+- `go build ./...`, `go vet ./...`: clean
+- Full `go test ./... -race -short`: all packages pass (including a new regression test, `TestRouter_Next_CounterNearOverflow`, verified failing against the pre-fix code with a real panic — `index out of range [-2]` — before being restored)
+- `gofmt` (using the toolchain-matched binary, not a stray system one): clean repo-wide after reformatting ~25 files affected by the toolchain bump's minor comment-alignment shift
+- `golangci-lint run ./...`: 112 issues, verified via a side-by-side worktree comparison against the pre-session `HEAD` (111 issues) that every issue is pre-existing and unrelated to this diff, except 2 new `govet` findings — both in a vendored third-party file (`web/node_modules/flatted/...`), an artifact of the toolchain bump surfacing a newer deprecation-inlining suggestion in code this repo doesn't own; flagged as a separate follow-up (exclude `web/node_modules/` from linting) rather than fixed here
+- `gosec ./...`: 0 issues, verified against both `@latest` and CI's exact pinned `v2.25.0`
+- `govulncheck`: 3 remaining findings, all present in `.govulncheck-allowlist.txt`; the CI gating script itself was tested both positively (passes with the current allowlist) and negatively (fails when an entry is removed, confirmed via a temp-file test)
+- `goreleaser check`: SBOM config valid; 2 unrelated, pre-existing deprecation warnings noted, not fixed (out of scope)
+
+### Rollback Implications
+The toolchain/dependency bump is the highest-blast-radius part of this change (touches `go.mod`/`go.sum` and, transitively, every package) — mitigated by running the full test suite under `-race` before and after. `#nosec` suppressions are all inline comments (revertible per-file). The CI workflow and `.goreleaser.yml` changes are config-only. A full revert would be a single commit revert; a partial revert (e.g., keeping the toolchain bump but reverting the CI blocking behavior) is also straightforward since the two are independently committable concerns.
+
+---
+
+### Decision 12: AUDIT-2 — Threading the Real Peer Identity into the Audit Log
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+AUDIT-1 wired `internal/audit.Log` into `AgentServer.GetSecret` but recorded every caller as a fixed `"agent"` placeholder, explicitly scoped out as a follow-up: the connecting peer's OS UID is already authenticated per-connection at socket-accept time (SEC-C2's `readPeerIdentity`), but `net/rpc`'s dispatch model gives `GetSecret(req, resp)` no way to see which connection a given call arrived on.
+
+### Options
+1. **A custom `rpc.ServerCodec`** wrapping the default gob codec, stashing the peer identity in a side-channel (e.g. a `sync.Map` keyed by something derivable inside the method call)
+2. **Per-connection `*rpc.Server` + per-connection receiver value** — since `rpc.ServeConn` already runs in its own goroutine per accepted connection with the peer identity already in scope at that point, give each connection its own lightweight `*rpc.Server` and register a small wrapper value (embedding the shared `*AgentServer`, carrying this connection's resolved identity) on it instead of using the process-wide `rpc.RegisterName`/`rpc.ServeConn` convenience functions
+3. **Move off `net/rpc` entirely** (e.g., to gRPC or a hand-rolled protocol with explicit per-call context) to get proper context propagation
+
+### Decision
+**Chosen**: Option 2.
+
+### Rationale
+- Option 3 would be a full transport rewrite touching every RPC call site in the codebase (`internal/injector.AgentClient` and everything built on it) for a single field's attribution — wildly disproportionate
+- Option 1 (custom codec + side-channel map) solves the same problem as option 2 but with more moving parts (a map to keep in sync with connection lifecycle, an extra layer of indirection to keep straight) for no additional benefit — `net/rpc`'s own documented pattern for "receiver needs per-connection state" is exactly a per-connection `*rpc.Server` + per-connection receiver value, which is option 2
+- `agentConn` embeds `*AgentServer` rather than duplicating its method set, so `GetEvents` (and any RPC method added later) is promoted unchanged with zero extra code; only `GetSecret` needed overriding, keeping the diff minimal
+- The exported `AgentServer.GetSecret` (still reachable directly, not via RPC, from `StartDriverServer`'s HTTP path) needed *some* placeholder since that path has no peer-credential concept at all — changed it from the old shared `"agent"` to `"docker-secret-driver"`, a real and distinct identifier, rather than leaving a second ambiguous placeholder in place
+- A UID that doesn't resolve to a local account (e.g. NSS/LDAP-only accounts under the CGO-disabled build, per `peerAuthorized`'s existing comment on this exact caveat) degrades to a `"uid:<n>"` audit value rather than failing the request — audit attribution should never block an already-authorized secret fetch
+
+### Verification (single review round, per the established stop rule)
+- Reproduced empirically before fixing: stashed only `server.go`/`peercred.go` (reverting fully to committed `HEAD`, which predates AUDIT-1 entirely), confirmed both new tests fail — the peer-identity test asserted this sandbox's real resolved username and got an empty audit log, the HTTP-driver test asserted `"docker-secret-driver"` and got nothing
+- Restored the fix, both tests pass; `TestStartSocketServer_AuditLogsRealPeerIdentity` dials a real `StartSocketServer` over an actual Unix socket and makes a real `net/rpc` call — not a mocked/direct method call — so it exercises the exact dispatch path a real client uses
+- Full `internal/agent` suite (including the pre-existing AUDIT-1 tests, unaffected) re-run under `-race`: clean — the new per-connection `*rpc.Server` allocation happens inside the same per-connection goroutine that already existed, no new shared state introduced
+- `go build ./...`, `go vet ./...`, `gofmt`, `golangci-lint`, `gosec`: one new `staticcheck` style suggestion (`QF1008`, redundant embedded-field selector) found and fixed immediately (`c.AgentServer.getSecret(...)` → `c.getSecret(...)`, relying on promotion); zero other new findings
+
+### Rollback Implications
+Two-file production change (`internal/agent/server.go`, `internal/agent/peercred.go`) plus new tests. A revert restores the `"agent"` placeholder behavior exactly as AUDIT-1 shipped it — no data or API compatibility impact; `internal/injector.AgentClient` and all other RPC callers are unaffected since `Agent.GetSecret`/`Agent.GetEvents`'s wire-visible method names and argument/reply types are unchanged.
+
+---
+
+### Decision 13: AUDIT-3 — Extending the Audit Trail to Rotation Events
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+AUDIT-1 wired `internal/audit.Log` into secret *access* (`AgentServer.GetSecret`) and explicitly scoped out rotation-completion events as a separate follow-up. The comprehensive review's Phase 3/7 framing wanted the audit trail to also cover "secret X was rotated into container Y, success/failure" — the other half of what a compliance audit trail for a secrets-rotation tool should record.
+
+### Investigation
+Traced the call chain from where a secret change is first detected to where a rotation's outcome is finally known:
+- `internal/agent/trigger.go`'s secret-change-detection loop has `providerName`/`secretName` cleanly in scope, but only calls `Reloader.TriggerReload(ctx, secretName)` and checks whether *triggering* succeeded — not whether the actual container swap succeeded, which happens asynchronously
+- `internal/watcher/controller.go`'s `TriggerReload`, specifically its "rolling" strategy branch (the actual blue-green swap, delegating to `internal/rotation.RollingStrategy.Execute`), is the only place that both triggers the rotation *and* eventually learns its real, final outcome (line ~729 in the current file: `err := rs.Execute(...)`) — confirming the comprehensive review's own hypothesis that this file's reconciliation loop was the right candidate
+
+### Decision
+Wired `audit.Log` into the "rolling" strategy's goroutine in `TriggerReload`, immediately after `rs.Execute` returns, for both the success and failure branches. Added `resolveSecretProvider` to look up the provider name for the given secret the same way the surrounding code already does it (mirroring, not duplicating, the existing inline fallback logic). Deliberately left the "restart" and "signal" strategies unaudited — they don't call into `internal/rotation` at all, so auditing them is a different, separate question (not "did the blue-green rotation succeed") better left for its own follow-up if wanted.
+
+### Rationale
+- `internal/watcher/controller.go` was the right choke point, not `internal/agent/trigger.go`, precisely because it's the only place where the *actual* outcome (not just "was a rotation triggered") is known — auditing at the trigger.go layer would have produced a compliance record that could say "success" for a rotation that then failed asynchronously
+- Scoping to "rolling" only (not "restart"/"signal") mirrors AUDIT-1's own discipline of picking the single clearest, most clearly in-scope choke point rather than trying to cover every adjacent code path in one change
+- `resolveSecretProvider` reuses the exact resolution order (`sec.Provider`, else the sole configured provider) the surrounding rotation code already relies on for building env vars, so the audit record's `provider` field can never disagree with what the rotation itself actually used
+
+### Verification (single review round, per the established stop rule)
+- Reproduced empirically before fixing: stashed only `controller.go`, confirmed `TestTriggerReload_RollingRotation_AuditLogsFailure` fails against the pre-fix code (`timed out waiting for audit log to contain "event":"rotate"; got: `), restored, confirmed it passes
+- `TestTriggerReload_NonRollingStrategy_NoRotationAuditLog` confirms the "signal" strategy scope decision holds (no rotation audit event emitted)
+- **A genuine data race was found and fixed during this work — in the new test helper, not production code.** `go test -race` caught the test's own audit-log buffer (a bare `bytes.Buffer`) being read by the polling goroutine while the rotation goroutine wrote to it concurrently. Fixed by introducing a small mutex-guarded `syncBuffer` type in the test file. Documented here rather than silently fixed because it's a useful reminder that `-race` earns its keep even on test infrastructure, not just production code
+- Full `internal/watcher` suite re-run under `-race` (including 3x repeats of the two new tests specifically): clean
+- `go build ./...`, `go vet ./...`, `gofmt`, `golangci-lint`, `gosec`: zero new findings (confirmed via `git diff` line-range comparison against golangci-lint's output — all 9 pre-existing findings in this package are outside this diff's touched lines)
+
+### Rollback Implications
+Two-file change (`internal/watcher/controller.go` production code, `internal/watcher/controller_audit_test.go` new tests). No API/wire compatibility impact — `TriggerReload`'s signature and behavior for its actual (non-audit) job are unchanged; a revert simply stops emitting the new `"rotate"` audit events.
+
+---
+
+### Decision 14: CLEAN-3 — Excluding Vendored `web/node_modules` from `golangci-lint`/`gosec`
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+SEC-5's Go toolchain bump (`go1.25.6` → `go1.25.12`) surfaced 2 new `govet` findings in `web/node_modules/flatted/golang/pkg/flatted/flatted.go` — an npm package's bundled Go binding, not DSO's own code. Flagged at the time as a config gap rather than fixed inline, since it wasn't part of SEC-5's actual scope.
+
+### Investigation
+`run.exclude-dirs` and `issues.exclude-dirs` — the config keys most commonly cited for this in older golangci-lint documentation — were tried first and empirically confirmed to have **no effect** under the exact pinned CI version (v2.12.2, also the version installed locally): the vendored file kept appearing in output under both. `linters.exclusions.paths` — golangci-lint v2's restructured config schema — was tried third and confirmed to work, verified against the same pinned binary before editing the real config file.
+
+### Decision
+Added `linters.exclusions.paths: [web/node_modules]` to `.golangci.yml`. Added `-exclude-dir=web` to `gosec`'s CI invocation (a separate CLI flag, since `gosec` doesn't share a config file with `golangci-lint`), kept in sync so both tools apply the same boundary.
+
+### Rationale
+- Verifying against the schema empirically (rather than trusting documentation or memory of an older config version) mattered here specifically because a config change that *looks* right but silently does nothing is worse than no change at all — it would have shipped a false sense of the gap being closed
+- `-exclude-dir` (gosec) vs. `linters.exclusions.paths` (golangci-lint) are necessarily different mechanisms since the two tools don't share configuration; keeping them documented as "kept in sync" in both the CI comment and this entry is the cheap insurance against them drifting apart on a future change
+
+### Verification
+- `golangci-lint run ./...` (real config): 110 issues, matching the expected pre-existing baseline exactly, zero `govet` findings, zero mentions of `node_modules`/`flatted`
+- `gosec -exclude-dir=web ./...` (matching CI's exact invocation): file count 166→165, 0 issues, zero mentions of `node_modules`/`flatted`
+- `go build ./...`: clean (config-only change, no Go source touched)
+- Both YAML files validated for syntax
+
+### Rollback Implications
+Two config files only (`.golangci.yml`, `.github/workflows/ci.yml`); no Go source touched. Trivial single-commit revert if ever needed.
+
+---
+
+### Decision 15: SEC-6 — Allow-List Secret File Names to Block Shell Injection
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` (fresh Go-backend audit) found that `internal/injector/inject.go`'s `injectOneFile` interpolates a secret file name unquoted into a shell command run via `docker exec /bin/sh -c`. The name is derived (`internal/resolver/resolve.go:232`) from a compose file's service key, which is untrusted input with no character restrictions from the YAML parser. The existing sanitization (`filepath.Base` + rejecting empty/`.`/`/`) only defended against path traversal, not shell metacharacters — a service key like `app; touch /run/secrets/dso/pwned #` would execute arbitrary commands inside the target container.
+
+### Options Considered
+1. **Allow-list regex on the file name** (`^[A-Za-z0-9._-]+$`), enforced in `injectOneFile` right before the command is built.
+   - Pros: single choke point at the actual shell boundary, catches the issue regardless of which caller/resolver logic changes upstream; small diff; consistent with the existing validation style in the same function.
+   - Cons: none identified — legitimate compose service names and secret paths are already restricted to this character set by Docker Compose's own naming rules, so no valid use case is broken.
+   - Effort: <1 hour.
+
+2. **Sanitize/reject at the source** (`internal/resolver/resolve.go`, where `serviceName` is first read from YAML).
+   - Pros: rejects bad input earlier, closer to where it originates.
+   - Cons: doesn't protect against a different future caller of `InjectFiles` that isn't `resolve.go`; `injectOneFile` would still contain the same latent bug. Also a larger diff touching the resolver's parsing path.
+   - Effort: ~1-2 hours.
+
+3. **Avoid shell interpolation entirely** — pass the file name as an argument/env var to a static script instead of splicing it into the command string.
+   - Pros: eliminates the class of bug entirely, not just this instance.
+   - Cons: larger refactor of `buildInjectCmd`/`injectOneFile`'s exec plumbing; changes the shape of the `docker exec` call in ways that need broader re-testing; out of proportion to the fix needed right now.
+   - Effort: ~1 day.
+
+### Decision
+Chose Option 1: added a `validFileName` regexp (`^[A-Za-z0-9._-]+$`) in `internal/injector/inject.go`, checked immediately after the existing path-traversal checks in `injectOneFile`, rejecting any name that doesn't match before `buildInjectCmd` is called.
+
+### Rationale
+- The shell command is built and executed in exactly one place (`injectOneFile`); defending there means the fix holds even if `internal/resolver` or a future caller changes how file names are derived.
+- An allow-list (reject-by-default) is safer than a denylist of shell metacharacters, which is easy to get wrong (e.g. missing a metacharacter, or interaction with locale/encoding edge cases).
+- The character set matches what's already legitimate for a secret file name (`filepath.Base` + prior traversal checks already assumed a "plain" name); no behavior change for any valid input.
+
+### Verification
+- New regression test `TestInjectOneFile_ShellInjection` in `internal/injector/inject_test.go` — covers `;`, backtick, `$()`, `|`, `&`, space, newline, and `'; rm -rf / #` payloads, all now rejected with `invalid secret file name`.
+- Existing `TestInjectOneFile_PathTraversal` and `TestInjectOneFile_ValidFilename` still pass — traversal rejection and legitimate filenames are unaffected.
+- `go build ./...`: clean.
+- `go vet ./...`: clean.
+- `go test -race ./internal/injector/... ./internal/resolver/... ./internal/agent/...`: all pass, 0 races.
+
+### Rollback Implications
+Single file touched for the fix (`internal/injector/inject.go`), single file for the test (`internal/injector/inject_test.go`). No API/behavior change for legitimate compose service names. Trivial single-commit revert if ever needed — reverting only restores the pre-existing (already-tracked) vulnerability, so a revert should not happen without a replacement fix.
+
+---
+
+### Decision 16: REL-1 — Defer Rotation-Complete State Until Async Work Actually Finishes
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` found that `internal/watcher/controller.go`'s `TriggerReload` launches the real rotation work (rolling swap, restart, or compose-project restart) in detached `go func(...)` goroutines and returns before they finish. The caller, `internal/agent/trigger.go`, called `StateTracker.CompleteRotation` immediately after `TriggerReload` returned — so crash-recovery state was marked "complete" while the actual container swap could still be running (or about to fail) in the background, with no way to correct the state afterward.
+
+### Options Considered
+1. **Make `TriggerReload` block until all rotation goroutines finish.**
+   - Pros: simplest mental model — state is always accurate by the time the function returns.
+   - Cons: changes `TriggerReload`'s fire-and-forget timing contract; `trigger.go`'s existing long-lived context comment explicitly relies on `TriggerReload` returning quickly so the goroutines can keep running past a short-lived caller scope. Blocking here risks serializing rotations that were designed to overlap and could reintroduce timeout/deadlock surface.
+   - Effort: ~2-3 hours, but with more behavioral risk.
+
+2. **Add an `onComplete func(error)` callback parameter, invoked once after all of `TriggerReload`'s detached goroutines for that call finish**, aggregating the first error.
+   - Pros: preserves the existing non-blocking return; state is updated exactly when the real outcome is known, no matter which strategy (rolling/restart/compose) ran; single choke point (a `sync.WaitGroup` + mutex-guarded first-error) inside `TriggerReload` itself, so every current and future goroutine launch site is covered as long as it's wired into the same WaitGroup.
+   - Cons: `TriggerReload`'s signature changes (one new parameter); every call site needs updating (only one production call site and two test call sites existed, per `grep`).
+   - Effort: ~1-2 hours.
+
+3. **Return a `*sync.WaitGroup` (or similar handle) from `TriggerReload` for the caller to `Wait()` on before deciding completion.**
+   - Pros: no callback indirection.
+   - Cons: leaks the "how many goroutines were launched" internal detail into the caller's control flow, and still requires the caller to separately track *which* of those goroutines failed (aggregation would have to happen in `trigger.go` instead of at the source), which is a worse separation of concerns than Option 2.
+   - Effort: ~1-2 hours.
+
+### Decision
+Chose Option 2. Added `onComplete func(err error)` as `TriggerReload`'s third parameter. Internally, a `sync.WaitGroup` (`asyncWG`) is incremented before every goroutine launch (rolling, restart, and compose-restart) and decremented via `defer asyncWG.Done()`; each goroutine's terminal error (success or failure, at every existing return point) is recorded into a mutex-guarded `asyncFirstErr` via a `recordAsyncErr`/`finish` helper. After the synchronous part of `TriggerReload` completes, a small waiter goroutine calls `asyncWG.Wait()` then invokes `onComplete(asyncFirstErr)` exactly once. `internal/agent/trigger.go` moved its `StateTracker.CompleteRotation`/`MarkRollback` logic out of the code that ran immediately after `TriggerReload` returned and into this `onComplete` callback.
+
+### Rationale
+- Preserves `TriggerReload`'s existing timing contract (callers already document why it must return quickly — that comment in `trigger.go` predates this fix and stays correct), so this fix doesn't reintroduce whatever problem prompted the fire-and-forget design in the first place.
+- Aggregating errors inside `TriggerReload` (where the goroutines actually run) rather than in the caller keeps the "did the real work succeed" logic next to the code that does the real work — the caller only needs to react to a final pass/fail, not reconstruct it from partial signals.
+- Synchronous strategies (`signal`, and the "no strategy matched" fallback) are unaffected — they complete before `TriggerReload` returns already, so they were never part of this bug and don't need to go through the callback.
+
+### Verification
+- New regression test `TestTriggerReload_OnComplete_FiresAfterAsyncRotationFinishes` in `internal/watcher/controller_audit_test.go` — forces a rolling-rotation failure (mock daemon returns 500 on inspect) and asserts `onComplete` fires strictly after `TriggerReload` returns, exactly once, with a non-nil error (proving it reflects the async goroutine's real outcome, not a false success recorded at return time).
+- Existing `TestTriggerReload_RollingRotation_AuditLogsFailure` and `TestTriggerReload_NonRollingStrategy_NoRotationAuditLog` updated for the new signature (passing `nil` where no callback is needed) and still pass unchanged otherwise.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- `go test -race ./internal/watcher/... ./internal/agent/...`: all pass, 0 races.
+- Full `go test ./...`: all packages pass.
+
+### Rollback Implications
+Three files touched: `internal/watcher/controller.go` (fix), `internal/agent/trigger.go` (caller update), `internal/watcher/controller_audit_test.go` (new + updated tests). The only other call sites needing a signature update were the two existing tests in the same file. Reverting restores the pre-existing (already-tracked) state-tracking gap, so — as with SEC-6 — a revert should not happen without a replacement fix.
+
+---
+
+### Decision 17: SEC-7 — Reject Privileged/Out-of-Range Host Ports in `ParseHostPorts`
+
+**Date**: 2026-07-29  
+**Status**: Implemented (partial mitigation — see Rationale)
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` found that any running container can set the `dso.host_ports` label (read in `internal/proxy/manager.go` and `internal/watcher/controller.go`) and DSO will open a listener bound to all interfaces and proxy to that container, with no validation beyond the format being parseable — no port-range check, no privileged-port restriction, no check that the container is one DSO's operator actually intended to expose.
+
+### Options Considered
+1. **Full operator-supplied allow-list** (new config field enumerating permitted host ports/ranges, checked before binding).
+   - Pros: closes the gap completely — only explicitly-approved ports could ever be bound, regardless of what a container's labels claim.
+   - Cons: new config schema surface, a design decision about defaults (fail-open vs fail-closed for existing deployments with no allow-list configured), and how it interacts with `internal/core/compose.go`'s auto-generation of this exact label from the operator's own compose file. This is a scope/design decision, not a same-day fix — appropriately handled as its own brainstorm/spec, not bundled into this audit-fix pass.
+   - Effort: ~1-2 days including config plumbing and tests.
+
+2. **Reject privileged (<1024) and out-of-range ports in `ParseHostPorts`**, the single function all three label-reading call sites (`manager.go` `ScanAndRegister`, `controller.go`'s two event-handler call sites) already funnel through.
+   - Pros: same-day fix, single choke point, no config/schema changes, no behavior change for any legitimate use — `compose.go`'s label generator only ever writes back port pairs already present in the operator's own compose file, which are virtually always application ports >= 1024.
+   - Cons: does not fully close the gap — a compromised/malicious container could still claim any unprivileged port (e.g. 8080) that happens to collide with something legitimate, since there's still no cross-check against what the operator actually intended to expose. This is documented as a known partial mitigation, not a full fix.
+   - Effort: <1 hour.
+
+3. **Do nothing beyond documenting the risk.**
+   - Rejected: the audit's own severity rationale (Medium, not Low) was that this is fail-open trust of attacker-influenceable input; a floor at zero cost to legitimate use is worth taking now.
+
+### Decision
+Chose Option 2: added a `minUnprivilegedHostPort = 1024` floor and a 1-65535 range check to `ParseHostPorts` in `internal/proxy/manager.go`. Out-of-range or malformed entries are silently skipped, consistent with the function's existing behavior for malformed pairs (non-numeric, missing colon).
+
+### Rationale
+- `ParseHostPorts` is genuinely the single place all three call sites read this label through, so the fix protects `ScanAndRegister` (startup) and both event-driven paths in `controller.go` without needing three separate changes.
+- Chose a floor rather than a full allow-list because the full allow-list is a legitimate design question (what's the right default, how does it interact with `compose.go`'s auto-generation) that deserves its own scoped brainstorm rather than being folded into an unrelated audit-fix commit — recording this here so it isn't lost. Suggested follow-up: an opt-in `proxy.allowed_host_ports` config field, cross-checked in `EnsurePort`/`RegisterContainer`, defaulting to "allow all >= 1024" (this fix's current behavior) when unset, so existing deployments are unaffected until an operator opts into stricter enforcement.
+- This does not fully close SEC-7 — flagged as "partial mitigation" rather than "fixed" in the audit summary, so a future reader doesn't mistake this for the full allow-list design.
+
+### Verification
+- New test cases in `TestParseHostPorts` (`internal/proxy/manager_test.go`): privileged port alone rejected, privileged port dropped from a mixed list while the valid entry is kept, the 1024/1023 boundary, out-of-range host and container ports, and a negative port. All existing `ParseHostPorts` test cases (ports 3306/8080/80, all >= 1024) still pass unchanged, confirming no behavior change for legitimate use.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- `go test -race ./internal/proxy/... ./internal/watcher/... ./internal/core/...`: all pass, 0 races (`internal/core` included since `compose.go` generates this exact label).
+
+### Rollback Implications
+Two files touched (`internal/proxy/manager.go`, `internal/proxy/manager_test.go`), both additive (a new constant + range checks, new test cases). Trivial single-commit revert if ever needed. SEC-7 remains open as a partial mitigation regardless — the full allow-list design (Option 1) is still a valid follow-up.
+
+---
+
+### Decision 18: REL-2 — Lock `entry.mu` Before Reading `LastHealthy` in `GetProvider`
+
+**Date**: 2026-07-29  
+**Status**: Implemented
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` found that `internal/providers/store.go`'s `GetProvider` read `entry.LastHealthy` (and called `entry.Client.Exited()`) without acquiring `entry.mu`, while `MarkProviderHealthy`/`MarkProviderFailure` mutate `LastHealthy`/`ConsecFails` under that same lock — a real data race under concurrent secret fetches.
+
+### Options Considered
+1. **Lock `entry.mu` around the `LastHealthy` read in `GetProvider`.**
+   - Pros: minimal diff, fixes exactly the race the audit identified, no behavior change to the stale/crash-recovery decision logic itself.
+   - Cons: none identified.
+   - Effort: <30 minutes.
+2. **Switch `entry.mu` from `sync.Mutex` to `sync.RWMutex`** so `GetProvider`'s read could use `RLock` for less contention.
+   - Pros: theoretically lower lock contention under heavy concurrent reads.
+   - Cons: `GetProvider` also calls `entry.Client.Kill()`/`store.Delete()` in the branches following the read (a broader mutating sequence), and the read itself is a single `time.Time` field copy — negligible contention either way. Switching to `RWMutex` here would be optimizing a lock that's held for nanoseconds, adding a wider API surface for no measurable benefit.
+   - Effort: ~30 minutes, no benefit.
+
+### Decision
+Chose Option 1: added an `entry.mu.Lock()`/`Unlock()` pair around a single `lastHealthy := entry.LastHealthy` copy at the top of `GetProvider`'s existing-entry branch, then used the local `lastHealthy` variable for the staleness check instead of re-reading the field.
+
+### Rationale
+- The race is on a single field read; the minimal fix (copy it out under the existing lock) is correct and leaves the rest of `GetProvider`'s control flow (including the intentionally-unlocked `entry.Client.Exited()` call, which is safe because `plugin.Client` guards its own internal state with its own mutex) untouched.
+- No need to introduce `RWMutex` for a lock held for a single field copy — that would add complexity without a measurable win.
+
+### Verification
+- New regression test `TestGetProvider_ConcurrentWithMarkProviderHealthy` (`internal/providers/store_test.go`) — runs `GetProvider` and `MarkProviderHealthy` concurrently 50x each against a shared `StoreEntry` (using a zero-value `&plugin.Client{}`, whose `Exited()` is safe to call without a real subprocess since `plugin.Client` guards its own state internally). **Confirmed failing before the fix**: reverting only `store.go` (via `git stash`) and re-running under `-race` reproduces the exact race reported in the audit (write in `MarkProviderHealthy` at `store.go:140` vs. read in `GetProvider` at `store.go:43`). Confirmed passing after the fix, 0 races.
+- Full `internal/providers` suite re-run under `-race`: all pass.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- Full `go test ./...`: all packages pass.
+
+### Rollback Implications
+Two files touched (`internal/providers/store.go`, `internal/providers/store_test.go`). Trivial single-commit revert if ever needed — reverting restores the pre-existing (already-tracked) data race.
+
+---
+
+### Decision 19: REL-3/REL-4/REL-5 — Bound Two Unbounded Maps and Fix a Non-Restartable Listener
+
+**Date**: 2026-07-29  
+**Status**: Implemented (REL-4's fix revised after an initial version broke mutual exclusion — see below)
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` found three related Low-severity reliability issues, fixed together as small, independent changes:
+- **REL-3**: `internal/events/event_reactor_impl.go`'s `lastSeen` dedup map (keyed by secret name) had no eviction, unlike the sibling `DedupCache`.
+- **REL-4**: `internal/rotation/lock_manager.go`'s `LockManager.locks` map entries were never removed after `ReleaseLock`.
+- **REL-5**: `internal/events/container_listener.go`'s `Stop()` never reset `cl.ctx`, permanently blocking any later `Start()` on the same instance, plus a redundant blocking `stopChan` send that stalled every `Stop()` call by up to 100ms.
+
+### REL-3: Options Considered
+1. **Opportunistic eviction inside `deduplicateSecret`**: sweep entries older than a fixed age (`lastSeenEvictionAge = 1 minute`) every time the function already holds `lastSeenMu` for a write.
+   - Pros: no new goroutine, no new lock, piggybacks on a lock already being taken; the sweep only runs when a new secret event arrives, which is exactly when the map is being touched anyway.
+   - Cons: sweep cost is O(map size) per call — negligible here since this map is naturally small (distinct secret names), not per-event.
+2. **Background cleanup goroutine (like `DedupCache.cleanupLoop`)**: matches the sibling cache's design exactly.
+   - Cons: another goroutine + ticker + shutdown path to wire into `EventReactorImpl`'s existing lifecycle, disproportionate for a map whose growth is bounded by distinct secret names, not event volume.
+   - **Decision**: chose Option 1 for its far smaller footprint given the actual (mild) severity.
+
+### REL-4: Options Considered
+1. **Unconditional `delete(lm.locks, containerID)` in `ReleaseLock`, right after unlocking.**
+   - **This was implemented first and found to be unsafe** by the pre-existing `TestLockManager_ConcurrentMutualExclusion` test, which failed after this change (verified: reverting to the ref-counted version below made it pass again in under 0.5s instead of timing out at 10s). The bug: a goroutine that already read the old `*sync.Mutex` out of the map (and is polling `TryLock`) can still lock it *after* a concurrent `ReleaseLock` deletes the map entry, while a third goroutine simultaneously creates a *new* mutex for the same key and acquires that one too — two goroutines then believe they hold "the lock" for the same key at once.
+2. **Reference-counted `lockEntry` (`{mu sync.Mutex; count int}`)**: `AcquireLock` increments `count` before touching `mu`; `ReleaseLock` (and the timeout/failure paths in `AcquireLock`) decrement it and only delete the map entry when `count` reaches zero, with an identity check (`cur == entry`) guarding against deleting a different, newer entry that has since replaced this one under the same key.
+   - Pros: correct — an entry is only ever removed from the map once no goroutine holds a reference to it, so the "new mutex created while an old reference is still live" scenario above is impossible by construction.
+   - Cons: more code than Option 1 (a new type, refcount bookkeeping at every acquire/release/failure path).
+   - **Decision**: chose Option 2 after Option 1 was caught failing its own existing test. Mutual exclusion correctness during rotation is a stronger requirement than bounding this map's size, so the more careful fix was the only acceptable option here.
+
+### REL-5: Options Considered
+1. **Reset `cl.ctx`/`cl.cancel` and recreate `eventsChan`/`stopChan` in `Stop()`.**
+   - Chosen. `Start()`'s "already started" guard checks `cl.ctx != nil`, so it must be cleared for a restart to succeed. `eventsChan` must be recreated because `watchEvents` closes it on exit — a second `Start()` reusing the same (now-closed) channel would mean `Events()` immediately reports closed, and `handleEvent`'s send to it inside the new `watchEvents` goroutine would panic ("send on closed channel").
+   - **Also required a follow-up fix**: the initial version of this change reassigned `cl.eventsChan` with no synchronization, which the existing `TestContainerListener_ConcurrentOperations` test (which calls `Events()` concurrently with `Stop()`) caught as a data race under `-race`. Fixed by guarding both the reassignment in `Stop()` and the read in `Events()` with the struct's existing `cl.mu` (already used to guard `lastLabels`). `ctx`/`cancel`/`stopChan` did not need the same treatment — `Stop()` calls `cl.wg.Wait()` before resetting them, which happens-before-orders out any concurrent access from the (by-then-exited) `watchEvents` goroutine, and nothing else reads them.
+2. **Leave `Stop()`'s redundant blocking `stopChan` send as-is.**
+   - Rejected: since `cl.cancel()` already causes `watchEvents` to exit via its `ctx.Done()` case, the goroutine is essentially always gone by the time `Stop()` attempts the blocking send, so that send times out on its own 100ms window on every call for no benefit. Changed to a non-blocking `select`/`default` — still delivers the signal in the (very unlikely) case `watchEvents` is genuinely waiting on `stopChan` first, but no longer stalls the common case.
+
+### Verification
+- **REL-3**: new `TestEventReactorImpl_LastSeenEviction` seeds two stale entries and one fresh one, triggers a sweep via `deduplicateSecret`, and asserts the stale entries are gone while the fresh one and the newly-recorded key remain.
+- **REL-4**: new `TestLockManager_ReleaseLock_RemovesMapEntry` confirms `lm.locks` is empty after five sequential acquire/release cycles on different keys. The pre-existing `TestLockManager_ConcurrentMutualExclusion` (20 goroutines contending on one key, run under `-race`) is the test that caught the unsafe first version and now passes in ~0.46s.
+- **REL-5**: new `TestContainerListener_RestartAfterStop` confirms `Start()` succeeds again after `Stop()` on the same instance, and that `Events()` returns a fresh, open channel. The pre-existing `TestContainerListener_ConcurrentOperations` (concurrent `Events()` + `Stop()`, run under `-race`) is what caught the eventsChan race and now passes.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- `go test -race ./internal/events/... ./internal/rotation/...`: all pass, 0 races.
+- Full `go test ./...`: all packages pass.
+
+### Rollback Implications
+Five files touched: `internal/events/event_reactor_impl.go` + `event_reactor_test.go` (REL-3), `internal/rotation/lock_manager.go` + `lock_manager_test.go` (REL-4), `internal/events/container_listener.go` + `container_listener_test.go` (REL-5). Each of the three fixes is independent and can be reverted separately if needed; REL-4's revert would restore both the unbounded-map issue and, if reverted to the unconditional-delete version rather than the pre-fix baseline, the mutual-exclusion bug — a revert should go back to the original `map[string]*sync.Mutex` design, not the intermediate unsafe version.
+
+---
+
+### Decision 20: QUAL-1/2/3 — Surface Three Previously-Swallowed Errors
+
+**Date**: 2026-07-29  
+**Status**: Implemented (QUAL-2 and part of QUAL-3 verified by code review + full suite rather than a forced-failure test — see Verification)
+
+### Context
+`docs/audit/2026-07-29-fresh-audit.md` found three places where an error was discarded (`_ = err` or unchecked assignment), each silently masking a real failure from the operator:
+- **QUAL-1**: `internal/cli/logs.go`'s `fetchEvents` discarded a JSON unmarshal error, making a malformed agent API response indistinguishable from "no events".
+- **QUAL-2**: `internal/core/compose.go`'s `RunComposeUpWithEnv` discarded a `filepath.Abs` error, risking a corrupted `dso.compose.path` label / project name on failure.
+- **QUAL-3**: `internal/core/compose.go`'s `PrintRedactedCompose` discarded a `yaml.Marshal` error, silently printing nothing instead of surfacing a compose-parsing problem during `--debug`.
+
+### Decision
+For each, checked the error and surfaced it in a way consistent with the function's existing style and signature:
+- **QUAL-1**: `fetchEvents` now prints a stderr diagnostic (matching its existing error-reporting style for the "cannot reach agent" case) and still returns `nil`, so callers' behavior is unchanged but the operator now sees *why* no events came back.
+- **QUAL-2**: `RunComposeUpWithEnv` (which already returns `error`) now returns a wrapped error instead of proceeding with a zero-value path.
+- **QUAL-3**: `PrintRedactedCompose` (a `void` function used only for `--debug` output) now prints a stderr diagnostic and returns early instead of calling `fmt.Println` with an empty/zero-value string.
+
+### Rationale
+Each fix matches the shape of its function — return an error where one is already returned (QUAL-2), print a diagnostic where the function's contract is side-effecting output (QUAL-1, QUAL-3) — rather than introducing a new error-return signature that would ripple into unrelated callers.
+
+### Verification
+- **QUAL-1**: new `TestFetchEvents_MalformedResponse` (`internal/cli/logs_test.go`) serves malformed JSON from an `httptest.Server`, captures stderr, and confirms both the diagnostic message and the unchanged `nil` return.
+- **QUAL-3**: new `TestPrintRedactedCompose_HappyPath` (`internal/core/compose_test.go`) confirms the normal path is unaffected (secret redacted, no stderr output) now that the error is checked. A forced-failure test (feeding a `func()` value into a service map to make `yaml.Marshal` fail) was attempted but discarded: `gopkg.in/yaml.v3` **panics** on unsupported types rather than returning an error, so that specific approach doesn't exercise the new error-return branch at all — it would test a panic path this change doesn't touch. No other practical way to force `yaml.Marshal` to return (rather than panic) was found for this call site's actual data shape (parsed YAML, so only maps/slices/scalars ever appear in practice).
+- **QUAL-2**: no dedicated forced-failure test — `filepath.Abs` only fails when `os.Getwd()` fails (e.g. current directory deleted out from under the process), which isn't practically reproducible in a portable unit test without mocking `os` internals. Verified instead by code review (the fix is a straightforward `if err != nil { return ... }` matching the pattern immediately above it in the same function) and the full test suite passing with no regression to `RunComposeUpWithEnv`'s existing (indirect) coverage.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- Full `go test ./...`: all packages pass.
+
+### Rollback Implications
+Four files touched: `internal/cli/logs.go` + `logs_test.go` (QUAL-1), `internal/core/compose.go` + `compose_test.go` (QUAL-2/QUAL-3). All three fixes are small and independent; trivial to revert individually if needed.
+
+---
+
+### Decision 21: SEC-7 (Full Fix) — Operator-Configurable Host-Port Allow-List
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+Decision 17 (2026-07-29) applied a partial mitigation for SEC-7: `ParseHostPorts` rejects privileged (<1024) and out-of-range host ports, since `dso.host_ports` is attacker-influenceable (any container can set its own labels). That decision explicitly deferred the full fix — a cross-check against what the operator actually intended to expose — as its own scoped design rather than bundling it into the audit-fix pass. The user has now asked for it.
+
+### Decision
+Added an opt-in `proxy.allowed_host_ports` config field (`pkg/config/config.go`'s new `ProxyConfig`), a list of exact ports (`"8080"`) or inclusive ranges (`"3000-4000"`). Parsed into a `*portAllowList` (`internal/proxy/manager.go`) and enforced in `Manager.EnsurePort` — the single choke point all three `dso.host_ports`-reading call sites (`ScanAndRegister`, and `controller.go`'s two event-handler paths) already go through. `internal/cli/agent.go` wires `cfg.Proxy.AllowedHostPorts` into the `Manager` via a new `SetAllowedHostPorts` method, called once at startup before `ScanAndRegister` so the initial container scan is governed by it too.
+
+### Options Considered (recap from Decision 17, now resolved)
+1. **Change `NewManager`'s signature** to accept the allow-list at construction.
+   - Rejected: ~13 existing test call sites (`internal/proxy/manager_more_test.go`) construct `Manager` via `NewManager(logger)` with no config; changing the signature would force updating all of them for a config value that's genuinely optional and commonly absent (most deployments won't set it).
+2. **`SetAllowedHostPorts` method, called post-construction, mirroring the existing `reloader.ProxyManager = proxyManager` post-construction wiring pattern already used in `agent.go`.**
+   - Chosen: zero changes to existing `NewManager` call sites; nil allow-list (the zero value) is the default and preserves exactly the Decision 17 behavior (any port >= 1024 allowed) until an operator opts in.
+
+### Rationale
+- A nil-safe `allows` method (`func (al *portAllowList) allows(port int) bool { if al == nil { return true } ... }`) means "no allow-list configured" requires no special-casing at call sites — `EnsurePort` always calls `al.allows(hostPort)` whether or not one was ever set.
+- Enforcing in `EnsurePort` rather than in each of the three label-reading call sites keeps this fix, like Decision 17's, to a single choke point — a future fourth call site automatically gets the same protection.
+- Supporting both exact ports and ranges matches how operators actually describe firewall/allow-list policy (a single service port, or a range for a pool of services) without requiring one entry per port.
+
+### Verification
+- New tests in `internal/proxy/manager_more_test.go`: `TestPortAllowList_NilAllowsEverything` (default/zero-value behavior), `TestNewPortAllowList_ExactPorts`, `TestNewPortAllowList_Range`, `TestNewPortAllowList_MixedEntries`, `TestNewPortAllowList_Empty`, `TestNewPortAllowList_InvalidEntries` (malformed port, zero, out-of-range, inverted range, negative), and `TestManager_EnsurePort_RejectsPortOutsideAllowList` (confirms `EnsurePort` rejects a non-allow-listed port, accepts an allow-listed one, and reverts to unrestricted once `SetAllowedHostPorts(nil)` clears it).
+- Existing `TestManager_EnsurePort` (which calls `EnsurePort(0, 80)` with no allow-list configured) still passes unchanged, confirming the default path is unaffected.
+- `go build ./...`, `go vet ./...`, `gofmt -l`: clean.
+- `go test -race ./internal/proxy/... ./pkg/config/... ./internal/cli/...`: all pass, 0 races.
+- Full `go test ./...`: all packages pass.
+
+### Rollback Implications
+Three files touched: `pkg/config/config.go` (new `ProxyConfig` field, additive/backward-compatible — omitted YAML key means the field is empty, i.e. today's behavior), `internal/proxy/manager.go` (new type + method + `EnsurePort` check), `internal/cli/agent.go` (wiring). All additive; a deployment with no `proxy.allowed_host_ports` in its config is completely unaffected. SEC-7 is now fully closed — no further follow-up tracked.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code
