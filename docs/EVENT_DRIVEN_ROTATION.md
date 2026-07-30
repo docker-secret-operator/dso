@@ -14,7 +14,16 @@ DSO uses a **two-tier rotation triggering architecture** to balance latency, eff
    - Batches and deduplicates events for efficiency
    - Adds zero latency for event-driven scenarios
 
-Together, they enable **sub-second latency** for container-driven rotations while maintaining **80% API call reduction** through intelligent batching and deduplication.
+Together they enable **sub-second latency** for container-driven rotations, with batching and deduplication reducing redundant rotation work.
+
+> **Status note on Tier 1 (polling).** The `SmartPoller`-based adaptive polling
+> described below is **not currently on a production code path**, and the loop
+> that referenced it never made provider API calls — it hashed DSO's local
+> cache. No API-call-reduction percentage is claimed here for that reason; see
+> `docs/SMART_POLLING.md` and `PERF-2` in `docs/audit/DECISION_LOG.md`. Real
+> provider polling and rotation are performed by `TriggerEngine.StartPolling`
+> (`internal/agent/trigger.go`). The Event Reactor's batching and dedup (Tier 2)
+> are real and active.
 
 ---
 
@@ -38,7 +47,7 @@ Version changed?
 
 **Characteristics**:
 - Runs continuously at intervals: 5s (aggressive) → 30s (baseline) → 5m (backoff)
-- One HTTP API call per poll
+- One HTTP API call per poll *(design intent; the removed `SmartPoller` loop made none — see the status note above)*
 - See [Smart Polling](SMART_POLLING.md) for details
 
 ### Tier 2: Event Reactor (Opportunistic)
@@ -528,7 +537,7 @@ sum by (source) (rate(dso_rotations_triggered_total[5m]))
 
 | Scenario | Fixed 30s Polling | Smart Polling Only | Smart + Events | Savings |
 |----------|-------------------|--------------------|-----------------|---------:|
-| Idle secrets (no changes) | 28,800 calls/day | 3,260 calls/day | 2,880 calls/day | 90% |
+| Idle secrets (no changes) | 28,800 calls/day | 3,260 calls/day | 2,880 calls/day | 90% *(projected, not measured — see status note)* |
 | Active secrets (5 changes/day) | 28,800 calls/day | 16,300 calls/day | 15,600 calls/day | 46% |
 | Event-driven rotations | N/A | N/A | 0 calls/day | ✓ Zero API overhead |
 

@@ -192,26 +192,51 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 		return true
 	})
 
-	orphaned := make([]string, 0)
-	r.Targets.Range(func(key, value interface{}) bool {
-		containerID := key.(string)
-		// Try to inspect container
-		_, err := r.cli.ContainerInspect(ctx, containerID)
-		if err != nil {
-			// Container no longer exists
-			orphaned = append(orphaned, containerID)
-			r.Logger.Debug("Found orphaned container", zap.String("id", containerID), zap.Error(err))
+	// PERF-5: determine which tracked containers still exist with ONE batched
+	// list call instead of one ContainerInspect per tracked target. This runs
+	// on a 10-minute ticker *and* on every Docker daemon reconnect, so the old
+	// N+1 shape meant a host tracking 200 containers issued 200 round-trips
+	// per cycle, and a flapping daemon produced a burst on each reconnect.
+	//
+	// All: true is required, not incidental: ContainerInspect succeeds for a
+	// stopped container, so the previous code treated "stopped but present" as
+	// existing. A default (running-only) list would reclassify every stopped
+	// container as orphaned and silently drop it from tracking.
+	existing, listErr := r.cli.ContainerList(ctx, container.ListOptions{All: true})
+
+	remainingCount := targetCount
+	orphanedCount := 0
+	if listErr != nil {
+		// Deliberately do not treat this as "everything is orphaned". A
+		// transient API error must not wipe the entire tracking set; skip the
+		// orphan sweep this cycle and let the next one reconcile.
+		r.Logger.Warn("Reconciliation: failed to list containers, skipping orphan cleanup this cycle",
+			zap.Error(listErr))
+	} else {
+		alive := make(map[string]struct{}, len(existing))
+		for _, c := range existing {
+			alive[c.ID] = struct{}{}
 		}
-		return true
-	})
 
-	// Clean up orphaned containers
-	for _, id := range orphaned {
-		r.Targets.Delete(id)
-		r.Logger.Info("Cleaned up orphaned container from tracking", zap.String("id", id))
+		orphaned := make([]string, 0)
+		r.Targets.Range(func(key, value interface{}) bool {
+			containerID := key.(string)
+			if _, ok := alive[containerID]; !ok {
+				orphaned = append(orphaned, containerID)
+				r.Logger.Debug("Found orphaned container", zap.String("id", containerID))
+			}
+			return true
+		})
+
+		// Clean up orphaned containers
+		for _, id := range orphaned {
+			r.Targets.Delete(id)
+			r.Logger.Info("Cleaned up orphaned container from tracking", zap.String("id", id))
+		}
+
+		orphanedCount = len(orphaned)
+		remainingCount = targetCount - orphanedCount
 	}
-
-	remainingCount := targetCount - len(orphaned)
 
 	// Pass 2: re-register labeled containers that started while the event stream
 	// was disconnected (their start events were missed).
@@ -280,7 +305,7 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 
 	r.Logger.Info("Runtime reconciliation complete",
 		zap.Int("total_targets", targetCount),
-		zap.Int("orphaned", len(orphaned)),
+		zap.Int("orphaned", orphanedCount),
 		zap.Int("re_added", added),
 		zap.Int("active", remainingCount+added))
 }

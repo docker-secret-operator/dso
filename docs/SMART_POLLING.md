@@ -1,5 +1,36 @@
 # Smart Polling: Adaptive Intervals for Secret Rotation
 
+> ## ⚠️ Implementation status
+>
+> **The `SmartPoller` component described in this document is implemented and
+> unit-tested, but it is NOT currently wired into any production code path.**
+> No API-call reduction is being delivered today.
+>
+> This document previously quantified specific savings ("88.7% fewer API
+> calls", "80% API call reduction") and documented a
+> `dso_polling_api_calls_saved_total` metric. Those claims were not supported
+> by the code and have been removed:
+>
+> - The loop that used `SmartPoller` (`Agent.runMainLoop`) only ever hashed
+>   DSO's **local cache**. It held no provider handle and made **zero**
+>   provider API calls, so both the numerator and denominator of every savings
+>   figure were zero. That loop was removed (see `PERF-2`/`PERF-3` in
+>   `docs/audit/DECISION_LOG.md`), because it could not detect a
+>   provider-side rotation even in principle.
+> - `dso_polling_api_calls_saved_total` was never implemented. No polling
+>   metrics exist in `pkg/observability`.
+>
+> **What actually polls providers today:** `TriggerEngine.StartPolling`
+> (`internal/agent/trigger.go`), which the `dso agent` daemon runs. It makes
+> real provider calls and performs real rotation, but uses its own simple
+> interval-with-backoff logic — not `SmartPoller`.
+>
+> The intervals and tiering below describe `SmartPoller`'s actual behavior and
+> are accurate as a description of that component. Treat the tiering as a
+> design reference, not as a description of current runtime behavior. Adopting
+> `SmartPoller` inside `TriggerEngine.StartPolling` — where the provider calls
+> genuinely happen — is the work that would make this document's premise true.
+
 ## Overview
 
 Traditional secret rotation systems use fixed polling intervals, which creates a difficult trade-off:
@@ -7,7 +38,9 @@ Traditional secret rotation systems use fixed polling intervals, which creates a
 - **Frequent polling (e.g., every 5 seconds)** — Detects changes quickly but wastes API calls and bandwidth when secrets are stable
 - **Infrequent polling (e.g., every 5 minutes)** — Reduces API usage but introduces 5-minute latency for secret changes
 
-DSO solves this with **Smart Polling**: adaptive intervals that automatically adjust based on activity patterns. When secrets are actively changing, polling is aggressive. When secrets are stable, polling backs off to minimal levels. This reduces API call volume by up to 80% while maintaining sub-2-minute change detection latency.
+DSO addresses this with **Smart Polling**: adaptive intervals that adjust based on activity patterns. When secrets are actively changing, polling is aggressive; when stable, it backs off. The intent is to cut API call volume substantially while keeping change-detection latency low.
+
+**See the implementation-status note above before relying on this.** The component exists and is tested, but is not currently on a production code path, so it delivers no API-call reduction today.
 
 ---
 
@@ -102,13 +135,14 @@ Remaining 1,430 minutes (10m to midnight):
 Total: 240 + 160 + 2,860 = 3,260 API calls/day
 ```
 
-**Reduction**: 28,800 → 3,260 = **88.7% fewer API calls**
+**Arithmetic reduction for this scenario**: 28,800 → 3,260 calls.
 
-**Note**: This assumes only one secret change per day. With higher change frequency (e.g., multiple deployments):
-- 5 changes/day → ~16,300 API calls/day = 43% reduction
-- 1 change/day → ~3,260 API calls/day = 89% reduction
-
-**Typical real-world result**: 80% API call reduction across a diverse workload of actively rotating and idle secrets.
+> **These are illustrative projections of the tiering arithmetic, not measured
+> results.** They describe what the interval tiers would save *if* `SmartPoller`
+> governed a loop that made one provider API call per poll. Nothing in DSO does
+> that today (see the status note at the top of this document), so no such
+> saving is currently realized. The figures have not been benchmarked against a
+> real provider.
 
 ---
 
@@ -119,11 +153,16 @@ Smart Polling is part of DSO's two-tier rotation architecture:
 1. **Tier 1 — Smart Polling** provides continuous monitoring with adaptive intervals
 2. **Tier 2 — Event Reactor** adds immediate notification when secrets change via polling or Docker container events
 
-Together, they deliver:
-- **Adaptive polling intervals** (Smart Polling) reduce API calls by 80%
+Intended design:
+- **Adaptive polling intervals** (Smart Polling) reduce provider API calls
 - **Event batching** (Event Reactor) groups rotations into efficient batches
 - **Container event detection** (Event Reactor) triggers rotations without waiting for the next poll cycle
-- **Combined effect**: 80–95% API call reduction + sub-second latency for container-driven rotations
+
+**Current status:** Tier 1 as described here is *not* active — `SmartPoller` is
+not on a production path, and the loop that used to reference it never called a
+provider. Event batching and deduplication in the Event Reactor are real and
+active. No combined API-reduction percentage is claimed, because none has been
+measured.
 
 See [Event-Driven Rotation](EVENT_DRIVEN_ROTATION.md) for details on the Event Reactor and complete two-tier architecture.
 
@@ -173,7 +212,6 @@ DSO exposes Prometheus-compatible metrics for Smart Polling behavior:
 | `dso_polling_interval_seconds` | Gauge | Current polling interval for each secret (5, 30, 300) |
 | `dso_polling_changes_detected_total` | Counter | Total secret changes detected |
 | `dso_polling_polls_executed_total` | Counter | Total polls executed |
-| `dso_polling_api_calls_saved_total` | Counter | Estimated API calls saved vs. fixed 30s polling |
 | `dso_polling_change_latency_seconds` | Histogram | Time from change occurrence to detection |
 
 ### Log Lines
@@ -203,7 +241,7 @@ Returns (JSON):
     "secrets_monitored": 12,
     "total_changes_detected": 47,
     "total_polls_executed": 3847,
-    "api_calls_saved": 24753,
+    "api_calls_saved": 24753,   // NOT IMPLEMENTED -- illustrative only
     "last_change": "2026-07-20T14:23:45Z"
   }
 }
@@ -218,7 +256,10 @@ Recommended Prometheus queries for Grafana dashboards:
 sum by (interval) (dso_polling_interval_seconds)
 
 # API calls saved over time (area chart)
-rate(dso_polling_api_calls_saved_total[5m])
+# NOTE: dso_polling_api_calls_saved_total is NOT implemented -- no polling
+# metrics are currently exported. This example is retained only to show the
+# intended shape of such a query.
+# rate(dso_polling_api_calls_saved_total[5m])
 
 # Change latency percentiles (line chart)
 histogram_quantile(0.95, rate(dso_polling_change_latency_seconds_bucket[5m]))
@@ -360,7 +401,7 @@ docker dso system logs --since 10m | grep "Adapting interval"
 ## Best Practices
 
 1. **Enable event-driven rotation** for fastest latency on container changes (see [Event-Driven Rotation](EVENT_DRIVEN_ROTATION.md))
-2. **Monitor `dso_polling_api_calls_saved_total`** to track efficiency gains
+2. ~~Monitor `dso_polling_api_calls_saved_total`~~ — **not implemented**; no polling metrics are currently exported
 3. **Set up alerts** if `IsHealthy()` is false for >5 minutes
 4. **Use baseline interval of 30s or less** for production; backoff intervals are safe even at 10m
 5. **Combine with provider-specific webhooks** for zero-latency notification (provider-dependent)

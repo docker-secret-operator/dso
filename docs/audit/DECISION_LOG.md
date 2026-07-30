@@ -1105,6 +1105,99 @@ Server-side deadline propagation (Option 3 above): the plugin currently has no i
 
 ---
 
+### Decision 29: PERF-4/PERF-5 — Removing Two Per-Container API Amplification Patterns
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+The 2026-07-28 audit listed five HIGH-severity performance findings (PERF-1..5). Because the code had changed substantially since (v3.5.21's "Smart Polling", plus this month's fixes), each was **re-verified against HEAD before any change** rather than trusted. Two were confirmed as real API-amplification patterns:
+
+- **PERF-5 (N+1 reconciliation)** — `reconcileRuntimeState` issued one `ContainerInspect` per tracked target. It runs on a 10-minute ticker *and* on every Docker daemon reconnect, so 200 tracked containers meant 200 round-trips per cycle, with a burst per reconnect on a flapping daemon.
+- **PERF-4 (event filtering)** — confirmed real, but **the audit named the wrong direction**. It said "over-filtering"; the actual problem was *under*-filtering plus ordering. The subscription used bare `type=container`, delivering every container event on the host, and `handleEvent`'s **first** action was a full `ContainerInspect` — the relevance check (`HasRelevantLabels`) ran only afterwards. One `docker exec` on any container produced three events and therefore three inspects; any container with a `HEALTHCHECK` produced them indefinitely, for containers DSO does not manage. Cost scaled with total host activity, not with DSO's tracked set.
+
+### Decision
+**PERF-5**: replaced the per-target loop with a single `ContainerList`. Two non-obvious details drove the implementation:
+- `All: true` is **required, not incidental**. `ContainerInspect` succeeds for a *stopped* container, so the old code treated "stopped but present" as existing. A default (running-only) list would have reclassified every stopped container as orphaned and silently dropped it from tracking — a correctness regression disguised as an optimization.
+- A failed list must **not** be treated as "everything is orphaned". The old shape could not fail this way; the batched shape can. On list error the orphan sweep is skipped for that cycle rather than wiping the entire tracking set on one transient API error.
+
+**PERF-4**: two independent fixes, both applied.
+1. Narrowed the subscription to the only actions that can change a container's labels or existence (`create`, `start`, `stop`, `die`, `destroy`, `update` — `update` is how label changes on a running container surface; `destroy` is kept so tracking cleanup still runs).
+2. Reordered `handleEvent` to reject irrelevant containers from `event.Actor.Attributes` (the daemon already ships labels in the event payload) *before* inspecting. Guarded on `len(Attributes) > 0`: if an event ever arrived without attributes, an empty map would look like "no relevant labels" and we would silently skip a container we should watch, so that case deliberately falls through to the inspect. Correctness is preferred over the saved call.
+
+### Rationale
+- Fix 2 is the more robust half — it holds even for actions that remain subscribed, and even if a future change widens the filter again.
+- The `All: true` and list-failure hazards are recorded here because both are cases where the "obvious" batched rewrite is subtly wrong, and a future reader optimizing this code again should not have to rediscover them.
+
+### Verification
+- **PERF-5**: 4 new tests in `internal/watcher/controller_perf_test.go` — asserts zero per-container inspects and at most 2 list calls with 3 targets tracked; that genuinely-missing containers are still removed; that a list failure does **not** drop tracking; and that a stopped-but-present container is not orphaned (asserting `?all=1` is actually requested). **Confirmed enforcing**: reintroducing the N+1 loop makes the batching test fail with "reconciliation made 3 per-container inspect calls; expected 0".
+- **PERF-4**: 5 new tests in `internal/events/container_listener_perf_test.go` — zero inspects for an irrelevant container, exactly one for a relevant one, the conservative fallback when attributes are absent, cleanup still happening without an API call, and the subscription carrying the action filters while *not* carrying the noisy ones.
+- A test-harness bug was found and fixed while writing these: the first version counted the *list* endpoint (`/containers/json`) as an inspect, because it also matches `/containers/` + `/json`. The list case must be matched first. Worth noting since it initially looked like a code failure.
+- `golangci-lint` 0 issues, `gosec` 0 issues, build/vet/gofmt clean, full suite passes.
+
+### Rollback Implications
+Two production files (`internal/watcher/controller.go`, `internal/events/container_listener.go`) plus two new test files. Behavior-preserving apart from the reduced call volume; the narrowed event subscription means DSO no longer *receives* events it previously received and discarded.
+
+---
+
+### Decision 30: PERF-1/PERF-2/PERF-3 — Deleting an "Adaptive Polling" Loop That Could Never Have Worked
+
+**Date**: 2026-07-30  
+**Status**: Implemented
+
+### Context
+Verifying PERF-2 against HEAD produced a more fundamental finding than the audit described. `Agent.pollSecret` reads **only DSO's local cache**:
+
+```go
+currentVal, ok := a.cache.Get(secretName)   // no provider handle exists here
+```
+
+No provider or resolver is reachable from it, and its doc comment ("queries the current version of a secret from its configured backend") was simply false. Consequences:
+
+1. **A provider-side rotation was undetectable by it.** The hash could only change if something *else* had already written the new value locally, making the "detector" a downstream observer of the change it was supposed to discover.
+2. **Every secret fired one spurious rotation event at startup** (`!exists` on the first poll returns `changed=true`).
+3. `Agent.rotationCallback` — the sink for both the polling path *and* the container-listener path — is an **admitted stub**. Its own comment read "In a production implementation with TriggerEngine, this would call ExecuteRotation… For now, record that rotation was triggered and log." It rotates nothing.
+
+Meanwhile `TriggerEngine.StartPolling` (`internal/agent/trigger.go`) does the real work: `Store.GetProvider` → `GetSecretWithContext`/`GetSecret` → hash → `ExecuteRotation`. That is what `internal/cli/agent.go` runs for the `dso agent` daemon. So the `agent.go` loop was a **non-functional parallel duplicate**.
+
+Separately, PERF-3 split in two, as suspected: goroutine *accumulation* was genuinely fixed in v3.5.21 (stop channels + `BUG-1`'s mutexes), but *churn* remained and was worse than "per interval change" — `updateTicker` was called **unconditionally on every poll**, closing a channel, allocating a channel, stopping a ticker, creating a ticker and spawning a goroutine even when the interval was identical (the common case, since `GetNextInterval` returns one of three constants). At the 5s tier that is 12 full teardown/spawn cycles per minute per secret.
+
+A **shutdown panic** was also found in the same code: `defer close(tickersChan)` was registered *after* the ticker-stop defer, and defers run LIFO — so the channel closed while goroutines were still parked in `select { case tickersChan <- name: ; case <-ctx.Done(): }`. With both cases ready Go selects uniformly at random, giving each parked goroutine roughly a coin-flip chance of a send-on-closed-channel panic.
+
+### Options Considered
+1. **Wire a provider handle into `agent.go`'s poller** so it makes real calls.
+   - Rejected: two independent pollers would then hit provider APIs for the same secrets — duplicated cost and duplicated rotation triggers — and the sink is still a stub, so it would rotate nothing anyway.
+2. **Leave the code, correct only the docs.**
+   - Rejected: smallest diff, but leaves dead machinery, spurious startup rotations, per-poll churn and a probabilistic shutdown panic in place.
+3. **Delete the polling machinery; keep the container-listener/reactor path.** Chosen (and confirmed with the user before deleting, since it removes a documented headline feature).
+
+### Decision
+Removed `pollSecret`, `getSecretsToMonitor`, `startPollingGoroutines`, `updateTicker`, `cleanupStaleSecrets`, `GetSecretVersionsMapSize`, `GetLastCleanupTime`, the `secretVersions`/`tickers`/`tickerStopChans` maps and their mutexes, and `tickersChan` (which removes the panic by construction). Kept the `ContainerListener` → `EventReactor` path, which PERF-4 had just improved. Simplified `rotationCallback` and replaced its misleading comment with an explicit **KNOWN GAP** note stating plainly that it performs no rotation and naming where real rotation lives.
+
+Deleted the tests that exercised only the removed machinery, including all of `agent_ticker_race_test.go` (it tested the race on the now-deleted `tickers`/`tickerStopChans` maps).
+
+### Rationale
+- Deleting beats wiring: the loop's sink was a stub, so wiring providers into it would have added real API cost for still-zero functional benefit.
+- Kept the honest framing rather than quietly improving it — the new `rotationCallback` comment says it does not rotate, instead of the old comment's implication that rotation happened elsewhere in the queue processor (which was not true).
+- **Consequence stated plainly rather than hidden:** `polling.SmartPoller` now has **zero production callers**. It is retained (implemented, unit-tested) because adopting it inside `TriggerEngine.StartPolling` — where provider calls genuinely occur — is the change that would make the advertised feature real. `unused` will not flag it, since exported symbols in a package with no importers are not reported.
+
+### PERF-1 (documentation)
+The "not wired" half of PERF-1 was already closed by Decision 27 (`CLEAN-4`). The "false advertising" half was **still present, for a larger reason than the audit gave**: the docs quantified provider-API savings from a loop that made zero provider API calls, so both the numerator and denominator of every figure were zero. Corrected:
+- `docs/SMART_POLLING.md` — added a prominent implementation-status note; relabeled the 28,800→3,260 arithmetic as an unmeasured projection; marked `dso_polling_api_calls_saved_total` as never implemented (confirmed: no polling metrics exist in `pkg/observability`); removed the "80% reduction" and "80–95% combined" claims.
+- `docs/EVENT_DRIVEN_ROTATION.md` — status note on Tier 1; annotated "One HTTP API call per poll" and the projected savings table.
+- `README.md` — replaced both 80% claims with the actual status.
+- `CHANGELOG.md` `[3.5.21]` — **annotated, not rewritten.** A released entry is a historical record; the correction is added inline as a pointer and stated fully under `[Unreleased]`.
+
+### Verification
+- `TestAgent_RunMainLoop_RepeatedShutdownDoesNotPanic` runs 25 start/cancel cycles with cancellation racing startup, since the original defect was probabilistic and a single pass could pass by luck.
+- `internal/agent` suite runtime dropped from ~10s to ~1.4s, consistent with the spurious polling work being gone.
+- `go build`/`go vet`/`gofmt` clean, `golangci-lint` 0 issues, `gosec` 0 issues, full suite passes.
+
+### Rollback Implications
+Touches `internal/agent/agent.go` (large deletion), `internal/agent/agent_test.go`, deletes `internal/agent/agent_ticker_race_test.go`, and edits four docs. **No functional loss**: the deleted loop detected nothing and its sink rotated nothing. Reverting restores the dead machinery, the spurious startup rotations, the per-poll churn and the shutdown panic.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code

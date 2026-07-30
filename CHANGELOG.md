@@ -8,7 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–28) and `docs/audit/2026-07-29-fresh-audit.md`.
+Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–30) and `docs/audit/2026-07-29-fresh-audit.md`.
+
+### Performance
+
+- **[PERF-5]** Reconciliation no longer issues one `ContainerInspect` per tracked container. It ran on a 10-minute ticker **and** on every Docker daemon reconnect, so a host tracking 200 containers made 200 API round-trips per cycle, with a burst on each reconnect. Replaced with a single batched `ContainerList`. Uses `All: true` deliberately — `ContainerInspect` succeeded for stopped containers, so a running-only list would have reclassified every stopped container as orphaned and dropped it from tracking. A failed list now skips the orphan sweep instead of wiping the whole tracking set.
+- **[PERF-4]** The container listener subscribed to *all* `type=container` events (`exec_create`/`exec_start`/`exec_die`, `attach`, `top`, `resize`, `health_status`, `oom`, `kill`, …) and called `ContainerInspect` **before** checking whether the container was relevant. One `docker exec` on any container on the host cost three inspects; any container with a `HEALTHCHECK` generated them forever — for containers DSO does not manage. Cost scaled with total host activity rather than DSO's tracked set. Now filters by action at the subscription, and rejects irrelevant containers from the event payload's labels before paying for an inspect.
+- **[PERF-2/PERF-3]** Removed the vestigial "adaptive polling" loop from `internal/agent/agent.go`. It could not do what it claimed: `pollSecret` only hashed DSO's **local cache** — it had no provider handle and made zero provider API calls — so a secret rotated at the provider was undetectable by it. It also fired one spurious change per secret on the first tick after boot, and tore down and recreated a ticker plus goroutine on *every* poll rather than only when the interval changed. Real provider polling and rotation are done by `TriggerEngine.StartPolling`, which the `dso agent` daemon runs.
+- Fixed a probable **shutdown panic** in the same loop: `defer close(tickersChan)` was registered *after* the ticker-stop defer, and defers run LIFO — so the channel closed while goroutines were still parked in `select { case tickersChan <- name: ; case <-ctx.Done(): }`. With both cases ready Go chooses at random, giving each parked goroutine roughly a coin-flip chance of sending on a closed channel. Removing the poller removed the channel.
+
+### Documentation
+
+- **[PERF-1]** Corrected unsupported performance claims. `docs/SMART_POLLING.md` quantified "88.7% fewer API calls" / "80% API call reduction" and documented a `dso_polling_api_calls_saved_total` metric; `docs/EVENT_DRIVEN_ROTATION.md` asserted "one HTTP API call per poll"; `README.md` repeated the 80% figure. All were contradicted by the code: the polling loop made **no** provider calls, so both the numerator and denominator of every figure were zero, and the metric was never implemented. Docs now carry an explicit implementation-status note, projections are labeled as unmeasured arithmetic, and the nonexistent metric is marked as such. The `[3.5.21]` release entry is annotated rather than rewritten, since it is a historical record.
+  - Note: `SmartPoller` itself is retained (implemented and unit-tested) but now has **no production callers**. Adopting it inside `TriggerEngine.StartPolling`, where provider calls actually happen, is the work that would make the feature real.
 
 ### Security
 
@@ -71,6 +83,7 @@ Full rationale, options considered, and verification detail for every entry belo
 ### Added
 
 - **Smart Polling with Adaptive Intervals** — Reduce API calls by 80% through intelligent polling interval adaptation
+  - > ⚠️ **Correction (see [Unreleased] → PERF-1/PERF-2):** the API-call-reduction figures in this 3.5.21 entry were not supported by the code. The polling loop that used `SmartPoller` never called a provider — it hashed DSO's local cache — so no provider API calls were being saved or made. This historical entry is left intact as the release record; the claims are corrected in [Unreleased] and in `docs/SMART_POLLING.md`.
   - Aggressive (5s): Triggered immediately after secret changes detected
   - Baseline (30s): Normal operating mode for actively monitored secrets
   - Backoff (5m): Idle mode for secrets with no recent activity

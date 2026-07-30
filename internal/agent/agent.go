@@ -9,7 +9,6 @@ import (
 
 	eventqueue "github.com/docker-secret-operator/dso/internal/events"
 	"github.com/docker-secret-operator/dso/internal/injector"
-	"github.com/docker-secret-operator/dso/internal/polling"
 	"github.com/docker-secret-operator/dso/internal/resolver"
 	"github.com/docker-secret-operator/dso/internal/util"
 	"github.com/docker-secret-operator/dso/pkg/observability"
@@ -30,15 +29,6 @@ type Agent struct {
 	Ready      chan struct{} // Signaled when the agent is listening
 	eventQueue *eventqueue.BoundedEventQueue
 	readyOnce  sync.Once // Ensures Ready channel closes exactly once
-
-	// Polling and event reaction components
-	secretVersions   map[string]string // Track last seen versions for change detection
-	secretVersionsMu sync.RWMutex
-	tickerStopChans  map[string]chan struct{} // Signal channels for ticker goroutines
-	tickerStopMu     sync.Mutex               // Protect tickerStopChans map
-	tickers          map[string]*time.Ticker  // Polling tickers for each secret
-	tickersMu        sync.Mutex               // Protect tickers map
-	lastCleanup      time.Time                // Track last cleanup time for stale secret entries
 }
 
 // NewAgent creates a new Agent daemon.
@@ -55,15 +45,12 @@ func NewAgent(docker *client.Client) *Agent {
 		}
 	}
 	return &Agent{
-		cache:           NewCache(),
-		docker:          docker,
-		logger:          logger,
-		injected:        make(map[string]bool),
-		Ready:           make(chan struct{}),
-		readyOnce:       sync.Once{},
-		secretVersions:  make(map[string]string),
-		tickerStopChans: make(map[string]chan struct{}),
-		tickers:         make(map[string]*time.Ticker),
+		cache:     NewCache(),
+		docker:    docker,
+		logger:    logger,
+		injected:  make(map[string]bool),
+		Ready:     make(chan struct{}),
+		readyOnce: sync.Once{},
 	}
 }
 
@@ -80,15 +67,15 @@ func (a *Agent) Close() error {
 	return nil
 }
 
-// Start begins listening to the Docker socket for lifecycle events.
-// It also starts the adaptive polling main loop for secret change detection.
+// Start begins listening to the Docker socket for lifecycle events and
+// starts the container label-watching loop.
 func (a *Agent) Start(ctx context.Context) error {
 	// Initialize bounded event queue (1000 max events, 16 workers)
 	a.eventQueue = eventqueue.NewBoundedEventQueue(a.logger, 1000, 16, a.handleEventWithContext)
 	a.eventQueue.Start(ctx)
 	defer a.eventQueue.Stop()
 
-	// Start the adaptive polling and event-driven rotation main loop
+	// Start the container label-watching loop
 	go func() {
 		if err := a.runMainLoop(ctx); err != nil && err != context.Canceled {
 			a.logger.Error("main loop exited with error",
@@ -240,21 +227,27 @@ func (a *Agent) inject(ctx context.Context, containerID string, serviceSecrets r
 	return injector.InjectFiles(ctx, a.docker, containerID, filesToInject, serviceSecrets.UID, serviceSecrets.GID)
 }
 
-// runMainLoop runs the adaptive polling and event-driven rotation loop.
-// It integrates SmartPoller, ContainerListener, and EventReactor to replace
-// fixed polling with adaptive event-driven rotation.
+// runMainLoop watches container label changes and feeds them to the event
+// reactor.
+//
+// PERF-2/PERF-3: this used to also run an "adaptive polling" loop over a
+// SmartPoller. That loop was removed because it could not do the job it
+// claimed: pollSecret only ever hashed the *local cache* (it had no provider
+// handle and made no provider API call), so a secret rotated at the provider
+// was undetectable by it — it could only observe changes something else had
+// already written locally. It also fired one spurious "change" per secret on
+// the first tick after boot, and re-created a ticker plus goroutine on *every*
+// poll rather than only when the interval actually changed.
+//
+// Real provider polling and rotation live in TriggerEngine.StartPolling
+// (internal/agent/trigger.go), which does call the provider, and is what the
+// `dso agent` daemon runs. This loop's remaining job is container label
+// watching for the `docker dso up` path.
+//
+// Known gap, unchanged by this cleanup: rotationCallback is still a stub that
+// only logs (see its comment). Wiring the reactor to real rotation is separate
+// work from removing the poller that could never have worked.
 func (a *Agent) runMainLoop(ctx context.Context) error {
-	// 1. Initialize components.
-	//
-	// The poller is owned by this loop, which is the only thing that uses it.
-	// NewAgent previously also built one into an Agent.poller field that
-	// nothing ever read -- a dead allocation that the `unused` linter cannot
-	// flag, because assigning a field counts as using it. That field has been
-	// removed rather than wired up here: keeping it would leave a shadowing
-	// trap (a local named `poller` silently overriding the field) that is not
-	// unit-testable without a live Docker daemon and secret config.
-	poller := polling.NewSmartPoller()
-
 	// Create listener only if Docker client is available
 	var listener *eventqueue.ContainerListener
 	if a.docker != nil {
@@ -281,39 +274,10 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 		}
 		_ = reactor.Stop(ctx)
 
-		// Close all ticker stop channels to signal goroutines to exit
-		a.tickerStopMu.Lock()
-		for _, stopChan := range a.tickerStopChans {
-			close(stopChan)
-		}
-		a.tickerStopChans = make(map[string]chan struct{})
-		a.tickerStopMu.Unlock()
-
-		// Stop all tickers and clean up map
-		a.tickersMu.Lock()
-		for _, ticker := range a.tickers {
-			ticker.Stop()
-		}
-		a.tickers = make(map[string]*time.Ticker)
-		a.tickersMu.Unlock()
-
 		log.Println("✅ [DSO Agent] Main loop components cleaned up")
 	}()
 
-	// 4. Channel for poll events
-	tickersChan := make(chan string, 10)
-
-	defer func() {
-		close(tickersChan)
-	}()
-
-	// 5. Start ticker goroutines for each secret
-	go a.startPollingGoroutines(ctx, poller, tickersChan)
-
-	// 5.5. Start cleanup goroutine to remove stale secret entries
-	go a.cleanupStaleSecrets(ctx)
-
-	// 6. Get listener events channel (nil if listener not available)
+	// 4. Get listener events channel (nil if listener not available)
 	var listenerEventsChan <-chan *eventqueue.ContainerLabelEvent
 	if listener != nil {
 		listenerEventsChan = listener.Events()
@@ -333,39 +297,6 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 				}
 			}
 
-		case secretName := <-tickersChan:
-			if secretName == "" {
-				continue
-			}
-
-			// Poll secret to check for version change
-			version, changed := a.pollSecret(secretName)
-			if changed && version != "" {
-				a.logger.Info("secret version changed detected",
-					zap.String("secret", secretName),
-					zap.String("version", version))
-
-				// Record change in poller for interval adaptation
-				poller.RecordChange(secretName)
-
-				// Process as secret event
-				secretEvent := eventqueue.SecretChangeEvent{
-					SecretName: secretName,
-					Version:    version,
-					Source:     eventqueue.SourceLocalVault,
-					Severity:   eventqueue.SeverityNormal,
-					Timestamp:  time.Now(),
-				}
-				if err := reactor.ProcessSecretEvent(ctx, secretEvent); err != nil {
-					a.logger.Warn("failed to process secret event", zap.Error(err))
-				}
-			}
-
-			// Record poll regardless of change
-			poller.RecordPoll(secretName)
-
-			// Update interval for next poll
-			a.updateTicker(ctx, tickersChan, secretName, poller)
 		}
 
 		// Health check
@@ -375,241 +306,24 @@ func (a *Agent) runMainLoop(ctx context.Context) error {
 	}
 }
 
-// startPollingGoroutines creates and manages polling goroutines for each monitored secret.
-// Each secret gets its own ticker that fires at adaptive intervals based on recent change frequency.
-// Poll events are sent to tickersChan for processing in the main event loop.
-func (a *Agent) startPollingGoroutines(ctx context.Context, poller *polling.SmartPoller,
-	tickersChan chan<- string) {
-
-	// Initial secret list
-	secrets := a.getSecretsToMonitor()
-
-	for _, secretName := range secrets {
-		interval := poller.GetNextInterval(secretName)
-		ticker := time.NewTicker(interval)
-
-		// Create stop channel for this secret's goroutine
-		stopChan := make(chan struct{})
-
-		// Lock tickers map to add new ticker
-		a.tickersMu.Lock()
-		a.tickers[secretName] = ticker
-		a.tickersMu.Unlock()
-
-		// Lock stop channels map to add new stop channel
-		a.tickerStopMu.Lock()
-		a.tickerStopChans[secretName] = stopChan
-		a.tickerStopMu.Unlock()
-
-		go func(name string, t *time.Ticker, stop <-chan struct{}) {
-			for {
-				select {
-				case <-stop:
-					return
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					select {
-					case tickersChan <- name:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-		}(secretName, ticker, stopChan)
-	}
-}
-
-// updateTicker adapts the polling interval for a secret based on recent change frequency.
-// It stops the old ticker and creates a new one with the interval from SmartPoller.
-// The adaptive interval uses: 5s for active changes, 30s for baseline, 5m for backoff.
-// This method must be called with both tickersMu and tickerStopMu locked or held individually.
-func (a *Agent) updateTicker(ctx context.Context,
-	tickersChan chan<- string, secretName string, poller *polling.SmartPoller) {
-
-	// Lock stop channels to signal old goroutine and create new one
-	a.tickerStopMu.Lock()
-	// Signal old goroutine to exit immediately
-	if stopChan, exists := a.tickerStopChans[secretName]; exists {
-		close(stopChan)
-	}
-
-	// Create new stop channel for new goroutine
-	newStopChan := make(chan struct{})
-	a.tickerStopChans[secretName] = newStopChan
-	a.tickerStopMu.Unlock()
-
-	// Get new interval for the secret
-	interval := poller.GetNextInterval(secretName)
-
-	// Lock tickers map to replace old ticker with new one
-	a.tickersMu.Lock()
-	if oldTicker, exists := a.tickers[secretName]; exists {
-		oldTicker.Stop()
-	}
-
-	newTicker := time.NewTicker(interval)
-	a.tickers[secretName] = newTicker
-	a.tickersMu.Unlock()
-
-	// Start new ticker goroutine with new stop channel
-	go func(name string, t *time.Ticker, stop <-chan struct{}) {
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				select {
-				case tickersChan <- name:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}(secretName, newTicker, newStopChan)
-}
-
-// pollSecret queries the current version of a secret from its configured backend.
-// It compares against the last known version and returns whether the secret changed.
-func (a *Agent) pollSecret(secretName string) (version string, changed bool) {
-	var currentVersion string
-
-	// Try to get current secret value from cache
-	currentVal, ok := a.cache.Get(secretName)
-	if ok {
-		// Compute hash of current secret value to use as version identifier
-		currentVersion = ComputeHash(map[string]string{"value": currentVal})
-	} else {
-		// Secret not in cache - use a stable identifier based on secret name
-		// This handles the case where a secret is tracked but not yet in cache
-		currentVersion = ComputeHash(map[string]string{"name": secretName})
-	}
-
-	a.secretVersionsMu.Lock()
-	defer a.secretVersionsMu.Unlock()
-
-	lastVersion, exists := a.secretVersions[secretName]
-	if !exists || lastVersion != currentVersion {
-		a.secretVersions[secretName] = currentVersion
-		return currentVersion, true
-	}
-
-	return currentVersion, false
-}
-
-// getSecretsToMonitor returns the list of secrets that should be actively monitored.
-func (a *Agent) getSecretsToMonitor() []string {
-	a.cache.mu.RLock()
-	defer a.cache.mu.RUnlock()
-
-	var secrets []string
-	seenSecrets := make(map[string]bool)
-
-	// Iterate through all cached projects and extract their secret hashes
-	for _, seed := range a.cache.projects {
-		if seed == nil {
-			continue
-		}
-		// Each hash in SecretPool is a unique secret to monitor
-		for hash := range seed.SecretPool {
-			if !seenSecrets[hash] {
-				secrets = append(secrets, hash)
-				seenSecrets[hash] = true
-			}
-		}
-	}
-
-	return secrets
-}
-
-// rotationCallback returns a RotationTrigger that handles secret rotations triggered by polling or container events.
+// rotationCallback returns the RotationTrigger the event reactor invokes when
+// a container label change is detected.
+//
+// KNOWN GAP — this is observability only, not rotation. It logs and returns
+// nil; it does not rotate anything. Real rotation is performed by
+// TriggerEngine.ExecuteRotation (internal/agent/trigger.go), driven by
+// TriggerEngine.StartPolling, which is what the `dso agent` daemon runs.
+//
+// Wiring this callback to the TriggerEngine would require the Agent to hold
+// one (it currently does not) and to resolve a secret name to its provider and
+// SecretMapping. That is deliberately out of scope here: this comment replaces
+// an older one that described the same stub as if the rotation happened
+// elsewhere in the queue processor, which was not accurate.
 func (a *Agent) rotationCallback() eventqueue.RotationTrigger {
 	return func(ctx context.Context, secretName string, priority eventqueue.EventPriority) error {
-		a.logger.Info("rotation triggered",
+		a.logger.Info("container label change observed (no rotation performed here — see rotationCallback doc)",
 			zap.String("secret", secretName),
-			zap.String("priority", fmt.Sprintf("%d", priority)))
-
-		// In a production implementation with TriggerEngine, this would call:
-		// a.triggerEngine.ExecuteRotation(providerName, secretName, secretData, secretMapping)
-		//
-		// For now, record that rotation was triggered and log the action.
-		// The actual rotation coordination happens in the bounded event queue processor.
-		//
-		// Mark this secret as recently rotated to prevent duplicate rotation triggers
-		a.secretVersionsMu.Lock()
-		a.secretVersions[secretName] = fmt.Sprintf("rotated_%d", time.Now().Unix())
-		a.secretVersionsMu.Unlock()
-
-		a.logger.Info("secret rotation recorded",
-			zap.String("secret", secretName),
-			zap.String("priority", fmt.Sprintf("%d", priority)))
-
+			zap.Int("priority", int(priority)))
 		return nil
 	}
-}
-
-// cleanupStaleSecrets periodically removes entries for secrets no longer being monitored.
-// This prevents unbounded growth of the secretVersions map. Cleanup runs every 5 minutes.
-func (a *Agent) cleanupStaleSecrets(ctx context.Context) {
-	// Helper function to perform cleanup
-	performCleanup := func() {
-		// Get list of currently monitored secrets
-		currentSecrets := a.getSecretsToMonitor()
-		currentSet := make(map[string]bool)
-		for _, s := range currentSecrets {
-			currentSet[s] = true
-		}
-
-		// Remove entries for secrets no longer monitored
-		a.secretVersionsMu.Lock()
-		staleCount := 0
-		for secret := range a.secretVersions {
-			if !currentSet[secret] {
-				delete(a.secretVersions, secret)
-				staleCount++
-			}
-		}
-		a.lastCleanup = time.Now()
-		mapSize := len(a.secretVersions)
-		a.secretVersionsMu.Unlock()
-
-		// Log cleanup result
-		if staleCount > 0 {
-			a.logger.Debug("cleaned stale secret entries",
-				zap.Int("stale_count", staleCount),
-				zap.Int("map_size", mapSize))
-		}
-	}
-
-	// Run cleanup immediately on startup
-	performCleanup()
-
-	// Then set up periodic cleanup every 5 minutes
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			performCleanup()
-		}
-	}
-}
-
-// GetSecretVersionsMapSize returns the current size of the secretVersions map for monitoring.
-func (a *Agent) GetSecretVersionsMapSize() int {
-	a.secretVersionsMu.RLock()
-	defer a.secretVersionsMu.RUnlock()
-	return len(a.secretVersions)
-}
-
-// GetLastCleanupTime returns when cleanup last ran.
-func (a *Agent) GetLastCleanupTime() time.Time {
-	a.secretVersionsMu.RLock()
-	defer a.secretVersionsMu.RUnlock()
-	return a.lastCleanup
 }

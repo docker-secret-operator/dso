@@ -28,7 +28,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 
 | Feature | Description |
 |---------|-------------|
-| **Smart Polling with Adaptive Intervals** | Reduce API calls by 80% through intelligent polling interval adaptation (5s aggressive → 30s baseline → 5m backoff based on activity); combined with event batching for 80–95% total API call reduction. See [Smart Polling](docs/SMART_POLLING.md) for details. |
+| **Smart Polling with Adaptive Intervals** | Adaptive polling interval component (5s aggressive → 30s baseline → 5m backoff based on activity). **Not currently on a production code path** — no API-call reduction is delivered today; see [Smart Polling](docs/SMART_POLLING.md) for current status. Provider polling and rotation are performed by the agent's trigger engine. |
 | **Event-Driven Rotation** | Two-tier triggering: immediate Docker container events (Tier 2) combined with continuous adaptive polling (Tier 1) detect secret changes in <5s and trigger zero-downtime rotations without polling delays. See [Event-Driven Rotation](docs/EVENT_DRIVEN_ROTATION.md) for details. |
 | **Zero-Persistence** | Plaintext secrets never written to disk; held only in process memory and tmpfs. File injection (`dsofile://`) also keeps secrets out of `docker inspect`; env injection (`dso://`) is intentionally visible there — see [Security Model](#security-model) |
 | **Rolling Rotation** | Zero-downtime blue-green container swap — new container starts, health-checked, old container stops |
@@ -606,7 +606,7 @@ Working examples for common providers:
 | **[CLI Reference](docs/cli.md)** | Complete command reference |
 | **[Configuration](docs/configuration.md)** | YAML schema & all options |
 | **[Providers](docs/providers.md)** | Provider-specific setup guides |
-| **[Smart Polling](docs/SMART_POLLING.md)** | Adaptive polling intervals, 80% API call reduction, monitoring examples |
+| **[Smart Polling](docs/SMART_POLLING.md)** | Adaptive polling interval component and its current implementation status |
 | **[Event-Driven Rotation](docs/EVENT_DRIVEN_ROTATION.md)** | Two-tier triggering, event batching, deduplication, real-world scenarios |
 | **[Architecture](docs/architecture.md)** | System design & internals |
 | **[Operational Guide](docs/operational-guide.md)** | Day-2 operations & monitoring |

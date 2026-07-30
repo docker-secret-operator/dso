@@ -203,9 +203,26 @@ func (cl *ContainerListener) watchEvents() {
 	defer cl.wg.Done()
 	defer close(cl.eventsChan)
 
-	// Set up event filters for container events
+	// Set up event filters for container events.
+	//
+	// PERF-4: filter by action, not just type. Subscribing to bare
+	// type=container delivers every container event on the host --
+	// exec_create/exec_start/exec_die, attach, top, resize, health_status,
+	// oom, kill -- and handleEvent's first act used to be a full
+	// ContainerInspect round-trip. A single `docker exec` produced three
+	// events (so three inspects), and any container with a HEALTHCHECK
+	// emitted health_status forever, for containers DSO does not even manage.
+	// The cost scaled with total host activity rather than DSO's tracked set.
+	//
+	// These are the only actions that can change a container's labels or its
+	// existence, which is all this listener reacts to: update carries label
+	// changes on a running container, and create/start/stop/die/destroy carry
+	// lifecycle transitions (destroy is kept so tracking cleanup still runs).
 	filter := filters.NewArgs()
 	filter.Add("type", "container")
+	for _, action := range []string{"create", "start", "stop", "die", "destroy", "update"} {
+		filter.Add("event", action)
+	}
 
 	eventChan, errChan := cl.client.Events(cl.ctx, events.ListOptions{Filters: filter})
 
@@ -235,6 +252,26 @@ func (cl *ContainerListener) watchEvents() {
 // handleEvent processes a Docker event and emits ContainerLabelEvent if labels changed
 func (cl *ContainerListener) handleEvent(event events.Message) {
 	containerID := event.Actor.ID
+
+	// PERF-4: reject irrelevant containers from the event payload before
+	// paying for an API round-trip. The daemon already ships the container's
+	// labels in Actor.Attributes, so for the common case -- an event about a
+	// container DSO does not manage -- this avoids the ContainerInspect below
+	// entirely.
+	//
+	// Guarded on len(Attributes) > 0: if a daemon/API version ever delivered
+	// an event without attributes, an empty map would look like "no relevant
+	// labels" and we would silently skip a container we should be watching.
+	// Falling through to the inspect in that case keeps the old behavior as
+	// the conservative default rather than trading correctness for calls.
+	if len(event.Actor.Attributes) > 0 && !HasRelevantLabels(event.Actor.Attributes) {
+		// Still drop any tracking state, exactly as the post-inspect
+		// irrelevance path below does -- this is local map work, no API call.
+		cl.mu.Lock()
+		delete(cl.lastLabels, containerID)
+		cl.mu.Unlock()
+		return
+	}
 
 	// Get current container info
 	inspect, err := cl.client.ContainerInspect(cl.ctx, containerID)

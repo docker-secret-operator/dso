@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -578,59 +576,6 @@ type ServiceSecrets struct {
 // Integration Tests: SmartPoller + EventReactor + ContainerListener
 // ============================================================================
 
-// TestAgent_MainLoop_SmartPolling verifies that the main loop integrates
-// SmartPoller with adaptive polling intervals
-func TestAgent_MainLoop_SmartPolling(t *testing.T) {
-	agent := NewAgent(nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Track when polls occur
-	pollTimes := make([]time.Time, 0)
-	var pollMu sync.Mutex
-
-	// Override pollSecret to track calls
-	originalPollSecret := agent.pollSecret
-	_ = originalPollSecret // Keep reference to avoid unused warning
-
-	// Run main loop in goroutine with a timeout
-	mainLoopDone := make(chan error, 1)
-	go func() {
-		err := agent.runMainLoop(ctx)
-		mainLoopDone <- err
-	}()
-
-	// Wait for main loop to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Simulate secret monitoring by manually triggering polls
-	pollTimes = append(pollTimes, time.Now())
-
-	// Wait for at least one poll cycle
-	time.Sleep(2 * time.Second)
-
-	// Cancel context to stop the main loop
-	cancel()
-
-	// Wait for main loop to exit
-	select {
-	case err := <-mainLoopDone:
-		// Should exit with context.Canceled or DeadlineExceeded
-		if err != nil && err != context.Canceled && err != context.DeadlineExceeded {
-			t.Errorf("unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("main loop did not exit in time")
-	}
-
-	// Verify polling component was initialized
-	pollMu.Lock()
-	defer pollMu.Unlock()
-	if len(pollTimes) == 0 {
-		t.Fatal("expected at least one poll time to be recorded")
-	}
-}
-
 // TestAgent_MainLoop_ComponentInitialization verifies that all components
 // are initialized and started correctly in the main loop
 func TestAgent_MainLoop_ComponentInitialization(t *testing.T) {
@@ -659,63 +604,6 @@ func TestAgent_MainLoop_ComponentInitialization(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("main loop did not exit in time")
-	}
-}
-
-// TestAgent_RotationCallback verifies that the rotation callback is properly wired
-func TestAgent_RotationCallback(t *testing.T) {
-	agent := NewAgent(nil)
-
-	callback := agent.rotationCallback()
-	if callback == nil {
-		t.Fatal("rotation callback should not be nil")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// Call the callback - should not panic and should return without error
-	err := callback(ctx, "test-secret", 2) // priority = PriorityNormal
-	if err != nil {
-		t.Errorf("unexpected error from rotation callback: %v", err)
-	}
-}
-
-// TestAgent_PollSecret verifies the pollSecret method correctly tracks version changes
-func TestAgent_PollSecret(t *testing.T) {
-	agent := NewAgent(nil)
-	secretName := "test-secret"
-
-	// First poll - should be marked as changed (no prior version)
-	version1, changed1 := agent.pollSecret(secretName)
-	if !changed1 {
-		t.Error("first poll should report change")
-	}
-	if version1 == "" {
-		t.Error("first poll should return a version")
-	}
-
-	// Second poll immediately after - should not change (same timestamp in testing)
-	// Note: This test may be flaky due to timestamp precision
-	time.Sleep(10 * time.Millisecond)
-	version2, changed2 := agent.pollSecret(secretName)
-	if changed2 && version2 == version1 {
-		// Version is the same, so changed should be false if timestamps are the same
-		t.Logf("versions match: %s == %s, changed: %v", version1, version2, changed2)
-	}
-}
-
-// TestAgent_GetSecretsToMonitor verifies getting the list of monitored secrets
-func TestAgent_GetSecretsToMonitor(t *testing.T) {
-	agent := NewAgent(nil)
-
-	// Initially empty
-	secrets := agent.getSecretsToMonitor()
-	if secrets == nil {
-		secrets = []string{}
-	}
-	if len(secrets) != 0 {
-		t.Errorf("expected 0 secrets initially, got %d", len(secrets))
 	}
 }
 
@@ -748,197 +636,40 @@ func TestAgent_MainLoop_GracefulShutdown(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Cleanup Tests (Issue #2: Unbounded secretVersions map growth)
-// ============================================================================
+// TestAgent_RunMainLoop_RepeatedShutdownDoesNotPanic guards the shutdown
+// panic that the removed polling machinery could produce. runMainLoop
+// registered `defer close(tickersChan)` *after* the defer that signalled
+// ticker goroutines to stop. Defers run LIFO, so the channel was closed
+// FIRST, while goroutines were still parked in
+// `select { case tickersChan <- name: ; case <-ctx.Done(): }`. When both
+// cases are ready Go chooses uniformly at random, so each parked goroutine
+// had roughly a coin-flip chance of sending on a closed channel and crashing
+// the process.
+//
+// Removing the poller removed the channel and therefore the panic. This runs
+// the start/shutdown cycle repeatedly because the original defect was
+// probabilistic -- a single pass could easily have passed by luck.
+func TestAgent_RunMainLoop_RepeatedShutdownDoesNotPanic(t *testing.T) {
+	for i := 0; i < 25; i++ {
+		agent := NewAgent(nil)
+		ctx, cancel := context.WithCancel(context.Background())
 
-// TestAgent_CleanupStaleSecrets verifies that stale secret entries are removed
-func TestAgent_CleanupStaleSecrets(t *testing.T) {
-	agent := NewAgent(nil)
+		done := make(chan error, 1)
+		go func() {
+			done <- agent.runMainLoop(ctx)
+		}()
 
-	// Manually add some entries to secretVersions map
-	agent.secretVersionsMu.Lock()
-	agent.secretVersions["active-secret"] = "hash1"
-	agent.secretVersions["stale-secret-1"] = "hash2"
-	agent.secretVersions["stale-secret-2"] = "hash3"
-	agent.secretVersionsMu.Unlock()
+		// Cancel almost immediately so shutdown races startup, which is when
+		// goroutines were most likely to be parked mid-select.
+		time.Sleep(time.Millisecond)
+		cancel()
 
-	// Initial size should be 3
-	if size := agent.GetSecretVersionsMapSize(); size != 3 {
-		t.Errorf("expected initial map size 3, got %d", size)
-	}
-
-	// Add active-secret to cache so it's considered monitored
-	cache := agent.GetCache()
-	seed := &resolver.AgentSeed{
-		ProjectName: "test-project",
-		SecretPool: map[string]string{
-			"active-secret": "value",
-		},
-		Services: make(map[string]resolver.ServiceSecrets),
-	}
-	cache.Seed(seed)
-
-	// Create a context with short timeout to trigger one cleanup cycle
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Run cleanup (will timeout after 100ms)
-	agent.cleanupStaleSecrets(ctx)
-
-	// After cleanup, map should only have active-secret
-	if size := agent.GetSecretVersionsMapSize(); size != 1 {
-		t.Errorf("expected map size 1 after cleanup, got %d", size)
-	}
-
-	// Verify stale secrets are gone
-	agent.secretVersionsMu.RLock()
-	if _, exists := agent.secretVersions["active-secret"]; !exists {
-		t.Error("active-secret should still exist")
-	}
-	if _, exists := agent.secretVersions["stale-secret-1"]; exists {
-		t.Error("stale-secret-1 should be removed")
-	}
-	if _, exists := agent.secretVersions["stale-secret-2"]; exists {
-		t.Error("stale-secret-2 should be removed")
-	}
-	agent.secretVersionsMu.RUnlock()
-}
-
-// TestAgent_GetSecretVersionsMapSize returns correct map size
-func TestAgent_GetSecretVersionsMapSize(t *testing.T) {
-	agent := NewAgent(nil)
-
-	// Initially empty
-	if size := agent.GetSecretVersionsMapSize(); size != 0 {
-		t.Errorf("expected initial size 0, got %d", size)
-	}
-
-	// Add entries
-	agent.secretVersionsMu.Lock()
-	agent.secretVersions["secret1"] = "hash1"
-	agent.secretVersions["secret2"] = "hash2"
-	agent.secretVersions["secret3"] = "hash3"
-	agent.secretVersionsMu.Unlock()
-
-	// Verify size
-	if size := agent.GetSecretVersionsMapSize(); size != 3 {
-		t.Errorf("expected size 3, got %d", size)
-	}
-}
-
-// TestAgent_GetLastCleanupTime returns correct cleanup time
-func TestAgent_GetLastCleanupTime(t *testing.T) {
-	agent := NewAgent(nil)
-
-	// Initially should be zero time
-	if lastCleanup := agent.GetLastCleanupTime(); !lastCleanup.IsZero() {
-		t.Errorf("expected zero time initially, got %v", lastCleanup)
-	}
-
-	// Set lastCleanup time
-	now := time.Now()
-	agent.secretVersionsMu.Lock()
-	agent.lastCleanup = now
-	agent.secretVersionsMu.Unlock()
-
-	// Verify it's set
-	lastCleanup := agent.GetLastCleanupTime()
-	if lastCleanup.IsZero() {
-		t.Error("lastCleanup should not be zero after setting")
-	}
-	// Allow for small time difference due to clock resolution
-	if lastCleanup.Sub(now).Abs() > 10*time.Millisecond {
-		t.Errorf("expected lastCleanup ~%v, got %v", now, lastCleanup)
-	}
-}
-
-// TestAgent_CleanupConcurrency verifies cleanup is thread-safe
-func TestAgent_CleanupConcurrency(t *testing.T) {
-	agent := NewAgent(nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Add initial entries
-	agent.secretVersionsMu.Lock()
-	for i := 0; i < 100; i++ {
-		agent.secretVersions[fmt.Sprintf("secret-%d", i)] = fmt.Sprintf("hash-%d", i)
-	}
-	agent.secretVersionsMu.Unlock()
-
-	done := make(chan bool, 2)
-
-	// Run cleanup goroutine
-	go func() {
-		agent.cleanupStaleSecrets(ctx)
-		done <- true
-	}()
-
-	// Concurrently poll and modify the map
-	go func() {
-		for i := 0; i < 20; i++ {
-			size := agent.GetSecretVersionsMapSize()
-			if size < 0 {
-				t.Error("map size should never be negative")
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		done <- true
-	}()
-
-	// Wait for both to complete
-	<-time.After(150 * time.Millisecond)
-	cancel()
-	<-done
-	<-done
-}
-
-// TestAgent_CleanupWithMonitoredSecrets verifies cleanup preserves monitored secrets
-func TestAgent_CleanupWithMonitoredSecrets(t *testing.T) {
-	agent := NewAgent(nil)
-
-	// Add secrets to cache (these will be monitored)
-	cache := agent.GetCache()
-	seed := &resolver.AgentSeed{
-		ProjectName: "test-project",
-		SecretPool: map[string]string{
-			"secret-a": "value-a",
-			"secret-b": "value-b",
-			"secret-c": "value-c",
-		},
-		Services: make(map[string]resolver.ServiceSecrets),
-	}
-	cache.Seed(seed)
-
-	// Add entries to secretVersions map, including extras
-	agent.secretVersionsMu.Lock()
-	agent.secretVersions["secret-a"] = "hash-a"
-	agent.secretVersions["secret-b"] = "hash-b"
-	agent.secretVersions["secret-c"] = "hash-c"
-	agent.secretVersions["extra-secret"] = "hash-extra"
-	agent.secretVersions["another-extra"] = "hash-extra2"
-	agent.secretVersionsMu.Unlock()
-
-	if size := agent.GetSecretVersionsMapSize(); size != 5 {
-		t.Errorf("expected initial size 5, got %d", size)
-	}
-
-	// Run cleanup with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	agent.cleanupStaleSecrets(ctx)
-
-	// After cleanup, should have 3 secrets (the monitored ones)
-	if size := agent.GetSecretVersionsMapSize(); size != 3 {
-		t.Errorf("expected size 3 after cleanup, got %d", size)
-	}
-
-	// Verify monitored secrets still exist
-	agent.secretVersionsMu.RLock()
-	for _, secret := range []string{"secret-a", "secret-b", "secret-c"} {
-		if _, exists := agent.secretVersions[secret]; !exists {
-			t.Errorf("monitored secret %s should exist", secret)
+		select {
+		case <-done:
+			// Returned without panicking, which is the assertion. A
+			// send-on-closed-channel panic would crash the test binary.
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: runMainLoop did not shut down within 5s", i)
 		}
 	}
-	agent.secretVersionsMu.RUnlock()
 }
