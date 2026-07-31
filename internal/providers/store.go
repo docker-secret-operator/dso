@@ -170,6 +170,22 @@ func (s *SecretStoreManager) MarkProviderFailure(providerName string) {
 	}
 }
 
+// Health reports what is currently known about a provider WITHOUT
+// triggering a connection attempt (unlike GetProvider). known is false when
+// this provider has never actually been used yet — a distinct state from
+// unhealthy, since an unused provider isn't necessarily broken.
+func (s *SecretStoreManager) Health(providerName string) (healthy bool, known bool) {
+	val, ok := s.store.Load(providerName)
+	if !ok {
+		return false, false
+	}
+	entry := val.(*StoreEntry)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	healthy = time.Since(entry.LastHealthy) < 10*time.Minute && entry.ConsecFails < entry.MaxFailures
+	return healthy, true
+}
+
 func secureJitterMillis() uint64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {

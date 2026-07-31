@@ -14,6 +14,7 @@ type DirectoryExecutor struct {
 	// Injectable OS hooks — defaults point to real syscalls.
 	stat    func(string) (os.FileInfo, error)
 	mkdir   func(string, os.FileMode) error
+	chmod   func(string, os.FileMode) error
 	chown   func(string, string) error // "path", "user:group"
 	ownerOf func(string) (string, error)
 }
@@ -24,6 +25,7 @@ func newDirectoryExecutor(ops []DirectoryChange, emitter *Emitter) *DirectoryExe
 		emitter: emitter,
 		stat:    os.Stat,
 		mkdir:   os.MkdirAll,
+		chmod:   os.Chmod,
 		chown:   chownPath,
 		ownerOf: ownerOfPath,
 	}
@@ -56,6 +58,17 @@ func (e *DirectoryExecutor) executeOne(_ context.Context, op *DirectoryChange, t
 		markFailed(txOp, err)
 		e.emitter.emit(EventOperationFailed, txOp, err)
 		return fmt.Errorf("%s: mkdir %s: %w", op.ID, op.Path, err)
+	}
+
+	// os.MkdirAll only applies its mode argument when CREATING a directory —
+	// on an already-existing path (e.g. re-running setup/repair) it leaves
+	// the existing mode untouched, so an over-permissive directory would
+	// silently stay that way while txOp.After below claims op.Mode was
+	// applied. Chmod explicitly so the declared mode is always enforced.
+	if err := e.chmod(op.Path, op.Mode); err != nil {
+		markFailed(txOp, err)
+		e.emitter.emit(EventOperationFailed, txOp, err)
+		return fmt.Errorf("%s: chmod %s: %w", op.ID, op.Path, err)
 	}
 
 	if op.Owner != "" {

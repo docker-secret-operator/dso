@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// ServiceFilePath is the systemd unit file DSO installs. Exported so
+// rollback.go can snapshot/restore its prior content around InstallServiceOp
+// without duplicating this path as a second literal that could drift.
+const ServiceFilePath = "/etc/systemd/system/dso-agent.service"
+
 // SystemdManager manages systemd service creation and management
 type SystemdManager struct {
 	logger Logger
@@ -87,7 +92,7 @@ WantedBy=multi-user.target
 
 // InstallServiceFile writes the systemd service file
 func (sm *SystemdManager) InstallServiceFile(ctx context.Context, fsOps *FilesystemOps) error {
-	const servicePath = "/etc/systemd/system/dso-agent.service"
+	const servicePath = ServiceFilePath
 
 	if sm.dryRun {
 		sm.logger.Info("DRY_RUN: Would install systemd service", "path", servicePath)
@@ -256,7 +261,7 @@ func (sm *SystemdManager) GetSystemdVersion(ctx context.Context) (string, error)
 
 // RemoveServiceFile removes the systemd service file (for cleanup/rollback)
 func (sm *SystemdManager) RemoveServiceFile(ctx context.Context, fsOps *FilesystemOps) error {
-	const servicePath = "/etc/systemd/system/dso-agent.service"
+	const servicePath = ServiceFilePath
 
 	if sm.dryRun {
 		sm.logger.Info("DRY_RUN: Would remove systemd service", "path", servicePath)

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -136,4 +137,38 @@ func TestDocumentPermissionModelContent(t *testing.T) {
 	if !contains(doc, "/etc/dso") {
 		t.Error("Expected '/etc/dso' in documentation")
 	}
+}
+
+// TestRejectSymlink proves rejectSymlink refuses a symlinked path instead of
+// silently allowing a subsequent chmod/chown to follow it onto the link's
+// target — the core of the BOOT-1 fix.
+func TestRejectSymlink(t *testing.T) {
+	t.Run("plain directory is accepted", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := rejectSymlink(dir); err != nil {
+			t.Errorf("expected a real directory to be accepted, got: %v", err)
+		}
+	})
+
+	t.Run("nonexistent path is accepted (nothing to protect yet)", func(t *testing.T) {
+		if err := rejectSymlink(t.TempDir() + "/does-not-exist"); err != nil {
+			t.Errorf("expected a nonexistent path to be accepted, got: %v", err)
+		}
+	})
+
+	t.Run("symlink is rejected", func(t *testing.T) {
+		base := t.TempDir()
+		target := base + "/real-target"
+		if err := os.Mkdir(target, 0755); err != nil {
+			t.Fatal(err)
+		}
+		link := base + "/dso-like-path"
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := rejectSymlink(link); err == nil {
+			t.Error("expected rejectSymlink to error on a symlinked path")
+		}
+	})
 }

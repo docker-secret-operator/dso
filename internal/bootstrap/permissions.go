@@ -213,6 +213,29 @@ func (pm *PermissionManager) ConfigureNonRootAccess(invokerUID int) error {
 	return nil
 }
 
+// rejectSymlink returns an error if path exists and is a symlink. os.Chmod
+// and os.Chown both follow symlinks, so calling them on a path DSO expects
+// to own — without first checking — would silently apply root-privileged
+// permission/ownership changes to whatever the symlink points at instead of
+// failing. A leftover from a failed prior install, or anything else able to
+// write the parent directory before this runs, could plant a symlink here
+// (e.g. "/etc/dso" -> "/etc") to redirect that chmod/chown onto an arbitrary
+// path. os.Lstat (unlike os.Stat) does not follow the final symlink, so it
+// reports the link itself rather than its target.
+func rejectSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to chmod/chown %s: it is a symlink, not a real path", path)
+	}
+	return nil
+}
+
 // setupDSODirectories configures permissions on DSO directories
 func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
 	directories := []struct {
@@ -226,6 +249,13 @@ func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
 	}
 
 	for _, dir := range directories {
+		// Reject a symlink at this path BEFORE MkdirAll/Chmod/Chown, all of
+		// which follow symlinks and would otherwise operate on whatever the
+		// link points at rather than on dir.path itself.
+		if err := rejectSymlink(dir.path); err != nil {
+			return err
+		}
+
 		// Create directory if it doesn't exist
 		if err := os.MkdirAll(dir.path, dir.perm); err != nil {
 			// If it exists, try to change permissions only
@@ -268,6 +298,14 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 				continue
 			}
 			return fmt.Errorf("failed to stat %s: %w", file.path, err)
+		}
+
+		// Reject a symlink at this path BEFORE Chmod/Chown, both of which
+		// follow symlinks (the preceding os.Stat above intentionally does
+		// too — it only wants to know whether the config exists at all;
+		// this Lstat is the one that determines the path's own type).
+		if err := rejectSymlink(file.path); err != nil {
+			return err
 		}
 
 		// Set permissions

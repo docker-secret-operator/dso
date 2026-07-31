@@ -8,7 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–32) and `docs/audit/2026-07-29-fresh-audit.md`.
+Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–33) and `docs/audit/2026-07-29-fresh-audit.md`.
+
+### Added
+
+- **[CLI-3/4/5]** The agent now exposes a real RPC surface for reconciliation and status, replacing fabricated CLI output:
+  - **`docker dso sync`** actually asks the running agent to re-fetch and, if changed, rotate the requested secret(s), and reports real per-secret results — it previously verified only that the agent's socket was reachable, then always reported success without asking it to do anything.
+  - **`docker dso status`** reports the agent's real cache size, pending-rotation count, and per-provider health — it previously returned hardcoded example containers/cache/rotation/queue numbers regardless of actual state. Sections with no real data source (container health, queue depth, historical rotation success/failure counts) were removed from the output rather than left fabricated; the command now clearly reports "agent unreachable" instead of silently falling back to example data when the agent isn't running.
+  - **`docker dso apply`**'s provider-connectivity pre-flight check now asks the agent to attempt a real connection to the exact config being applied (falling back to a type-only check, with an explicit notice, if the agent isn't running yet); its reconciliation trigger now calls the same real RPC instead of writing a raw string directly onto the RPC socket, which triggered nothing server-side.
 
 ### Fixed
 
@@ -17,8 +24,14 @@ Full rationale, options considered, and verification detail for every entry belo
 - **[CLI-1]** `docker dso system status` could panic on short `systemctl` output (`slice bounds out of range`) instead of reporting status.
 - **[CLI-2]** `docker dso export --format <anything but env>` silently wrote an empty file while reporting success. Now rejected upfront.
 - **[REL-8]** Fixed a WebSocket client being registered twice on `/api/events/ws` connect; harmless in steady state, but could permanently block the connecting goroutine if a server shutdown landed between the two registrations.
-
-See Decision 32 for a full list of findings from this round that were triaged and **deferred** (with rationale): `sync`/`status`/`apply` CLI commands returning fabricated data rather than real agent state (needs new agent RPC surface, not a bugfix); bootstrap installer symlink/rollback/lock hazards; setup-engine transaction snapshot gaps; unbounded WebSocket connections on the REST server; container-name/stateful-workload misclassification in the rotation analyzer; and missing connection deadlines/caps in the TCP proxy core.
+- **[REL-9]** `/api/events/ws` is deliberately exempt from per-message rate limiting, but had no cap on concurrent connections at all. Added a 500-connection cap, enforced before the WebSocket upgrade.
+- **[ANALYZER-1]** `HasContainerName` was true for virtually every container (Docker always auto-generates a name), incorrectly biasing rotation decisions toward "restart" regardless of whether an operator actually pinned a name other services might depend on. Now matches Docker's actual auto-name pattern to distinguish explicit names. Also expanded stateful-workload detection from 3 recognized image names to 20, plus 3 additional mount-path prefixes.
+- **[BOOT-1]** Bootstrap's directory/file permission setup now rejects a symlink at any path it's about to `chmod`/`chown`, instead of following it onto whatever the link points at.
+- **[BOOT-2]** Bootstrap rollback now restores a config/systemd-unit file's prior content on failure, instead of unconditionally deleting it — a re-run on an already-configured host no longer risks ending up with no config at all.
+- **[BOOT-3]** The bootstrap lock now detects and reclaims a lock left behind by a process that no longer exists (crash, OOM, power loss), instead of waiting out the full acquire timeout — or, in production, effectively forever — every time.
+- **[SETUP-1]** The setup engine's file/directory executors now explicitly re-apply the declared mode after write/mkdir, since `os.WriteFile`/`os.MkdirAll` silently leave an already-existing path's mode untouched.
+- **[SETUP-2]** Fixed a dead rollback path: adding a member to a Unix group during setup recorded no members in the transaction's "after" state, so rolling back an add-member operation could never actually find a member to remove.
+- **[PROXY-1]** The TCP proxy core now enforces a per-connection idle timeout, a concurrent-connection cap, and force-closes any connections still open when a graceful shutdown's drain window expires (previously only reported a timeout error while leaving them running); accept-error retries now back off exponentially instead of retrying every 10ms indefinitely.
 
 ### Performance
 

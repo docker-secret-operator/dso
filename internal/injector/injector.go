@@ -134,6 +134,38 @@ func (ac *AgentClient) GetEvents() (*api.AgentResponse, error) {
 	return &resp, nil
 }
 
+// TriggerReconciliation asks the running agent to re-fetch and, if changed,
+// re-rotate one (or, if secret is empty, all) configured secrets right now.
+func (ac *AgentClient) TriggerReconciliation(secret string) (*api.ReconcileResponse, error) {
+	req := &api.ReconcileRequest{Secret: secret}
+	var resp api.ReconcileResponse
+	if err := ac.client.Call("Agent.TriggerReconciliation", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetStatus retrieves the agent's real, currently-known operational state.
+func (ac *AgentClient) GetStatus() (*api.StatusResponse, error) {
+	req := &api.StatusRequest{}
+	var resp api.StatusResponse
+	if err := ac.client.Call("Agent.GetStatus", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CheckProviderConnectivity asks the agent to attempt a real connection to
+// the given provider configuration, which need not be one the agent has
+// already loaded.
+func (ac *AgentClient) CheckProviderConnectivity(req *api.ProviderCheckRequest) (*api.ProviderCheckResponse, error) {
+	var resp api.ProviderCheckResponse
+	if err := ac.client.Call("Agent.CheckProviderConnectivity", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Close closes the RPC connection and releases resources
 func (ac *AgentClient) Close() error {
 	if ac.client != nil {

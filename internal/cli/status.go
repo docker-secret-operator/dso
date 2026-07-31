@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/spf13/cobra"
 )
 
@@ -20,9 +21,10 @@ func NewStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show DSO runtime operational status",
-		Long: `Display DSO runtime status including mode, providers, containers, cache, rotations, and queue health.
+		Long: `Display DSO runtime status including mode, providers, cache, and rotation health.
 
-Provides operational visibility into the DSO system.
+Provides operational visibility into the DSO system by querying the running
+agent (via 'docker dso agent'/systemd) for its real, current state.
 
 Examples:
   docker dso status              # Single status check
@@ -59,52 +61,37 @@ type RuntimeStatus struct {
 	StartTime time.Time `json:"start_time"`
 }
 
+// ProviderStatus reflects what the agent's SecretStoreManager actually
+// knows about a provider — "unknown" when the agent hasn't contacted it
+// yet, not a guess.
 type ProviderStatus struct {
 	Name    string `json:"name"`
-	Status  string `json:"status"` // healthy, unhealthy, disabled
-	Secrets int    `json:"secrets,omitempty"`
+	Status  string `json:"status"` // healthy, unhealthy, unknown
 	Message string `json:"message,omitempty"`
 }
 
-type ContainerStatus struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // healthy, unhealthy, stopped
-	Secrets string `json:"secrets,omitempty"`
-	Message string `json:"message,omitempty"`
-}
-
+// CacheStatus reports only what the agent actually tracks (entry count).
+// Hit/miss/size instrumentation does not exist in the agent yet, so those
+// fields are deliberately omitted rather than filled with invented numbers.
 type CacheStatus struct {
-	Entries int64   `json:"entries"`
-	Size    string  `json:"size"`
-	MaxSize string  `json:"max_size"`
-	Hits    int64   `json:"hits"`
-	Misses  int64   `json:"misses"`
-	HitRate float64 `json:"hit_rate"`
+	Entries int `json:"entries"`
 }
 
+// RotationStatus reports only what the agent's crash-recovery state tracker
+// actually counts (in-flight/pending rotations). Historical success/failure
+// totals are not tracked anywhere in the agent yet.
 type RotationStatus struct {
-	Successful int    `json:"successful"`
-	Failed     int    `json:"failed"`
-	Pending    int    `json:"pending"`
-	AvgTime    string `json:"avg_time"`
-}
-
-type QueueStatus struct {
-	Depth     int64  `json:"depth"`
-	MaxDepth  int64  `json:"max_depth"`
-	Processed int64  `json:"processed"`
-	Dropped   int64  `json:"dropped"`
-	Latency   string `json:"latency"`
+	Pending int `json:"pending"`
 }
 
 type SystemStatus struct {
-	Runtime    RuntimeStatus     `json:"runtime"`
-	Providers  []ProviderStatus  `json:"providers"`
-	Containers []ContainerStatus `json:"containers"`
-	Cache      CacheStatus       `json:"cache"`
-	Rotations  RotationStatus    `json:"rotations"`
-	Queue      QueueStatus       `json:"queue"`
-	Health     string            `json:"health"`
+	Runtime      RuntimeStatus    `json:"runtime"`
+	AgentReached bool             `json:"agent_reached"`
+	AgentError   string           `json:"agent_error,omitempty"`
+	Providers    []ProviderStatus `json:"providers,omitempty"`
+	Cache        CacheStatus      `json:"cache"`
+	Rotations    RotationStatus   `json:"rotations"`
+	Health       string           `json:"health"`
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -153,25 +140,52 @@ func (s *Status) watchStatus() error {
 
 func (s *Status) gatherStatus() SystemStatus {
 	status := SystemStatus{
-		Runtime:    s.gatherRuntime(),
-		Providers:  s.gatherProviders(),
-		Containers: s.gatherContainers(),
-		Cache:      s.gatherCache(),
-		Rotations:  s.gatherRotations(),
-		Queue:      s.gatherQueue(),
+		Runtime: s.gatherRuntime(),
 	}
 
-	// Determine overall health
+	socketPath := "/run/dso/dso.sock"
+	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
+		socketPath = custom
+	}
+
+	client, err := injector.NewAgentClientWithTimeout(socketPath, 3*time.Second)
+	if err != nil {
+		status.AgentReached = false
+		status.AgentError = err.Error()
+		status.Health = "✗ agent unreachable"
+		return status
+	}
+	defer func() { _ = client.Close() }()
+
+	resp, err := client.GetStatus()
+	if err != nil {
+		status.AgentReached = false
+		status.AgentError = err.Error()
+		status.Health = "✗ agent unreachable"
+		return status
+	}
+
+	status.AgentReached = true
+	status.Cache = CacheStatus{Entries: resp.CacheEntries}
+	status.Rotations = RotationStatus{Pending: resp.PendingRotations}
+
+	for _, p := range resp.Providers {
+		ps := ProviderStatus{Name: p.Name, Message: p.Message}
+		switch {
+		case !p.Known:
+			ps.Status = "unknown"
+		case p.Healthy:
+			ps.Status = "healthy"
+		default:
+			ps.Status = "unhealthy"
+		}
+		status.Providers = append(status.Providers, ps)
+	}
+
 	status.Health = "✓ All systems nominal"
 	for _, p := range status.Providers {
 		if p.Status == "unhealthy" {
 			status.Health = "⚠ Some providers unhealthy"
-			break
-		}
-	}
-	for _, c := range status.Containers {
-		if c.Status == "unhealthy" {
-			status.Health = "✗ Some containers unhealthy"
 			break
 		}
 	}
@@ -218,60 +232,6 @@ func (s *Status) gatherRuntime() RuntimeStatus {
 	}
 }
 
-func (s *Status) gatherProviders() []ProviderStatus {
-	providers := []ProviderStatus{
-		{Name: "local", Status: "healthy", Secrets: 1, Message: "available"},
-		{Name: "vault", Status: "disabled", Message: "not configured"},
-		{Name: "aws", Status: "disabled", Message: "not configured"},
-		{Name: "azure", Status: "disabled", Message: "not configured"},
-	}
-
-	// TODO: if a config file exists, parse it to report real provider status
-	// instead of the hardcoded defaults above.
-
-	return providers
-}
-
-func (s *Status) gatherContainers() []ContainerStatus {
-	// This would normally query Docker to get actual container status
-	// For now, return example data
-	return []ContainerStatus{
-		{Name: "postgres", Status: "healthy", Secrets: "db_password", Message: "running"},
-		{Name: "redis", Status: "healthy", Secrets: "redis_pwd", Message: "running"},
-		{Name: "api", Status: "healthy", Secrets: "none", Message: "running"},
-	}
-}
-
-func (s *Status) gatherCache() CacheStatus {
-	return CacheStatus{
-		Entries: 5,
-		Size:    "2.3 MB",
-		MaxSize: "100 MB",
-		Hits:    1234,
-		Misses:  23,
-		HitRate: 98.2,
-	}
-}
-
-func (s *Status) gatherRotations() RotationStatus {
-	return RotationStatus{
-		Successful: 12,
-		Failed:     0,
-		Pending:    1,
-		AvgTime:    "8.3s",
-	}
-}
-
-func (s *Status) gatherQueue() QueueStatus {
-	return QueueStatus{
-		Depth:     0,
-		MaxDepth:  2000,
-		Processed: 487,
-		Dropped:   0,
-		Latency:   "42ms",
-	}
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // OUTPUT METHODS
 // ════════════════════════════════════════════════════════════════════════════
@@ -286,6 +246,15 @@ func (s *Status) printText(status SystemStatus) error {
 	fmt.Printf("│ Uptime:   %-50s │\n", status.Runtime.Uptime)
 	fmt.Println("│                                                             │")
 
+	if !status.AgentReached {
+		fmt.Printf("│ AGENT: NOT REACHABLE (%-38s │\n", truncate(status.AgentError, 38)+")")
+		fmt.Println("│                                                             │")
+		fmt.Printf("│ HEALTH: %-53s │\n", status.Health)
+		fmt.Println("└─────────────────────────────────────────────────────────────┘")
+		fmt.Println()
+		return nil
+	}
+
 	// Providers
 	fmt.Println("│ PROVIDERS                                                   │")
 	for i, p := range status.Providers {
@@ -298,49 +267,17 @@ func (s *Status) printText(status SystemStatus) error {
 	}
 	fmt.Println("│                                                             │")
 
-	// Containers
-	fmt.Println("│ CONTAINERS                                                  │")
-	for i, c := range status.Containers {
-		prefix := "├─"
-		if i == len(status.Containers)-1 {
-			prefix = "└─"
-		}
-		contStatus := statusSymbolInline(c.Status)
-		secretInfo := ""
-		if c.Secrets != "none" {
-			secretInfo = fmt.Sprintf("(secret: %s)", c.Secrets)
-		}
-		msg := fmt.Sprintf("%s %s", contStatus, secretInfo)
-		fmt.Printf("│ %s %s: %-45s │\n", prefix, c.Name, msg)
-	}
-	fmt.Println("│                                                             │")
-
 	// Cache
 	fmt.Println("│ CACHE                                                       │")
-	fmt.Printf("│ ├─ Entries:  %-46d │\n", status.Cache.Entries)
-	fmt.Printf("│ ├─ Size:     %-46s │\n", fmt.Sprintf("%s / %s", status.Cache.Size, status.Cache.MaxSize))
-	fmt.Printf("│ ├─ Hits:     %-46d │\n", status.Cache.Hits)
-	fmt.Printf("│ ├─ Misses:   %-46d │\n", status.Cache.Misses)
-	fmt.Printf("│ └─ Hit rate: %-46.1f%% │\n", status.Cache.HitRate)
+	fmt.Printf("│ └─ Entries:  %-46d │\n", status.Cache.Entries)
 	fmt.Println("│                                                             │")
 
 	// Rotations
 	fmt.Println("│ ROTATIONS                                                   │")
-	fmt.Printf("│ ├─ Successful: %-43d │\n", status.Rotations.Successful)
-	fmt.Printf("│ ├─ Failed:     %-43d │\n", status.Rotations.Failed)
-	fmt.Printf("│ ├─ Pending:    %-43d │\n", status.Rotations.Pending)
-	fmt.Printf("│ └─ Avg time:   %-43s │\n", status.Rotations.AvgTime)
+	fmt.Printf("│ └─ Pending:    %-43d │\n", status.Rotations.Pending)
 	fmt.Println("│                                                             │")
 
-	// Queue
-	fmt.Println("│ QUEUE                                                       │")
-	fmt.Printf("│ ├─ Depth:     %-46s │\n", fmt.Sprintf("%d / %d", status.Queue.Depth, status.Queue.MaxDepth))
-	fmt.Printf("│ ├─ Processed: %-46d │\n", status.Queue.Processed)
-	fmt.Printf("│ ├─ Dropped:   %-46d │\n", status.Queue.Dropped)
-	fmt.Printf("│ └─ Latency:   %-46s │\n", status.Queue.Latency)
-	fmt.Println("│                                                             │")
-
-	fmt.Printf("│ HEALTH: %s%-50s │\n", status.Health, "")
+	fmt.Printf("│ HEALTH: %-53s │\n", status.Health)
 	fmt.Println("└─────────────────────────────────────────────────────────────┘")
 	fmt.Println()
 
@@ -384,4 +321,11 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh %dm", hours, minutes)
 	}
 	return fmt.Sprintf("%dm", minutes)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

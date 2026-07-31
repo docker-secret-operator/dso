@@ -12,6 +12,14 @@ import (
 const (
 	writeWait  = 10 * time.Second
 	pingPeriod = 60 * time.Second // Kept simple
+
+	// maxHubClients caps concurrent WebSocket connections. The rate limiter
+	// deliberately exempts this endpoint from per-message throttling (a
+	// single long-lived connection legitimately sends very few messages),
+	// but without a cap here that exemption also meant no limit on how many
+	// connections could be opened — each costing a buffered channel and two
+	// goroutines. This bounds that instead.
+	maxHubClients = 500
 )
 
 type Client struct {
@@ -37,6 +45,13 @@ func NewHub(logger *zap.Logger) *Hub {
 		clients:    make(map[*Client]bool),
 		logger:     logger,
 	}
+}
+
+// ClientCount returns the number of currently connected WebSocket clients.
+func (h *Hub) ClientCount() int {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return len(h.clients)
 }
 
 func (h *Hub) Run(ctx context.Context) {

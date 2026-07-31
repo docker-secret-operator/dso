@@ -133,6 +133,7 @@ func NewAgentCmd() *cobra.Command {
 				logger.Fatal("Failed to start agent socket server", zap.Error(err))
 			}
 			trigger.Server = agentServer
+			agentServer.Trigger = trigger
 			reloader.Server = agentServer
 
 			// 2. Start Docker Secret Driver Server (V2 Plugin). Serve runs in the

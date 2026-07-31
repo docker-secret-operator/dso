@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -290,9 +292,48 @@ func (b *BootstrapLockOps) Acquire(ctx context.Context, timeout time.Duration) (
 			}, nil
 		}
 
-		// Lock file exists, wait a bit and retry
+		// Lock file exists. If it was left behind by a process that no
+		// longer exists (killed, OOM-killed, or the host lost power before
+		// Release ran), waiting out the full timeout every time would wedge
+		// every future bootstrap attempt on this host until an operator
+		// manually deletes the file. Check the recorded PID's liveness and
+		// reclaim the lock if it's gone.
+		if b.isStaleLock() {
+			b.logger.Warn("Removing stale lock left by a process that no longer exists", "path", b.lockPath)
+			_ = os.Remove(b.lockPath)
+			continue
+		}
+
+		// Lock file exists and its owner is still alive — wait a bit and retry.
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// isStaleLock reports whether the lock file's recorded PID no longer
+// corresponds to a running process. Returns false (assume live) on any
+// ambiguous case — a malformed/unreadable lock file, or a PID lookup error
+// other than "process does not exist" — so this can only ever shorten a
+// wait, never falsely delete a live lock out from under its owner.
+func (b *BootstrapLockOps) isStaleLock() bool {
+	data, err := os.ReadFile(b.lockPath) // #nosec G304 -- lockPath is DSO's own fixed lock location, not user input
+	if err != nil {
+		return false
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+
+	// syscall.Kill with signal 0 performs only the existence/permission
+	// check, sending no actual signal. Called directly (rather than via
+	// os.Process.Signal) so this reflects the OS's view of the PID even
+	// when it happens to be one of our own already-reaped children — Go's
+	// os.Process tracks child reap state internally and would otherwise
+	// return its own "process already finished" error instead of the OS
+	// answering the question directly.
+	err = syscall.Kill(pid, syscall.Signal(0))
+	return errors.Is(err, syscall.ESRCH)
 }
 
 // Release releases the lock

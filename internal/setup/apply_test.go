@@ -67,6 +67,7 @@ func TestDirectoryExecutor_Create_MkdirCalled(t *testing.T) {
 	}, &Emitter{})
 	exec.stat = noopStat
 	exec.mkdir = func(p string, m os.FileMode) error { called = true; return nil }
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -84,6 +85,7 @@ func TestDirectoryExecutor_Create_RecordsOp(t *testing.T) {
 	}, &Emitter{})
 	exec.stat = noopStat
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -107,6 +109,7 @@ func TestDirectoryExecutor_Create_BeforeStateRecorded(t *testing.T) {
 	}, &Emitter{})
 	exec.stat = noopStat // returns ErrNotExist → Existed=false
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -130,6 +133,7 @@ func TestDirectoryExecutor_Create_ExistingDirSnapshotted(t *testing.T) {
 		return os.Stat(".")
 	}
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 	exec.ownerOf = func(_ string) (string, error) { return "root:root", nil }
 
@@ -151,6 +155,7 @@ func TestDirectoryExecutor_MkdirError_FailsOp(t *testing.T) {
 	}, &Emitter{})
 	exec.stat = noopStat
 	exec.mkdir = errMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -170,6 +175,7 @@ func TestDirectoryExecutor_ChownError_FailsOp(t *testing.T) {
 	}, &Emitter{})
 	exec.stat = noopStat
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = failChown
 
 	tx := newTransaction("plan-001")
@@ -193,6 +199,7 @@ func TestDirectoryExecutor_EmitsStartedAndCompletedEvents(t *testing.T) {
 	}, em)
 	exec.stat = noopStat
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -219,6 +226,7 @@ func TestDirectoryExecutor_EmitsFailedEventOnError(t *testing.T) {
 	}, em)
 	exec.stat = noopStat
 	exec.mkdir = errMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -239,6 +247,7 @@ func TestDirectoryExecutor_MultipleOps_AllRecorded(t *testing.T) {
 	exec := newDirectoryExecutor(ops, &Emitter{})
 	exec.stat = noopStat
 	exec.mkdir = noopMkdir
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -257,6 +266,7 @@ func TestDirectoryExecutor_FirstFailureAbortsRest(t *testing.T) {
 	exec := newDirectoryExecutor(ops, &Emitter{})
 	exec.stat = noopStat
 	exec.chown = noopChown
+	exec.chmod = noopChmod
 	call := 0
 	exec.mkdir = func(_ string, _ os.FileMode) error {
 		call++
@@ -278,6 +288,36 @@ func TestDirectoryExecutor_FirstFailureAbortsRest(t *testing.T) {
 	}
 }
 
+// TestDirectoryExecutor_ChmodCalledEvenWhenDirAlreadyExists proves the
+// SETUP-1 fix: os.MkdirAll only applies its mode argument when CREATING a
+// directory, so on an already-existing path it silently leaves the current
+// mode untouched. Without an explicit chmod after mkdir, a directory that
+// already existed with an over-permissive mode would stay that way across a
+// setup/repair re-run despite the recorded transaction claiming op.Mode was
+// applied.
+func TestDirectoryExecutor_ChmodCalledEvenWhenDirAlreadyExists(t *testing.T) {
+	var chmodCalled bool
+	var chmodMode os.FileMode
+	exec := newDirectoryExecutor([]DirectoryChange{
+		{ID: "DIR-001", Path: "/etc/dso", Mode: 0750, Operation: "create"},
+	}, &Emitter{})
+	exec.stat = func(_ string) (os.FileInfo, error) { return os.Stat(".") } // simulate already-existing (any non-nil FileInfo)
+	exec.mkdir = func(_ string, _ os.FileMode) error { return nil }         // MkdirAll no-ops on existing dir
+	exec.chmod = func(_ string, m os.FileMode) error { chmodCalled = true; chmodMode = m; return nil }
+	exec.chown = noopChown
+
+	tx := newTransaction("plan-001")
+	if err := exec.execute(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !chmodCalled {
+		t.Fatal("expected chmod to be called even though the directory already existed")
+	}
+	if chmodMode != 0750 {
+		t.Errorf("expected chmod mode 0750, got %04o", chmodMode)
+	}
+}
+
 // ─── FileExecutor ─────────────────────────────────────────────────────────────
 
 func TestFileExecutor_Empty_NoOps(t *testing.T) {
@@ -291,6 +331,37 @@ func TestFileExecutor_Empty_NoOps(t *testing.T) {
 	}
 }
 
+// TestFileExecutor_ChmodCalledEvenWhenFileAlreadyExists proves the SETUP-1
+// fix: os.WriteFile only applies its mode argument when CREATING a file, so
+// on an already-existing path it silently leaves the current mode
+// untouched. Without an explicit chmod after write, a config file that
+// already existed with an over-permissive mode would stay that way across a
+// setup/repair re-run despite the recorded transaction claiming op.Mode was
+// applied.
+func TestFileExecutor_ChmodCalledEvenWhenFileAlreadyExists(t *testing.T) {
+	var chmodCalled bool
+	var chmodMode os.FileMode
+	exec := newFileExecutor([]FileChange{
+		{ID: "FILE-001", Path: "/etc/dso/dso.yaml", Content: []byte("v: 1"), Mode: 0600, Operation: "create"},
+	}, &Emitter{})
+	exec.readFile = func(_ string) ([]byte, error) { return []byte("v: 0"), nil } // simulate already-existing
+	exec.stat = func(_ string) (os.FileInfo, error) { return os.Stat(".") }
+	exec.writeFile = func(_ string, _ []byte, _ os.FileMode) error { return nil } // WriteFile no-ops mode on existing file
+	exec.chmod = func(_ string, m os.FileMode) error { chmodCalled = true; chmodMode = m; return nil }
+	exec.chown = noopChown
+
+	tx := newTransaction("plan-001")
+	if err := exec.execute(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !chmodCalled {
+		t.Fatal("expected chmod to be called even though the file already existed")
+	}
+	if chmodMode != 0600 {
+		t.Errorf("expected chmod mode 0600, got %04o", chmodMode)
+	}
+}
+
 func TestFileExecutor_Write_WriteFileCalled(t *testing.T) {
 	var called bool
 	exec := newFileExecutor([]FileChange{
@@ -299,6 +370,7 @@ func TestFileExecutor_Write_WriteFileCalled(t *testing.T) {
 	exec.stat = noopStat
 	exec.readFile = noopReadFile
 	exec.writeFile = func(_ string, _ []byte, _ os.FileMode) error { called = true; return nil }
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -317,6 +389,7 @@ func TestFileExecutor_Write_RecordsCompleted(t *testing.T) {
 	exec.stat = noopStat
 	exec.readFile = noopReadFile
 	exec.writeFile = noopWriteFile
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -337,6 +410,7 @@ func TestFileExecutor_NewFile_BeforeExistedFalse(t *testing.T) {
 	exec.stat = noopStat
 	exec.readFile = noopReadFile // ErrNotExist → Existed=false
 	exec.writeFile = noopWriteFile
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -359,6 +433,7 @@ func TestFileExecutor_ExistingFile_BeforeContentSaved(t *testing.T) {
 	exec.stat = func(_ string) (os.FileInfo, error) { return os.Stat(".") }
 	exec.readFile = func(_ string) ([]byte, error) { return existing, nil }
 	exec.writeFile = noopWriteFile
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 	exec.ownerOf = func(_ string) (string, error) { return "root:root", nil }
 
@@ -384,6 +459,7 @@ func TestFileExecutor_WriteError_FailsOp(t *testing.T) {
 	exec.stat = noopStat
 	exec.readFile = noopReadFile
 	exec.writeFile = errWriteFile
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	tx := newTransaction("plan-001")
@@ -408,6 +484,7 @@ func TestFileExecutor_EmitsStartedAndCompletedEvents(t *testing.T) {
 	exec.stat = noopStat
 	exec.readFile = noopReadFile
 	exec.writeFile = noopWriteFile
+	exec.chmod = noopChmod
 	exec.chown = noopChown
 
 	_ = exec.execute(context.Background(), newTransaction("plan-001"))
@@ -982,5 +1059,84 @@ func TestServiceExecutor_Stop_AfterSnapshotReflectsActualState(t *testing.T) {
 	}
 	if after.Active {
 		t.Error("After.Active must be false after stop; old inferred value (op==\"start\"||active) was wrong")
+	}
+}
+
+// ─── GroupExecutor: After snapshot reflects actual post-add-member state (SETUP-2) ───
+
+// TestGroupExecutor_AddMember_AfterSnapshotReflectsAddedMembers proves the
+// SETUP-2 fix: After.Members must reflect the members actually present after
+// an add-member operation, not always be empty. Before this fix,
+// txOp.After was hardcoded to &GroupSnapshot{Existed: true} with no
+// Members, so rollback_group.go's diff (After minus Before) could never
+// find anything to remove — a rollback path that looked like real coverage
+// but could never fire.
+func TestGroupExecutor_AddMember_AfterSnapshotReflectsAddedMembers(t *testing.T) {
+	members := []string{"bob"} // pre-existing member before this operation
+	exec := newGroupExecutor([]GroupChange{
+		{ID: "GROUP-001", Name: "dso", Operation: "add-member", Users: []string{"alice"}},
+	}, &Emitter{})
+	exec.groupExists = func(_ string) (bool, error) { return true, nil }
+	exec.getMembers = func(_ string) ([]string, error) { return members, nil }
+	exec.addMember = func(_, u string) error {
+		members = append(members, u) // simulate usermod actually adding the member
+		return nil
+	}
+
+	tx := newTransaction("plan-001")
+	if err := exec.execute(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, ok := tx.Operations[0].After.(*GroupSnapshot)
+	if !ok {
+		t.Fatalf("expected *GroupSnapshot After, got %T", tx.Operations[0].After)
+	}
+	found := false
+	for _, m := range after.Members {
+		if m == "alice" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected After.Members to include the newly-added member 'alice', got %v", after.Members)
+	}
+}
+
+// TestGroupRollback_AddMember_RemovesTheMemberItAdded is the end-to-end
+// proof: given a real executeOne run through GroupExecutor followed by
+// groupRollback.rollback on the resulting TxOperation, the member added by
+// this operation is actually removed. This is the exact path that was dead
+// code before the SETUP-2 fix.
+func TestGroupRollback_AddMember_RemovesTheMemberItAdded(t *testing.T) {
+	members := []string{"bob"}
+	exec := newGroupExecutor([]GroupChange{
+		{ID: "GROUP-001", Name: "dso", Operation: "add-member", Users: []string{"alice"}},
+	}, &Emitter{})
+	exec.groupExists = func(_ string) (bool, error) { return true, nil }
+	exec.getMembers = func(_ string) ([]string, error) { return members, nil }
+	exec.addMember = func(_, u string) error {
+		members = append(members, u)
+		return nil
+	}
+
+	tx := newTransaction("plan-001")
+	if err := exec.execute(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rb := newGroupRollback(&Emitter{})
+	var removedFrom, removedUser string
+	rb.removeMember = func(group, username string) error {
+		removedFrom, removedUser = group, username
+		return nil
+	}
+
+	if err := rb.rollback(context.Background(), &tx.Operations[0]); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	if removedUser != "alice" || removedFrom != "dso" {
+		t.Errorf("expected rollback to remove 'alice' from group 'dso', got removeMember(%q, %q)", removedFrom, removedUser)
 	}
 }

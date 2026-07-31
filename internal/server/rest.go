@@ -184,6 +184,11 @@ func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
+	if s.Hub.ClientCount() >= maxHubClients {
+		http.Error(w, "too many active connections", http.StatusServiceUnavailable)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.Logger.Error("WebSocket upgrade failed", zap.Error(err))

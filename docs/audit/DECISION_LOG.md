@@ -1290,7 +1290,7 @@ Tests prove the deadline actually crosses the process boundary (server-side reco
 ### Decision 32: Final Parallel-Domain Audit — Six Unaudited Feature Surfaces
 
 **Date**: 2026-07-31
-**Status**: Partially implemented — five contained fixes landed, larger findings triaged and deferred with rationale below.
+**Status**: Fully implemented — five contained fixes landed in this decision; all remaining deferred items closed in Decision 33.
 
 Dispatched six parallel read-only audit agents, one per feature domain that had not yet had a dedicated pass this cycle: CLI command surface (`internal/cli`), the legacy bootstrap installer (`internal/bootstrap`), the transactional setup engine (`internal/setup`), the server/API layer (`internal/server`, `pkg/api`), injector/strategy/analyzer (`internal/injector`, `internal/strategy`, `internal/analyzer`), and the TCP proxy core (`internal/proxy`). Each agent was scoped to its file list only, told what was already fixed in prior decisions so it wouldn't re-report closed findings, and required file:line evidence with a concrete failure scenario.
 
@@ -1314,6 +1314,87 @@ Dispatched six parallel read-only audit agents, one per feature domain that had 
 - **Proxy core (`internal/proxy/server.go`)** — no per-connection read/write deadlines and no concurrent-connection cap in `acceptLoop`/`handleConn`; a client that opens connections and sends nothing pins goroutines and file descriptors indefinitely. `CloseGraceful` returns a timeout error on a slow drain but never force-closes the lingering connections, compounding the leak across restarts. The 10ms accept-error retry has no backoff, so a sustained `Accept()` failure (e.g. FD exhaustion from the leak above) becomes a tight, log-flooding loop.
 
 None of the deferred items were fixed here because each requires either a feature addition (sync/status/apply) or touches enough surrounding logic (transactional rollback correctness, connection-lifecycle changes to a proxy already carrying live traffic semantics) that bundling five-plus non-trivial changes into one pass would trade verification confidence for speed. They're recorded here, in full, with enough detail to act on independently.
+
+---
+
+### Decision 33: Closing All Decision 32 Deferrals, Including a Real Agent RPC Surface
+
+**Date**: 2026-07-31
+**Status**: Implemented
+
+Every item Decision 32 deferred is closed here. Verified throughout: `go build`/`go vet`/`gofmt` clean, `golangci-lint` 0 issues, `gosec` 0 issues, full `go test -race ./...` all packages `ok`.
+
+---
+
+#### (a) PROXY-1 — proxy core hardening (`internal/proxy/server.go`)
+
+Added, as a single `idleTimeoutConn` wrapper applied to both legs of a proxied connection: a per-connection idle-read deadline (10 min, reset on every `Read`, so an active-but-long-lived connection like a held-open database session is never cut — only a truly idle one is); a global connection cap (`maxConcurrentConns`, default 4096, enforced via a buffered semaphore channel, connections over cap closed immediately post-accept); exponential (capped at 1s) backoff on repeated `Accept` errors instead of a fixed 10ms retry; and `CloseGraceful` now force-closes any connections still in-flight when its drain timeout expires, instead of reporting a timeout error while leaving them to leak.
+
+The force-close needed a second iteration: closing only the client-side leg was not sufficient, because if the *upstream* leg is the one blocked in `Read` (e.g. a backend that accepted but never replies), the client-side close alone doesn't unblock the goroutine copying upstream→client. Added `connLegs`, tracking both legs of a connection so a forced shutdown closes whichever side the pipe goroutines are actually blocked on. `TestServer_CloseGraceful_ForceClosesOnTimeout` uses exactly this stalled-backend shape and caught the gap on the first attempt (the test failed against the client-only-close version), which is the reason this got two commits' worth of iteration recorded here rather than one.
+
+`CloseWrite`'s existing half-close optimization (TCP graceful shutdown, used by protocols like HTTP/1.1 that half-close a request before reading the response) also had to be explicitly forwarded through `idleTimeoutConn`, since `net.Conn` doesn't declare `CloseWrite()` and Go's embedding-based method promotion only promotes methods declared on the embedded *interface* type — without this, wrapping would have silently downgraded every half-close to a full `Close()`.
+
+---
+
+#### (b) REL-9 — WebSocket connection cap (`internal/server/hub.go`, `rest.go`)
+
+Also fixed the duplicate-registration issue from the fresh audit's own Decision 32 finding (`client.hub.register <- client` sent twice before pumps started) — removed the redundant first send.
+
+Separately: the rate limiter deliberately exempts `/api/events/ws` from per-message throttling (correct — a long-lived connection legitimately sends almost no messages), but that exemption had no companion cap on *how many connections* could exist. Added `Hub.ClientCount()` and a `maxHubClients` (500) check in `handleEventWS`, returning `503` before the WebSocket upgrade once at capacity, so opening unlimited connections (each costing a 256-slot channel + 2 goroutines) is no longer free for an authorized caller (or any caller, on a loopback/no-token deployment).
+
+---
+
+#### (c) ANALYZER-1 — container name/stateful detection (`internal/analyzer/container_analyzer.go`)
+
+`HasContainerName` was true for virtually every container, since Docker's `InspectResponse.Name` is never empty (the daemon auto-generates one). Added `looksExplicitlyNamed`, matching Docker's actual auto-name shape (`namesgenerator`'s `adjective_surname[N]` pattern) — a name that does NOT match this shape was very likely set explicitly via `--name` or Compose's `container_name:`. This is an explicitly-documented heuristic, not a guarantee (a coincidental two-lowercase-word name would be misclassified), because there is no field on `InspectResponse` that distinguishes "the daemon picked this" from "the user picked this."
+
+This interacts directly with Decision 32's `STRAT-1` fix: `HasContainerName`'s universal true value had been incidentally helping push containers below the rolling-rotation threshold. Fixing it in isolation, without STRAT-1's hard stateful override already in place, would have made MORE stateful containers eligible for "rolling" — Decision 32's ordering (fix the hard override first) was what made this safe to fix here without reopening that risk.
+
+Also expanded stateful-workload detection: image-name matching grew from 3 substrings (`mysql`/`postgres`/`mongo`) to 20 (redis, elasticsearch, opensearch, cassandra, rabbitmq, clickhouse, etcd, zookeeper, kafka, influxdb, cockroach, couchdb, neo4j, sqlserver, dynamodb, timescale, mariadb, memcached), and mount-path matching grew from `/var/lib/` alone to also include `/data`, `/bitnami`, `/var/opt/`. Both remain best-effort — a custom-tagged internal image with none of these hints and a non-matching mount path is still not detected, which is documented as an accepted limitation rather than silently left implicit.
+
+---
+
+#### (d)/(e)/(f) BOOT-1/2/3 — bootstrap installer hardening (`internal/bootstrap`)
+
+- **Symlink-following chmod/chown (`permissions.go`)**: added `rejectSymlink`, called via `os.Lstat` (which does not follow the final symlink, unlike `os.Stat`) before every `os.Chmod`/`os.Chown` in `setupDSODirectories`/`setupDSOFiles`. A path DSO expects to own that turns out to be a symlink (planted by a failed prior install, or anything else able to write the parent directory first) now fails loudly instead of silently applying a root-privileged permission/ownership change to whatever the link points at.
+- **Rollback destroying pre-existing state (`rollback.go`)**: `WriteConfigOp` and `InstallServiceOp` now snapshot any pre-existing content at the target path *before* overwriting it (captured in a closure variable at op-execute time, read back at rollback time), and rollback restores that content instead of unconditionally deleting the file. A bootstrap re-run on an already-configured host that fails partway through no longer leaves the host with no config and no service file — it's restored to what it had before. Exported `ServiceFilePath` from `systemd.go` so `rollback.go` doesn't duplicate that path as a second literal that could drift from the one `InstallServiceFile`/`RemoveServiceFile` actually use.
+- **Stale lock detection (`filesystem.go`)**: `BootstrapLockOps.Acquire` previously spun for the full timeout against a lock file with no liveness check on its recorded PID. Added `isStaleLock`, which reads the PID and checks it via `syscall.Kill(pid, 0)` (existence-check only, no signal delivered) — **called directly rather than via `os.Process.Signal`**, because for a process that happens to be one of *this* process's own already-`Wait()`-reaped children, Go's runtime tracks that reap state internally and `Signal` would return its own synthetic "process already finished" error instead of consulting the OS, which does not satisfy an `errors.Is(err, syscall.ESRCH)` check. This was caught by `TestBootstrapLock_ReclaimsStaleLock`, which failed on the first `os.FindProcess`/`Signal`-based implementation for exactly this reason, and passed once switched to a direct `syscall.Kill` call. On any ambiguous read (malformed lock file, permission error) `isStaleLock` returns false — it can only shorten a wait, never falsely evict a live lock's owner.
+
+---
+
+#### (g)/(h) SETUP-1/2 — transaction executor correctness (`internal/setup`)
+
+- **Mode not re-enforced on existing paths (`executor_file.go`, `executor_directory.go`)**: `os.WriteFile`/`os.MkdirAll` only apply their mode argument when *creating* a path; on an already-existing one (the common case on a setup/repair re-run) the existing mode is left untouched while the transaction's `After` snapshot claimed `op.Mode` was applied. Both executors now call an explicit `chmod` after write/mkdir succeeds, so the declared mode is always enforced regardless of whether the path pre-existed. Required updating ~18 existing executor tests to inject a `noopChmod`/`errChmod` hook alongside the existing `mkdir`/`writeFile` hooks (mechanical, since the executors' function-field injection pattern already existed for exactly this purpose).
+- **Dead add-member rollback path (`executor_group.go`)**: `txOp.After` was hardcoded to `&GroupSnapshot{Existed: true}` with no `Members`, so `rollback_group.go`'s diff (`After.Members` minus `Before.Members`) could never find a member to remove — a rollback code path that looked like real coverage but could never fire. Fixed by re-reading actual group membership into `After.Members` after an `add-member` operation. `TestGroupRollback_AddMember_RemovesTheMemberItAdded` exercises the full executor→rollback path end-to-end (not just the executor in isolation) specifically because the bug was in how those two pieces connected, not in either one alone.
+
+---
+
+#### (i) CLI-3/4/5 — building the real agent RPC surface (`sync`/`status`/`apply`)
+
+This was the most severe item from Decision 32: `docker dso sync` connected to the agent only to confirm it was reachable, then fabricated a `SyncResult{Succeeded: true}` without asking it to do anything; `docker dso status` returned hardcoded example containers/cache/rotation/queue numbers regardless of real state; `apply`'s provider-connectivity check only validated the provider *type* string. The daemon's entire RPC surface (`pkg/api.AgentAPI`) was a single `GetSecret` method — there was no reconciliation-trigger or status-query endpoint to call.
+
+**Chose to build the real RPC surface** (over making the commands merely "honest about being fake," the smaller alternative) because the underlying capability — re-fetch a secret and rotate on change, or report the agent's actual state — already exists in `TriggerEngine`/`StateTracker`/`SecretStoreManager`; the gap was purely in exposing it, not in building new rotation/tracking logic from scratch.
+
+**Added to `pkg/api`**: `ReconcileRequest`/`ReconcileResponse` (per-secret check/rotate outcome), `StatusRequest`/`StatusResponse` (cache size, pending rotations, per-provider health), `ProviderCheckRequest`/`ProviderCheckResponse` (a specific config to test, not necessarily one the agent has loaded — `apply`'s check must validate the *new* config being pushed, which may differ from what the agent is currently running).
+
+**Server side (`internal/agent/server.go`)**: added a `Trigger *TriggerEngine` back-reference field on `AgentServer` (mirroring the existing `TriggerEngine.Server` back-reference), wired in `internal/cli/agent.go` right after both are constructed. Three new exported methods — `TriggerReconciliation`, `GetStatus`, `CheckProviderConnectivity` — are picked up automatically by net/rpc's per-connection registration (`agentConn` embeds `*AgentServer`; any exported `func(reqType, *respType) error` method is reachable as `Agent.<Name>` with no additional wiring), the same mechanism `GetEvents` already used.
+
+- `TriggerReconciliation` iterates the agent's configured secrets (or one, if `req.Secret` is set), calls `Store.GetProvider`+`provider.GetSecret` for each, and — since `TriggerEngine.ExecuteRotation` is fire-and-forget and does its own internal hash-diff silently — independently compares old/new hash *before* calling it, so the response can honestly report whether a rotation actually happened rather than always claiming success once the fetch succeeded.
+- `GetStatus` reports `len(Cache.ListKeys())` for cache size, `len(StateTracker.GetPendingRotations())` for pending rotations, and per-provider health via a new `SecretStoreManager.Health(name)` method that reads existing `StoreEntry` state **without** triggering a connection attempt (unlike `GetProvider`) — a provider the agent has never contacted is reported as `Known: false`, a distinct state from unhealthy, rather than fabricating either. Historical rotation success/failure counts and the old "Containers"/"Queue" status sections were **dropped, not fabricated-differently**: no counter for either exists anywhere in the codebase, and inventing one under review-effort constraints would just be a slower-to-notice version of the same bug being fixed. `internal/cli/status.go`'s `SystemStatus`/`CacheStatus`/`RotationStatus` types were trimmed to match — they now only carry fields with a real data source, and the command clearly reports `agent unreachable` (with the underlying dial error) rather than silently falling back to any hardcoded content when the agent isn't running.
+- `CheckProviderConnectivity` calls `Store.GetProvider` with the caller-supplied config and a forced single retry attempt (`Retry.Attempts: 1`) — deliberately not the caller's own retry/backoff settings, so a pre-flight check fails fast instead of blocking `apply` for a multi-attempt backoff window a real rotation would tolerate.
+
+**Client side (`internal/injector/injector.go`)**: added `TriggerReconciliation`, `GetStatus`, `CheckProviderConnectivity` methods on `AgentClient`, each a thin `rpc.Call` wrapper matching the existing `GetEvents` pattern.
+
+**`sync.go`** now calls `AgentClient.TriggerReconciliation` and reports real `SecretsChecked`/`SecretsRotated`/per-secret errors; the command now exits non-zero when any secret failed to reconcile, which it never did before (fabricated results were always "success").
+
+**`apply.go`**: `verifyProviderConnectivity` now asks the agent to actually attempt the connection via `CheckProviderConnectivity` (falling back to the type-only check with an explicit "agent not reachable, validated type only" notice if the agent isn't running yet — e.g. first-time setup before `docker dso up`, so this doesn't block initial installs). `triggerAgentSync` — which previously wrote a raw `"SYNC\n"` string directly onto the RPC socket (a write that could succeed at the socket-buffer level while the net/rpc server on the other end has no way to interpret it as a request, triggering nothing) — now calls the same real `TriggerReconciliation` RPC and reports actual per-secret results.
+
+**Tests**: `internal/agent/server_reconcile_test.go` covers all three new server methods, including two cases chosen because they map directly to the original fabrication bugs — an unknown-provider config must produce a per-secret error rather than being silently skipped, and an unused-but-configured provider must report `Known: false` rather than a fabricated healthy/unhealthy value. `internal/cli/status_test.go`'s three tests that asserted on the OLD hardcoded fake data (`gatherProviders`/`gatherContainers`/`gatherCache`) were replaced with one that asserts the opposite: no agent reachable ⇒ `AgentReached: false` and zero-value data, not fabricated content.
+
+### Remaining Open (genuinely deferred, not silently dropped)
+- `docker dso status`'s Containers and Queue sections remain unimplemented (removed from output rather than faked) — would need new instrumentation (a queue doesn't exist as a first-class concept outside `internal/events`'s batch reactor, which the agent's `TriggerEngine` path doesn't currently share) and container-health polling via the agent's Docker client, both real feature work.
+- Historical rotation success/failure counters do not exist anywhere in the codebase; `GetStatus` only reports current pending count.
+- Huawei plugin's in-flight interruption limitation (Decision 31) and `redactFields`'s one remaining allocation (Decision 31) remain as previously recorded.
 
 ---
 

@@ -45,6 +45,14 @@ type AgentServer struct {
 	Config *config.Config
 	Events []string // Simple in-memory event log for 'watch'
 	mu     sync.Mutex
+
+	// Trigger backs TriggerReconciliation/GetStatus with the agent's real
+	// rotation/state machinery. Set by the caller after both are
+	// constructed (see internal/cli/agent.go), mirroring the existing
+	// TriggerEngine.Server back-reference. May be nil in tests that only
+	// exercise GetSecret/GetEvents; TriggerReconciliation and GetStatus
+	// degrade gracefully when it is.
+	Trigger *TriggerEngine
 }
 
 func (s *AgentServer) Emit(msg string) {
@@ -76,6 +84,129 @@ func (s *AgentServer) GetEvents(req *api.AgentRequest, resp *api.AgentResponse) 
 // concept of its own) attributes audit entries to that distinct caller instead.
 func (s *AgentServer) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) error {
 	return s.getSecret(req, resp, "docker-secret-driver")
+}
+
+// TriggerReconciliation re-fetches one (or, if req.Secret is empty, all)
+// configured secrets from their providers right now, rotating any whose
+// value actually changed. This backs `docker dso sync`, which previously
+// fabricated a success response without contacting the agent at all.
+func (s *AgentServer) TriggerReconciliation(req *api.ReconcileRequest, resp *api.ReconcileResponse) error {
+	if s.Trigger == nil {
+		return fmt.Errorf("trigger engine not available on this agent")
+	}
+
+	for _, sec := range s.Config.Secrets {
+		if req.Secret != "" && sec.Name != req.Secret {
+			continue
+		}
+
+		result := api.ReconcileResult{Secret: sec.Name}
+
+		pCfg, ok := s.Config.Providers[sec.Provider]
+		if !ok {
+			result.Error = fmt.Sprintf("provider %q not found in config", sec.Provider)
+			resp.Results = append(resp.Results, result)
+			continue
+		}
+
+		resp.SecretsChecked++
+
+		provider, err := s.Store.GetProvider(sec.Provider, pCfg)
+		if err != nil {
+			result.Error = fmt.Sprintf("provider unreachable: %v", err)
+			s.Store.MarkProviderFailure(sec.Provider)
+			resp.Results = append(resp.Results, result)
+			continue
+		}
+
+		data, err := provider.GetSecret(sec.Name)
+		if err != nil {
+			result.Error = fmt.Sprintf("fetch failed: %v", err)
+			s.Store.MarkProviderFailure(sec.Provider)
+			resp.Results = append(resp.Results, result)
+			continue
+		}
+		s.Store.MarkProviderHealthy(sec.Provider)
+
+		// ExecuteRotation is fire-and-forget: it does its own hash-diff
+		// against the last-seen value and silently no-ops when nothing
+		// changed. Compare here too so the response can honestly report
+		// whether THIS call actually caused a rotation, rather than always
+		// claiming success once the fetch succeeded.
+		cacheKey := fmt.Sprintf("%s:%s", sec.Provider, sec.Name)
+		var oldHash string
+		if val, ok := s.Trigger.secretHashes.Load(cacheKey); ok {
+			oldHash = val.(string)
+		}
+		newHash := ComputeHash(data)
+		if newHash != oldHash {
+			result.Rotated = true
+			resp.SecretsRotated++
+		}
+
+		s.Trigger.ExecuteRotation(sec.Provider, sec.Name, data, sec)
+		resp.Results = append(resp.Results, result)
+	}
+
+	return nil
+}
+
+// GetStatus reports real, currently-known agent state: cache size, pending
+// rotations (from the crash-recovery state tracker), and per-provider
+// health as actually observed by SecretStoreManager. This backs
+// `docker dso status`, which previously returned hardcoded example data
+// regardless of the agent's actual state.
+func (s *AgentServer) GetStatus(_ *api.StatusRequest, resp *api.StatusResponse) error {
+	resp.CacheEntries = len(s.Cache.ListKeys())
+
+	if s.Trigger != nil && s.Trigger.StateTracker != nil {
+		resp.PendingRotations = len(s.Trigger.StateTracker.GetPendingRotations())
+	}
+
+	for name := range s.Config.Providers {
+		info := api.ProviderStatusInfo{Name: name}
+		healthy, known := s.Store.Health(name)
+		info.Known = known
+		info.Healthy = healthy
+		switch {
+		case !known:
+			info.Message = "not yet contacted"
+		case healthy:
+			info.Message = "healthy"
+		default:
+			info.Message = "unhealthy (stale or consecutive failures)"
+		}
+		resp.Providers = append(resp.Providers, info)
+	}
+
+	return nil
+}
+
+// CheckProviderConnectivity attempts a real connection to the given
+// provider configuration — which is not necessarily one the agent has
+// already loaded, since this backs `docker dso apply`'s pre-flight check
+// against a config the agent may not have applied yet. A single attempt
+// (no retry backoff) keeps a pre-flight check from blocking for the same
+// multi-attempt backoff window a real rotation would tolerate.
+func (s *AgentServer) CheckProviderConnectivity(req *api.ProviderCheckRequest, resp *api.ProviderCheckResponse) error {
+	pCfg := config.ProviderConfig{
+		Type:   req.Type,
+		Region: req.Region,
+		Config: req.Config,
+		Retry:  config.RetryConfig{Attempts: 1},
+	}
+	if req.AuthMethod != "" {
+		pCfg.Auth = config.AuthConfig{Method: req.AuthMethod, Params: req.AuthParams}
+	}
+
+	if _, err := s.Store.GetProvider(req.ProviderName, pCfg); err != nil {
+		resp.Reachable = false
+		resp.Error = err.Error()
+		return nil
+	}
+
+	resp.Reachable = true
+	return nil
 }
 
 func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, auditUser string) error {

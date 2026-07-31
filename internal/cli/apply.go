@@ -3,12 +3,12 @@ package cli
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
+	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/client"
@@ -118,21 +118,56 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// verifyProviderConnectivity checks if a provider is accessible
+// verifyProviderConnectivity checks that a provider's type is recognized and,
+// if the agent is reachable, asks it to attempt a real connection using this
+// exact configuration (not necessarily one the agent has already loaded —
+// that's the point of checking before `apply` pushes it). If the agent isn't
+// running yet (e.g. first-time setup, before `docker dso up`), this falls
+// back to the type-only check rather than failing apply outright, since a
+// fresh install legitimately has no agent to ask.
 func verifyProviderConnectivity(cfg *config.Config, provName string) error {
 	provider, exists := cfg.Providers[provName]
 	if !exists {
 		return fmt.Errorf("provider not found in config")
 	}
 
-	// For now, basic validation - actual provider connectivity
-	// would be done via injector.NewAgentClient() or direct provider calls
 	switch provider.Type {
 	case "local", "vault", "aws", "azure", "huawei":
-		return nil
 	default:
 		return fmt.Errorf("unsupported provider type: %s", provider.Type)
 	}
+
+	socketPath := "/run/dso/dso.sock"
+	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
+		socketPath = custom
+	}
+
+	client, err := injector.NewAgentClient(socketPath)
+	if err != nil {
+		fmt.Printf("[DSO]   (agent not reachable at %s — validated provider type only, not live connectivity)\n", socketPath)
+		return nil
+	}
+	defer func() { _ = client.Close() }()
+
+	req := &api.ProviderCheckRequest{
+		ProviderName: provName,
+		Type:         provider.Type,
+		Region:       provider.Region,
+		Config:       provider.Config,
+	}
+	if provider.Auth.Method != "" {
+		req.AuthMethod = provider.Auth.Method
+		req.AuthParams = provider.Auth.Params
+	}
+
+	resp, err := client.CheckProviderConnectivity(req)
+	if err != nil {
+		return fmt.Errorf("connectivity check request failed: %w", err)
+	}
+	if !resp.Reachable {
+		return fmt.Errorf("not reachable: %s", resp.Error)
+	}
+	return nil
 }
 
 // ApplyPlan represents the changes to be made
@@ -227,12 +262,16 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 		FailedSecrets: make([]string, 0),
 	}
 
-	// Attempt to trigger sync via agent
-	if err := triggerAgentSync(socketPath, applyOpts.Timeout); err == nil {
-		// Agent sync succeeded
-		result.SecretsUpdated = len(plan.SecretsToUpdate)
-		result.ContainersInjected = plan.ContainersAffected
-		result.Succeeded = true
+	// Attempt to trigger reconciliation via the agent's real RPC.
+	if resp, err := triggerAgentSync(socketPath, applyOpts.Timeout); err == nil {
+		result.SecretsUpdated = resp.SecretsRotated
+		result.ContainersInjected = resp.SecretsRotated // one rotation per secret's containers, at minimum
+		for _, r := range resp.Results {
+			if r.Error != "" {
+				result.FailedSecrets = append(result.FailedSecrets, fmt.Sprintf("%s: %s", r.Secret, r.Error))
+			}
+		}
+		result.Succeeded = len(result.FailedSecrets) == 0
 	} else {
 		// Agent not available, try direct reconciliation
 		fmt.Printf("[DSO] Agent not available, attempting direct reconciliation (%v)\n", err)
@@ -292,20 +331,21 @@ func executeApplyPlan(cfg *config.Config, plan *ApplyPlan) (*ApplyResult, error)
 	return result, nil
 }
 
-// triggerAgentSync triggers reconciliation via the agent socket
-func triggerAgentSync(socketPath string, timeout time.Duration) error {
-	// #nosec G704 -- this dials the "unix" network (a local socket file), not
-	// a remote host:port; a Unix domain socket dial cannot reach an internal
-	// network resource, so SSRF does not apply regardless of socketPath's origin
-	conn, err := net.DialTimeout("unix", socketPath, timeout)
+// triggerAgentSync triggers a real reconciliation of all configured secrets
+// via the agent's Agent.TriggerReconciliation RPC. Previously this wrote a
+// raw "SYNC\n" string directly onto the RPC socket, which the net/rpc
+// server on the other end cannot interpret as a request — the write itself
+// could succeed at the socket level while triggering nothing server-side,
+// which is exactly the "reports success without doing anything" bug this
+// replaces.
+func triggerAgentSync(socketPath string, timeout time.Duration) (*api.ReconcileResponse, error) {
+	client, err := injector.NewAgentClientWithTimeout(socketPath, timeout)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = client.Close() }()
 
-	// Send simple sync request
-	_, err = conn.Write([]byte("SYNC\n"))
-	return err
+	return client.TriggerReconciliation("")
 }
 
 // displayApplyResult shows the results of the apply operation

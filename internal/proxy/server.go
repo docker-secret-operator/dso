@@ -10,11 +10,60 @@ import (
 	"go.uber.org/zap"
 )
 
-const dialTimeout = 5 * time.Second
+const (
+	dialTimeout = 5 * time.Second
+
+	// idleTimeout bounds how long a proxied connection may go without any
+	// data in either direction. It resets on every read, so long-lived but
+	// active connections (e.g. a held-open database connection) are never
+	// cut — only truly idle ones are, which also bounds how long a
+	// connection that never sends data can pin a goroutine/FD pair.
+	idleTimeout = 10 * time.Minute
+
+	// maxConcurrentConns caps in-flight proxied connections across all
+	// listeners so a client that opens connections without sending data
+	// can't exhaust file descriptors/goroutines. Connections beyond the
+	// cap are closed immediately after accept rather than queued.
+	maxConcurrentConns = 4096
+
+	// maxAcceptRetryDelay caps the backoff applied after a transient Accept
+	// error so a sustained failure (e.g. FD exhaustion) degrades into a
+	// slow retry loop instead of a tight, log-flooding busy loop.
+	maxAcceptRetryDelay = 1 * time.Second
+)
 
 var dialer = &net.Dialer{
 	Timeout:   dialTimeout,
 	KeepAlive: 30 * time.Second,
+}
+
+// idleTimeoutConn resets a read deadline on every Read call, so the
+// underlying connection is only closed by the deadline when it goes
+// idle for the full duration — not merely because it has been open a while.
+type idleTimeoutConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleTimeoutConn) Read(p []byte) (int, error) {
+	_ = c.SetReadDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
+
+// CloseWrite forwards to the wrapped connection's half-close if it supports
+// one. net.Conn does not declare CloseWrite, so embedding alone would not
+// promote it — without this, closeWrite's halfCloser type assertion would
+// always miss and every direction would take a full Close instead of a
+// graceful half-close, changing behavior for protocols relying on it
+// (e.g. HTTP/1.1 request bodies that half-close before reading the response).
+func (c *idleTimeoutConn) CloseWrite() error {
+	type halfCloser interface {
+		CloseWrite() error
+	}
+	if hc, ok := c.Conn.(halfCloser); ok {
+		return hc.CloseWrite()
+	}
+	return c.Close()
 }
 
 // PortBinding describes one host port the proxy should own.
@@ -38,13 +87,51 @@ type Server struct {
 	mu          sync.RWMutex
 	listeners   map[int]*portListener
 	activeConns sync.WaitGroup
+
+	connsMu sync.Mutex
+	conns   map[net.Conn]*connLegs
+	connSem chan struct{}
+}
+
+// connLegs tracks both sides of one proxied connection (client and, once
+// dialed, upstream) so a forced shutdown can close whichever leg the pipe
+// goroutines are currently blocked reading from. Closing only the client
+// leg is not sufficient: if the upstream is the stalled side, the goroutine
+// copying upstream->client stays blocked in Read on the upstream socket
+// and never notices the client closed.
+type connLegs struct {
+	mu   sync.Mutex
+	legs []net.Conn
+}
+
+func (c *connLegs) add(conn net.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.legs = append(c.legs, conn)
+}
+
+func (c *connLegs) closeAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, conn := range c.legs {
+		_ = conn.Close()
+	}
 }
 
 func NewServer(router *Router, log *zap.Logger) *Server {
+	return NewServerWithMaxConns(router, log, maxConcurrentConns)
+}
+
+// NewServerWithMaxConns is like NewServer but with an explicit connection
+// cap, primarily so tests can exercise the cap without opening thousands of
+// connections.
+func NewServerWithMaxConns(router *Router, log *zap.Logger, maxConns int) *Server {
 	return &Server{
 		router:    router,
 		log:       log,
 		listeners: make(map[int]*portListener),
+		conns:     make(map[net.Conn]*connLegs),
+		connSem:   make(chan struct{}, maxConns),
 	}
 }
 
@@ -131,7 +218,15 @@ func (s *Server) CloseGraceful(timeout time.Duration) error {
 		s.log.Info("proxy: all connections drained")
 		return nil
 	case <-time.After(timeout):
-		return fmt.Errorf("proxy: drain timeout (%s)", timeout)
+		// Drain window expired — force-close whatever is left rather than
+		// leaving those goroutines/FDs to leak past this call's return.
+		s.connsMu.Lock()
+		remaining := len(s.conns)
+		for _, legs := range s.conns {
+			legs.closeAll()
+		}
+		s.connsMu.Unlock()
+		return fmt.Errorf("proxy: drain timeout (%s), force-closed %d remaining connection(s)", timeout, remaining)
 	}
 }
 
@@ -148,6 +243,7 @@ func (s *Server) Bindings() []PortBinding {
 }
 
 func (s *Server) acceptLoop(pl *portListener) {
+	retryDelay := 10 * time.Millisecond
 	for {
 		conn, err := pl.listener.Accept()
 		if err != nil {
@@ -158,17 +254,45 @@ func (s *Server) acceptLoop(pl *portListener) {
 				s.log.Warn("proxy: accept error",
 					zap.Int("port", pl.binding.ListenPort),
 					zap.Error(err))
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(retryDelay)
+				if retryDelay < maxAcceptRetryDelay {
+					retryDelay *= 2
+					if retryDelay > maxAcceptRetryDelay {
+						retryDelay = maxAcceptRetryDelay
+					}
+				}
 				continue
 			}
 		}
+		retryDelay = 10 * time.Millisecond
+
+		select {
+		case s.connSem <- struct{}{}:
+		default:
+			s.log.Warn("proxy: connection limit reached — rejecting",
+				zap.Int("port", pl.binding.ListenPort),
+				zap.Int("limit", maxConcurrentConns))
+			_ = conn.Close()
+			continue
+		}
+
+		legs := &connLegs{}
+		legs.add(conn)
+
 		s.activeConns.Add(1)
-		go s.handleConn(conn)
+		s.connsMu.Lock()
+		s.conns[conn] = legs
+		s.connsMu.Unlock()
+		go s.handleConn(conn, legs)
 	}
 }
 
-func (s *Server) handleConn(client net.Conn) {
+func (s *Server) handleConn(client net.Conn, legs *connLegs) {
 	defer func() {
+		s.connsMu.Lock()
+		delete(s.conns, client)
+		s.connsMu.Unlock()
+		<-s.connSem
 		s.activeConns.Done()
 		_ = client.Close()
 	}()
@@ -189,13 +313,14 @@ func (s *Server) handleConn(client net.Conn) {
 		return
 	}
 	defer func() { _ = upstream.Close() }()
+	legs.add(upstream)
 
 	s.log.Debug("proxy: connection established",
 		zap.String("client", client.RemoteAddr().String()),
 		zap.String("upstream", backend.Addr),
 		zap.String("backend_id", backend.ID))
 
-	pipe(client, upstream)
+	pipe(&idleTimeoutConn{Conn: client, timeout: idleTimeout}, &idleTimeoutConn{Conn: upstream, timeout: idleTimeout})
 }
 
 func pipe(a, b net.Conn) {

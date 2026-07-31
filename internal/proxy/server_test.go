@@ -246,3 +246,220 @@ func TestServer_NoBackendAvailable(t *testing.T) {
 		t.Error("expected read to fail (connection closed) when no backend is available")
 	}
 }
+
+// TestServer_ConnectionCap proves connections beyond the configured cap are
+// rejected rather than queued indefinitely, guarding against a client that
+// opens connections without sending data to exhaust FDs/goroutines.
+func TestServer_ConnectionCap(t *testing.T) {
+	backendAddr, stopBackend := startEchoBackend(t)
+	defer stopBackend()
+
+	reg := NewRegistry()
+	if err := reg.Add(Backend{ID: "echo", Addr: backendAddr}); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(reg)
+	const connCap = 2
+	s := NewServerWithMaxConns(router, testLogger(t), connCap)
+	defer s.Close()
+
+	if err := s.Bind(PortBinding{ListenPort: 0}); err != nil {
+		t.Fatal(err)
+	}
+	proxyPort := s.Bindings()[0].ListenPort
+	proxyAddr := "127.0.0.1:" + strconv.Itoa(proxyPort)
+
+	// Open `connCap` connections and hold them open (don't send/receive, so
+	// they stay counted as in-flight).
+	var held []net.Conn
+	for i := 0; i < connCap; i++ {
+		conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+		if err != nil {
+			t.Fatalf("failed to open connection %d: %v", i, err)
+		}
+		held = append(held, conn)
+	}
+	defer func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	}()
+
+	// Give handleConn goroutines time to register in the semaphore before
+	// testing the connCap — otherwise this test could pass by accident if the
+	// (connCap+1)th dial races ahead of the first connCap connections being counted.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.connsMu.Lock()
+		n := len(s.conns)
+		s.connsMu.Unlock()
+		if n >= connCap {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d connections to register (got %d)", connCap, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The next connection should be accepted at the TCP level (listener
+	// backlog) but then closed immediately by the proxy once over connCap.
+	extra, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial of over-connCap connection should succeed at TCP level, got: %v", err)
+	}
+	defer func() { _ = extra.Close() }()
+
+	_ = extra.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	_, err = extra.Read(buf)
+	if err == nil {
+		t.Error("expected the over-connCap connection to be closed by the proxy, but read succeeded")
+	}
+}
+
+// TestServer_CloseGraceful_ForceClosesOnTimeout proves that connections still
+// in-flight when the drain timeout expires are force-closed rather than
+// leaked, so CloseGraceful's caller can rely on no goroutines/FDs surviving
+// past its return.
+func TestServer_CloseGraceful_ForceClosesOnTimeout(t *testing.T) {
+	// A backend that accepts but never replies, so the proxied connection
+	// stays open (in-flight) until something closes it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn // held open, never read/write/close
+		}
+	}()
+
+	reg := NewRegistry()
+	if err := reg.Add(Backend{ID: "stall", Addr: ln.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(reg)
+	s := NewServer(router, testLogger(t))
+
+	if err := s.Bind(PortBinding{ListenPort: 0}); err != nil {
+		t.Fatal(err)
+	}
+	proxyPort := s.Bindings()[0].ListenPort
+
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(proxyPort), 2*time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Wait for the connection to register as in-flight.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.connsMu.Lock()
+		n := len(s.conns)
+		s.connsMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for connection to register as in-flight")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	start := time.Now()
+	err = s.CloseGraceful(300 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected CloseGraceful to report a drain timeout, since the connection never completes on its own")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("CloseGraceful took %s — should return promptly after its own timeout, not hang", elapsed)
+	}
+
+	// The defining behavior under test: the connection must actually be
+	// closed, not merely reported as timed-out while left dangling.
+	// handleConn's cleanup (removing itself from s.conns) runs asynchronously
+	// after Close() unblocks its pipe goroutines, so poll rather than assert
+	// immediately.
+	drainDeadline := time.Now().Add(2 * time.Second)
+	for {
+		s.connsMu.Lock()
+		remaining := len(s.conns)
+		s.connsMu.Unlock()
+		if remaining == 0 {
+			break
+		}
+		if time.Now().After(drainDeadline) {
+			t.Fatalf("expected 0 connections remaining after force-close, got %d", remaining)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 16)
+	if _, err := conn.Read(buf); err == nil {
+		t.Error("expected client connection to be closed by force-close on drain timeout")
+	}
+}
+
+// TestIdleTimeoutConn_ClosesOnIdle proves idleTimeoutConn actually enforces
+// its timeout (a Read that never gets data eventually errors) while NOT
+// cutting a connection that keeps producing data within the window, using a
+// short timeout directly rather than the 10-minute production constant.
+func TestIdleTimeoutConn_ClosesOnIdle(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	wrapped := &idleTimeoutConn{Conn: server, timeout: 100 * time.Millisecond}
+
+	start := time.Now()
+	buf := make([]byte, 16)
+	_, err := wrapped.Read(buf)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected Read to time out on an idle connection")
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("Read took %s to time out — expected close to the configured 100ms deadline", elapsed)
+	}
+}
+
+// TestIdleTimeoutConn_ResetsOnActivity proves the deadline is refreshed on
+// each Read, so a connection that keeps sending data within the window is
+// never cut even if its total lifetime exceeds the idle timeout.
+func TestIdleTimeoutConn_ResetsOnActivity(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	wrapped := &idleTimeoutConn{Conn: server, timeout: 150 * time.Millisecond}
+
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		for i := 0; i < 5; i++ {
+			time.Sleep(75 * time.Millisecond)
+			if _, err := client.Write([]byte("x")); err != nil {
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 1)
+	for i := 0; i < 5; i++ {
+		if _, err := wrapped.Read(buf); err != nil {
+			t.Fatalf("read %d failed unexpectedly (deadline should have reset on prior activity): %v", i, err)
+		}
+	}
+	<-writeDone
+}

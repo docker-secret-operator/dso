@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -191,27 +192,55 @@ func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFu
 	return op, rollback
 }
 
-// WriteConfigOp writes configuration file with rollback
+// WriteConfigOp writes configuration file with rollback. If a config already
+// existed at configPath before this operation ran (e.g. re-running bootstrap
+// on an already-configured host), rollback restores that prior content
+// instead of deleting the file outright — an unconditional delete would
+// leave a previously-working host with no config at all if a later
+// operation in the same transaction fails.
 func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) (Operation, RollbackFunc) {
+	var previousContent []byte
+	var previouslyExisted bool
+
 	op := NewSimpleOperation("write-config", func(ctx context.Context) error {
+		if existing, err := os.ReadFile(configPath); err == nil { // #nosec G304 -- configPath is DSO's own fixed config location, not user input
+			previouslyExisted = true
+			previousContent = existing
+		}
 		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0664)
 	})
 
 	rollback := func(ctx context.Context) error {
+		if previouslyExisted {
+			return bo.fsOps.SafeWriteFile(ctx, configPath, previousContent, 0664)
+		}
 		return bo.fsOps.SafeRemove(ctx, configPath)
 	}
 
 	return op, rollback
 }
 
-// InstallServiceOp installs systemd service with rollback
+// InstallServiceOp installs systemd service with rollback. Like
+// WriteConfigOp, this snapshots any pre-existing unit file before
+// overwriting it, so rollback restores the prior unit instead of deleting
+// the service definition entirely on a host that already had one.
 // Note: Context is provided at execution time, not construction time
 func (bo *BootstrapOperations) InstallServiceOp() (Operation, RollbackFunc) {
+	var previousContent []byte
+	var previouslyExisted bool
+
 	op := NewSimpleOperation("install-service", func(ctx context.Context) error {
+		if existing, err := os.ReadFile(ServiceFilePath); err == nil {
+			previouslyExisted = true
+			previousContent = existing
+		}
 		return bo.svc.InstallServiceFile(ctx, bo.fsOps)
 	})
 
 	rollback := func(ctx context.Context) error {
+		if previouslyExisted {
+			return bo.fsOps.SafeWriteFile(ctx, ServiceFilePath, previousContent, 0644)
+		}
 		return bo.svc.RemoveServiceFile(ctx, bo.fsOps)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
+	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/spf13/cobra"
 )
 
@@ -95,6 +96,9 @@ func syncCommand(cmd *cobra.Command, args []string) error {
 	// 5. Display results
 	displaySyncResults(result, duration)
 
+	if !result.Succeeded {
+		return fmt.Errorf("reconciliation did not complete successfully: %s", result.ErrorMessage)
+	}
 	return nil
 }
 
@@ -113,34 +117,62 @@ func verifyAgentRunning(socketPath string) error {
 
 // SyncResult holds the results of sync operation
 type SyncResult struct {
-	SecretsUpdated       int
-	ContainersAffected   int
+	SecretsChecked       int
+	SecretsRotated       int
 	Succeeded            bool
 	ErrorMessage         string
 	SpecificSecretSynced string
+	FailedSecrets        []string
 }
 
-// triggerReconciliation triggers sync via agent client
+// triggerReconciliation triggers a real reconciliation via the agent's
+// Agent.TriggerReconciliation RPC, which re-fetches the requested secret(s)
+// from their providers and rotates any whose value actually changed.
 func triggerReconciliation(ctx context.Context, client *injector.AgentClient, specificSecret string) (*SyncResult, error) {
-	result := &SyncResult{
-		Succeeded: false,
-	}
+	respCh := make(chan struct {
+		resp *api.ReconcileResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := client.TriggerReconciliation(specificSecret)
+		respCh <- struct {
+			resp *api.ReconcileResponse
+			err  error
+		}{resp, err}
+	}()
 
-	// If specific secret requested, handle differently
-	if specificSecret != "" {
-		result.SpecificSecretSynced = specificSecret
-		// Would fetch specific secret via client
-		result.SecretsUpdated = 1
-		result.ContainersAffected = 1
-	} else {
-		// General reconciliation
-		// This would trigger a full sync via the agent
-		result.SecretsUpdated = 0
-		result.ContainersAffected = 0
-	}
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("reconciliation timed out: %w", ctx.Err())
+	case r := <-respCh:
+		if r.err != nil {
+			return nil, r.err
+		}
 
-	result.Succeeded = true
-	return result, nil
+		result := &SyncResult{
+			SecretsChecked:       r.resp.SecretsChecked,
+			SecretsRotated:       r.resp.SecretsRotated,
+			SpecificSecretSynced: specificSecret,
+		}
+		for _, res := range r.resp.Results {
+			if res.Error != "" {
+				result.FailedSecrets = append(result.FailedSecrets, fmt.Sprintf("%s: %s", res.Secret, res.Error))
+			}
+		}
+		result.Succeeded = len(result.FailedSecrets) == 0
+		if !result.Succeeded {
+			result.ErrorMessage = fmt.Sprintf("%d secret(s) failed to reconcile", len(result.FailedSecrets))
+		}
+		if result.SecretsChecked == 0 {
+			result.Succeeded = false
+			if specificSecret != "" {
+				result.ErrorMessage = fmt.Sprintf("secret %q not found in agent config", specificSecret)
+			} else {
+				result.ErrorMessage = "no secrets configured on the agent"
+			}
+		}
+		return result, nil
+	}
 }
 
 // displaySyncResults shows the sync operation results
@@ -154,16 +186,18 @@ func displaySyncResults(result *SyncResult, duration time.Duration) {
 	}
 
 	if result.SpecificSecretSynced != "" {
-		fmt.Printf("│ Secret synced: %s\n", result.SpecificSecretSynced)
-	} else {
-		fmt.Printf("│ Secrets synced: %d\n", result.SecretsUpdated)
-		fmt.Printf("│ Containers updated: %d\n", result.ContainersAffected)
+		fmt.Printf("│ Secret checked: %s\n", result.SpecificSecretSynced)
 	}
+	fmt.Printf("│ Secrets checked: %d\n", result.SecretsChecked)
+	fmt.Printf("│ Secrets rotated: %d\n", result.SecretsRotated)
 
 	fmt.Printf("│ Duration: %v\n", duration)
 
 	if result.ErrorMessage != "" {
 		fmt.Printf("│ Error: %s\n", result.ErrorMessage)
+	}
+	for _, f := range result.FailedSecrets {
+		fmt.Printf("│ Failed: %s\n", f)
 	}
 
 	fmt.Println("╰──────────────────────────────────────────────────────────╯")

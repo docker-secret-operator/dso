@@ -15,6 +15,7 @@ type FileExecutor struct {
 	stat      func(string) (os.FileInfo, error)
 	readFile  func(string) ([]byte, error)
 	writeFile func(string, []byte, os.FileMode) error
+	chmod     func(string, os.FileMode) error
 	chown     func(string, string) error
 	ownerOf   func(string) (string, error)
 }
@@ -26,6 +27,7 @@ func newFileExecutor(ops []FileChange, emitter *Emitter) *FileExecutor {
 		stat:      os.Stat,
 		readFile:  os.ReadFile,
 		writeFile: os.WriteFile,
+		chmod:     os.Chmod,
 		chown:     chownPath,
 		ownerOf:   ownerOfPath,
 	}
@@ -61,6 +63,17 @@ func (e *FileExecutor) executeOne(_ context.Context, op *FileChange, tx *Transac
 		markFailed(txOp, err)
 		e.emitter.emit(EventOperationFailed, txOp, err)
 		return fmt.Errorf("%s: write %s: %w", op.ID, op.Path, err)
+	}
+
+	// os.WriteFile only applies its mode argument when CREATING a file — on
+	// an already-existing path (e.g. re-running setup/repair) it leaves the
+	// existing mode untouched, so an over-permissive file would silently
+	// stay that way while txOp.After below claims op.Mode was applied.
+	// Chmod explicitly so the declared mode is always enforced.
+	if err := e.chmod(op.Path, op.Mode); err != nil {
+		markFailed(txOp, err)
+		e.emitter.emit(EventOperationFailed, txOp, err)
+		return fmt.Errorf("%s: chmod %s: %w", op.ID, op.Path, err)
 	}
 
 	if op.Owner != "" {

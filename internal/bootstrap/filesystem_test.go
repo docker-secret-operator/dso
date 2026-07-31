@@ -3,7 +3,9 @@ package bootstrap
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -174,5 +176,65 @@ func TestDirectoryValidator(t *testing.T) {
 	// Error is expected if directories don't exist, but function should work
 	if err == nil {
 		t.Log("Directory validation passed")
+	}
+}
+
+// TestBootstrapLock_ReclaimsStaleLock proves Acquire detects a lock file left
+// by a process that no longer exists and reclaims it, instead of waiting out
+// the full timeout (or forever, in production use) for a lock nothing will
+// ever release (BOOT-3).
+func TestBootstrapLock_ReclaimsStaleLock(t *testing.T) {
+	logger := &testLogger{}
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, "bootstrap.lock")
+
+	// Run a trivial subprocess to completion so its PID is guaranteed to no
+	// longer correspond to a running process, then plant a lock file
+	// recording that now-dead PID — simulating a bootstrap process that
+	// died (kill -9/OOM/power loss) before it could call Release.
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to run helper subprocess: %v", err)
+	}
+	deadPID := cmd.Process.Pid
+
+	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(deadPID)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	lockOps := NewBootstrapLock(lockPath, logger, false)
+	start := time.Now()
+	lock, err := lockOps.Acquire(context.Background(), 5*time.Second)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected Acquire to reclaim the stale lock, got error: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("Acquire returned nil lock")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Acquire took %s — expected prompt reclaim, not waiting out most of the timeout", elapsed)
+	}
+}
+
+// TestBootstrapLock_RespectsLiveLock proves a lock file recording a PID that
+// IS still running is NOT reclaimed — the counterpart to the stale-lock
+// test above, guarding against isStaleLock ever misjudging a live owner as
+// dead (which would break mutual exclusion between two real bootstrap runs).
+func TestBootstrapLock_RespectsLiveLock(t *testing.T) {
+	logger := &testLogger{}
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, "bootstrap.lock")
+
+	// This test process is unambiguously alive.
+	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	lockOps := NewBootstrapLock(lockPath, logger, false)
+	_, err := lockOps.Acquire(context.Background(), 300*time.Millisecond)
+	if err == nil {
+		t.Error("expected Acquire to time out against a lock held by a live PID, not reclaim it")
 	}
 }

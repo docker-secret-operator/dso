@@ -55,50 +55,28 @@ func TestStatusGatherRuntime(t *testing.T) {
 	}
 }
 
-func TestStatusGatherProviders(t *testing.T) {
+// TestStatusGatherStatus_NoAgent_ReportsUnreachableNotFakeData proves
+// gatherStatus is honest when it can't reach an agent (the normal case in a
+// unit test environment with no socket listening): it must report
+// AgentReached=false with an explanatory error, rather than falling back to
+// any hardcoded example data the way this command used to.
+func TestStatusGatherStatus_NoAgent_ReportsUnreachableNotFakeData(t *testing.T) {
+	t.Setenv("DSO_SOCKET_PATH", t.TempDir()+"/does-not-exist.sock")
+
 	status := &Status{}
-	providers := status.gatherProviders()
+	result := status.gatherStatus()
 
-	if len(providers) == 0 {
-		t.Fatal("expected providers")
+	if result.AgentReached {
+		t.Fatal("expected AgentReached=false when no agent is listening")
 	}
-
-	// Should have at least local provider
-	foundLocal := false
-	for _, p := range providers {
-		if p.Name == "local" {
-			foundLocal = true
-		}
+	if result.AgentError == "" {
+		t.Error("expected a non-empty AgentError explaining why")
 	}
-
-	if !foundLocal {
-		t.Fatal("expected 'local' provider")
+	if len(result.Providers) != 0 {
+		t.Errorf("expected no fabricated providers when agent is unreachable, got %v", result.Providers)
 	}
-}
-
-func TestStatusGatherContainers(t *testing.T) {
-	status := &Status{}
-	containers := status.gatherContainers()
-
-	if len(containers) == 0 {
-		t.Fatal("expected containers")
-	}
-
-	// Should have at least one container
-	if containers[0].Name == "" || containers[0].Status == "" {
-		t.Fatal("container missing required fields")
-	}
-}
-
-func TestStatusGatherCache(t *testing.T) {
-	status := &Status{}
-	cache := status.gatherCache()
-
-	if cache.MaxSize == "" {
-		t.Fatal("expected cache max_size")
-	}
-	if cache.HitRate < 0 || cache.HitRate > 100 {
-		t.Fatal("expected valid hit rate")
+	if result.Cache.Entries != 0 || result.Rotations.Pending != 0 {
+		t.Errorf("expected zero-value Cache/Rotations when agent is unreachable, got %+v / %+v", result.Cache, result.Rotations)
 	}
 }
 

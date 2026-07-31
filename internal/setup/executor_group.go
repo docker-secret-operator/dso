@@ -81,7 +81,20 @@ func (e *GroupExecutor) executeOne(_ context.Context, op *GroupChange, tx *Trans
 		return fmt.Errorf("%s: group %s %s: %w", op.ID, op.Operation, op.Name, execErr)
 	}
 
-	txOp.After = &GroupSnapshot{Existed: true}
+	// For add-member, rollback (rollback_group.go) diffs After.Members
+	// against Before.Members to know which members it added and must
+	// remove. Recording Existed:true with no Members here made that diff
+	// permanently empty, so rollback could never actually remove a member
+	// this operation added — dead code that looked like real rollback
+	// coverage. Read the members back so After reflects what's actually on
+	// the group now.
+	afterMembers := currentMembers
+	if op.Operation == "add-member" {
+		if refreshed, err := e.getMembers(op.Name); err == nil {
+			afterMembers = refreshed
+		}
+	}
+	txOp.After = &GroupSnapshot{Existed: true, Members: afterMembers}
 	markCompleted(txOp)
 	e.emitter.emit(EventOperationCompleted, txOp, nil)
 	return nil

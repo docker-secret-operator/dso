@@ -112,29 +112,29 @@ func TestSyncCmd_HelpText(t *testing.T) {
 // TestSyncResult_SuccessfulResult verifies success state
 func TestSyncResult_SuccessfulResult(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:     2,
-		ContainersAffected: 2,
-		Succeeded:          true,
+		SecretsRotated: 2,
+		SecretsChecked: 2,
+		Succeeded:      true,
 	}
 
 	if !result.Succeeded {
 		t.Error("Result should be successful")
 	}
-	if result.SecretsUpdated != 2 {
-		t.Errorf("Expected 2 secrets updated, got %d", result.SecretsUpdated)
+	if result.SecretsRotated != 2 {
+		t.Errorf("Expected 2 secrets updated, got %d", result.SecretsRotated)
 	}
-	if result.ContainersAffected != 2 {
-		t.Errorf("Expected 2 containers affected, got %d", result.ContainersAffected)
+	if result.SecretsChecked != 2 {
+		t.Errorf("Expected 2 containers affected, got %d", result.SecretsChecked)
 	}
 }
 
 // TestSyncResult_FailedResult verifies failure state
 func TestSyncResult_FailedResult(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:     0,
-		ContainersAffected: 0,
-		Succeeded:          false,
-		ErrorMessage:       "Agent connection failed",
+		SecretsRotated: 0,
+		SecretsChecked: 0,
+		Succeeded:      false,
+		ErrorMessage:   "Agent connection failed",
 	}
 
 	if result.Succeeded {
@@ -148,8 +148,8 @@ func TestSyncResult_FailedResult(t *testing.T) {
 // TestSyncResult_SpecificSecretSync tracks specific secret
 func TestSyncResult_SpecificSecretSync(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:       1,
-		ContainersAffected:   1,
+		SecretsRotated:       1,
+		SecretsChecked:       1,
 		Succeeded:            true,
 		SpecificSecretSynced: "db_password",
 	}
@@ -162,9 +162,9 @@ func TestSyncResult_SpecificSecretSync(t *testing.T) {
 // TestDisplaySyncResults_ProducesOutput shows results
 func TestDisplaySyncResults_ProducesOutput(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:     2,
-		ContainersAffected: 2,
-		Succeeded:          true,
+		SecretsRotated: 2,
+		SecretsChecked: 2,
+		Succeeded:      true,
 	}
 
 	// Capture output
@@ -264,16 +264,16 @@ func TestSyncCmd_SocketPaths(t *testing.T) {
 // TestSyncResult_ZeroValues handles no updates
 func TestSyncResult_ZeroUpdates(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:     0,
-		ContainersAffected: 0,
-		Succeeded:          true,
+		SecretsRotated: 0,
+		SecretsChecked: 0,
+		Succeeded:      true,
 	}
 
-	if result.SecretsUpdated != 0 {
-		t.Error("SecretsUpdated should be 0")
+	if result.SecretsRotated != 0 {
+		t.Error("SecretsRotated should be 0")
 	}
-	if result.ContainersAffected != 0 {
-		t.Error("ContainersAffected should be 0")
+	if result.SecretsChecked != 0 {
+		t.Error("SecretsChecked should be 0")
 	}
 }
 
@@ -350,14 +350,14 @@ func TestSyncOptions_AllFields(t *testing.T) {
 // TestSyncResult_AllFieldsAccessible verifies all result fields
 func TestSyncResult_AllFields(t *testing.T) {
 	result := &SyncResult{
-		SecretsUpdated:       2,
-		ContainersAffected:   2,
+		SecretsRotated:       2,
+		SecretsChecked:       2,
 		Succeeded:            true,
 		ErrorMessage:         "",
 		SpecificSecretSynced: "db_password",
 	}
 
-	if result.SecretsUpdated == 0 || result.ContainersAffected == 0 {
+	if result.SecretsRotated == 0 || result.SecretsChecked == 0 {
 		t.Error("Result fields should be accessible")
 	}
 }

@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 )
 
@@ -204,5 +205,78 @@ func TestBootstrapOperations(t *testing.T) {
 	verifyOp, verifyRollback := ops.VerifyInstallationOp("/tmp/test.yaml")
 	if verifyOp == nil || verifyRollback == nil {
 		t.Fatal("VerifyInstallationOp returned nil")
+	}
+}
+
+// TestWriteConfigOp_RollbackRestoresPreviousContent proves that rolling back
+// WriteConfigOp on a path that already had a config restores the ORIGINAL
+// content rather than deleting the file — a bootstrap re-run that fails
+// partway through must not leave a previously-configured host with no
+// config at all (BOOT-2).
+func TestWriteConfigOp_RollbackRestoresPreviousContent(t *testing.T) {
+	logger := &testLogger{}
+	fsOps := NewFilesystemOps(logger, false) // real (non-dry-run) filesystem ops
+	svc := NewSystemdManager(logger, true)
+	perm := NewPermissionManager(logger, true)
+	ops := NewBootstrapOperations(logger, fsOps, svc, perm)
+
+	configPath := t.TempDir() + "/dso.yaml"
+	original := []byte("providers:\n  - name: original\n")
+	if err := os.WriteFile(configPath, original, 0664); err != nil {
+		t.Fatal(err)
+	}
+
+	op, rollback := ops.WriteConfigOp(configPath, []byte("providers:\n  - name: new\n"))
+
+	ctx := context.Background()
+	if err := op.Execute(ctx); err != nil {
+		t.Fatalf("op.Execute failed: %v", err)
+	}
+
+	// Confirm the new content actually landed before testing rollback.
+	written, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != "providers:\n  - name: new\n" {
+		t.Fatalf("expected new content to be written, got %q", written)
+	}
+
+	if err := rollback(ctx); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	restored, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("expected config file to still exist after rollback, got: %v", err)
+	}
+	if string(restored) != string(original) {
+		t.Errorf("expected rollback to restore original content %q, got %q", original, restored)
+	}
+}
+
+// TestWriteConfigOp_RollbackRemovesWhenNoPriorConfig proves the other half:
+// when there was NO pre-existing config, rollback still removes the file
+// this operation created, rather than leaving it behind.
+func TestWriteConfigOp_RollbackRemovesWhenNoPriorConfig(t *testing.T) {
+	logger := &testLogger{}
+	fsOps := NewFilesystemOps(logger, false)
+	svc := NewSystemdManager(logger, true)
+	perm := NewPermissionManager(logger, true)
+	ops := NewBootstrapOperations(logger, fsOps, svc, perm)
+
+	configPath := t.TempDir() + "/dso.yaml"
+	op, rollback := ops.WriteConfigOp(configPath, []byte("providers:\n  - name: new\n"))
+
+	ctx := context.Background()
+	if err := op.Execute(ctx); err != nil {
+		t.Fatalf("op.Execute failed: %v", err)
+	}
+	if err := rollback(ctx); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Errorf("expected config file to be removed on rollback when it did not pre-exist, stat err: %v", err)
 	}
 }

@@ -560,3 +560,28 @@ func TestRESTServer_AcceptableBody(t *testing.T) {
 		t.Errorf("small body was incorrectly blocked with 413")
 	}
 }
+
+// TestRESTServer_EventWS_RejectsOverCap proves the WebSocket endpoint rejects
+// new connections once Hub.ClientCount() reaches maxHubClients, instead of
+// upgrading unboundedly. The rate limiter deliberately exempts this endpoint
+// from per-message throttling, so this cap is the only backstop against a
+// client opening unlimited connections.
+func TestRESTServer_EventWS_RejectsOverCap(t *testing.T) {
+	server := createTestRESTServer()
+
+	// Directly populate the hub's client set to simulate being at capacity,
+	// rather than actually opening maxHubClients real WebSocket connections.
+	server.Hub.mutex.Lock()
+	for i := 0; i < maxHubClients; i++ {
+		server.Hub.clients[&Client{}] = true
+	}
+	server.Hub.mutex.Unlock()
+
+	req := httptest.NewRequest("GET", "/api/events/ws", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when at connection cap, got %d", w.Code)
+	}
+}
