@@ -1,10 +1,31 @@
 package proxy
 
 import (
+	"net"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
+
+// freePort asks the OS for a currently-unused TCP port by binding to :0 and
+// immediately releasing it. Used instead of a hardcoded port like 8080 --
+// which is commonly already bound by something else on a shared dev/CI
+// machine -- to avoid flaky "address already in use" failures unrelated to
+// what the test is actually checking. There is an inherent, small
+// close-then-rebind race (another process could grab the port in between),
+// but that's a large improvement over a fixed well-known port and matches
+// the ephemeral-port pattern already used elsewhere in this file.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find a free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
 
 func TestNewManager(t *testing.T) {
 	m := NewManager(testLogger(t))
@@ -112,14 +133,17 @@ func TestManager_EnsurePort_RejectsPortOutsideAllowList(t *testing.T) {
 	m := NewManager(testLogger(t))
 	defer func() { _ = m.Stop(time.Second) }()
 
-	if err := m.SetAllowedHostPorts([]string{"8080"}); err != nil {
+	allowedPort := freePort(t)
+	rejectedPort := freePort(t)
+
+	if err := m.SetAllowedHostPorts([]string{strconv.Itoa(allowedPort)}); err != nil {
 		t.Fatalf("SetAllowedHostPorts failed: %v", err)
 	}
 
-	if err := m.EnsurePort(9090, 80); err == nil {
+	if err := m.EnsurePort(rejectedPort, 80); err == nil {
 		t.Fatal("expected EnsurePort to reject a port outside the allow-list")
 	}
-	if err := m.EnsurePort(8080, 80); err != nil {
+	if err := m.EnsurePort(allowedPort, 80); err != nil {
 		t.Fatalf("expected EnsurePort to accept an allow-listed port, got: %v", err)
 	}
 
@@ -127,7 +151,7 @@ func TestManager_EnsurePort_RejectsPortOutsideAllowList(t *testing.T) {
 	if err := m.SetAllowedHostPorts(nil); err != nil {
 		t.Fatalf("SetAllowedHostPorts(nil) failed: %v", err)
 	}
-	if err := m.EnsurePort(9090, 80); err != nil {
+	if err := m.EnsurePort(rejectedPort, 80); err != nil {
 		t.Fatalf("expected EnsurePort to accept any port once allow-list is cleared, got: %v", err)
 	}
 }
