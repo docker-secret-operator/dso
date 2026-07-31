@@ -40,7 +40,10 @@ func TestDecideStrategy(t *testing.T) {
 				IsStateful:     true,
 				HasHealthCheck: true,
 			},
-			expectedStrategy: "rolling", // 100 - 20 = 80 >= 70
+			// Score would be 100 - 20 = 80 >= 70, but IsStateful is a hard
+			// override to "restart" regardless of score: parallel instances
+			// of a stateful workload risk data corruption.
+			expectedStrategy: "restart",
 			minScore:         80,
 		},
 		{

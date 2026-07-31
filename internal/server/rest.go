@@ -196,8 +196,6 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 		send: make(chan Event, 256),
 	}
 
-	client.hub.register <- client
-
 	// Push last N events synchronously on connect
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50

@@ -34,6 +34,11 @@ func NewExportCmd() *cobra.Command {
 			}
 			defer func() { _ = client.Close() }()
 
+			if format != "env" {
+				fmt.Fprintf(os.Stderr, "Error: unsupported format %q (only \"env\" is supported)\n", format)
+				os.Exit(1)
+			}
+
 			injectedEnvs, err := client.FetchAllEnvs(cfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Injection failed: %v\n", err)

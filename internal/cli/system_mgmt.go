@@ -78,7 +78,11 @@ func showSystemStatus() error {
 	} else {
 		fmt.Printf("│ Service:    dso-agent                │\n")
 		fmt.Printf("│ Status:     ✓ running                │\n")
-		fmt.Printf("│ Output:     %s│\n", string(output)[:30])
+		outputStr := string(output)
+		if len(outputStr) > 30 {
+			outputStr = outputStr[:30]
+		}
+		fmt.Printf("│ Output:     %s│\n", outputStr)
 	}
 
 	// Check if enabled

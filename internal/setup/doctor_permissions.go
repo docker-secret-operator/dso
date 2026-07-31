@@ -50,7 +50,7 @@ func (pc *PermissionChecks) checkSocketPermissions() DoctorCheck {
 	}
 
 	mode := info.Mode().Perm()
-	if mode&0002 != 0 {
+	if mode&0004 != 0 {
 		return warnCheck(id, name, desc,
 			fmt.Sprintf("socket permissions are %04o — world-readable", mode),
 			"World-readable Docker socket allows any user to control Docker",

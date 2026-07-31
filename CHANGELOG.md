@@ -8,7 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–31) and `docs/audit/2026-07-29-fresh-audit.md`.
+Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–32) and `docs/audit/2026-07-29-fresh-audit.md`.
+
+### Fixed
+
+- **[STRAT-1]** Stateful containers (databases etc.) can no longer be assigned the "rolling" (parallel-instance) rotation strategy. `IsStateful` was a soft -20 score penalty that other positive signals could outweigh; it is now a hard override to `"restart"`.
+- **[DOCTOR-1]** `docker dso doctor`'s Docker-socket permission check tested the wrong bit (`0002`, world-writable) while claiming to test world-*readable* (`0004`) — a world-readable socket passed silently. Fixed.
+- **[CLI-1]** `docker dso system status` could panic on short `systemctl` output (`slice bounds out of range`) instead of reporting status.
+- **[CLI-2]** `docker dso export --format <anything but env>` silently wrote an empty file while reporting success. Now rejected upfront.
+- **[REL-8]** Fixed a WebSocket client being registered twice on `/api/events/ws` connect; harmless in steady state, but could permanently block the connecting goroutine if a server shutdown landed between the two registrations.
+
+See Decision 32 for a full list of findings from this round that were triaged and **deferred** (with rationale): `sync`/`status`/`apply` CLI commands returning fabricated data rather than real agent state (needs new agent RPC surface, not a bugfix); bootstrap installer symlink/rollback/lock hazards; setup-engine transaction snapshot gaps; unbounded WebSocket connections on the REST server; container-name/stateful-workload misclassification in the rotation analyzer; and missing connection deadlines/caps in the TCP proxy core.
 
 ### Performance
 

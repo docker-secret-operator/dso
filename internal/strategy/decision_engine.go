@@ -125,7 +125,12 @@ func DecideStrategy(result analyzer.AnalysisResult) StrategyDecision {
 		Score: score,
 	}
 
-	if score >= 70 {
+	// Stateful workloads must never receive "rolling" (parallel-instance)
+	// rotation regardless of score: two live instances of the same
+	// database/stateful backend risks data corruption. This is a hard
+	// override, not a point deduction, because other positive signals
+	// (health check present, no fixed port) could otherwise outweigh it.
+	if score >= 70 && !result.IsStateful {
 		decision.Strategy = "rolling"
 	} else {
 		decision.Strategy = "restart"
