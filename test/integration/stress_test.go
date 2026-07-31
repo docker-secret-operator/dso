@@ -115,12 +115,22 @@ func TestStress_EventDebouncer_RapidFire(t *testing.T) {
 	var duplicatesDetected int
 	var freshDetected int
 
-	// Generate rapid fire events
+	// Generate rapid fire events.
+	//
+	// TEST-1: the original condition was
+	//   if i%int(float64(numEvents)*eventDuplicateRatio) == 0
+	// which evaluates to `i%8000 == 0` — true for exactly i=0 and i=8000. So
+	// only two events ever reused an ID and the debouncer was never actually
+	// exercised: the assertion below reported 1 duplicate against 7200
+	// expected, but only logged, so nobody noticed. The intent was clearly
+	// "eventDuplicateRatio of events are drawn from a small repeating pool".
+	duplicatePoolSize := 10
+	duplicateCutoff := int(eventDuplicateRatio * 10) // 80% -> first 8 of every 10
 	for i := 0; i < numEvents; i++ {
 		var eventID string
-		if i%int(float64(numEvents)*eventDuplicateRatio) == 0 {
-			// Repeat same event ID frequently
-			eventID = fmt.Sprintf("container-%d", i%10)
+		if i%10 < duplicateCutoff {
+			// Repeat from a small pool so these collide constantly.
+			eventID = fmt.Sprintf("container-%d", i%duplicatePoolSize)
 		} else {
 			// Mostly unique event IDs
 			eventID = fmt.Sprintf("container-unique-%d", i)
@@ -138,9 +148,16 @@ func TestStress_EventDebouncer_RapidFire(t *testing.T) {
 	t.Logf("✅ Rapid-fire test: %d fresh events, %d duplicates detected out of %d",
 		freshDetected, duplicatesDetected, numEvents)
 
-	expectedDuplicates := int(float64(numEvents) * eventDuplicateRatio * 0.9) // Allow 90% detection
+	// TEST-1: was t.Logf, so a broken debouncer could never fail the build.
+	// Now that the generator above actually produces duplicates, this is a
+	// real assertion: ~80% of events come from a 10-ID pool inside a 100ms
+	// debounce window, so all but the first sighting of each ID must be
+	// detected as a duplicate. The 0.9 factor is headroom for the pool's
+	// first-occurrence events and any window expiry under a slow runner.
+	expectedDuplicates := int(float64(numEvents) * eventDuplicateRatio * 0.9)
 	if duplicatesDetected < expectedDuplicates {
-		t.Logf("Warning: Deduplication may be weak (%d < %d expected)", duplicatesDetected, expectedDuplicates)
+		t.Errorf("deduplication is weaker than expected: %d duplicates detected, want at least %d",
+			duplicatesDetected, expectedDuplicates)
 	}
 }
 

@@ -41,6 +41,34 @@ func (p *EnvProvider) WatchSecret(ctx context.Context, name string, interval tim
 	ch := make(chan api.SecretUpdate)
 	go func() {
 		defer close(ch)
+
+		// Deliver immediately on first call so callers don't block on the first
+		// tick, matching the AWS/Azure/Huawei plugins. This previously only
+		// sent on tick, so a consumer waiting for an initial value stalled for
+		// a full interval on this provider.
+		//
+		// Errors are propagated via SecretUpdate.Error rather than silently
+		// emitting an update with nil Data, which consumers cannot distinguish
+		// from a legitimately empty secret.
+		send := func() {
+			data, err := p.GetSecret(name)
+			update := api.SecretUpdate{Name: name, Data: data}
+			if err != nil {
+				update = api.SecretUpdate{Name: name, Error: err.Error()}
+			}
+			select {
+			case ch <- update:
+			case <-ctx.Done():
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		send()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -50,21 +78,7 @@ func (p *EnvProvider) WatchSecret(ctx context.Context, name string, interval tim
 				// Context cancelled, clean up goroutine
 				return
 			case <-ticker.C:
-				// Propagate the error via SecretUpdate.Error rather than
-				// silently emitting an update with nil Data, which consumers
-				// cannot distinguish from a legitimately empty secret.
-				data, err := p.GetSecret(name)
-				update := api.SecretUpdate{Name: name, Data: data}
-				if err != nil {
-					update = api.SecretUpdate{Name: name, Error: err.Error()}
-				}
-				select {
-				case ch <- update:
-					// Message sent
-				case <-ctx.Done():
-					// Context cancelled while sending
-					return
-				}
+				send()
 			}
 		}
 	}()

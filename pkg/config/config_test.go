@@ -458,24 +458,46 @@ func TestIsSafePath_SymlinkedParentDirNotEscaping(t *testing.T) {
 	}
 }
 
-// TestIsSafePathEmptyPaths handles empty paths
+// TestIsSafePathEmptyPaths handles empty paths.
+//
+// TEST-1: this previously only called t.Logf on mismatch, so it could never
+// fail the build. Converting it to a real assertion required first determining
+// which side was wrong — the test's expectation or the production behavior.
+//
+// Verified against the implementation: an empty baseDir is IsSafePath's
+// deliberate "anywhere mode" (see the `if baseDir == ""` branch), which
+// rejects only absolute paths outside the allow-listed system directories and
+// non-local (`..`) paths, then returns the cleaned path with a nil error. So
+// none of these inputs is an error, and the original `wantErr: true` entries
+// were simply wrong. The production code is unchanged; only the expectations
+// are corrected.
+//
+// Note `IsSafePath("", "")` yields "." (filepath.Clean of an empty string),
+// i.e. the current directory. That is the documented behavior of Clean rather
+// than a defect here, but a caller treating "." as a file path would be
+// making a mistake — worth remembering if a future caller passes user input
+// straight through.
 func TestIsSafePathEmptyPaths(t *testing.T) {
 	tests := []struct {
-		name    string
-		base    string
-		target  string
-		wantErr bool
+		name     string
+		base     string
+		target   string
+		wantErr  bool
+		wantPath string
 	}{
-		{"both empty", "", "", true},
-		{"empty base", "", "target", true},
-		{"empty target", "base", "", false}, // empty target might be allowed
+		{"both empty", "", "", false, "."},
+		{"empty base", "", "target", false, "target"},
+		{"empty target", "base", "", false, ""}, // resolves under baseDir; path not asserted
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := IsSafePath(tt.base, tt.target)
+			got, err := IsSafePath(tt.base, tt.target)
 			if (err != nil) != tt.wantErr {
-				t.Logf("IsSafePath(%q, %q) error=%v, want error=%v", tt.base, tt.target, err, tt.wantErr)
+				t.Fatalf("IsSafePath(%q, %q) error=%v, want error=%v", tt.base, tt.target, err, tt.wantErr)
+			}
+			if tt.wantPath != "" && got != tt.wantPath {
+				t.Errorf("IsSafePath(%q, %q) = %q, want %q", tt.base, tt.target, got, tt.wantPath)
 			}
 		})
 	}

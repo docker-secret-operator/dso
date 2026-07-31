@@ -48,6 +48,25 @@ func NewRedactionPatterns() *RedactionPatterns {
 func (rp *RedactionPatterns) RedactString(input string) string {
 	output := input
 	for _, pattern := range rp.patterns {
+		// SEC-1.1: ReplaceAllString allocates a fresh result string on every
+		// call, even when the pattern does not match — which is the common
+		// case, since most log messages and fields contain no credentials. Of
+		// the 11 patterns, typically zero match, so this previously performed
+		// 11 scans AND 11 allocations per string.
+		//
+		// MatchString does not allocate. Guarding on it is *provably*
+		// equivalence-preserving rather than a heuristic: when MatchString is
+		// false, ReplaceAllString is defined to return the input unchanged, so
+		// skipping it cannot alter the result. This is deliberately NOT the
+		// "cheap keyword pre-scan" idea from the SEC-1.1 backlog, which could
+		// drift out of sync with the patterns and silently redact less.
+		//
+		// Cost when a pattern *does* match is one extra scan, which is the
+		// right trade: matches are rare, and correctness on the match path is
+		// worth more than speed there.
+		if !pattern.MatchString(output) {
+			continue
+		}
 		output = pattern.ReplaceAllString(output, "[REDACTED]")
 	}
 	return output

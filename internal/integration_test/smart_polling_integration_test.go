@@ -258,8 +258,10 @@ func TestSmartPolling_BatchingUnderLoad(t *testing.T) {
 	callTimesMu.Lock()
 	defer callTimesMu.Unlock()
 
+	// TEST-1: was t.Logf. callTimes gets one entry per trigger and the test
+	// already fatals unless the count is 5, so this bound always holds.
 	if len(callTimes) < 3 {
-		t.Logf("WARNING: expected at least 3 call timestamps, got %d", len(callTimes))
+		t.Errorf("expected at least 3 call timestamps, got %d", len(callTimes))
 	}
 }
 
@@ -576,10 +578,19 @@ func TestSmartPolling_LoadTest(t *testing.T) {
 	var endMem runtime.MemStats
 	runtime.ReadMemStats(&endMem)
 
-	memIncrease := endMem.Alloc - startMem.Alloc
-	// Allow up to 50MB increase (reasonable for this load)
-	if memIncrease > 50*1024*1024 {
-		t.Logf("WARNING: significant memory increase: %d bytes", memIncrease)
+	// MemStats.Alloc is unsigned, and a GC between the two reads can leave
+	// endMem.Alloc BELOW startMem.Alloc -- the naive subtraction then wraps to
+	// ~2^64 and prints a nonsense "memory increase" (observed:
+	// 18446744073708176448 bytes). Compare before subtracting.
+	//
+	// Left as an informational log rather than an assertion: allocation
+	// deltas across a GC boundary are inherently noisy, and asserting on them
+	// buys flaky CI for no real signal.
+	if endMem.Alloc > startMem.Alloc {
+		memIncrease := endMem.Alloc - startMem.Alloc
+		if memIncrease > 50*1024*1024 { // 50MB
+			t.Logf("note: memory increased by %d bytes during the load test", memIncrease)
+		}
 	}
 
 	// Verify goroutine count is stable
@@ -588,9 +599,19 @@ func TestSmartPolling_LoadTest(t *testing.T) {
 		t.Logf("WARNING: goroutine count increased significantly. Before: %d, After: %d", beforeGoroutines, afterGoroutines)
 	}
 
-	// Verify all operations completed
-	if rotationCalls != int32(numSecrets*operationsPerSecret) {
-		t.Logf("note: rotation calls: %d (may be less due to deduplication)", rotationCalls)
+	// TEST-1: was t.Logf. Strict equality is genuinely the wrong contract --
+	// the reactor deduplicates within a 1s window AND drains only 5 events
+	// per 5s batch tick, so within this test's window the great majority of
+	// the enqueued events have not been processed yet. (An earlier attempt at
+	// this assertion used `>= numSecrets` and failed for exactly that reason:
+	// 100 secrets, 5 rotations observed.)
+	//
+	// The meaningful invariant is therefore that the pipeline ran at all: a
+	// stalled, deadlocked or dead reactor yields zero, which is what this
+	// needs to catch. Anything stricter is a statement about batch timing,
+	// not about correctness, and would be flaky by construction.
+	if rotationCalls == 0 {
+		t.Errorf("no rotations were triggered at all under load (%d secrets enqueued); the reactor pipeline is not running", numSecrets)
 	}
 }
 
@@ -661,42 +682,88 @@ func TestSmartPolling_StressTest(t *testing.T) {
 	totalElapsed := time.Since(startTime)
 	t.Logf("stress test completed in %v, rotation calls: %d", totalElapsed, rotationCalls)
 
-	// Verify all events were processed
+	// TEST-1: was t.Logf. The loop above already polls until numEvents is
+	// reached or the deadline expires, so requiring the full count would make
+	// this flaky on a slow runner. Assert instead that the pipeline actually
+	// did substantial work -- a stalled or dead reactor yields ~0, which is
+	// what this needs to catch.
 	finalCalls := atomic.LoadInt32(&rotationCalls)
+	if finalCalls == 0 {
+		t.Errorf("no events were processed at all (expected up to %d)", numEvents)
+	}
 	if finalCalls < int32(numEvents) {
-		t.Logf("note: some events may not have been processed yet, got %d out of %d", finalCalls, numEvents)
+		t.Logf("note: processed %d of %d events before the deadline (deduplication and batching make the exact count timing-dependent)", finalCalls, numEvents)
 	}
 }
 
-// TestSmartPolling_APICallReduction validates polling efficiency
+// countAdaptivePolls walks a window of wall-clock time, asking the production
+// polling.CalculateInterval what the interval would be at each step, and
+// returns how many polls the adaptive schedule would issue after a single
+// change at t=0.
+//
+// Deriving the tiers from CalculateInterval (rather than hardcoding 5s/30s/5m)
+// is the point: if the tier boundaries change, this test tracks them.
+func countAdaptivePolls(window time.Duration) int {
+	polls := 0
+	for elapsed := time.Duration(0); elapsed < window; {
+		elapsed += polling.CalculateInterval(elapsed)
+		if elapsed <= window {
+			polls++
+		}
+	}
+	return polls
+}
+
+// TestSmartPolling_APICallReduction characterizes the adaptive tiering against
+// fixed-interval polling.
+//
+// TEST-1 / PERF-1: this test previously computed hardcoded arithmetic, called
+// NO production code, and its only check (`if reduction < 0`) merely logged —
+// while actually firing, because over a short window the aggressive 5s tier
+// costs *more* than fixed 30s polling. It therefore silently contradicted the
+// "80% fewer API calls" claim it appeared to validate.
+//
+// It now exercises polling.CalculateInterval and asserts the real, honest
+// relationship in both directions.
+//
+// IMPORTANT SCOPE NOTE: this measures the *tiering arithmetic* only. It is not
+// a measurement of DSO's actual provider API traffic — no production code path
+// currently polls a provider through SmartPoller at all (see PERF-2 and the
+// status note in docs/SMART_POLLING.md). Treat these numbers as a property of
+// the schedule, not as a delivered saving.
 func TestSmartPolling_APICallReduction(t *testing.T) {
-	// Simulate baseline polling (fixed 30s interval)
-	fixedInterval := 30 * time.Second
-	simulationDuration := 15 * time.Minute
+	const fixedInterval = 30 * time.Second
 
-	fixedPollsCount := int(simulationDuration.Seconds() / fixedInterval.Seconds())
-	t.Logf("Fixed 30s polling over 15 min: %d polls", fixedPollsCount)
+	fixedPolls := func(window time.Duration) int {
+		return int(window.Seconds() / fixedInterval.Seconds())
+	}
 
-	// Simulate SmartPoller polling with NO changes detected (baseline stable)
-	// With no changes, SmartPoller would eventually poll every 5 minutes (backoff mode)
-	// Phase 1 (0-2m): 5s interval = 24 polls
-	// Phase 2 (2m-10m): 30s interval = 16 polls
-	// Phase 3 (10m-15m): 5m interval = 1 poll
-	phase1Count := int(2 * time.Minute.Seconds() / 5.0)
-	phase2Count := int(8 * time.Minute.Seconds() / 30.0)
-	phase3Count := int(5 * time.Minute.Seconds() / (5 * time.Minute).Seconds())
-	smartPollCount := phase1Count + phase2Count + phase3Count
+	// Short window: the aggressive tier dominates, so adaptive costs MORE.
+	// This is the finding the old test was hiding.
+	shortWindow := 15 * time.Minute
+	shortFixed := fixedPolls(shortWindow)
+	shortAdaptive := countAdaptivePolls(shortWindow)
+	t.Logf("over %v: fixed=%d polls, adaptive=%d polls", shortWindow, shortFixed, shortAdaptive)
 
-	t.Logf("SmartPoller polling (no changes after initial): %d polls (P1: %d + P2: %d + P3: %d)",
-		smartPollCount, phase1Count, phase2Count, phase3Count)
+	if shortAdaptive <= shortFixed {
+		t.Errorf("expected adaptive polling to cost MORE than fixed over a short window "+
+			"(the 5s aggressive tier dominates): fixed=%d, adaptive=%d", shortFixed, shortAdaptive)
+	}
 
-	// Calculate reduction percentage
-	reduction := float64(fixedPollsCount-smartPollCount) / float64(fixedPollsCount) * 100
-	t.Logf("API call reduction: %.1f%%", reduction)
+	// Day-long window: the 5m backoff tier dominates and adaptive wins
+	// substantially. This is where the documented savings figure comes from.
+	dayWindow := 24 * time.Hour
+	dayFixed := fixedPolls(dayWindow)
+	dayAdaptive := countAdaptivePolls(dayWindow)
+	reduction := float64(dayFixed-dayAdaptive) / float64(dayFixed) * 100
+	t.Logf("over %v: fixed=%d polls, adaptive=%d polls (%.1f%% fewer)", dayWindow, dayFixed, dayAdaptive, reduction)
 
-	// Verify reduction is significant (>30% for this scenario with eventual backoff)
-	if reduction < 0 {
-		t.Logf("note: SmartPoller uses %d polls vs Fixed %d polls", smartPollCount, fixedPollsCount)
+	if dayAdaptive >= dayFixed {
+		t.Fatalf("expected adaptive polling to cost less than fixed over a day: fixed=%d, adaptive=%d",
+			dayFixed, dayAdaptive)
+	}
+	if reduction < 80 {
+		t.Errorf("expected >=80%% fewer polls over a day with one change at t=0, got %.1f%%", reduction)
 	}
 }
 

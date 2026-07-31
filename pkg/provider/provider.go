@@ -3,11 +3,22 @@ package provider
 import (
 	"context"
 	"net/rpc"
+	"strings"
 	"time"
 
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/hashicorp/go-plugin"
 )
+
+// GetSecretArgs carries the arguments for the deadline-aware GetSecret RPC.
+// Fields must stay exported so gob can encode them across the plugin boundary.
+type GetSecretArgs struct {
+	Name string
+	// Deadline is the caller's absolute deadline, or the zero time when the
+	// caller has none. Absolute rather than a duration so the plugin isn't
+	// working from a timer that started when the message was sent.
+	Deadline time.Time
+}
 
 // ProviderRPC is an implementation that communicates over RPC
 type ProviderRPC struct {
@@ -55,8 +66,40 @@ func (g *ProviderRPC) GetSecretWithContext(ctx context.Context, name string) (ma
 		return nil, err
 	}
 
+	// Propagate the caller's deadline to the plugin so it can bound its own
+	// SDK call, instead of continuing to burn a cloud API request after the
+	// daemon has already given up. Older plugin binaries do not expose this
+	// method; that case falls back below.
+	args := GetSecretArgs{Name: name}
+	if dl, ok := ctx.Deadline(); ok {
+		args.Deadline = dl
+	}
+
 	var resp map[string]string
 	// Buffered by net/rpc: Go() returns immediately and signals on Done.
+	call := g.client.Go("Plugin.GetSecretWithDeadline", args, &resp, make(chan *rpc.Call, 1))
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case done := <-call.Done:
+		if done.Error != nil {
+			if isUnknownRPCMethod(done.Error) {
+				// Plugin predates GetSecretWithDeadline. Fall back to the
+				// original method: the caller still gets client-side
+				// cancellation, just without server-side bounding.
+				return g.getSecretLegacy(ctx, name)
+			}
+			return nil, done.Error
+		}
+		return resp, nil
+	}
+}
+
+// getSecretLegacy is the pre-deadline call path, retained so a daemon can talk
+// to a plugin binary built before GetSecretWithDeadline existed.
+func (g *ProviderRPC) getSecretLegacy(ctx context.Context, name string) (map[string]string, error) {
+	var resp map[string]string
 	call := g.client.Go("Plugin.GetSecret", name, &resp, make(chan *rpc.Call, 1))
 
 	select {
@@ -68,6 +111,19 @@ func (g *ProviderRPC) GetSecretWithContext(ctx context.Context, name string) (ma
 		}
 		return resp, nil
 	}
+}
+
+// isUnknownRPCMethod reports whether err is net/rpc's "method not found"
+// response, which is how an older plugin answers a method it does not
+// implement. net/rpc returns this as a plain ServerError string, so matching
+// on the text is the only option available.
+func isUnknownRPCMethod(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "can't find method") ||
+		strings.Contains(msg, "can't find service")
 }
 
 func (g *ProviderRPC) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {
@@ -130,6 +186,46 @@ func (s *ProviderRPCServer) Init(config map[string]string, resp *interface{}) er
 
 func (s *ProviderRPCServer) GetSecret(name string, resp *map[string]string) error {
 	v, err := s.Impl.GetSecret(name)
+	*resp = v
+	return err
+}
+
+// GetSecretWithDeadline is the deadline-aware counterpart of GetSecret.
+//
+// It exists as a SEPARATE method rather than a change to GetSecret's argument
+// type on purpose: net/rpc encodes arguments with gob, so widening `string` to
+// a struct in place would break every already-installed plugin binary. Adding
+// a method keeps old plugins working — a daemon calling this against an older
+// plugin gets net/rpc's "can't find method" error, which the client detects
+// and falls back from (see ProviderRPC.GetSecretWithContext).
+//
+// The deadline is only *honored* if the plugin implements
+// api.SecretProviderWithContext; otherwise the underlying SDK call is not
+// interruptible and we simply run it to completion. Passing the deadline is
+// still worthwhile: it lets a context-aware plugin stop work the daemon no
+// longer cares about, and an already-expired deadline is rejected before any
+// remote work starts.
+func (s *ProviderRPCServer) GetSecretWithDeadline(args GetSecretArgs, resp *map[string]string) error {
+	ctx := context.Background()
+	if !args.Deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, args.Deadline)
+		defer cancel()
+
+		// The daemon's deadline may already have passed in transit; don't
+		// start a provider call that is guaranteed to be discarded.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	if withCtx, ok := s.Impl.(api.SecretProviderWithContext); ok {
+		v, err := withCtx.GetSecretWithContext(ctx, args.Name)
+		*resp = v
+		return err
+	}
+
+	v, err := s.Impl.GetSecret(args.Name)
 	*resp = v
 	return err
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/provider"
 	"github.com/hashicorp/go-plugin"
@@ -47,7 +48,20 @@ func (p *AWSProvider) Init(cfg map[string]string) error {
 	return nil
 }
 
+// GetSecret satisfies api.SecretProvider. It delegates to getSecret with a
+// background context.
 func (p *AWSProvider) GetSecret(name string) (map[string]string, error) {
+	return p.getSecret(context.Background(), name)
+}
+
+// GetSecretWithContext satisfies api.SecretProviderWithContext, letting the
+// daemon's deadline bound the AWS SDK call rather than the plugin continuing
+// to burn a request the daemon has already stopped waiting for.
+func (p *AWSProvider) GetSecretWithContext(ctx context.Context, name string) (map[string]string, error) {
+	return p.getSecret(ctx, name)
+}
+
+func (p *AWSProvider) getSecret(ctx context.Context, name string) (map[string]string, error) {
 	if p.client == nil {
 		return nil, fmt.Errorf("aws provider not initialized — Init() was not called")
 	}
@@ -56,7 +70,7 @@ func (p *AWSProvider) GetSecret(name string) (map[string]string, error) {
 		SecretId: &name,
 	}
 
-	result, err := p.client.GetSecretValue(context.TODO(), input)
+	result, err := p.client.GetSecretValue(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to fetch secret '%s' from AWS Secrets Manager: %w\n  Fix: Verify the secret name and IAM permissions (secretsmanager:GetSecretValue)",
@@ -91,16 +105,48 @@ func (p *AWSProvider) GetSecret(name string) (map[string]string, error) {
 	}
 
 	// Attach AWS resource tags as _TAG_<key> metadata fields (non-blocking).
+	//
+	// Tag data must never overwrite secret data. Tags share this map's
+	// namespace, and in AWS they are typically writable by a broader IAM
+	// population than secretsmanager:GetSecretValue readers -- so someone able
+	// to set a tag named "_TAG_password" (or literally "password", once
+	// prefixed) must not be able to shadow a real secret key. Existing keys
+	// therefore win, and the collision is reported rather than applied
+	// silently.
 	descInput := &secretsmanager.DescribeSecretInput{SecretId: &name}
-	if descResult, err := p.client.DescribeSecret(context.TODO(), descInput); err == nil && descResult.Tags != nil {
-		for _, tag := range descResult.Tags {
-			if tag.Key != nil && tag.Value != nil {
-				data["_TAG_"+*tag.Key] = *tag.Value
-			}
-		}
+	if descResult, err := p.client.DescribeSecret(ctx, descInput); err == nil {
+		mergeTags(data, descResult.Tags, name)
 	}
 
 	return data, nil
+}
+
+// mergeTags copies AWS resource tags into the secret map as _TAG_<key>
+// entries, without ever overwriting existing secret data.
+//
+// Tags share the secret's key namespace, and in AWS they are typically
+// writable by a broader IAM population than secretsmanager:GetSecretValue
+// readers. Letting a tag win would mean someone able to set a tag named
+// "password" (which becomes "_TAG_password"), or literally "_TAG_password",
+// could shadow real secret material. Existing keys therefore take precedence
+// and the collision is reported on stderr rather than applied silently.
+//
+// Extracted from GetSecret so this precedence rule is unit-testable without
+// an AWS client.
+func mergeTags(data map[string]string, tags []types.Tag, secretName string) {
+	for _, tag := range tags {
+		if tag.Key == nil || tag.Value == nil {
+			continue
+		}
+		key := "_TAG_" + *tag.Key
+		if _, clash := data[key]; clash {
+			fmt.Fprintf(os.Stderr,
+				"[dso-provider-aws] ignoring tag %q on secret %q: key %q already present in the secret payload (secret data takes precedence)\n",
+				*tag.Key, secretName, key)
+			continue
+		}
+		data[key] = *tag.Value
+	}
 }
 
 func (p *AWSProvider) WatchSecret(ctx context.Context, name string, interval time.Duration) (<-chan api.SecretUpdate, error) {

@@ -540,8 +540,11 @@ func TestExtractUIDGIDWithWhitespace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			uid, gid := ExtractUIDGID(tt.input)
+			// TEST-1: was t.Logf, so this table could never fail the build.
+			// ExtractUIDGID uses strconv.Atoi, which does not trim whitespace,
+			// so the whitespace cases correctly fall back to (0, 0).
 			if uid != tt.wantUID || gid != tt.wantGID {
-				t.Logf("ExtractUIDGID(%q) = (%d, %d), expected (%d, %d)", tt.input, uid, gid, tt.wantUID, tt.wantGID)
+				t.Errorf("ExtractUIDGID(%q) = (%d, %d), expected (%d, %d)", tt.input, uid, gid, tt.wantUID, tt.wantGID)
 			}
 		})
 	}

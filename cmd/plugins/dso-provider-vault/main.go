@@ -62,7 +62,19 @@ func (p *VaultProvider) Init(config map[string]string) error {
 	return nil
 }
 
+// GetSecret satisfies api.SecretProvider. It delegates to getSecret with a
+// background context.
 func (p *VaultProvider) GetSecret(name string) (map[string]string, error) {
+	return p.getSecret(context.Background(), name)
+}
+
+// GetSecretWithContext satisfies api.SecretProviderWithContext, letting the
+// daemon's deadline bound the Vault API call.
+func (p *VaultProvider) GetSecretWithContext(ctx context.Context, name string) (map[string]string, error) {
+	return p.getSecret(ctx, name)
+}
+
+func (p *VaultProvider) getSecret(ctx context.Context, name string) (map[string]string, error) {
 	// Every other provider guards this; without it a GetSecret call that
 	// reaches the RPC server before Init nil-derefs and panics the plugin.
 	if p.client == nil {
@@ -100,9 +112,9 @@ func (p *VaultProvider) GetSecret(name string) (map[string]string, error) {
 	var secret *vault.Secret
 	var err error
 	if version != "" {
-		secret, err = p.client.Logical().ReadWithData(vaultPath, map[string][]string{"version": {version}})
+		secret, err = p.client.Logical().ReadWithDataWithContext(ctx, vaultPath, map[string][]string{"version": {version}})
 	} else {
-		secret, err = p.client.Logical().Read(vaultPath)
+		secret, err = p.client.Logical().ReadWithContext(ctx, vaultPath)
 	}
 
 	if err != nil {
@@ -198,6 +210,30 @@ func (p *VaultProvider) WatchSecret(ctx context.Context, name string, interval t
 	ch := make(chan api.SecretUpdate)
 	go func() {
 		defer close(ch)
+
+		// Deliver immediately on first call so callers don't block on the first
+		// tick. This previously only sent on tick, unlike the AWS/Azure/Huawei
+		// plugins, so a consumer waiting for an initial value stalled for a
+		// full interval on half the providers.
+		send := func() {
+			data, err := p.GetSecret(name)
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			}
+			select {
+			case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
+			case <-ctx.Done():
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		send()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -205,16 +241,7 @@ func (p *VaultProvider) WatchSecret(ctx context.Context, name string, interval t
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				data, err := p.GetSecret(name)
-				var errMsg string
-				if err != nil {
-					errMsg = err.Error()
-				}
-				select {
-				case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
-				case <-ctx.Done():
-					return
-				}
+				send()
 			}
 		}
 	}()

@@ -1198,6 +1198,95 @@ Touches `internal/agent/agent.go` (large deletion), `internal/agent/agent_test.g
 
 ---
 
+### Decision 31: Closing the Remaining Backlog — Provider Consistency, TEST-1, SEC-1.1, Deadline Propagation
+
+**Date**: 2026-07-31  
+**Status**: Implemented
+
+This entry covers the five items that were still open after Decisions 22–30.
+
+---
+
+#### (a) `WatchSecret` first-delivery divergence
+
+AWS/Azure/Huawei emitted an initial value immediately; Vault, `file` and `env` only sent on their first tick, so a consumer waiting for an initial value stalled a full interval on half the providers. Applied the existing AWS `send()` + immediate-first shape to the other three. All six now behave identically.
+
+Verified by `pkg/backend/watch_firstdelivery_test.go`, which uses a **one-hour** watch interval and a 3-second deadline: only an immediate first send can satisfy it, so the test cannot pass by accident. Also covers the error case (an unset env var must report promptly rather than after an interval) and confirms a pre-cancelled context still closes the channel instead of emitting.
+
+---
+
+#### (b) AWS `_TAG_` key shadowing
+
+`GetSecret` merged AWS resource tags into the secret map as `_TAG_<key>` with a plain assignment, so a tag could silently overwrite secret material. This matters because tags are typically writable by a **broader IAM population** than `secretsmanager:GetSecretValue` readers — someone able to set a tag named `password` (→ `_TAG_password`), or literally `_TAG_password`, could shadow a real key.
+
+Secret data now always wins and the collision is reported on stderr. Extracted the loop into `mergeTags` so the precedence rule is unit-testable without an AWS client; tests cover shadowing, non-colliding tags, nil `Key`/`Value` pointers (which would otherwise panic the plugin), and empty/nil tag lists.
+
+---
+
+#### (c) TEST-1 — toothless tests
+
+A full repo sweep covered **127 test files**. 13 genuinely toothless instances were confirmed by reading code; 5 would have failed if naively converted.
+
+**The most important result: none of the 5 was a production defect.** Each was a wrong test expectation or a broken test fixture — the opposite of TEST-1's origin story (SEC-4, where the toothless test was hiding a real vulnerability). Recorded because it changes how the next sweep should be approached: assume the test is wrong before assuming the code is.
+
+Per-instance triage:
+- **`TestIsSafePathEmptyPaths`** (the known instance) — verified independently with a scratch program that `IsSafePath("", "")` returns `(".", nil)`. The `baseDir == ""` branch is a deliberate "anywhere mode" (rejects absolute paths outside the allow-list and `..` traversal, then returns the cleaned path). The test's `wantErr: true` was simply wrong. **Production code unchanged**, expectations corrected, and the assertion strengthened to also check the returned path.
+- **`TestEventReactorImpl_QueueMaxBatch`** — reported "expected 12, got 10" forever. A test arithmetic bug, not a defect: `batchTimeout=5s` with `dequeueBatch(5)` means 12 events need **three** ticks (~15s), but it slept 12s. Replaced the fixed sleep with polling; now passes in 15.03s, exactly as predicted.
+- **`TestStress_EventDebouncer_RapidFire`** — the fixture was broken: `i % int(10000*0.8)` is `i % 8000`, true for exactly `i=0` and `i=8000`, so only **two** events ever reused an ID. The debouncer was never exercised (1 duplicate detected against 7200 expected). Fixed the generator to match its stated 80% intent; now detects **7992** duplicates, and the check is a real assertion.
+- **`TestSmartPolling_APICallReduction`** — called *no production code*; pure arithmetic over hardcoded intervals, with a guard (`reduction < 0`) that fired every run. Rewritten to exercise `polling.CalculateInterval` and assert the honest relationship in **both** directions. This produced a genuinely useful result (see below).
+- **`rotationCalls` strict-equality checks** — equality was the wrong contract (the reactor deduplicates), so these became meaningful lower bounds with the reasoning stated inline, rather than being forced into assertions that would be flaky.
+
+Four further instances were converted mechanically after confirming they pass. Timing/resource heuristics (goroutine-count and memory-growth warnings in the stability suites) were deliberately **left as logs** — converting them buys flaky CI, and that judgement is recorded rather than silently applied.
+
+**Bonus finding, corroborating PERF-1:** the rewritten polling test shows the adaptive schedule uses **more** calls than fixed 30s polling over a 15-minute window (41 vs 30), and **88.7% fewer** over 24 hours (326 vs 2880). So the docs' 88.7% figure was arithmetically correct for a day-long window — the problem corrected in Decision 30 was that those polls never happen at all, not that the arithmetic was wrong. The docs' current wording ("unmeasured projections of the tiering arithmetic") is accurate on both counts.
+
+---
+
+#### (d) SEC-1.1 — redaction performance
+
+`RedactString` ran all 11 patterns through `ReplaceAllString` unconditionally. That call allocates a fresh result string **even when the pattern does not match**, which is the common case — so a typical log field paid 11 scans and 11 allocations to change nothing.
+
+**Options considered:**
+1. **Combined single-alternation regex** (backlog option 1) — rejected. Merging 11 patterns changes match/overlap semantics and application order, which is exactly the "faster path that redacts *less*" failure the backlog explicitly warned about. Not worth that risk inside a security control.
+2. **Cheap keyword pre-scan** (backlog option 2) — rejected for the reason the backlog itself gives: it must stay manually in sync with the patterns or it becomes a silent bypass.
+3. **Guard each `ReplaceAllString` with a non-allocating `MatchString`.** Chosen. This is **provably** equivalence-preserving rather than heuristic: when `MatchString` is false, `ReplaceAllString` is defined to return the input unchanged, so skipping it cannot alter the result.
+4. **Avoid the `redactFields` slice allocation** (backlog option 3) — **declined.** Detecting "nothing changed" requires comparing `zapcore.Field` values that contain an `interface{}`, which is not reliably comparable. Trading that risk inside a security control for one allocation out of four is a bad deal; recorded here so the decision is deliberate rather than an oversight.
+
+**Measured (same harness the backlog specified):**
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `Redaction_StringField` | 24,274 ns/op, 1,783 B/op, **70 allocs** | ~13,600 ns/op, 531 B/op, **4 allocs** | ~44% faster, **94% fewer allocations** |
+| `Redaction_ReflectField` | 47,840 ns/op, 2,967 B/op, **90 allocs** | ~28,400 ns/op, 1,358 B/op, **24 allocs** | ~41% faster, **73% fewer allocations** |
+
+**Correctness evidence** — the acceptance criterion was "proves the optimization doesn't change *what* gets redacted, only *how fast*". Speed numbers alone do not establish that, so two differential tests were added that run the guarded implementation against a retained copy of the original unguarded one and require **byte-identical** output: a hand-picked matrix (no-match, single-pattern, multi-pattern ordering, and adversarial inputs like `"[REDACTED]"`, `"password="`, `"://:@"`), plus a fuzzy pass over **2,197** three-fragment combinations. All 37 subtests named in the SEC-1.1 acceptance criteria pass unchanged.
+
+---
+
+#### (e) Server-side deadline propagation (completes Decision 28)
+
+Decision 28 deferred this because widening `GetSecret`'s gob-encoded argument from `string` to a struct would break every already-installed plugin binary.
+
+**Resolved additively instead:** a new `Plugin.GetSecretWithDeadline` RPC method carrying `GetSecretArgs{Name, Deadline}`. An older plugin answers with net/rpc's "can't find method" error, which the client detects and transparently falls back from — so no plugin rebuild is required and no wire format changed. The deadline is sent as an **absolute time**, not a duration, so the plugin isn't working from a timer that started when the message was sent.
+
+To make the deadline meaningful rather than decorative, all four plugins now implement `api.SecretProviderWithContext`, each refactored to an internal `getSecret(ctx, name)`:
+- **AWS / Azure / Vault** — genuinely honor it; their SDKs accept a context (Vault via `ReadWithContext`/`ReadWithDataWithContext`).
+- **Huawei** — **documented limitation**: `ShowSecretVersion` takes no context, so an in-flight call cannot be interrupted. It performs a pre-flight `ctx.Err()` check so an already-expired deadline starts no CSMS call at all. Daemon-side cancellation still unblocks the caller regardless. Real interruption needs SDK support.
+
+Tests prove the deadline actually crosses the process boundary (server-side records what it received and compares against the caller's), that a caller **without** a deadline does not get one fabricated, that an older plugin exposing only the legacy method still works, and that `isUnknownRPCMethod` does not misclassify a genuine provider error as "method missing" (which would silently retry on the legacy path).
+
+---
+
+### Verification (all five)
+`go build`/`go vet`/`gofmt` clean; `golangci-lint` 0 issues; `gosec` 0 issues; full `go test ./...` passes.
+
+### Remaining Open
+- Huawei in-flight interruption (blocked on SDK context support).
+- `redactFields` slice allocation (declined above, with reasoning).
+- Coverage-padding tests noted by the sweep (`TestFormatDuration`, `TestIsTerminal`, `store_more_test.go`) — a different anti-pattern from TEST-1's warning-only tests; worth a sibling backlog item rather than folding in here.
+
+---
+
 ## How to Use This Log
 
 ### When Reviewing Code

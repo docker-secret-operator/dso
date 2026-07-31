@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/rpc"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,4 +223,146 @@ func (e *erroringProvider) GetSecret(string) (map[string]string, error) {
 }
 func (e *erroringProvider) WatchSecret(context.Context, string, time.Duration) (<-chan api.SecretUpdate, error) {
 	return nil, errors.New("not used")
+}
+
+// deadlineRecordingProvider records the deadline it observes on the server
+// side, so tests can prove the caller's deadline actually crossed the RPC
+// boundary rather than being silently dropped.
+type deadlineRecordingProvider struct {
+	mu       sync.Mutex
+	sawCtx   bool
+	deadline time.Time
+	hasDL    bool
+}
+
+func (d *deadlineRecordingProvider) Init(map[string]string) error { return nil }
+
+func (d *deadlineRecordingProvider) GetSecret(string) (map[string]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sawCtx = false
+	return map[string]string{"via": "plain"}, nil
+}
+
+func (d *deadlineRecordingProvider) GetSecretWithContext(ctx context.Context, _ string) (map[string]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sawCtx = true
+	d.deadline, d.hasDL = ctx.Deadline()
+	return map[string]string{"via": "context"}, nil
+}
+
+func (d *deadlineRecordingProvider) WatchSecret(context.Context, string, time.Duration) (<-chan api.SecretUpdate, error) {
+	return nil, errors.New("not used")
+}
+
+// TestGetSecretWithDeadline_PropagatesDeadlineToPlugin proves the server-side
+// half of the fix: the caller's deadline reaches the plugin process, so a
+// context-aware plugin can bound its own SDK call instead of continuing to
+// burn a cloud API request the daemon has already abandoned.
+func TestGetSecretWithDeadline_PropagatesDeadlineToPlugin(t *testing.T) {
+	impl := &deadlineRecordingProvider{}
+	p := newTestRPC(t, impl)
+
+	want := time.Now().Add(37 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), want)
+	defer cancel()
+
+	got, err := p.GetSecretWithContext(ctx, "db_password")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["via"] != "context" {
+		t.Errorf("server used the non-context path (%v); the deadline-aware method was not reached", got)
+	}
+
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	if !impl.hasDL {
+		t.Fatal("plugin received no deadline — it crossed the RPC boundary as a bare name")
+	}
+	// Allow slop for gob's time encoding; the point is that it is the same
+	// instant, not a fresh timer started plugin-side.
+	if delta := impl.deadline.Sub(want); delta > time.Second || delta < -time.Second {
+		t.Errorf("plugin deadline %v differs from caller deadline %v by %v", impl.deadline, want, delta)
+	}
+}
+
+// TestGetSecretWithDeadline_NoDeadlineIsNotFabricated confirms a caller
+// without a deadline does not cause one to be invented plugin-side, which
+// would silently truncate long-running fetches.
+func TestGetSecretWithDeadline_NoDeadlineIsNotFabricated(t *testing.T) {
+	impl := &deadlineRecordingProvider{}
+	p := newTestRPC(t, impl)
+
+	if _, err := p.GetSecretWithContext(context.Background(), "db_password"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	if impl.hasDL {
+		t.Errorf("plugin saw a deadline (%v) though the caller had none", impl.deadline)
+	}
+}
+
+// TestGetSecretWithDeadline_FallsBackForOlderPlugin is the backward-
+// compatibility guard. The deadline was added as a NEW rpc method rather than
+// by widening GetSecret's gob-encoded argument, precisely so an already-
+// installed plugin binary keeps working. This registers a server exposing
+// ONLY the legacy method, exactly as an older plugin would.
+func TestGetSecretWithDeadline_FallsBackForOlderPlugin(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+
+	srv := rpc.NewServer()
+	if err := srv.RegisterName("Plugin", &legacyOnlyServer{}); err != nil {
+		t.Fatalf("RegisterName: %v", err)
+	}
+	go srv.ServeConn(serverConn)
+
+	client := rpc.NewClient(clientConn)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverConn.Close()
+	})
+
+	p := &ProviderRPC{client: client}
+
+	got, err := p.GetSecretWithContext(context.Background(), "db_password")
+	if err != nil {
+		t.Fatalf("expected a transparent fallback to the legacy method, got: %v", err)
+	}
+	if got["via"] != "legacy" {
+		t.Errorf("got %v, want the legacy method's response", got)
+	}
+}
+
+// legacyOnlyServer exposes GetSecret but NOT GetSecretWithDeadline, standing
+// in for a plugin binary built before the deadline method existed.
+type legacyOnlyServer struct{}
+
+func (l *legacyOnlyServer) Init(_ map[string]string, _ *interface{}) error { return nil }
+
+func (l *legacyOnlyServer) GetSecret(_ string, resp *map[string]string) error {
+	*resp = map[string]string{"via": "legacy"}
+	return nil
+}
+
+// TestIsUnknownRPCMethod covers the string matching the fallback relies on.
+// net/rpc reports an unimplemented method as a plain ServerError, so text
+// matching is the only signal available — worth pinning so a Go version that
+// rewords it is caught here rather than by a silent loss of fallback.
+func TestIsUnknownRPCMethod(t *testing.T) {
+	if !isUnknownRPCMethod(errors.New("rpc: can't find method Plugin.GetSecretWithDeadline")) {
+		t.Error("failed to recognize net/rpc's unknown-method error")
+	}
+	if !isUnknownRPCMethod(errors.New("rpc: can't find service Plugin.Foo")) {
+		t.Error("failed to recognize net/rpc's unknown-service error")
+	}
+	if isUnknownRPCMethod(nil) {
+		t.Error("nil must not be treated as an unknown-method error")
+	}
+	if isUnknownRPCMethod(errors.New("secret not found in backend")) {
+		t.Error("a genuine provider error was misread as an unknown-method error, which would silently retry on the legacy path")
+	}
 }

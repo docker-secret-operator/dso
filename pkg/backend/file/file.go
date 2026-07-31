@@ -64,6 +64,30 @@ func (p *FileProvider) WatchSecret(ctx context.Context, name string, interval ti
 	ch := make(chan api.SecretUpdate)
 	go func() {
 		defer close(ch)
+
+		// Deliver immediately on first call so callers don't block on the first
+		// tick, matching the AWS/Azure/Huawei plugins. This previously only
+		// sent on tick, so a consumer waiting for an initial value stalled for
+		// a full interval on this provider.
+		send := func() {
+			data, err := p.GetSecret(name)
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			}
+			select {
+			case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
+			case <-ctx.Done():
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		send()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -73,18 +97,7 @@ func (p *FileProvider) WatchSecret(ctx context.Context, name string, interval ti
 				// Context cancelled, clean up goroutine
 				return
 			case <-ticker.C:
-				data, err := p.GetSecret(name)
-				var errMsg string
-				if err != nil {
-					errMsg = err.Error()
-				}
-				select {
-				case ch <- api.SecretUpdate{Name: name, Data: data, Error: errMsg}:
-					// Message sent
-				case <-ctx.Done():
-					// Context cancelled while sending
-					return
-				}
+				send()
 			}
 		}
 	}()

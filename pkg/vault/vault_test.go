@@ -540,8 +540,11 @@ func TestVaultMetadataTracking(t *testing.T) {
 		t.Fatalf("Failed to parse timestamp: %v", err)
 	}
 
+	// TEST-1: was t.Logf. The recorded timestamp must fall inside the window
+	// bracketing the write; outside it means metadata is not being stamped
+	// from the write itself.
 	if ts.Before(before) || ts.After(after) {
-		t.Logf("Timestamp validation: before=%v, ts=%v, after=%v (acceptable if within 1s)", before, ts, after)
+		t.Errorf("timestamp outside expected window: before=%v, ts=%v, after=%v", before, ts, after)
 	}
 }
 

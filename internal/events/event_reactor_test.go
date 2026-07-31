@@ -206,8 +206,10 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 
 	// Verify batching behavior: should have been called around 5s and 10s marks
 	mu.Lock()
+	// TEST-1: was t.Logf. One timestamp is recorded per callback, and the
+	// test already fatals unless callCount == 7, so this is always satisfied.
 	if len(batchTimestamps) < 5 {
-		t.Logf("batch timestamps count: %d (expected at least 5)", len(batchTimestamps))
+		t.Errorf("batch timestamps count: %d (expected at least 5)", len(batchTimestamps))
 	}
 	mu.Unlock()
 }
@@ -319,9 +321,11 @@ func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 	time.Sleep(6 * time.Second) // Let last batch process
 
 	// Should complete without panic
+	// TEST-1: was t.Logf. 250 events are enqueued above, so at least one
+	// callback must have fired; zero would mean the reactor never ran.
 	finalCount := atomic.LoadInt32(&callCount)
 	if finalCount < 1 {
-		t.Logf("warning: expected at least 1 call, got %d", finalCount)
+		t.Errorf("expected at least 1 call, got %d", finalCount)
 	}
 }
 
@@ -511,14 +515,30 @@ func TestEventReactorImpl_QueueMaxBatch(t *testing.T) {
 		})
 	}
 
-	time.Sleep(12 * time.Second) // Wait for batches
+	// TEST-1: this previously slept a fixed 12s and then only logged on
+	// mismatch, so it silently reported "expected 12, got 10" forever.
+	//
+	// The production code was correct; the test's arithmetic was wrong. With
+	// batchTimeout=5s and dequeueBatch(5), 12 events need THREE ticks
+	// (5+5+2 = ~15s), not the 12s this waited. Poll instead of sleeping a
+	// fixed duration so the test tracks the real batching cadence rather than
+	// a hardcoded guess.
+	deadline := time.Now().Add(18 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := len(timestamps) >= 12
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// With max 5 per batch, we should have 3 batches (5, 5, 2)
-	// But these will be spread across multiple 5s intervals
+	// With max 5 per batch, we should have 3 batches (5, 5, 2).
 	if len(timestamps) != 12 {
-		t.Logf("warning: expected 12 total calls, got %d", len(timestamps))
+		t.Errorf("expected 12 total calls across 3 batches, got %d", len(timestamps))
 	}
 }

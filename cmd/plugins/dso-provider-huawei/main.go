@@ -93,7 +93,32 @@ func (h *HuaweiProvider) Init(cfg map[string]string) error {
 	return nil
 }
 
+// GetSecret satisfies api.SecretProvider. It delegates to getSecret with a
+// background context.
 func (h *HuaweiProvider) GetSecret(name string) (map[string]string, error) {
+	return h.getSecret(context.Background(), name)
+}
+
+// GetSecretWithContext satisfies api.SecretProviderWithContext.
+//
+// LIMITATION: the Huawei CSMS SDK's ShowSecretVersion takes no context, so an
+// in-flight call cannot actually be interrupted. What this does provide is a
+// pre-flight check -- if the daemon's deadline has already passed by the time
+// the request arrives, no CSMS call is made at all. The daemon-side
+// cancellation in ProviderRPC.GetSecretWithContext still unblocks the caller
+// regardless. Upgrading this to real interruption requires SDK support.
+func (h *HuaweiProvider) GetSecretWithContext(ctx context.Context, name string) (map[string]string, error) {
+	return h.getSecret(ctx, name)
+}
+
+func (h *HuaweiProvider) getSecret(ctx context.Context, name string) (map[string]string, error) {
+	// Best-effort honoring of the caller's deadline: the SDK call below is not
+	// interruptible, so the only thing we can do is refuse to start one that
+	// is already known to be pointless.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if h.client == nil {
 		return nil, fmt.Errorf("huawei provider not initialized — Init() was not called")
 	}

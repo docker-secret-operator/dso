@@ -497,3 +497,96 @@ func TestRedactStructFields(t *testing.T) {
 func errMsg(msg string) error {
 	return errors.New(msg)
 }
+
+// redactStringUnguarded is the pre-SEC-1.1 implementation: every pattern's
+// ReplaceAllString runs unconditionally. Kept here purely as the reference
+// oracle for the differential test below.
+func (rp *RedactionPatterns) redactStringUnguarded(input string) string {
+	output := input
+	for _, pattern := range rp.patterns {
+		output = pattern.ReplaceAllString(output, "[REDACTED]")
+	}
+	return output
+}
+
+// TestRedactString_GuardIsEquivalentToUnguarded is the correctness proof for
+// the SEC-1.1 optimization. The backlog warned explicitly that "a 'faster'
+// redaction path that redacts *less* would be a regression disguised as an
+// optimization", so speed alone is not sufficient evidence.
+//
+// The optimization skips ReplaceAllString when MatchString is false. That is
+// equivalence-preserving by definition, and this asserts it directly across
+// matching, non-matching and adversarial inputs: the guarded and unguarded
+// implementations must produce byte-identical output for every case.
+func TestRedactString_GuardIsEquivalentToUnguarded(t *testing.T) {
+	rp := NewRedactionPatterns()
+
+	inputs := []string{
+		// No-match cases (the ones the guard short-circuits).
+		"",
+		"container started successfully",
+		"listening on port 8080",
+		"secret rotation completed for db_password",
+		"level=info msg=\"rotation finished\" container_id=abc123",
+
+		// Single-pattern matches.
+		`api_key="sk-1234567890abcdef"`,
+		"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+		"AWS Access Key: AKIAIOSFODNN7EXAMPLE",
+		"password=MySecureP@ssw0rd",
+		"postgresql://user:MySecureP@ssw0rd@localhost/db",
+		"vault token hvs.CAESIJlN0aXNhbXBsZXRva2Vu",
+		"legacy token s.abcdefghijklmnopqrstuvwx",
+		`{"password": "hunter2"}`,
+		"access_token=ya29.a0AfH6SMBexample",
+
+		// Multiple patterns in one string — order of application matters, so
+		// this is the case most likely to expose a divergence.
+		`api_key="sk-abc1234567" and password=hunter2 and AKIAIOSFODNN7EXAMPLE`,
+		`Bearer abc.def.ghi password=x api_key=y`,
+
+		// Adversarial / edge shapes.
+		"password=",
+		"PASSWORD=secret",
+		"[REDACTED]",
+		"password=[REDACTED]",
+		"====",
+		"://:@",
+	}
+
+	for _, in := range inputs {
+		guarded := rp.RedactString(in)
+		unguarded := rp.redactStringUnguarded(in)
+		if guarded != unguarded {
+			t.Errorf("guarded and unguarded redaction diverged\n  input:     %q\n  guarded:   %q\n  unguarded: %q",
+				in, guarded, unguarded)
+		}
+	}
+}
+
+// TestRedactString_GuardIsEquivalent_Fuzzy widens the equivalence check beyond
+// the hand-picked cases above by assembling inputs from fragments that each
+// touch a different pattern, including combinations no single test author
+// would think to enumerate.
+func TestRedactString_GuardIsEquivalent_Fuzzy(t *testing.T) {
+	rp := NewRedactionPatterns()
+
+	fragments := []string{
+		"", " ", "plain text ", "container_id=abc ",
+		`api_key="sk-1234567890"`, "password=p1 ", "Bearer tok.en.here ",
+		"AKIAIOSFODNN7EXAMPLE ", "hvs.CAESIJexampletoken ", "s.abcdefghijklmnopqrstuvwx ",
+		`"password": "x"`, "https://u:p@host ", "access_token=abc ",
+	}
+
+	for i, a := range fragments {
+		for j, b := range fragments {
+			for k, c := range fragments {
+				in := a + b + c
+				if rp.RedactString(in) != rp.redactStringUnguarded(in) {
+					t.Fatalf("divergence at [%d,%d,%d] for input %q\n  guarded:   %q\n  unguarded: %q",
+						i, j, k, in, rp.RedactString(in), rp.redactStringUnguarded(in))
+				}
+			}
+		}
+	}
+}

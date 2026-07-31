@@ -60,7 +60,19 @@ func (p *AzureProvider) Init(cfg map[string]string) error {
 	return nil
 }
 
+// GetSecret satisfies api.SecretProvider. It delegates to getSecret with a
+// background context.
 func (p *AzureProvider) GetSecret(name string) (map[string]string, error) {
+	return p.getSecret(context.Background(), name)
+}
+
+// GetSecretWithContext satisfies api.SecretProviderWithContext, letting the
+// daemon's deadline bound the Azure SDK call.
+func (p *AzureProvider) GetSecretWithContext(ctx context.Context, name string) (map[string]string, error) {
+	return p.getSecret(ctx, name)
+}
+
+func (p *AzureProvider) getSecret(ctx context.Context, name string) (map[string]string, error) {
 	if p.client == nil {
 		return nil, fmt.Errorf("azure provider not initialized — Init() was not called")
 	}
@@ -69,7 +81,7 @@ func (p *AzureProvider) GetSecret(name string) (map[string]string, error) {
 	// Automatically translate to hyphens so dso.yaml names stay readable.
 	azureName := strings.ReplaceAll(name, "_", "-")
 
-	resp, err := p.client.GetSecret(context.TODO(), azureName, "", nil)
+	resp, err := p.client.GetSecret(ctx, azureName, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to fetch secret '%s' (Azure name: '%s') from Azure Key Vault: %w\n"+
