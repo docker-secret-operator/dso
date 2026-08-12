@@ -1,0 +1,67 @@
+name: 'DSO Validate'
+description: >-
+  Install a specific, signature-verified DSO release and run
+  `docker-dso validate` against a Compose project. A thin CI wrapper
+  around the DSO CLI's own validation command -- it does not implement
+  any validation logic itself.
+author: 'docker-secret-operator'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  version:
+    description: >-
+      DSO release version to install, e.g. "v4.0.0". Must be an explicit
+      tag for deterministic CI behavior -- pin a release that actually
+      contains the `validate` features you rely on. The literal value
+      "latest" is
+      supported as an explicit, documented opt-in to always install the
+      newest published release; this is less deterministic and not
+      recommended for production pipelines. Never resolves to main/master
+      or an unpinned branch.
+    required: true
+  working-directory:
+    description: >-
+      Directory (relative to the job's default working directory) to run
+      `docker-dso validate` in. Only affects where validate looks for a
+      Compose file and DSO config -- it does not check out or modify
+      anything.
+    required: false
+    default: '.'
+  args:
+    description: >-
+      Additional arguments forwarded verbatim to `docker-dso validate`,
+      e.g. "--json" or "--file docker-compose.dso.yml". Only add
+      arguments docker-dso validate itself already documents -- this
+      action does not add, translate, or duplicate any validation flags.
+    required: false
+    default: ''
+
+outputs:
+  dso-path:
+    description: 'Absolute path to the installed docker-dso binary.'
+    value: ${{ steps.install.outputs.dso-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Reuses the exact same trusted installer DSO's own release workflow
+    # uses to produce cosign (.github/workflows/release.yml) -- not a
+    # separately-maintained install path.
+    - name: Install cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Install DSO ${{ inputs.version }}
+      id: install
+      shell: bash
+      run: "${{ github.action_path }}/install-dso.sh"
+      env:
+        DSO_VERSION: ${{ inputs.version }}
+
+    - name: Run docker-dso validate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        "${{ steps.install.outputs.dso-path }}" validate ${{ inputs.args }}
