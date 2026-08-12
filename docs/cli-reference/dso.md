@@ -39,7 +39,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 * [dso compose](dso_compose.md)	 - Wrapper around docker compose that injects secrets
 * [dso config](dso_config.md)	 - Manage DSO configuration
 * [dso diff](dso_diff.md)	 - Show what changed between local configuration and deployed stack
-* [dso doctor](dso_doctor.md)	 - Validate DSO environment and diagnose issues
+* [dso doctor](dso_doctor.md)	 - Diagnose the local DSO environment and current project
 * [dso down](dso_down.md)	 - Stop and remove containers, networks, images, and volumes
 * [dso env](dso_env.md)	 - Manage .env file operations
 * [dso export](dso_export.md)	 - Export injected secrets for local CI or testing
@@ -48,13 +48,14 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 * [dso inject](dso_inject.md)	 - Inject secrets directly into a running container
 * [dso inspect](dso_inspect.md)	 - Inspect injected secrets for a running container
 * [dso logs](dso_logs.md)	 - View DSO agent logs
+* [dso migrate](dso_migrate.md)	 - Migrate an existing .env + Compose project to DSO-managed secrets
 * [dso secret](dso_secret.md)	 - Manage DSO Native Vault secrets
 * [dso setup](dso_setup.md)	 - Simple setup wizard for DSO
 * [dso status](dso_status.md)	 - Show DSO runtime operational status
 * [dso sync](dso_sync.md)	 - Trigger immediate secret synchronization
 * [dso system](dso_system.md)	 - System-level DSO management
 * [dso up](dso_up.md)	 - Deploy a stack and automatically start the DSO agent
-* [dso validate](dso_validate.md)	 - Validate the DSO configuration file
+* [dso validate](dso_validate.md)	 - Validate a DSO-managed Compose project (read-only, safe for CI)
 * [dso version](dso_version.md)	 - Print the version number of DSO
 * [dso watch](dso_watch.md)	 - Real-time monitor of secret rotations and container lifecycles
 

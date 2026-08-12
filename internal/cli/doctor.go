@@ -1,17 +1,50 @@
 package cli
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"os/user"
-	"path/filepath"
+	"sort"
+	"strings"
 
+	"github.com/docker-secret-operator/dso/internal/compose"
+	"github.com/docker-secret-operator/dso/internal/setup"
+	dsoConfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
-// NewDoctorCmd creates the doctor diagnostics command
+// doctorCatProject groups the project-level checks added on top of
+// setup.NewDoctor's system/environment checks (compose/.env/DSO-reference
+// detection). It deliberately lives in this package, not internal/setup:
+// these checks are about the user's current project directory, not the
+// host system, so they don't belong in the engine setup.Repair also drives.
+const doctorCatProject setup.DoctorCategory = "project"
+
+// doctorSection is a display grouping for terminal output. JSON output
+// stays flat (by Category) since machine consumers care about the
+// individual check, not how it's grouped on screen.
+type doctorSection struct {
+	title      string
+	categories map[setup.DoctorCategory]bool
+}
+
+var doctorSections = []doctorSection{
+	{
+		title: "Environment",
+		categories: map[setup.DoctorCategory]bool{
+			setup.DoctorCatDocker:      true,
+			setup.DoctorCatRuntime:     true,
+			setup.DoctorCatPermissions: true,
+			setup.DoctorCatService:     true,
+		},
+	},
+	{title: "Configuration", categories: map[setup.DoctorCategory]bool{setup.DoctorCatConfiguration: true}},
+	{title: "Provider", categories: map[setup.DoctorCategory]bool{setup.DoctorCatProvider: true}},
+	{title: "Project", categories: map[setup.DoctorCategory]bool{doctorCatProject: true}},
+}
+
+// NewDoctorCmd creates the doctor diagnostics command.
 func NewDoctorCmd() *cobra.Command {
 	var (
 		levelFlag string
@@ -20,24 +53,23 @@ func NewDoctorCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Validate DSO environment and diagnose issues",
-		Long: `Validate DSO environment and diagnose issues.
+		Short: "Diagnose the local DSO environment and current project",
+		Long: `Diagnose the local DSO environment and current project.
 
-Doctor checks your Docker connectivity, runtime environment, providers,
-agent status, containers, and system resources.
+Doctor performs safe, read-only checks: Docker connectivity, DSO
+configuration validity, configured provider credentials, and (when run
+inside a Compose project) whether the project has a compose file, a
+plaintext .env file, and well-formed DSO secret references.
+
+Doctor never prints secret values, tokens, or credentials, and never
+modifies any files.
 
 Examples:
   docker dso doctor              # Quick health check
-  docker dso doctor --level full # Comprehensive validation
+  docker dso doctor --level full # Include recovery steps for failures
   docker dso doctor --json       # Machine-readable output`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			diag := &Diagnostics{
-				Level:  levelFlag,
-				JSON:   jsonFlag,
-				Checks: []Check{},
-			}
-
-			return diag.Run()
+			return runDoctor(cmd.Context(), levelFlag, jsonFlag)
 		},
 	}
 
@@ -47,302 +79,363 @@ Examples:
 	return cmd
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// DIAGNOSTICS TYPES
-// ════════════════════════════════════════════════════════════════════════════
-
-type Diagnostics struct {
-	Level  string
-	JSON   bool
-	Checks []Check
-}
-
-type Check struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"` // healthy, unhealthy, warning, disabled
-	Message  string `json:"message"`
-	Critical bool   `json:"critical"`
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// RUN METHOD
-// ════════════════════════════════════════════════════════════════════════════
-
-func (d *Diagnostics) Run() error {
-	d.checkDockerConnectivity()
-	d.checkRuntimeEnvironment()
-	d.checkProviders()
-	d.checkContainers()
-	d.checkCache()
-
-	if d.Level == "full" {
-		d.checkSystem()
-		d.checkPermissions()
+func runDoctor(ctx context.Context, level string, jsonOut bool) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	// Print results
-	if d.JSON {
-		return d.printJSON()
+	cfgPath := ResolveConfig()
+	mode, _ := detectMode("", cfgPath)
+	setupMode := setup.ModeLocal
+	if mode == "cloud" {
+		setupMode = setup.ModeAgent
 	}
 
-	return d.printText()
+	providerNames := configuredProviderNames(cfgPath)
+
+	checks := runEnvironmentChecks(ctx, setupMode, cfgPath, providerNames)
+	checks = append(checks, runProjectChecks()...)
+
+	result := buildDoctorResult(checks)
+
+	if jsonOut {
+		out, err := result.RenderJSON()
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
+	} else {
+		fmt.Println(renderSectionedResult("DSO Doctor", result, doctorSections, level == "full"))
+	}
+
+	if result.OverallStatus == setup.DoctorFail {
+		return fmt.Errorf("doctor detected failing checks")
+	}
+	return nil
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// CHECK METHODS
-// ════════════════════════════════════════════════════════════════════════════
+// configuredProviderNames returns the names of providers configured in
+// dso.yaml, sorted for deterministic output. A load failure or absent
+// config returns nil -- setup.NewDoctor's own configuration checks already
+// surface that as a FAIL/WARN, so this just falls back to "no provider
+// configured" rather than erroring twice.
+func configuredProviderNames(cfgPath string) []string {
+	cfg, err := dsoConfig.LoadConfig(cfgPath)
+	if err != nil || cfg == nil || len(cfg.Providers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
-func (d *Diagnostics) checkDockerConnectivity() {
-	socketPaths := []string{
-		"/var/run/docker.sock",
-		"/var/run/docker/docker.sock",
+// runEnvironmentChecks runs setup.NewDoctor's full check suite (Docker,
+// runtime, permissions, configuration, service, provider) -- the same
+// engine internal/setup/repair.go uses. Reused wholesale rather than
+// reimplemented: this is a read-only diagnostic call, no state mutation.
+func runEnvironmentChecks(ctx context.Context, mode setup.SetupMode, cfgPath string, providerNames []string) []setup.DoctorCheck {
+	if len(providerNames) == 0 {
+		return setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath}).Run(ctx).Checks
 	}
 
-	var found bool
-	for _, path := range socketPaths {
-		if _, err := os.Stat(path); err == nil {
-			found = true
-			break
+	base := setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, Provider: providerNames[0]}).Run(ctx)
+	checks := base.Checks
+
+	// Multiple providers configured: the first run above already covers
+	// Docker/runtime/permissions/configuration/service once, plus the first
+	// provider. Re-running the full doctor per additional provider would
+	// duplicate those non-provider checks in the output, so only their
+	// provider-category checks are kept. Check IDs (DSO-DOCTOR-010/011) are
+	// shared across providers by design in setup.ProviderChecks, so the
+	// provider name is folded into Name here to keep multi-provider output
+	// distinguishable.
+	for _, name := range providerNames[1:] {
+		extra := setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, Provider: name}).Run(ctx)
+		for _, c := range extra.Checks {
+			if c.Category != setup.DoctorCatProvider {
+				continue
+			}
+			c.Name = fmt.Sprintf("%s (%s)", c.Name, name)
+			checks = append(checks, c)
 		}
 	}
-
-	if found {
-		d.addCheck("Docker socket", "healthy", "running", false)
-	} else {
-		d.addCheck("Docker socket", "unhealthy", "not accessible", true)
-	}
+	return checks
 }
 
-func (d *Diagnostics) checkRuntimeEnvironment() {
-	homeDir, err := os.UserHomeDir()
+// runProjectChecks inspects the current directory for a Compose project:
+// whether a compose file exists, whether a plaintext .env sits alongside
+// it, and whether any dso:// / dsofile:// references in the compose file
+// are at least well-formed. This does not consult the vault or any
+// provider -- confirming a referenced secret actually exists is
+// `docker dso validate`'s job, not doctor's; doctor stays fast and
+// read-only with zero network/provider calls.
+func runProjectChecks() []setup.DoctorCheck {
+	composePath, found := findComposeFile()
+	if !found {
+		return []setup.DoctorCheck{{
+			ID: "DSO-PROJECT-001", Category: doctorCatProject, Status: setup.DoctorInfo,
+			Name: "Compose file", Description: "A docker-compose.yml/.yaml in the current directory",
+			Detail: "no compose file found in the current directory",
+		}}
+	}
+
+	checks := []setup.DoctorCheck{{
+		ID: "DSO-PROJECT-001", Category: doctorCatProject, Status: setup.DoctorPass,
+		Name: "Compose file", Description: "A docker-compose.yml/.yaml in the current directory",
+		Detail: "found " + composePath,
+	}}
+
+	checks = append(checks, checkDotEnvPresence())
+
+	content, err := os.ReadFile(composePath) // #nosec G304 -- composePath comes from findComposeFile's fixed candidate list, not user input
 	if err != nil {
-		d.addCheck("Home directory", "unhealthy", fmt.Sprintf("error: %v", err), false)
-		return
+		return append(checks, setup.DoctorCheck{
+			ID: "DSO-PROJECT-003", Category: doctorCatProject, Status: setup.DoctorFail, Severity: setup.DoctorHigh,
+			Name: "Compose syntax", Description: "Compose file must be readable and valid YAML",
+			Detail: fmt.Sprintf("failed to read %s: %v", composePath, err),
+		})
 	}
 
-	dsoDir := filepath.Join(homeDir, ".dso")
-	vaultPath := filepath.Join(dsoDir, "vault.enc")
-	configPath := filepath.Join(dsoDir, "config.yaml")
-
-	// Check if local vault exists
-	if _, err := os.Stat(vaultPath); err == nil {
-		d.addCheck("Local vault", "healthy", dsoDir, false)
-	} else {
-		d.addCheck("Local vault", "disabled", "not initialized (run: dso bootstrap local)", false)
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return append(checks, setup.DoctorCheck{
+			ID: "DSO-PROJECT-003", Category: doctorCatProject, Status: setup.DoctorFail, Severity: setup.DoctorHigh,
+			Name: "Compose syntax", Description: "Compose file must be readable and valid YAML",
+			Detail:    fmt.Sprintf("YAML parse error: %v", err),
+			RootCause: "Compose file contains invalid YAML",
+			Recovery:  []string{"Validate YAML syntax and re-run doctor"},
+		})
 	}
-
-	// Check if config exists
-	if _, err := os.Stat(configPath); err == nil {
-		d.addCheck("Configuration", "healthy", "found", false)
-	} else {
-		d.addCheck("Configuration", "disabled", "not found", false)
-	}
-}
-
-func (d *Diagnostics) checkProviders() {
-	// Check if providers are available
-	d.addCheck("Local provider", "healthy", "available", false)
-	d.addCheck("Vault provider", "disabled", "not configured", false)
-	d.addCheck("AWS provider", "disabled", "not configured", false)
-	d.addCheck("Azure provider", "disabled", "not configured", false)
-}
-
-func (d *Diagnostics) checkContainers() {
-	// This would require Docker client library
-	// For now, just check if Docker is available
-	socketPaths := []string{
-		"/var/run/docker.sock",
-		"/var/run/docker/docker.sock",
-	}
-
-	var found bool
-	for _, path := range socketPaths {
-		if _, err := os.Stat(path); err == nil {
-			found = true
-			break
-		}
-	}
-
-	if found {
-		d.addCheck("Container introspection", "healthy", "Docker available", false)
-	} else {
-		d.addCheck("Container introspection", "unhealthy", "Docker not accessible", false)
-	}
-}
-
-func (d *Diagnostics) checkCache() {
-	// Check cache directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		d.addCheck("Cache status", "warning", fmt.Sprintf("cannot check: %v", err), false)
-		return
-	}
-
-	cacheDir := filepath.Join(homeDir, ".dso", "cache")
-	if _, err := os.Stat(cacheDir); err == nil {
-		d.addCheck("Cache directory", "healthy", "available", false)
-	} else {
-		d.addCheck("Cache directory", "disabled", "not initialized", false)
-	}
-}
-
-func (d *Diagnostics) checkSystem() {
-	currentUser, err := user.Current()
-	if err != nil {
-		d.addCheck("Current user", "warning", fmt.Sprintf("error: %v", err), false)
-	} else {
-		isRoot := currentUser.Uid == "0"
-		status := "non-root (development)"
-		if isRoot {
-			status = "root (agent mode)"
-		}
-		d.addCheck("User context", "healthy", status, false)
-	}
-
-	// Check /etc/dso — accessible to root and dso group members
-	if _, err := os.Stat("/etc/dso"); err == nil {
-		d.addCheck("Agent config dir", "healthy", "/etc/dso", false)
-	} else if os.Geteuid() == 0 {
-		d.addCheck("Agent config dir", "disabled", "not initialized", false)
-	}
-
-	// Check systemd service (root or dso group member)
-	if os.Geteuid() == 0 {
-		d.checkSystemdService()
-	}
-}
-
-func (d *Diagnostics) checkSystemdService() {
-	// Check if systemd is available
-	if _, err := os.Stat("/run/systemd/system"); err != nil {
-		d.addCheck("Systemd", "disabled", "not available", false)
-		return
-	}
-
-	// Check service status using systemctl
-	cmd := exec.Command("systemctl", "is-active", "dso-agent")
-	if err := cmd.Run(); err == nil {
-		d.addCheck("Agent service", "healthy", "running", false)
-	} else {
-		// Check if service exists at all
-		checkCmd := exec.Command("systemctl", "list-unit-files", "dso-agent.service")
-		if err := checkCmd.Run(); err == nil {
-			d.addCheck("Agent service", "warning", "installed but not running", false)
-		} else {
-			d.addCheck("Agent service", "disabled", "not installed", false)
-		}
-	}
-}
-
-func (d *Diagnostics) checkPermissions() {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
-	// Check ~/.dso permissions
-	dsoDir := filepath.Join(homeDir, ".dso")
-	info, err := os.Stat(dsoDir)
-	if err == nil {
-		mode := info.Mode()
-		d.addCheck("Local vault permissions", "healthy", fmt.Sprintf("%o", mode.Perm()), false)
-	}
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// OUTPUT METHODS
-// ════════════════════════════════════════════════════════════════════════════
-
-func (d *Diagnostics) addCheck(name, status, message string, critical bool) {
-	d.Checks = append(d.Checks, Check{
-		Name:     name,
-		Status:   status,
-		Message:  message,
-		Critical: critical,
+	checks = append(checks, setup.DoctorCheck{
+		ID: "DSO-PROJECT-003", Category: doctorCatProject, Status: setup.DoctorPass,
+		Name: "Compose syntax", Description: "Compose file must be readable and valid YAML",
+		Detail: "valid YAML",
 	})
+
+	checks = append(checks, checkDSOReferences(&root))
+	return checks
 }
 
-func (d *Diagnostics) printText() error {
-	fmt.Println()
-	fmt.Println("┌─────────────────────────────────────────┐")
-	fmt.Println("│     DSO Diagnostics Report              │")
-	fmt.Println("├─────────────────────────────────────────┤")
+func checkDotEnvPresence() setup.DoctorCheck {
+	if _, err := os.Stat(".env"); err != nil {
+		return setup.DoctorCheck{
+			ID: "DSO-PROJECT-002", Category: doctorCatProject, Status: setup.DoctorInfo,
+			Name: ".env file", Description: "Whether a plaintext .env file sits alongside the compose project",
+			Detail: "no .env file found",
+		}
+	}
+	return setup.DoctorCheck{
+		ID: "DSO-PROJECT-002", Category: doctorCatProject, Status: setup.DoctorWarn,
+		Name: ".env file", Description: "Whether a plaintext .env file sits alongside the compose project",
+		Detail:    ".env file present",
+		RootCause: "Plaintext secrets in .env are readable by any local process and are the exact risk DSO exists to remove",
+		Recovery:  []string{"Run 'docker dso migrate' to move its secret values into the DSO vault"},
+	}
+}
 
-	for _, check := range d.Checks {
-		status := statusSymbol(check.Status)
-		fmt.Printf("│ %s %-30s       │\n", status, check.Name)
-		if check.Message != "" {
-			fmt.Printf("│   %s│\n", padLeft(check.Message, 33))
+// checkDSOReferences walks services.*.environment for dso:// / dsofile://
+// values and reports how many were found and whether any are malformed
+// (empty path after the prefix). This mirrors the URI-shape rule
+// internal/resolver already enforces (project/path must both be
+// non-empty) without importing resolver's unexported parser -- it is a
+// two-line format check, not a re-implementation of secret resolution.
+func checkDSOReferences(root *yaml.Node) setup.DoctorCheck {
+	doc := root
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		doc = doc.Content[0]
+	}
+	servicesNode := compose.GetMapValue(doc, "services")
+
+	var total int
+	var malformed []string
+
+	if servicesNode != nil && servicesNode.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(servicesNode.Content); i += 2 {
+			serviceName := servicesNode.Content[i].Value
+			serviceBody := servicesNode.Content[i+1]
+			if serviceBody == nil || serviceBody.Kind != yaml.MappingNode {
+				continue
+			}
+			envNode := compose.GetMapValue(serviceBody, "environment")
+			if envNode == nil {
+				continue
+			}
+
+			values := scalarEnvValues(envNode)
+			for _, v := range values {
+				uri, prefix := "", ""
+				switch {
+				case strings.HasPrefix(v, "dsofile://"):
+					prefix, uri = "dsofile://", strings.TrimPrefix(v, "dsofile://")
+				case strings.HasPrefix(v, "dso://"):
+					prefix, uri = "dso://", strings.TrimPrefix(v, "dso://")
+				default:
+					continue
+				}
+				total++
+				if strings.TrimSpace(uri) == "" {
+					malformed = append(malformed, fmt.Sprintf("%s: %s<empty>", serviceName, prefix))
+				}
+			}
 		}
 	}
 
-	fmt.Println("└─────────────────────────────────────────┘")
-	fmt.Println()
+	switch {
+	case total == 0:
+		return setup.DoctorCheck{
+			ID: "DSO-PROJECT-004", Category: doctorCatProject, Status: setup.DoctorInfo,
+			Name: "DSO references", Description: "dso:// / dsofile:// references in the compose file",
+			Detail: "none found -- this project is not yet DSO-managed; run 'docker dso migrate' to get started",
+		}
+	case len(malformed) > 0:
+		return setup.DoctorCheck{
+			ID: "DSO-PROJECT-004", Category: doctorCatProject, Status: setup.DoctorFail, Severity: setup.DoctorHigh,
+			Name: "DSO references", Description: "dso:// / dsofile:// references in the compose file",
+			Detail:    fmt.Sprintf("%d reference(s) found, %d malformed", total, len(malformed)),
+			RootCause: "a dso:// or dsofile:// URI is missing its secret path (expected dso://[project/]path): " + strings.Join(malformed, ", "),
+			Recovery:  []string{"Fix the malformed reference(s) listed above"},
+		}
+	default:
+		return setup.DoctorCheck{
+			ID: "DSO-PROJECT-004", Category: doctorCatProject, Status: setup.DoctorPass,
+			Name: "DSO references", Description: "dso:// / dsofile:// references in the compose file",
+			Detail: fmt.Sprintf("%d reference(s) found, all well-formed", total),
+		}
+	}
+}
 
-	// Summary
-	criticalIssues := 0
-	for _, check := range d.Checks {
-		if check.Critical && check.Status == "unhealthy" {
-			criticalIssues++
+// scalarEnvValues extracts the raw values from an `environment:` node in
+// either its mapping form (KEY: value) or its list form (KEY=value).
+func scalarEnvValues(envNode *yaml.Node) []string {
+	var out []string
+	switch envNode.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(envNode.Content); i += 2 {
+			val := envNode.Content[i+1]
+			if val != nil && val.Kind == yaml.ScalarNode {
+				out = append(out, val.Value)
+			}
+		}
+	case yaml.SequenceNode:
+		for _, item := range envNode.Content {
+			if item.Kind != yaml.ScalarNode {
+				continue
+			}
+			parts := strings.SplitN(item.Value, "=", 2)
+			if len(parts) == 2 {
+				out = append(out, parts[1])
+			}
+		}
+	}
+	return out
+}
+
+// findComposeFile looks for the standard compose filenames in the current
+// directory, matching the same candidates `docker dso up` checks for.
+func findComposeFile() (string, bool) {
+	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml"} {
+		if _, err := os.Stat(name); err == nil {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// buildDoctorResult computes OverallStatus/Summary locally rather than via
+// setup's unexported doctorComputeOverall/doctorComputeSummary -- those stay
+// package-private to internal/setup, and the aggregation rule (any FAIL ->
+// FAIL; else any WARN -> WARN; else PASS) is simple enough not to warrant
+// exporting them just for this.
+func buildDoctorResult(checks []setup.DoctorCheck) *setup.DoctorResult {
+	summary := setup.DoctorSummary{Total: len(checks)}
+	overall := setup.DoctorPass
+	for _, c := range checks {
+		switch c.Status {
+		case setup.DoctorPass:
+			summary.Passed++
+		case setup.DoctorWarn:
+			summary.Warnings++
+			if overall != setup.DoctorFail {
+				overall = setup.DoctorWarn
+			}
+		case setup.DoctorFail:
+			summary.Failures++
+			overall = setup.DoctorFail
+		case setup.DoctorInfo:
+			summary.Infos++
+		}
+	}
+	return &setup.DoctorResult{
+		OverallStatus: overall,
+		Checks:        checks,
+		Summary:       summary,
+	}
+}
+
+// renderSectionedResult renders result's checks grouped into sections, for
+// any command sharing this display shape (doctor, validate) -- both build
+// on the same setup.DoctorCheck/DoctorResult types, so they share this one
+// renderer rather than each formatting output independently.
+func renderSectionedResult(heading string, result *setup.DoctorResult, sections []doctorSection, verbose bool) string {
+	var b strings.Builder
+	b.WriteString(heading + "\n")
+	b.WriteString(strings.Repeat("─", 43) + "\n")
+
+	for _, section := range sections {
+		var inSection []setup.DoctorCheck
+		for _, c := range result.Checks {
+			if section.categories[c.Category] {
+				inSection = append(inSection, c)
+			}
+		}
+		if len(inSection) == 0 {
+			continue
+		}
+
+		fmt.Fprintf(&b, "\n%s\n", section.title)
+		for _, c := range inSection {
+			fmt.Fprintf(&b, "  %s %s: %s\n", doctorStatusSymbol(c.Status), c.Name, c.Detail)
+			if verbose && (c.Status == setup.DoctorFail || c.Status == setup.DoctorWarn) {
+				if c.RootCause != "" {
+					fmt.Fprintf(&b, "      Root cause: %s\n", c.RootCause)
+				}
+				for i, step := range c.Recovery {
+					fmt.Fprintf(&b, "      Fix %d: %s\n", i+1, step)
+				}
+			}
 		}
 	}
 
-	if criticalIssues > 0 {
-		fmt.Printf("Health: ✗ %d critical issue(s) found\n", criticalIssues)
-		return fmt.Errorf("diagnostics detected critical issues")
+	s := result.Summary
+	b.WriteString("\nResult\n")
+	fmt.Fprintf(&b, "  %d checks passed\n", s.Passed)
+	if s.Warnings > 0 {
+		fmt.Fprintf(&b, "  %d warning(s)\n", s.Warnings)
+	}
+	if s.Failures > 0 {
+		fmt.Fprintf(&b, "  %d error(s)\n", s.Failures)
+	}
+	if s.Infos > 0 {
+		fmt.Fprintf(&b, "  %d informational\n", s.Infos)
 	}
 
-	fmt.Println("Health: ✓ All systems nominal")
-	fmt.Println()
-
-	return nil
+	return b.String()
 }
 
-func (d *Diagnostics) printJSON() error {
-	output := map[string]interface{}{
-		"checks": d.Checks,
-	}
-
-	data, err := json.MarshalIndent(output, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	fmt.Println(string(data))
-	return nil
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// UTILITIES
-// ════════════════════════════════════════════════════════════════════════════
-
-func statusSymbol(status string) string {
+func doctorStatusSymbol(status setup.DoctorStatus) string {
 	switch status {
-	case "healthy":
+	case setup.DoctorPass:
 		return "✓"
-	case "unhealthy":
+	case setup.DoctorFail:
 		return "✗"
-	case "warning":
+	case setup.DoctorWarn:
 		return "⚠"
-	case "disabled":
+	case setup.DoctorInfo:
 		return "-"
 	default:
 		return "?"
 	}
-}
-
-// padLeft appends a trailing separator to s. Note it does NOT actually pad to
-// `length` -- the parameter is only used to decide whether to return s
-// unchanged. That is pre-existing behavior (the box drawn by printText is
-// consequently misaligned for short messages); it is preserved verbatim here
-// rather than "fixed" as a side effect of a lint pass. See the TODO below.
-//
-// TODO: printText's report box does not line up. Fixing it means changing
-// padLeft's contract and printText's format strings together, as a deliberate
-// output change with test coverage -- not silently.
-func padLeft(s string, length int) string {
-	if len(s) >= length {
-		return s
-	}
-	return s + " |"
 }
