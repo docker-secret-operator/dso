@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDetectMode(t *testing.T) {
@@ -22,6 +23,40 @@ func TestDetectMode(t *testing.T) {
 	mode, _ = detectMode("", "missing.yaml")
 	if mode != "cloud" {
 		t.Fatal("expected cloud")
+	}
+}
+
+// TestSweepStaleTempComposeFiles verifies the LIFECYCLE-2 startup sweep only
+// removes docker-compose-dso-*.yaml temp files older than staleTempComposeAge,
+// so it cleans up files orphaned by a killed/crashed prior process without
+// racing a concurrently-running `dso up`'s own fresh temp file.
+func TestSweepStaleTempComposeFiles(t *testing.T) {
+	staleFile, err := os.CreateTemp("", "docker-compose-dso-*.yaml")
+	if err != nil {
+		t.Fatalf("failed to create stale fixture: %v", err)
+	}
+	staleFile.Close()
+	defer os.Remove(staleFile.Name())
+
+	oldTime := time.Now().Add(-2 * staleTempComposeAge)
+	if err := os.Chtimes(staleFile.Name(), oldTime, oldTime); err != nil {
+		t.Fatalf("failed to backdate stale fixture: %v", err)
+	}
+
+	freshFile, err := os.CreateTemp("", "docker-compose-dso-*.yaml")
+	if err != nil {
+		t.Fatalf("failed to create fresh fixture: %v", err)
+	}
+	freshFile.Close()
+	defer os.Remove(freshFile.Name())
+
+	sweepStaleTempComposeFiles()
+
+	if _, err := os.Stat(staleFile.Name()); !os.IsNotExist(err) {
+		t.Errorf("expected stale temp compose file to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(freshFile.Name()); err != nil {
+		t.Errorf("expected fresh temp compose file to survive the sweep, stat err = %v", err)
 	}
 }
 

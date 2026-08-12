@@ -6,8 +6,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
@@ -19,6 +21,37 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
+
+// staleTempComposeAge is how old an orphaned docker-compose-dso-*.yaml temp
+// file must be before sweepStaleTempComposeFiles will remove it. These files
+// briefly hold plaintext-resolved secret values (LIFECYCLE-2); a file this
+// old was almost certainly orphaned by a killed or crashed prior process
+// rather than one still in use by a concurrently-running `dso up`.
+const staleTempComposeAge = 1 * time.Hour
+
+// sweepStaleTempComposeFiles removes orphaned local-mode temp compose files
+// left behind by a prior process that was killed (SIGKILL) or crashed before
+// its own signal handler or deferred cleanup could run. Only files older
+// than staleTempComposeAge are removed, so a file that belongs to another
+// `dso up` invocation currently in flight is never touched. Best-effort: any
+// error here is silently ignored, since failing to sweep a stale file must
+// never block the current command from proceeding.
+func sweepStaleTempComposeFiles() {
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "docker-compose-dso-*.yaml"))
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleTempComposeAge)
+	for _, path := range matches {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(path)
+		}
+	}
+}
 
 // checkCloudAgent verifies the systemd agent is running and responsive.
 func checkCloudAgent() {
@@ -240,6 +273,47 @@ func NewUpCmd() *cobra.Command {
 				fmt.Printf("[DSO] Running in LOCAL mode (%s)\n", reason)
 				fmt.Println("[DSO] Resolving secrets...")
 
+				// Best-effort cleanup of any temp compose file orphaned by a
+				// prior `dso up` that was killed or crashed (LIFECYCLE-2).
+				sweepStaleTempComposeFiles()
+
+				// LIFECYCLE-2: local mode briefly writes the fully-resolved
+				// (plaintext) compose file to a temp file in /tmp for the
+				// duration of the `docker compose up` call below. The
+				// function's own `defer` only covers a normal return; SIGINT
+				// and SIGTERM would otherwise bypass it entirely (Go's
+				// default disposition for those signals is to terminate the
+				// process without running deferred functions). Mirrors the
+				// signal handling `docker dso agent` already registers in
+				// cli/agent.go.
+				sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+				defer stopSignals()
+
+				var tmpFile *os.File
+				cleanupTmpFile := func() {
+					if tmpFile != nil {
+						_ = tmpFile.Close()
+						_ = os.Remove(tmpFile.Name())
+					}
+				}
+				defer cleanupTmpFile()
+
+				go func() {
+					<-sigCtx.Done()
+					cleanupTmpFile()
+				}()
+
+				// fail cleans up the temp compose file (if it was created)
+				// before exiting. Previously every error path below called
+				// os.Exit(1) directly, which bypasses this function's own
+				// defer entirely -- including the ordinary "docker compose
+				// up failed" path, not just crash/signal cases.
+				fail := func(format string, args ...interface{}) {
+					cleanupTmpFile()
+					fmt.Fprintf(os.Stderr, format+"\n", args...)
+					os.Exit(1)
+				}
+
 				v, err := vault.LoadDefault()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error loading native vault: %v\n", err)
@@ -294,25 +368,22 @@ func NewUpCmd() *cobra.Command {
 					fmt.Fprintln(os.Stderr, "Warning: Agent startup timed out, proceeding anyway...")
 				}
 
-				tmpFile, err := os.CreateTemp("", "docker-compose-dso-*.yaml")
+				tmpFile, err = os.CreateTemp("", "docker-compose-dso-*.yaml")
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
 					os.Exit(1)
 				}
-				defer func() {
-					_ = tmpFile.Close() // Close file before removing
-					_ = os.Remove(tmpFile.Name())
-				}()
+				// cleanupTmpFile (deferred above and wired into the signal
+				// goroutine) now owns closing and removing this file; no
+				// separate defer is registered here.
 
 				enc := yaml.NewEncoder(tmpFile)
 				enc.SetIndent(2)
 				if err := enc.Encode(mutatedRoot); err != nil {
-					fmt.Fprintf(os.Stderr, "Error writing AST mutation: %v\n", err)
-					os.Exit(1)
+					fail("Error writing AST mutation: %v", err)
 				}
 				if err := enc.Close(); err != nil {
-					fmt.Fprintf(os.Stderr, "Error finalizing AST mutation: %v\n", err)
-					os.Exit(1)
+					fail("Error finalizing AST mutation: %v", err)
 				}
 
 				fmt.Println("🐳 Running docker compose...")
@@ -327,8 +398,7 @@ func NewUpCmd() *cobra.Command {
 				execCmd.Stdin = os.Stdin
 
 				if err := execCmd.Run(); err != nil {
-					fmt.Fprintf(os.Stderr, "Docker compose failed: %v\n", err)
-					os.Exit(1)
+					fail("Docker compose failed: %v", err)
 				}
 			}
 		},

@@ -710,7 +710,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		// EXECUTE PER-CONTAINER STRATEGIES (NON-COMPOSE)
 		if activeStrategy == "signal" {
 			r.Logger.Info("Sending SIGHUP to container", zap.String("id", target.ID))
-			_ = r.cli.ContainerKill(ctx, target.ID, "SIGHUP")
+			if err := r.cli.ContainerKill(ctx, target.ID, "SIGHUP"); err != nil {
+				// Best-effort: SIGHUP-based reload already relies on the
+				// target noticing a changed file and reloading itself, so a
+				// signal that never arrived (e.g. the container disappeared
+				// mid-rotation) has the same practical effect as one that
+				// arrived but was ignored. Logged for operator visibility
+				// rather than surfaced as a rotation failure.
+				r.Logger.Debug("SIGHUP delivery failed, target likely already gone",
+					zap.String("id", target.ID), zap.Error(err))
+			}
 			releaseLock()
 		} else if activeStrategy == "rolling" {
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))

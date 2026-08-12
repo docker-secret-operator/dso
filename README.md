@@ -30,7 +30,7 @@ DSO is a runtime secret injection daemon for Docker and Docker Compose. It solve
 |---------|-------------|
 | **Smart Polling with Adaptive Intervals** | Adaptive polling interval component (5s aggressive → 30s baseline → 5m backoff based on activity). **Not currently on a production code path** — no API-call reduction is delivered today; see [Smart Polling](docs/SMART_POLLING.md) for current status. Provider polling and rotation are performed by the agent's trigger engine. |
 | **Event-Driven Rotation** | Two-tier triggering: immediate Docker container events (Tier 2) combined with continuous adaptive polling (Tier 1) detect secret changes in <5s and trigger zero-downtime rotations without polling delays. See [Event-Driven Rotation](docs/EVENT_DRIVEN_ROTATION.md) for details. |
-| **Zero-Persistence** | Plaintext secrets never written to disk; held only in process memory and tmpfs. File injection (`dsofile://`) also keeps secrets out of `docker inspect`; env injection (`dso://`) is intentionally visible there — see [Security Model](#security-model) |
+| **Zero-Persistence (Cloud Mode)** | Plaintext secrets never written to disk; held only in process memory and tmpfs. File injection (`dsofile://`) also keeps secrets out of `docker inspect`; env injection (`dso://`) is intentionally visible there. Local Mode makes a narrower guarantee — see [Security Model](#security-model) |
 | **Rolling Rotation** | Zero-downtime blue-green container swap — new container starts, health-checked, old container stops |
 | **Multi-Provider** | Works with AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, or local encrypted storage |
 | **Non-Root Operation** | Members of the `dso` group can run all standard commands without `sudo` |
@@ -572,9 +572,15 @@ DSO is optimized for **single-host Docker Compose environments**:
 
 ## Security Model
 
-**Core principle**: Plaintext secrets never touch the host filesystem.
+**Core principle**: Plaintext secrets never touch the host filesystem — fully
+true in **Cloud Mode**. **Local Mode** briefly writes the resolved compose
+file (containing plaintext secret values) to a `0600` temp file in `/tmp` for
+the duration of `docker compose up`; see
+[Secret Lifecycle → Local Mode](SECURITY.md#local-mode-developmentci) in
+SECURITY.md for the exact guarantee and cleanup behavior.
 
-- Secrets held only in process memory and container tmpfs
+- Cloud Mode: secrets held only in process memory and container tmpfs, never written to a host file
+- Local Mode: secrets held in process memory, with a brief `0600` temp-file window during `docker compose up`
 - AES-256-GCM encryption for local vault
 - Log redaction (secrets never appear in logs)
 - File injection invisible to `docker inspect`

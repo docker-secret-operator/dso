@@ -2,13 +2,17 @@
 
 DSO is designed around a single principle: **secrets must never touch disk in plaintext**. This document explains the security properties of DSO, the trust boundaries, and the guarantees we provide.
 
+**This guarantee is fully upheld in Cloud Mode.** Local Mode makes a
+narrower guarantee — see [Secret Lifecycle → Local Mode](#local-mode-developmentci)
+below for the exact scope.
+
 ---
 
 ## Core Security Principles
 
 DSO is built on three security pillars:
 
-1. **Zero-Persistence on Host Storage** — Plaintext secrets are never written to the host's physical filesystem. Intermediate data exists only in volatile memory (RAM) or kernel-managed `tmpfs` mounts.
+1. **Zero-Persistence on Host Storage (Cloud Mode)** — Plaintext secrets are never written to the host's physical filesystem. Intermediate data exists only in volatile memory (RAM) or kernel-managed `tmpfs` mounts. Local Mode has a narrower guarantee — see below.
 
 2. **Least Privilege** — Secret files are injected with minimum required permissions (`0400` read-only) and assigned specific `UID/GID` owners to ensure application-level isolation.
 
@@ -38,14 +42,26 @@ Single-shot injection, no daemon:
 
 1. **Load & Decrypt** — Read encrypted `~/.dso/vault.enc`, decrypt with user's master key (Argon2id)
 2. **Parse Compose** — Load `docker-compose.yaml` from disk
-3. **Inject Secrets** (in-memory only):
+3. **Resolve Secrets** (in-memory) — mutate the parsed compose AST in place:
    - `dso://secret-name` → environment variable injection
    - `dsofile://secret-name` → tmpfs file injection (recommended)
-4. **Execute** — Pass resolved compose file to `docker compose up` via stdin (secrets never hit disk)
+4. **Write & Execute** — the fully-resolved compose document, which at this
+   point contains plaintext secret values, is written to a restricted-permission
+   (`0600`) temporary file and passed to `docker compose up -f <tempfile>`
 5. **Container Runtime** — Docker injects secrets into container process
-6. **Cleanup** — CLI exits, process memory cleared by OS
+6. **Cleanup** — the temp file is removed once `docker compose up` returns, or
+   on `SIGINT`/`SIGTERM`; a stale-file sweep at the start of the next `dso up`
+   also removes any file older than an hour left behind by an abrupt
+   termination (`SIGKILL`, crash) that no in-process handler can catch
 
-**Secrets never touch host disk.**
+**Local mode briefly writes plaintext-resolved secrets to a `0600` temp file
+in `/tmp` for the duration of the `docker compose up` call.** This is not a
+zero-persistence guarantee — same-user read access to that file is possible
+for that brief window, and an abrupt termination can leave the file behind
+until the next run's stale-file sweep. If you need the stronger,
+disk-never-touched guarantee, use **Cloud Mode** below, where secrets are
+streamed directly into the container over the Docker API and never written
+to a file on the host at all.
 
 ### Cloud Mode (Production)
 
