@@ -44,8 +44,17 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       # ── 5. Install syft for SBOM generation ───────────────────────────────
+      # Pinned, not "latest": v3.5.22's release attempt failed with
+      # "cataloging artifacts: command did not write any files" from an
+      # unpinned syft pulled at run time (a new syft release had landed 2
+      # days prior). v1.48.0 is the version that was actually "latest" --
+      # and worked -- for v3.5.21, the last successful release. Pinning
+      # removes this class of failure regardless of the exact mechanism;
+      # bump deliberately when ready to test a newer syft, not by drift.
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: v1.48.0
 
       # ── 7. Validate build before release ──────────────────────────────────
       - name: Verify build
