@@ -70,6 +70,11 @@ Thumbs.db
 .env
 .env.*
 secrets/
+
+# Exception: migrate's fixture .env files are test data (non-secret,
+# fabricated values), not real environment/secret files, and are required
+# for internal/cli's migration test suite to pass on a fresh clone.
+!internal/cli/testdata/migrate/**/.env
 test_local_secret
 .claude
 # Dependencies

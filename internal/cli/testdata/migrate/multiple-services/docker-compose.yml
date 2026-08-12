@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+  cache:
+    image: redis:7
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+  web:
+    image: nginx:latest
+    ports:
+      - "80:80"
