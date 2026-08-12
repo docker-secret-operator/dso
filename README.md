@@ -147,6 +147,47 @@ docker dso setup --mode agent --provider aws --dry-run
 
 ---
 
+### Migrating an Existing Project
+
+Already have a `docker-compose.yml` and a `.env` file? DSO's onboarding
+path is one guided flow, not four unrelated commands:
+
+```
+docker dso doctor      # check your local environment and this project
+      ↓
+docker dso migrate     # preview, then import .env secrets + generate a DSO-managed compose file
+      ↓
+docker dso validate    # confirm the result is correct (safe for CI, --json for scripts)
+      ↓
+GitHub Actions         # run the same validate check on every PR — see below
+      ↓
+docker dso up
+```
+
+`docker dso migrate --dry-run` never touches your vault or filesystem; a
+real migration never overwrites your original `docker-compose.yml` or
+`.env` — it writes a new `docker-compose.dso.yml` alongside them.
+
+### CI / GitHub Actions
+
+Run the same `docker dso validate` check on every pull request with the
+[DSO Validate action](docs/github-action.md) — a thin wrapper that
+installs a signature-verified DSO release and runs `validate`, nothing
+more:
+
+```yaml
+- uses: actions/checkout@v4
+
+- uses: docker-secret-operator/dso/.github/actions/validate@vX.Y.Z
+  with:
+    version: vX.Y.Z
+```
+
+See [docs/github-action.md](docs/github-action.md) for inputs, version
+pinning, and the release-signature verification model.
+
+---
+
 ## How It Works
 
 ```
@@ -619,6 +660,7 @@ Working examples for common providers:
 | **[Recovery Procedures](docs/RECOVERY_PROCEDURES.md)** | Failure recovery & troubleshooting |
 | **[Security Model](SECURITY.md)** | Threat analysis & guarantees |
 | **[Persistence Model](docs/PERSISTENCE_MODEL.md)** | What data DSO persists |
+| **[GitHub Action](docs/github-action.md)** | CI validation via `docker dso validate`, version pinning, security model |
 
 ---
 
