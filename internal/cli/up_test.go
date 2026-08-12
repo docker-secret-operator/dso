@@ -29,14 +29,14 @@ func TestDetectMode(t *testing.T) {
 // TestSweepStaleTempComposeFiles verifies the LIFECYCLE-2 startup sweep only
 // removes docker-compose-dso-*.yaml temp files older than staleTempComposeAge,
 // so it cleans up files orphaned by a killed/crashed prior process without
-// racing a concurrently-running `dso up`'s own fresh temp file.
+// racing a concurrently-running `docker dso up`'s own fresh temp file.
 func TestSweepStaleTempComposeFiles(t *testing.T) {
 	staleFile, err := os.CreateTemp("", "docker-compose-dso-*.yaml")
 	if err != nil {
 		t.Fatalf("failed to create stale fixture: %v", err)
 	}
-	staleFile.Close()
-	defer os.Remove(staleFile.Name())
+	_ = staleFile.Close()
+	defer func() { _ = os.Remove(staleFile.Name()) }()
 
 	oldTime := time.Now().Add(-2 * staleTempComposeAge)
 	if err := os.Chtimes(staleFile.Name(), oldTime, oldTime); err != nil {
@@ -47,8 +47,8 @@ func TestSweepStaleTempComposeFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create fresh fixture: %v", err)
 	}
-	freshFile.Close()
-	defer os.Remove(freshFile.Name())
+	_ = freshFile.Close()
+	defer func() { _ = os.Remove(freshFile.Name()) }()
 
 	sweepStaleTempComposeFiles()
 

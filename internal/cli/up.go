@@ -26,14 +26,14 @@ import (
 // file must be before sweepStaleTempComposeFiles will remove it. These files
 // briefly hold plaintext-resolved secret values (LIFECYCLE-2); a file this
 // old was almost certainly orphaned by a killed or crashed prior process
-// rather than one still in use by a concurrently-running `dso up`.
+// rather than one still in use by a concurrently-running `docker dso up`.
 const staleTempComposeAge = 1 * time.Hour
 
 // sweepStaleTempComposeFiles removes orphaned local-mode temp compose files
 // left behind by a prior process that was killed (SIGKILL) or crashed before
 // its own signal handler or deferred cleanup could run. Only files older
 // than staleTempComposeAge are removed, so a file that belongs to another
-// `dso up` invocation currently in flight is never touched. Best-effort: any
+// `docker dso up` invocation currently in flight is never touched. Best-effort: any
 // error here is silently ignored, since failing to sweep a stale file must
 // never block the current command from proceeding.
 func sweepStaleTempComposeFiles() {
@@ -121,7 +121,12 @@ func detectMode(flagMode string, configPath string) (string, string) {
 
 	// Conflict Check
 	if (hasCloudEtc || hasCloudLocal || hasExplicitConfig) && hasLocalVault {
-		fmt.Println("[DSO] ⚠️ Both local vault and cloud configuration detected. Defaulting to CLOUD mode.")
+		// stderr, not stdout: detectMode is called by `doctor`/`validate`,
+		// both of which support --json on stdout. This is a diagnostic
+		// aside, not part of either command's result -- printing it to
+		// stdout would corrupt the JSON stream whenever both a local
+		// vault and cloud config exist on the same host.
+		fmt.Fprintln(os.Stderr, "[DSO] ⚠️ Both local vault and cloud configuration detected. Defaulting to CLOUD mode.")
 		if hasExplicitConfig {
 			return "cloud", fmt.Sprintf("explicit config (%s)", configPath)
 		}
@@ -274,7 +279,7 @@ func NewUpCmd() *cobra.Command {
 				fmt.Println("[DSO] Resolving secrets...")
 
 				// Best-effort cleanup of any temp compose file orphaned by a
-				// prior `dso up` that was killed or crashed (LIFECYCLE-2).
+				// prior `docker dso up` that was killed or crashed (LIFECYCLE-2).
 				sweepStaleTempComposeFiles()
 
 				// LIFECYCLE-2: local mode briefly writes the fully-resolved
