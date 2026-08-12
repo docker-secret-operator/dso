@@ -4,9 +4,10 @@ Show DSO runtime operational status
 
 ### Synopsis
 
-Display DSO runtime status including mode, providers, containers, cache, rotations, and queue health.
+Display DSO runtime status including mode, providers, cache, and rotation health.
 
-Provides operational visibility into the DSO system.
+Provides operational visibility into the DSO system by querying the running
+agent (via 'docker dso agent'/systemd) for its real, current state.
 
 Examples:
   docker dso status              # Single status check

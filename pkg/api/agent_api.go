@@ -64,7 +64,7 @@ type StatusResponse struct {
 
 // ProviderCheckRequest carries the exact provider configuration to test —
 // not necessarily one the agent has already loaded, since this backs
-// `dso apply`'s pre-flight check against a NEW config the agent hasn't
+// `docker dso apply`'s pre-flight check against a NEW config the agent hasn't
 // applied yet.
 type ProviderCheckRequest struct {
 	ProviderName string

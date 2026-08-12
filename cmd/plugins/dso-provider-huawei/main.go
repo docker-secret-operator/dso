@@ -84,12 +84,15 @@ func (h *HuaweiProvider) Init(cfg map[string]string) error {
 		return fmt.Errorf("invalid Huawei Cloud region %q: %w", reg, err)
 	}
 
-	h.client = csms.NewCsmsClient(
-		csms.CsmsClientBuilder().
-			WithRegion(clientRegion).
-			WithCredential(auth).
-			Build(),
-	)
+	hcClient, err := csms.CsmsClientBuilder().
+		WithRegion(clientRegion).
+		WithCredential(auth).
+		SafeBuild()
+	if err != nil {
+		return fmt.Errorf("huawei Cloud client initialization error: %w", err)
+	}
+
+	h.client = csms.NewCsmsClient(hcClient)
 	return nil
 }
 
