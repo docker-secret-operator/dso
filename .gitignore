@@ -89,8 +89,11 @@ CLAUDE.md
 # Local release utility — not committed, run manually
 scripts/bump-version.sh
 
-# Web UI artifacts (from feature/web-ui branch)
-web/
+# Web UI build artifacts (source under web/ is tracked; see web/.gitignore
+# for node_modules/.next/out exclusions within that tree)
+web/node_modules/
+web/.next/
+web/out/
 ui-dist/
 docs/audit
 .claude/

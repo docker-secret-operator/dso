@@ -153,6 +153,9 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"/api/auth/login":  true,
 		"/api/auth/logout": true,
 	}
+	// NOTE: /api/auth/session is intentionally NOT in publicPaths -- its whole
+	// purpose is to report whether the caller's session cookie is valid, so it
+	// must go through the same authorized() gate as any other protected route.
 
 	isPublic := publicPaths[r.URL.Path]
 	if !isPublic && !s.authorized(r) {
@@ -167,6 +170,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAuthLogin(w, r)
 	case r.URL.Path == "/api/auth/logout" && r.Method == "POST":
 		s.handleAuthLogout(w, r)
+	case r.URL.Path == "/api/auth/session" && r.Method == "GET":
+		s.handleAuthSession(w, r)
 	case r.URL.Path == "/api/discovery":
 		s.handleDiscovery(w, r)
 	case r.URL.Path == "/api/config/raw":
@@ -256,6 +261,25 @@ func (s *RESTServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, s.WebUIAuth.ExpiredCookie())
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleAuthSession reports whether the request's session cookie currently
+// validates. It is the only client-visible signal of auth state -- the
+// frontend has no token to inspect locally (handleAuthLogin never returns one
+// in the body), so it must ask the server. No user profile data is returned;
+// DSO's webui is a single-operator model, so "authenticated" is all the
+// frontend needs to decide what to render.
+func (s *RESTServer) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	if s.WebUIAuth == nil {
+		http.Error(w, "WebUI is disabled", http.StatusNotFound)
+		return
+	}
+	if _, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"authenticated":true}`))
 }
 
 // handleDiscovery reports which optional feature areas are enabled so the

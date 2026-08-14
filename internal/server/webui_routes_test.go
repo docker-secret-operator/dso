@@ -149,6 +149,71 @@ func TestRESTServer_Logout_ClearsCookie(t *testing.T) {
 	}
 }
 
+func TestRESTServer_Session_ValidCookie_Authenticated(t *testing.T) {
+	s, _ := newTestRESTServer(t)
+	sess, err := s.WebUIAuth.Login("operator", "correct-horse")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	req.AddCookie(s.WebUIAuth.SessionCookie(sess))
+	rec := httptest.NewRecorder()
+
+	s.handleAuthSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `"authenticated":true`) {
+		t.Errorf("expected body to report authenticated:true, got %s", got)
+	}
+}
+
+func TestRESTServer_Session_NoCookie_Unauthorized(t *testing.T) {
+	s, _ := newTestRESTServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleAuthSession(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestRESTServer_Session_InvalidCookie_Unauthorized(t *testing.T) {
+	s, _ := newTestRESTServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	req.AddCookie(&http.Cookie{Name: webuiauth.CookieName, Value: "bogus-token"})
+	rec := httptest.NewRecorder()
+
+	s.handleAuthSession(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestRESTServer_Session_RoutedThroughAuthorizedGate confirms /api/auth/session
+// is NOT in publicPaths -- it must go through the same authorized() dual-auth
+// gate as any other protected endpoint, and rejects when neither a bearer
+// token nor a session cookie is present.
+func TestRESTServer_Session_RoutedThroughAuthorizedGate(t *testing.T) {
+	s, _ := newTestRESTServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	rec := httptest.NewRecorder()
+
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 from ServeHTTP without credentials, got %d", rec.Code)
+	}
+}
+
 func TestRESTServer_Discovery_NoSecretsLeaked(t *testing.T) {
 	s, _ := newTestRESTServer(t)
 
