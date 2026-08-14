@@ -49,6 +49,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 * [dso inspect](dso_inspect.md)	 - Inspect injected secrets for a running container
 * [dso logs](dso_logs.md)	 - View DSO agent logs
 * [dso migrate](dso_migrate.md)	 - Migrate an existing .env + Compose project to DSO-managed secrets
+* [dso notifications](dso_notifications.md)	 - Manage rotation-event notification destinations
 * [dso secret](dso_secret.md)	 - Manage DSO Native Vault secrets
 * [dso setup](dso_setup.md)	 - Simple setup wizard for DSO
 * [dso status](dso_status.md)	 - Show DSO runtime operational status
