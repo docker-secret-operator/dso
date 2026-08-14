@@ -21,15 +21,14 @@ const getApiBaseUrl = (): string => {
     return window.location.origin
   }
 
-  const envUrl = process.env.DSO_API_URL
-  if (!envUrl) {
-    throw new Error(
-      'Environment variable DSO_API_URL is required for server-side rendering. ' +
-      'Set it to the URL of the DSO API server (e.g., http://localhost:8471)'
-    )
-  }
-
-  return envUrl
+  // Build-time / static-export prerender: this module is evaluated in
+  // Node while `next build` renders the static HTML shell for each route
+  // (there is no real per-request Node server in production -- see
+  // next.config.js `output: 'export'`). There is no request origin to
+  // resolve here, so fall back to a relative base; axios resolves relative
+  // URLs against the page's own origin once this code actually runs in the
+  // browser, which is the only place these requests are ever issued.
+  return ''
 }
 
 const API_BASE_URL = getApiBaseUrl()
