@@ -26,6 +26,32 @@ type WebhookConfig struct {
 	Endpoint  string `yaml:"endpoint,omitempty"`
 }
 
+// NotificationsConfig configures outbound rotation-event notifications
+// (internal/notify). Distinct from WatchConfig.Webhook above, which is an
+// INBOUND trigger endpoint. Disabled by default: an existing deployment
+// must never start making outbound HTTP requests merely because a new DSO
+// version was installed.
+type NotificationsConfig struct {
+	Enabled  bool                  `yaml:"enabled"`
+	Webhooks []NotificationWebhook `yaml:"webhooks,omitempty"`
+}
+
+// NotificationWebhook is one outbound notification destination.
+type NotificationWebhook struct {
+	URL string `yaml:"url"`
+	// Timeout per delivery attempt, e.g. "10s". Default 10s.
+	Timeout string `yaml:"timeout,omitempty"`
+	// MaxRetries for transient failures (network errors, HTTP 5xx).
+	// Default 2; set -1 for no retries. HTTP 4xx is never retried.
+	MaxRetries int `yaml:"max_retries,omitempty"`
+	// Events filters which event types this destination receives
+	// (rotation_succeeded, rotation_failed, recovery_succeeded,
+	// recovery_failed). Empty = all.
+	Events []string `yaml:"events,omitempty"`
+	// AllowInsecureHTTP permits a plain-HTTP endpoint. Off by default.
+	AllowInsecureHTTP bool `yaml:"allow_insecure_http,omitempty"`
+}
+
 type RotationConfigV2 struct {
 	Enabled            bool   `yaml:"enabled"`
 	Strategy           string `yaml:"strategy"` // restart, signal, none
@@ -103,12 +129,13 @@ type SecretMapping struct {
 }
 
 type Config struct {
-	Providers map[string]ProviderConfig `yaml:"providers"`
-	Agent     AgentConfig               `yaml:"agent"`
-	Defaults  DefaultsConfig            `yaml:"defaults,omitempty"`
-	Logging   LoggingConfig             `yaml:"logging,omitempty"`
-	Proxy     ProxyConfig               `yaml:"proxy,omitempty"`
-	Secrets   []SecretMapping           `yaml:"secrets"`
+	Providers     map[string]ProviderConfig `yaml:"providers"`
+	Agent         AgentConfig               `yaml:"agent"`
+	Defaults      DefaultsConfig            `yaml:"defaults,omitempty"`
+	Logging       LoggingConfig             `yaml:"logging,omitempty"`
+	Proxy         ProxyConfig               `yaml:"proxy,omitempty"`
+	Notifications NotificationsConfig       `yaml:"notifications,omitempty"`
+	Secrets       []SecretMapping           `yaml:"secrets"`
 
 	// Legacy fields for backward compatibility detection
 	LegacyProvider string            `yaml:"provider,omitempty"`

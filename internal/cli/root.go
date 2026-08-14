@@ -80,6 +80,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewInjectCmd())
 	cmd.AddCommand(NewSyncCmd())
 	cmd.AddCommand(NewMigrateCmd())
+	cmd.AddCommand(NewNotificationsCmd())
 	cmd.AddCommand(NewUpCmd())
 	cmd.AddCommand(NewDownCmd())
 	cmd.AddCommand(NewWatchCmd())

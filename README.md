@@ -661,6 +661,7 @@ Working examples for common providers:
 | **[Security Model](SECURITY.md)** | Threat analysis & guarantees |
 | **[Persistence Model](docs/PERSISTENCE_MODEL.md)** | What data DSO persists |
 | **[GitHub Action](docs/github-action.md)** | CI validation via `docker dso validate`, version pinning, security model |
+| **[Notifications](docs/notifications.md)** | Rotation/recovery event webhooks, payload, delivery semantics, security model |
 
 ---
 

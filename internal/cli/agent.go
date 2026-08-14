@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/agent"
+	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/server"
@@ -127,6 +128,44 @@ func NewAgentCmd() *cobra.Command {
 				logger.Fatal("Failed to initialize trigger engine", zap.Error(err))
 			}
 
+			// Initialize rotation-event notifications (optional; disabled
+			// unless explicitly configured). Invalid destination config is
+			// fatal at startup -- matching proxy.allowed_host_ports above --
+			// rather than silently skipping a destination the operator
+			// believes is active.
+			var notifyDispatcher *notify.Dispatcher
+			if cfg.Notifications.Enabled && len(cfg.Notifications.Webhooks) > 0 {
+				var notifiers []*notify.WebhookNotifier
+				for _, w := range cfg.Notifications.Webhooks {
+					timeout := time.Duration(0)
+					if w.Timeout != "" {
+						d, perr := time.ParseDuration(w.Timeout)
+						if perr != nil {
+							logger.Fatal("Invalid notifications webhook timeout", zap.String("timeout", w.Timeout), zap.Error(perr))
+						}
+						timeout = d
+					}
+					var events []notify.EventType
+					for _, e := range w.Events {
+						events = append(events, notify.EventType(e))
+					}
+					n, nerr := notify.NewWebhookNotifier(notify.WebhookOptions{
+						URL:               w.URL,
+						Timeout:           timeout,
+						MaxRetries:        w.MaxRetries,
+						Events:            events,
+						AllowInsecureHTTP: w.AllowInsecureHTTP,
+					}, logger)
+					if nerr != nil {
+						logger.Fatal("Invalid notifications webhook configuration", zap.Error(nerr))
+					}
+					notifiers = append(notifiers, n)
+					logger.Info("Notification destination configured", zap.String("destination", n.SafeName()))
+				}
+				notifyDispatcher = notify.NewDispatcher(notifiers, logger)
+				trigger.Dispatcher = notifyDispatcher
+			}
+
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, socketShutdown, err := agent.StartSocketServer(ctx, socketPath, cache, storeManager, logger, cfg)
 			if err != nil {
@@ -185,6 +224,17 @@ func NewAgentCmd() *cobra.Command {
 			// Step 1: Stop accepting new work
 			logger.Info("Stopping trigger engine...")
 			trigger.Stop()
+
+			// Step 1b: Drain pending rotation notifications (bounded).
+			// Placed after trigger.Stop so most rotation outcomes have been
+			// emitted; a detached rotation goroutine that fires later is
+			// still safe (Dispatch never panics -- see notify.Dispatcher)
+			// but its event may be abandoned, consistent with the
+			// at-least-once delivery contract.
+			if notifyDispatcher != nil {
+				logger.Info("Draining rotation notifications...")
+				notifyDispatcher.Stop(10 * time.Second)
+			}
 
 			// Step 2: Drain the network servers. Each shutdown function blocks
 			// until its accept loop and in-flight connections have finished (or its

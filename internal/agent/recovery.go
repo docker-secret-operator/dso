@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -25,6 +27,23 @@ type AutomaticRecovery struct {
 	cli    *client.Client
 	logger *zap.Logger
 	st     *StateTracker
+
+	// Dispatcher optionally receives recovery outcome events. Nil when
+	// notifications are unconfigured; always emitted-to after the
+	// authoritative MarkRecovered/MarkCriticalError transition, never
+	// before, and never in a way recovery logic can observe.
+	Dispatcher *notify.Dispatcher
+}
+
+func (ar *AutomaticRecovery) emitRecoveryEvent(t notify.EventType, rotation *RotationState, err error) {
+	if ar.Dispatcher == nil {
+		return
+	}
+	var containers []string
+	if rotation.OriginalContainerID != "" {
+		containers = strings.Split(rotation.OriginalContainerID, ",")
+	}
+	ar.Dispatcher.Dispatch(notify.NewEvent(t, rotation.ProviderName, rotation.SecretName, containers, 0, err))
 }
 
 // NewAutomaticRecovery creates a recovery handler
@@ -165,6 +184,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 			logger.Error("Failed to mark rotation for manual intervention",
 				zap.Error(err))
 		}
+		ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New("original container missing after crash; manual intervention required"))
 		return
 	}
 
@@ -207,6 +227,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 				"original container renamed and stopped after crash; manual review required to avoid a duplicate"); merr != nil {
 				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
 			}
+			ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New("original container renamed and stopped after crash; manual review required"))
 			return
 		}
 
@@ -222,6 +243,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 				"failed to restart original container during automatic rollback"); merr != nil {
 				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
 			}
+			ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, startErr)
 			return
 		}
 		logger.Info("Original container restarted; rollback complete",
@@ -238,6 +260,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 		logger.Error("Failed to mark rotation as recovered",
 			zap.Error(err))
 	}
+	ar.emitRecoveryEvent(notify.RecoverySucceeded, rotation, nil)
 }
 
 // ValidateStateOnStartup validates the state file and detects corruption.

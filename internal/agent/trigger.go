@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/watcher"
@@ -35,6 +36,26 @@ type TriggerEngine struct {
 	LockManager       *rotation.LockManager
 	TimeoutController *TimeoutController
 	DockerClient      *client.Client // For crash recovery
+
+	// Dispatcher is the optional notification sink for rotation/recovery
+	// outcome events (internal/notify). Nil when notifications are not
+	// configured. Strictly an observer: emitted-to AFTER the authoritative
+	// StateTracker transition, via a non-blocking Dispatch that cannot
+	// fail, block, or otherwise influence rotation state.
+	Dispatcher *notify.Dispatcher
+}
+
+// emitEvent dispatches a rotation/recovery outcome event when a Dispatcher
+// is configured. containerIDs is the comma-joined form StateTracker uses.
+func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secretName, containerIDs string, duration time.Duration, err error) {
+	if t.Dispatcher == nil {
+		return
+	}
+	var containers []string
+	if containerIDs != "" {
+		containers = strings.Split(containerIDs, ",")
+	}
+	t.Dispatcher.Dispatch(notify.NewEvent(eventType, providerName, secretName, containers, duration, err))
 }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
@@ -96,6 +117,7 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 
 	// Create a recovery handler
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
+	ar.Dispatcher = t.Dispatcher
 
 	// Validate state file integrity and cleanup stale state
 	ar.ValidateStateOnStartup(t.ctx)
@@ -282,6 +304,11 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			}
 		}
 
+		// Wall-clock start for the notification event's duration field.
+		// Measured here (not at poll time): this is where the reload
+		// actually begins.
+		rotationStart := time.Now()
+
 		// Note: The Reloader internally handles the strategy logic (restart/signal).
 		// Some strategies rotate containers in detached goroutines that outlive
 		// TriggerReload's return, so rotation state is only marked complete/failed
@@ -294,6 +321,10 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 				if t.StateTracker != nil {
 					_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 				}
+				// Notification is emitted AFTER the authoritative state
+				// transition above, and via a non-blocking dispatch --
+				// delivery outcome can never feed back into rotation state.
+				t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), asyncErr)
 				return
 			}
 			if t.StateTracker != nil {
@@ -301,6 +332,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 					t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
 				}
 			}
+			t.emitEvent(notify.RotationSucceeded, providerName, secretName, originalContainerIDs, time.Since(rotationStart), nil)
 		}
 
 		if err := t.Reloader.TriggerReload(ctx, secretName, onComplete); err != nil {
@@ -311,6 +343,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			if t.StateTracker != nil {
 				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 			}
+			t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), err)
 			return
 		}
 	}()
