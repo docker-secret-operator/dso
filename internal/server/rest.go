@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/auth"
+	"github.com/docker-secret-operator/dso/internal/webui"
 	"github.com/docker-secret-operator/dso/internal/webuiauth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
@@ -98,6 +99,14 @@ type RESTServer struct {
 	// DSO_AUTH_TOKEN bearer token). Neither mechanism weakens the other --
 	// see internal/webuiauth's package doc.
 	WebUIAuth *webuiauth.Manager
+	// WebUI is optional. When non-nil, it serves the embedded WebUI static
+	// assets (with SPA fallback) for any request whose path is neither
+	// under /api nor exactly /health. It rides on this same listener --
+	// there is no second HTTP server. Static assets are served without the
+	// auth gate below (equivalent to any SPA's public shell); the app itself
+	// enforces auth client-side, and every data-bearing endpoint stays
+	// behind the /api prefix and the auth check.
+	WebUI http.Handler
 }
 
 // secureHeaders wraps a handler and adds security response headers to every reply.
@@ -116,6 +125,19 @@ func secureHeaders(next http.Handler) http.Handler {
 const maxRequestBodyBytes = 64 * 1024 // 64 KB
 
 func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// WebUI static assets: anything that isn't under /api and isn't /health
+	// is delegated to the embedded static/SPA-fallback handler, before the
+	// API auth gate below. The prefix check is deliberately "/api" (not
+	// "/api/") so this can never be fooled by an /api-prefixed but
+	// non-slash-separated path; every real API route below is registered
+	// under "/api/..." so the two spaces are disjoint by construction. This
+	// means an unknown path like /api/does-not-exist always falls through
+	// to the switch below (and its default 404), never to the SPA handler.
+	if s.WebUI != nil && r.URL.Path != "/health" && !strings.HasPrefix(r.URL.Path, "/api") {
+		s.WebUI.ServeHTTP(w, r)
+		return
+	}
+
 	// Cap request body size on all non-WebSocket endpoints to prevent OOM via
 	// large payloads. A 64 KB limit is generous for any legitimate DSO payload.
 	if r.URL.Path != "/api/events/ws" {
@@ -628,6 +650,21 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		mgr := webuiauth.NewManager(cfg.WebUI.Username, cfg.WebUI.PasswordHash, idleTimeout)
 		mgr.Secure = bindsPublic(addr)
 		restServer.WebUIAuth = mgr
+
+		// Mount the embedded WebUI static assets onto this same listener.
+		// WebUIConfig.ListenAddress is documented as "if empty, mounts onto
+		// the existing REST API listener" -- that is the only mode
+		// implemented here. A second, independently-addressed listener is
+		// explicitly out of scope for this integration (DSO is one binary,
+		// one process, one mux), so a non-empty ListenAddress is currently
+		// ignored other than being available for a future iteration to act
+		// on; it does not cause a second http.Server to start.
+		assets, err := webui.Assets()
+		if err != nil {
+			logger.Warn("Failed to load embedded WebUI assets; WebUI will not be served", zap.Error(err))
+		} else {
+			restServer.WebUI = webui.NewHandler(assets)
+		}
 	}
 
 	// Rate-limit: 10 requests/second sustained, burst of 30.

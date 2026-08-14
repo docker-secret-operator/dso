@@ -1,0 +1,27 @@
+<!--
+  PLACEHOLDER FILE -- NOT PRODUCT CONTENT.
+
+  This is a temporary stand-in for the real WebUI static export. The actual
+  frontend (Next.js build output under web/) has not been ported yet -- that
+  is Step 5 of the WebUI integration work, tracked separately.
+
+  This file exists only so that:
+    - internal/webui's //go:embed directive has a non-empty directory to embed
+      (Go's go:embed refuses to embed an empty directory tree).
+    - the static-serving + SPA-fallback mechanism built in Step 4 (embed ->
+      mux -> SPA fallback -> doesn't swallow /api/*) can be exercised by real
+      HTTP requests and real tests, not mocked out.
+
+  It contains no real product UI, no credentials, no tokens, no environment
+  values, and must not be mistaken for shipped frontend content. Step 5
+  replaces this entire assets/ directory with the actual Next.js static
+  export.
+-->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>DSO WebUI placeholder</title></head>
+<body>
+<h1>DSO WebUI placeholder</h1>
+<p>This is a build-time placeholder asset, not the real DSO web UI. The real frontend has not been integrated yet (see Step 5).</p>
+</body>
+</html>
