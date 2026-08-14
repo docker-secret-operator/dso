@@ -52,6 +52,28 @@ type NotificationWebhook struct {
 	AllowInsecureHTTP bool `yaml:"allow_insecure_http,omitempty"`
 }
 
+// WebUIConfig configures the optional browser-facing dashboard. Disabled by
+// default: an existing deployment must never start serving a web UI (or
+// listening on a new address) merely because a new DSO version was
+// installed. The web UI is session-authenticated separately from the
+// DSO_AUTH_TOKEN mechanism that protects the underlying REST API (see
+// internal/auth) -- both protections coexist.
+type WebUIConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// ListenAddress is the host:port the web UI is served on. If empty,
+	// the web UI mounts onto the existing REST API listener (--api-addr)
+	// instead of opening a second listener.
+	ListenAddress string `yaml:"listen_address,omitempty"`
+	// Username is the single operator identity allowed to log in.
+	Username string `yaml:"username,omitempty"`
+	// PasswordHash is a bcrypt hash of the operator's password. Never
+	// store a plaintext password here.
+	PasswordHash string `yaml:"password_hash,omitempty"`
+	// SessionIdleTimeout is how long an unused session stays valid, e.g.
+	// "30m". Defaults to 30m if empty.
+	SessionIdleTimeout string `yaml:"session_idle_timeout,omitempty"`
+}
+
 type RotationConfigV2 struct {
 	Enabled            bool   `yaml:"enabled"`
 	Strategy           string `yaml:"strategy"` // restart, signal, none
@@ -135,6 +157,7 @@ type Config struct {
 	Logging       LoggingConfig             `yaml:"logging,omitempty"`
 	Proxy         ProxyConfig               `yaml:"proxy,omitempty"`
 	Notifications NotificationsConfig       `yaml:"notifications,omitempty"`
+	WebUI         WebUIConfig               `yaml:"webui,omitempty"`
 	Secrets       []SecretMapping           `yaml:"secrets"`
 
 	// Legacy fields for backward compatibility detection
