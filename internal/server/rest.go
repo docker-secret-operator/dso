@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/auth"
+	"github.com/docker-secret-operator/dso/internal/webuiauth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/gorilla/websocket"
@@ -92,6 +93,11 @@ type RESTServer struct {
 	Hub           *Hub
 	EventStore    *EventStore
 	Auth          *auth.Authenticator
+	// WebUIAuth is optional. When non-nil, requests carrying a valid
+	// dso_webui_session cookie are also accepted (in addition to a valid
+	// DSO_AUTH_TOKEN bearer token). Neither mechanism weakens the other --
+	// see internal/webuiauth's package doc.
+	WebUIAuth *webuiauth.Manager
 }
 
 // secureHeaders wraps a handler and adds security response headers to every reply.
@@ -121,7 +127,9 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// endpoint must pass through the global DSO auth middleware first (defense in
 	// depth), and then perform its own webhook-token check as a second factor.
 	publicPaths := map[string]bool{
-		"/health": true,
+		"/health":          true,
+		"/api/auth/login":  true,
+		"/api/auth/logout": true,
 	}
 
 	isPublic := publicPaths[r.URL.Path]
@@ -133,6 +141,14 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
+	case r.URL.Path == "/api/auth/login" && r.Method == "POST":
+		s.handleAuthLogin(w, r)
+	case r.URL.Path == "/api/auth/logout" && r.Method == "POST":
+		s.handleAuthLogout(w, r)
+	case r.URL.Path == "/api/discovery":
+		s.handleDiscovery(w, r)
+	case r.URL.Path == "/api/config/raw":
+		s.handleConfigRaw(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/secrets"):
 		s.handleListSecrets(w, r)
 	case r.URL.Path == "/api/events/ws":
@@ -148,13 +164,136 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// authorized implements the composed dual-auth gate: a request is allowed in
+// if EITHER a valid DSO_AUTH_TOKEN bearer token OR (when the WebUI is
+// enabled) a valid webui session cookie is present. This composes the two
+// independent mechanisms rather than replacing either -- see
+// internal/webuiauth's package doc for why they must coexist.
 func (s *RESTServer) authorized(r *http.Request) bool {
-	if s.Auth == nil || s.Auth.GetToken() == "" {
+	tokenOK := s.Auth == nil || s.Auth.GetToken() == ""
+	if !tokenOK {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		token := strings.TrimPrefix(header, "Bearer ")
+		tokenOK = s.Auth.Verify(token) == nil
+	}
+	if tokenOK {
 		return true
 	}
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	token := strings.TrimPrefix(header, "Bearer ")
-	return s.Auth.Verify(token) == nil
+
+	if s.WebUIAuth != nil {
+		if _, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleAuthLogin authenticates the single configured webui operator
+// identity and, on success, sets an HttpOnly session cookie. The token is
+// never returned in the JSON body -- only via the Set-Cookie header -- so
+// browser JS can never read or store it (no localStorage token code).
+func (s *RESTServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if s.WebUIAuth == nil {
+		http.Error(w, "WebUI is disabled", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid Payload", http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.WebUIAuth.Login(creds.Username, creds.Password)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	http.SetCookie(w, s.WebUIAuth.SessionCookie(sess))
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleAuthLogout invalidates the session tied to the request's cookie, if
+// any, and clears the cookie in the browser.
+func (s *RESTServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if s.WebUIAuth == nil {
+		http.Error(w, "WebUI is disabled", http.StatusNotFound)
+		return
+	}
+	s.WebUIAuth.Logout(webuiauth.TokenFromRequest(r))
+	http.SetCookie(w, s.WebUIAuth.ExpiredCookie())
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleDiscovery reports which optional feature areas are enabled so the
+// WebUI can decide what to render, without exposing secret values or raw
+// config.
+func (s *RESTServer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	webhookEnabled := false
+	secretCount := 0
+	if s.Config != nil {
+		webhookEnabled = s.Config.Agent.Watch.Webhook.Enabled
+		secretCount = len(s.Config.Secrets)
+	}
+
+	resp := map[string]interface{}{
+		"webui_enabled":   s.WebUIAuth != nil,
+		"webhook_enabled": webhookEnabled,
+		"secret_count":    secretCount,
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.Logger.Error("Failed to encode discovery response", zap.Error(err))
+	}
+}
+
+// handleConfigRaw returns a read-only, secret-redacted view of the loaded
+// configuration. Provider credentials and any secret values are never
+// present in *config.Config (they are fetched at rotation time, not stored),
+// but we still explicitly avoid dumping s.Config.Providers verbatim in case
+// a provider config later grows a credential field -- only the metadata the
+// WebUI's read-only configuration view needs is surfaced.
+func (s *RESTServer) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.Config == nil {
+		_, _ = w.Write([]byte("{}"))
+		return
+	}
+
+	type secretView struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+	}
+	secrets := make([]secretView, 0, len(s.Config.Secrets))
+	for _, sec := range s.Config.Secrets {
+		secrets = append(secrets, secretView{Name: sec.Name, Provider: sec.Provider})
+	}
+
+	providers := make([]string, 0, len(s.Config.Providers))
+	for name := range s.Config.Providers {
+		providers = append(providers, name)
+	}
+
+	resp := map[string]interface{}{
+		"secrets":   secrets,
+		"providers": providers,
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.Logger.Error("Failed to encode config/raw response", zap.Error(err))
+	}
 }
 
 func (s *RESTServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +609,25 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Hub:           hub,
 		EventStore:    eventStore,
 		Auth:          auth.NewAuthenticator(),
+	}
+
+	// Only construct a webuiauth.Manager (and thereby expose /api/auth/*)
+	// when the operator has explicitly enabled the WebUI in config. This
+	// keeps existing deployments' behavior byte-for-byte identical unless
+	// they opt in.
+	if cfg != nil && cfg.WebUI.Enabled {
+		idleTimeout := webuiauth.DefaultIdleTimeout
+		if cfg.WebUI.SessionIdleTimeout != "" {
+			if d, err := time.ParseDuration(cfg.WebUI.SessionIdleTimeout); err == nil {
+				idleTimeout = d
+			} else {
+				logger.Warn("Invalid webui.session_idle_timeout, using default",
+					zap.String("value", cfg.WebUI.SessionIdleTimeout), zap.Error(err))
+			}
+		}
+		mgr := webuiauth.NewManager(cfg.WebUI.Username, cfg.WebUI.PasswordHash, idleTimeout)
+		mgr.Secure = bindsPublic(addr)
+		restServer.WebUIAuth = mgr
 	}
 
 	// Rate-limit: 10 requests/second sustained, burst of 30.
