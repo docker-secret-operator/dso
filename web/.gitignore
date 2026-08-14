@@ -32,3 +32,6 @@ Thumbs.db
 
 # Build output
 ui-dist/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

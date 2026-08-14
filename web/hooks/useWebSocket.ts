@@ -3,43 +3,43 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 
 /**
- * PASS 1 SCOPE: the Event type is defined locally here rather than imported
- * from lib/api-client -- the full dashboard/events API surface (including
- * the canonical Event type) belongs to a later porting pass. This shape
- * matches what feature/web-ui's lib/api-client.ts declared.
+ * PASS 3 SCOPE: this Event type matches the REAL backend event shape, not
+ * the aspirational feature/web-ui shape Pass 1 stubbed in. The Go side
+ * (internal/server/eventstore.go) defines `Event` as a bare
+ * `map[string]interface{}` -- the actual fields written onto it come from
+ * internal/injector/docker.go's LogInjectionEvent:
+ *
+ *   { "timestamp": RFC3339 string, "secret": string, "container": string,
+ *     "event_type": string, "status": string, "error"?: string }
+ *
+ * There is no "action", "severity", or "message" field server-side. Fields
+ * beyond timestamp/status are treated as optional/best-effort since the
+ * EventStore is a generic map and other producers could shape events
+ * differently in the future.
  */
 export interface Event {
   timestamp: string
-  action: string
-  secret_name?: string
-  provider?: string
-  container_id?: string
-  container_name?: string
-  status?: 'success' | 'failure' | 'pending'
-  duration_ms?: number
+  secret?: string
+  container?: string
+  event_type?: string
+  status?: string
   error?: string
-  severity: 'info' | 'warning' | 'error'
-  message: string
+  // Any other producer-specific fields are tolerated but not relied on.
+  [key: string]: unknown
 }
 
 export type ConnectionState = 'connected' | 'reconnecting' | 'disconnected'
 
-// Runtime validation for Event schema
+// Runtime validation for Event schema. Deliberately lenient: the server-side
+// EventStore type is a bare map with only "timestamp" guaranteed by
+// convention, so over-constraining this would silently drop real events.
 function isValidEvent(data: unknown): data is Event {
   if (typeof data !== 'object' || data === null) {
     return false
   }
 
   const obj = data as Record<string, unknown>
-
-  // Required fields for Event
-  return (
-    typeof obj.timestamp === 'string' &&
-    typeof obj.action === 'string' &&
-    typeof obj.severity === 'string' &&
-    typeof obj.message === 'string' &&
-    ['info', 'warning', 'error'].includes(obj.severity as string)
-  )
+  return typeof obj.timestamp === 'string'
 }
 
 // Fixed backoff sequence: 1s, 2s, 5s, 10s, 30s (stays at 30s afterward)
