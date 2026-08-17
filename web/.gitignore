@@ -2,8 +2,10 @@
 node_modules/
 .pnp
 .pnp.js
-package-lock.json
 yarn.lock
+# package-lock.json is intentionally tracked (npm ci in CI/dev needs it for
+# reproducible installs) -- only yarn.lock is ignored since npm is the
+# package manager actually used here.
 
 # Testing
 .nyc_output/
