@@ -75,6 +75,12 @@ secrets/
 # fabricated values), not real environment/secret files, and are required
 # for internal/cli's migration test suite to pass on a fresh clone.
 !internal/cli/testdata/migrate/**/.env
+
+# Exception: the WebUI's /secrets route is a Next.js page directory (source
+# code only -- it renders read-only secret *metadata* and never plaintext
+# values, see web/components/secrets-content.tsx), not a real secrets
+# directory. Without this it would be silently excluded by `secrets/` above.
+!web/app/secrets/
 test_local_secret
 .claude
 # Dependencies

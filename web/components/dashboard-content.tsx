@@ -72,6 +72,12 @@ export function DashboardContent() {
             <Link href="/events" className="text-sm text-slate-400 hover:text-slate-200 transition-colors">
               Events
             </Link>
+            <Link href="/secrets" className="text-sm text-slate-400 hover:text-slate-200 transition-colors">
+              Secrets
+            </Link>
+            <Link href="/configuration" className="text-sm text-slate-400 hover:text-slate-200 transition-colors">
+              Configuration
+            </Link>
             <button
               onClick={() => logout()}
               className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors"
