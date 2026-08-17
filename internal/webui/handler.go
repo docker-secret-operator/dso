@@ -94,7 +94,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, name string)
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	data, err := io.ReadAll(f)
 	if err != nil {
