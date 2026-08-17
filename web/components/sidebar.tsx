@@ -2,10 +2,11 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, Lock, Bell, Settings, Database, LogOut, ScrollText, Boxes } from 'lucide-react'
+import { BarChart3, Lock, Bell, Settings, LogOut, ScrollText, Boxes } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { logout as apiLogout } from '@/lib/api/auth'
+import { Logo } from '@/components/logo'
 
 const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: BarChart3 },
@@ -40,8 +41,8 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-60 flex-shrink-0 flex-col border-r border-border bg-card">
       <div className="flex items-center gap-3 border-b border-border p-6">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Database className="h-4.5 w-4.5" />
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent-dim text-primary">
+          <Logo className="h-5 w-5" />
         </div>
         <div>
           <h1 className="text-sm font-semibold text-foreground">DSO</h1>

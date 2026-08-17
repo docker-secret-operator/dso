@@ -33,6 +33,8 @@ module.exports = {
         accent: {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
+          secondary: 'hsl(var(--accent-secondary))',
+          dim: 'var(--accent-dim)',
         },
         popover: {
           DEFAULT: 'hsl(var(--popover))',
@@ -49,7 +51,8 @@ module.exports = {
         sm: 'calc(var(--radius) - 4px)',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['var(--font-sans)', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['var(--font-mono)', 'JetBrains Mono', 'monospace'],
       },
       keyframes: {
         'fade-in': {

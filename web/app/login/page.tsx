@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Shield, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import packageJson from '../../package.json'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Logo } from '@/components/logo'
 
 export default function LoginPage() {
   const [username, setUsername]   = useState('')
@@ -81,8 +82,8 @@ export default function LoginPage() {
       <div className="relative w-full max-w-sm">
         {/* Logo */}
         <div className="mb-8 flex flex-col items-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary shadow-lg shadow-primary/30">
-            <Shield className="h-6 w-6 text-primary-foreground" />
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-accent-dim shadow-lg shadow-primary/20">
+            <Logo className="h-6 w-6 text-primary" />
           </div>
           <h1 className="text-xl font-semibold text-foreground">DSO</h1>
           <p className="mt-1 text-sm text-muted-foreground">Docker Secret Operator</p>

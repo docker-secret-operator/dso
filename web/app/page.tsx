@@ -14,5 +14,5 @@ export default function RootPage() {
     router.replace('/dashboard')
   }, [router])
 
-  return <div className="min-h-screen bg-[#0B1020]" />
+  return <div className="min-h-screen bg-background" />
 }

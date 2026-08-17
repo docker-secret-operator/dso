@@ -3,31 +3,38 @@
 @tailwind utilities;
 
 /* ============================================================================
-   DSO Design System — dark-first, adapted/simplified from feature/web-ui
+   DSO Design System — real brand identity (mint/teal accent on near-black)
+   Source of truth: docker-secret-operator marketing site globals.css
    ============================================================================ */
 
 @layer base {
   :root {
-    --background: 220 13% 6%;        /* #0B1020 */
-    --foreground: 214 32% 91%;       /* slate-200 */
-    --card: 222 14% 10%;             /* #111827 */
-    --card-foreground: 214 32% 91%;
-    --popover: 222 15% 8%;
-    --popover-foreground: 214 32% 91%;
-    --primary: 239 84% 67%;          /* indigo-500 */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 222 19% 13%;        /* #1a1d24 */
-    --secondary-foreground: 215 20% 65%;
-    --muted: 222 19% 13%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 222 24% 16%;
-    --accent-foreground: 214 32% 91%;
+    --background: 216 33.3% 2.9%;      /* #05070A */
+    --foreground: 210 40% 98%;         /* #F8FAFC */
+    --card: 212.3 37.1% 6.9%;          /* #0B1118 (surface) */
+    --card-foreground: 210 40% 98%;
+    --popover: 212.7 40.7% 5.3%;       /* #080D13 (surface2) */
+    --popover-foreground: 210 40% 98%;
+    --primary: 170.1 100% 45.1%;       /* #00E6C0 mint accent */
+    --primary-foreground: 216 33.3% 2.9%;
+    --secondary: 212.7 40.7% 5.3%;     /* #080D13 (surface2) */
+    --secondary-foreground: 215 20.2% 65.1%;
+    --muted: 220.9 39.3% 11%;          /* #111827 (surface-hover) */
+    --muted-foreground: 215 20.2% 65.1%; /* #94A3B8 */
+    --accent: 220.9 39.3% 11%;         /* #111827 (surface-hover) */
+    --accent-foreground: 210 40% 98%;
+    --accent-secondary: 246.3 89.5% 66.5%; /* #6D5DF6 purple, used sparingly */
+    --accent-secondary-foreground: 210 40% 98%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 222 15% 12%;
-    --input: 222 19% 13%;
-    --ring: 239 84% 67%;
+    --border: 0 0% 100% / 0.08;
+    --input: 212.7 40.7% 5.3%;
+    --ring: 170.1 100% 45.1%;
     --radius: 0.5rem;
+
+    /* Literal (non-HSL-component) brand values, used directly as rgba fills */
+    --accent-dim: rgba(0, 230, 192, 0.1);
+    --border-soft: rgba(255, 255, 255, 0.04);
   }
 }
 
@@ -63,12 +70,12 @@
   }
 
   :focus-visible {
-    @apply outline-none ring-2 ring-indigo-500 ring-offset-2 ring-offset-[#0B1020];
+    @apply outline-none ring-2 ring-[#00E6C0] ring-offset-2 ring-offset-[#05070A];
   }
 
   ::selection {
-    background: rgba(99, 102, 241, 0.3);
-    color: #f1f5f9;
+    background: rgba(0, 230, 192, 0.25);
+    color: #f8fafc;
   }
 }
 
