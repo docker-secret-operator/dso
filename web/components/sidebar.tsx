@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, Lock, Bell, Settings, Database, LogOut } from 'lucide-react'
+import { BarChart3, Lock, Bell, Settings, Database, LogOut, ScrollText, Boxes } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { logout as apiLogout } from '@/lib/api/auth'
@@ -11,6 +11,8 @@ const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: BarChart3 },
   { name: 'Secrets', href: '/secrets', icon: Lock },
   { name: 'Events', href: '/events', icon: Bell },
+  { name: 'Logs', href: '/logs', icon: ScrollText },
+  { name: 'Containers', href: '/containers', icon: Boxes },
   { name: 'Configuration', href: '/configuration', icon: Settings },
 ]
 
