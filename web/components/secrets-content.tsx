@@ -1,9 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import Link from 'next/link'
-import { ArrowLeft, KeyRound } from 'lucide-react'
+import { KeyRound } from 'lucide-react'
 import { fetchSecrets, type SecretsResponse } from '@/lib/api/dashboard'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 
 interface SecretsState {
   loading: boolean
@@ -49,75 +51,74 @@ export function SecretsContent() {
   }, [load])
 
   return (
-    <div className="min-h-screen bg-[#0B1020] px-6 py-8">
-      <div className="max-w-5xl mx-auto">
-        <header className="flex items-center justify-between mb-8">
-          <div>
-            <div className="flex items-center gap-2">
-              <Link href="/dashboard" className="text-slate-500 hover:text-slate-300 transition-colors">
-                <ArrowLeft className="w-4 h-4" />
-              </Link>
-              <h1 className="text-xl font-semibold text-slate-100">Secrets</h1>
-            </div>
-            <p className="text-sm text-slate-500 mt-1">Managed secret metadata — read-only, no values ever exposed</p>
-          </div>
+    <div className="px-8 py-8">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-8">
+          <h1 className="text-xl font-semibold text-foreground">Secrets</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Managed secret metadata — read-only, no values ever exposed
+          </p>
         </header>
 
         {state.loading && (
-          <div data-testid="secrets-loading" className="text-sm text-slate-500">
+          <div data-testid="secrets-loading" className="text-sm text-muted-foreground">
             Loading secrets…
           </div>
         )}
 
         {!state.loading && state.error && (
-          <div data-testid="secrets-error" className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400 flex items-center justify-between">
+          <div
+            data-testid="secrets-error"
+            className="flex items-center justify-between rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400"
+          >
             <span>{state.error}</span>
-            <button onClick={load} className="text-red-300 underline hover:text-red-200">
+            <Button variant="link" size="sm" onClick={load} className="h-auto p-0 text-red-300 hover:text-red-200">
               Retry
-            </button>
+            </Button>
           </div>
         )}
 
         {!state.loading && !state.error && (
-          <div data-testid="secrets-content" className="bg-[#111827] border border-white/[0.09] rounded-2xl p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <KeyRound className="w-5 h-5 text-indigo-400" />
-              <span className="text-sm font-medium text-slate-300">
+          <Card data-testid="secrets-content">
+            <CardHeader className="flex-row items-center gap-2 space-y-0">
+              <KeyRound className="h-5 w-5 text-primary" />
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 {state.data?.total_count ?? 0} managed secret{state.data?.total_count === 1 ? '' : 's'}
-              </span>
-            </div>
-
-            {(!state.data || state.data.active_secrets.length === 0) ? (
-              <p data-testid="secrets-empty" className="text-sm text-slate-600">
-                No secrets currently in cache.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500 border-b border-white/[0.06]">
-                      <th className="py-2 pr-4 font-medium">Name</th>
-                      <th className="py-2 pr-4 font-medium">Provider</th>
-                      <th className="py-2 pr-4 font-medium">Status</th>
-                      <th className="py-2 pr-4 font-medium">Injection</th>
-                      <th className="py-2 pr-4 font-medium">Rotation</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!state.data || state.data.active_secrets.length === 0 ? (
+                <p data-testid="secrets-empty" className="text-sm text-muted-foreground">
+                  No secrets currently in cache.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Provider</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Injection</TableHead>
+                      <TableHead>Rotation</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {state.data.active_secrets.map((sec) => (
-                      <tr key={`${sec.provider}:${sec.name}`} className="border-b border-white/[0.03] text-slate-300">
-                        <td className="py-2 pr-4">{sec.name}</td>
-                        <td className="py-2 pr-4 text-slate-500">{sec.provider}</td>
-                        <td className="py-2 pr-4">{sec.status}</td>
-                        <td className="py-2 pr-4 text-slate-500">{sec.injection_type}</td>
-                        <td className="py-2 pr-4 text-slate-500">{sec.rotation_enabled ? 'on' : 'off'}</td>
-                      </tr>
+                      <TableRow key={`${sec.provider}:${sec.name}`}>
+                        <TableCell>{sec.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{sec.provider}</TableCell>
+                        <TableCell>{sec.status}</TableCell>
+                        <TableCell className="text-muted-foreground">{sec.injection_type}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {sec.rotation_enabled ? 'on' : 'off'}
+                        </TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
         )}
       </div>
     </div>

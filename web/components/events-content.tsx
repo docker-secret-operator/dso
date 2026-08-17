@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { ArrowLeft, Circle } from 'lucide-react'
+import { Circle } from 'lucide-react'
 import { useWebSocket, type Event } from '@/hooks/useWebSocket'
 import { fetchEvents } from '@/lib/api/events'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 
 function statusColor(status?: string): string {
   switch (status) {
@@ -77,26 +78,24 @@ export function EventsContent() {
   const loading = historyLoading && merged.length === 0
 
   return (
-    <div className="min-h-screen bg-[#0B1020] px-6 py-8">
-      <div className="max-w-4xl mx-auto">
-        <header className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard" className="text-slate-500 hover:text-slate-300 transition-colors">
-              <ArrowLeft className="w-4 h-4" />
-            </Link>
-            <div>
-              <h1 className="text-xl font-semibold text-slate-100">Events</h1>
-              <p className="text-sm text-slate-500 mt-1">Live secret rotation and injection activity</p>
-            </div>
+    <div className="px-8 py-8">
+      <div className="mx-auto max-w-4xl">
+        <header className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Events</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Live secret rotation and injection activity</p>
           </div>
-          <div className="flex items-center gap-1.5 text-xs" data-testid="ws-connection-state">
-            <Circle className={`w-2 h-2 fill-current ${connectionColor(connectionState)}`} />
-            <span className={connectionColor(connectionState)}>{connectionState}</span>
-          </div>
+          <Badge
+            variant={connectionState === 'connected' ? 'success' : connectionState === 'reconnecting' ? 'warning' : 'destructive'}
+            data-testid="ws-connection-state"
+          >
+            <Circle className="h-2 w-2 fill-current" />
+            {connectionState}
+          </Badge>
         </header>
 
         {loading && (
-          <div data-testid="events-loading" className="text-sm text-slate-500">
+          <div data-testid="events-loading" className="text-sm text-muted-foreground">
             Loading events…
           </div>
         )}
@@ -108,36 +107,34 @@ export function EventsContent() {
         )}
 
         {!loading && merged.length === 0 && !historyError && (
-          <div data-testid="events-empty" className="text-sm text-slate-600">
+          <div data-testid="events-empty" className="text-sm text-muted-foreground">
             No events yet.
           </div>
         )}
 
         {merged.length > 0 && (
-          <div data-testid="events-list" className="bg-[#111827] border border-white/[0.09] rounded-2xl divide-y divide-white/[0.05]">
+          <Card data-testid="events-list" className="divide-y divide-border overflow-hidden">
             {merged.map((ev, idx) => (
-              <div key={`${ev.timestamp}-${idx}`} className="px-5 py-3 flex items-center justify-between text-sm">
-                <div className="flex items-center gap-3 min-w-0">
-                  <Circle className={`w-2 h-2 fill-current flex-shrink-0 ${statusColor(ev.status)}`} />
+              <div key={`${ev.timestamp}-${idx}`} className="flex items-center justify-between px-5 py-3 text-sm">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Circle className={`h-2 w-2 flex-shrink-0 fill-current ${statusColor(ev.status)}`} />
                   <div className="min-w-0">
-                    <p className="text-slate-200 truncate">
+                    <p className="truncate text-foreground">
                       {ev.event_type ?? 'event'}
                       {ev.secret ? ` — ${ev.secret}` : ''}
                     </p>
                     {ev.container && (
-                      <p className="text-xs text-slate-600 truncate">container: {ev.container}</p>
+                      <p className="truncate text-xs text-muted-foreground">container: {ev.container}</p>
                     )}
-                    {ev.error && (
-                      <p className="text-xs text-red-400/80 truncate">{ev.error}</p>
-                    )}
+                    {ev.error && <p className="truncate text-xs text-red-400/80">{ev.error}</p>}
                   </div>
                 </div>
-                <span className="text-xs text-slate-600 flex-shrink-0 ml-4">
+                <span className="ml-4 flex-shrink-0 text-xs text-muted-foreground">
                   {new Date(ev.timestamp).toLocaleString()}
                 </span>
               </div>
             ))}
-          </div>
+          </Card>
         )}
       </div>
     </div>

@@ -1,10 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Settings, Lock } from 'lucide-react'
+import { Settings, Lock } from 'lucide-react'
 import { fetchConfigRaw, ConfigFetchError, type ConfigRawResponse } from '@/lib/api/config'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 
 type LoadStatus = 'loading' | 'ok' | 'unauthorized' | 'error'
 
@@ -74,92 +76,95 @@ export function ConfigurationContent() {
   }, [load])
 
   return (
-    <div className="min-h-screen bg-[#0B1020] px-6 py-8">
-      <div className="max-w-5xl mx-auto">
-        <header className="flex items-center justify-between mb-8">
-          <div>
-            <div className="flex items-center gap-2">
-              <Link href="/dashboard" className="text-slate-500 hover:text-slate-300 transition-colors">
-                <ArrowLeft className="w-4 h-4" />
-              </Link>
-              <h1 className="text-xl font-semibold text-slate-100">Configuration</h1>
-            </div>
-            <p className="text-sm text-slate-500 mt-1">Loaded configuration — read-only, secret-redacted</p>
-          </div>
+    <div className="px-8 py-8">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-8">
+          <h1 className="text-xl font-semibold text-foreground">Configuration</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Loaded configuration — read-only, secret-redacted</p>
         </header>
 
         {state.status === 'loading' && (
-          <div data-testid="configuration-loading" className="text-sm text-slate-500">
+          <div data-testid="configuration-loading" className="text-sm text-muted-foreground">
             Loading configuration…
           </div>
         )}
 
         {state.status === 'unauthorized' && (
-          <div data-testid="configuration-unauthorized" className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-400 flex items-center gap-2">
-            <Lock className="w-4 h-4" />
+          <div
+            data-testid="configuration-unauthorized"
+            className="flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-400"
+          >
+            <Lock className="h-4 w-4" />
             <span>You are not authorized to view configuration.</span>
           </div>
         )}
 
         {state.status === 'error' && (
-          <div data-testid="configuration-error" className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400 flex items-center justify-between">
+          <div
+            data-testid="configuration-error"
+            className="flex items-center justify-between rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400"
+          >
             <span>{state.error}</span>
-            <button onClick={load} className="text-red-300 underline hover:text-red-200">
+            <Button variant="link" size="sm" onClick={load} className="h-auto p-0 text-red-300 hover:text-red-200">
               Retry
-            </button>
+            </Button>
           </div>
         )}
 
         {state.status === 'ok' && (
-          <div data-testid="configuration-content" className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-[#111827] border border-white/[0.09] rounded-2xl p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Settings className="w-5 h-5 text-slate-400" />
-                <span className="text-sm font-medium text-slate-300">Providers</span>
-              </div>
-              {(!state.data || state.data.providers.length === 0) ? (
-                <p data-testid="configuration-providers-empty" className="text-sm text-slate-600">
-                  No providers configured.
-                </p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {state.data.providers.map((p) => (
-                    <li key={p} className="text-sm text-slate-300">{p}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
+          <div data-testid="configuration-content" className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Card>
+              <CardHeader className="flex-row items-center gap-2 space-y-0">
+                <Settings className="h-5 w-5 text-muted-foreground" />
+                <CardTitle className="text-sm font-medium text-muted-foreground">Providers</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {!state.data || state.data.providers.length === 0 ? (
+                  <p data-testid="configuration-providers-empty" className="text-sm text-muted-foreground">
+                    No providers configured.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {state.data.providers.map((p) => (
+                      <li key={p} className="text-sm text-foreground">
+                        {p}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
 
-            <div className="bg-[#111827] border border-white/[0.09] rounded-2xl p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Lock className="w-5 h-5 text-indigo-400" />
-                <span className="text-sm font-medium text-slate-300">Configured secrets</span>
-              </div>
-              {(!state.data || state.data.secrets.length === 0) ? (
-                <p data-testid="configuration-secrets-empty" className="text-sm text-slate-600">
-                  No secrets configured.
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-slate-500 border-b border-white/[0.06]">
-                        <th className="py-2 pr-4 font-medium">Name</th>
-                        <th className="py-2 pr-4 font-medium">Provider</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+            <Card>
+              <CardHeader className="flex-row items-center gap-2 space-y-0">
+                <Lock className="h-5 w-5 text-primary" />
+                <CardTitle className="text-sm font-medium text-muted-foreground">Configured secrets</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {!state.data || state.data.secrets.length === 0 ? (
+                  <p data-testid="configuration-secrets-empty" className="text-sm text-muted-foreground">
+                    No secrets configured.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Provider</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {state.data.secrets.map((sec) => (
-                        <tr key={`${sec.provider}:${sec.name}`} className="border-b border-white/[0.03] text-slate-300">
-                          <td className="py-2 pr-4">{sec.name}</td>
-                          <td className="py-2 pr-4 text-slate-500">{sec.provider}</td>
-                        </tr>
+                        <TableRow key={`${sec.provider}:${sec.name}`}>
+                          <TableCell>{sec.name}</TableCell>
+                          <TableCell className="text-muted-foreground">{sec.provider}</TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
           </div>
         )}
       </div>

@@ -47,7 +47,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (!ready) {
     // Blank dark screen while checking auth — avoids flash
-    return <div className="min-h-screen bg-[#0B1020]" />
+    return <div className="min-h-screen bg-background" />
   }
 
   if (isLoginPage) {
