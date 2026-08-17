@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/auth"
+	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/internal/webui"
 	"github.com/docker-secret-operator/dso/internal/webuiauth"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -94,6 +95,11 @@ type RESTServer struct {
 	Hub           *Hub
 	EventStore    *EventStore
 	Auth          *auth.Authenticator
+	// Reloader is optional. When non-nil, it backs GET /api/containers,
+	// which lists the containers currently tracked in Reloader.Targets. A
+	// nil Reloader (e.g. in older test constructions that predate this
+	// field) makes that endpoint return an empty list rather than panic.
+	Reloader *watcher.ReloaderController
 	// WebUIAuth is optional. When non-nil, requests carrying a valid
 	// dso_webui_session cookie are also accepted (in addition to a valid
 	// DSO_AUTH_TOKEN bearer token). Neither mechanism weakens the other --
@@ -186,6 +192,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleEvents(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/logs"):
 		s.handleLogs(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/containers"):
+		s.handleContainers(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -516,6 +524,57 @@ func (s *RESTServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ContainerSummary is the wire shape for one entry in GET /api/containers.
+// Deliberately omits ComposePath's sibling secret *values* -- Secrets here
+// is the list of secret *names* a container depends on (already exposed via
+// /api/secrets' active_secrets), never the secret material itself. ComposePath
+// is included: it is a local filesystem path to a compose file the operator
+// themselves configured, not a credential, and is useful for identifying
+// which stack a container belongs to.
+type ContainerSummary struct {
+	ID          string   `json:"id"`
+	Strategy    string   `json:"strategy"`
+	ComposePath string   `json:"compose_path,omitempty"`
+	Secrets     []string `json:"secrets"`
+}
+
+// handleContainers returns the containers DSO currently tracks for
+// rotation/reload, read live from the ReloaderController's Targets map.
+// Read-only: this endpoint never mutates Targets or triggers any action
+// against a container -- exposing a "rotate now" style write is explicitly
+// out of scope here.
+func (s *RESTServer) handleContainers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	res := []ContainerSummary{}
+	if s.Reloader != nil {
+		s.Reloader.Targets.Range(func(key, value interface{}) bool {
+			tc, ok := value.(*watcher.TargetContainer)
+			if !ok || tc == nil {
+				return true
+			}
+			secrets := tc.Secrets
+			if secrets == nil {
+				secrets = []string{}
+			}
+			res = append(res, ContainerSummary{
+				ID:          tc.ID,
+				Strategy:    tc.Strategy,
+				ComposePath: tc.ComposePath,
+				Secrets:     secrets,
+			})
+			return true
+		})
+	}
+
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"containers":  res,
+		"total_count": len(res),
+	}); err != nil {
+		s.Logger.Error("Failed to encode containers response", zap.Error(err))
+	}
+}
+
 func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	// For production, we would want more detail here.
 	// For now, listing keys in the cache.
@@ -608,7 +667,7 @@ const (
 	maxAuthTokenBytes = 512 // prevents constant-time compare from touching megabytes
 )
 
-func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger) (func(), error) {
+func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger, reloader *watcher.ReloaderController) (func(), error) {
 	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
 		return nil, fmt.Errorf(
 			"refusing to start REST API on non-loopback address %q without authentication: "+
@@ -655,6 +714,7 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Hub:           hub,
 		EventStore:    eventStore,
 		Auth:          auth.NewAuthenticator(),
+		Reloader:      reloader,
 	}
 
 	// Only construct a webuiauth.Manager (and thereby expose /api/auth/*)

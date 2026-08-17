@@ -185,7 +185,7 @@ func NewAgentCmd() *cobra.Command {
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
 			// returns an error (and refuses to start) if bound to a non-loopback
 			// address without DSO_AUTH_TOKEN.
-			restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
+			restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger, reloader)
 			if err != nil {
 				logger.Fatal("Failed to start REST API server", zap.Error(err))
 			}
