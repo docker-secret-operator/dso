@@ -64,7 +64,7 @@ describe('DashboardContent', () => {
     render(<DashboardContent />)
 
     await waitFor(() => expect(screen.getByTestId('dashboard-secrets-empty')).toBeInTheDocument())
-    expect(screen.getByText('No secrets to display.')).toBeInTheDocument()
+    expect(screen.getByText('No secrets to display')).toBeInTheDocument()
   })
 
   it('shows an error state with a retry option when a fetch fails', async () => {

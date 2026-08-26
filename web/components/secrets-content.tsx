@@ -6,6 +6,8 @@ import { fetchSecrets, type SecretsResponse } from '@/lib/api/dashboard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 interface SecretsState {
   loading: boolean
@@ -61,9 +63,17 @@ export function SecretsContent() {
         </header>
 
         {state.loading && (
-          <div data-testid="secrets-loading" className="text-sm text-muted-foreground">
-            Loading secrets…
-          </div>
+          <Card data-testid="secrets-loading">
+            <CardHeader className="flex-row items-center gap-2 space-y-0">
+              <Skeleton className="h-5 w-5 rounded-full" />
+              <Skeleton className="h-4 w-32" />
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+            </CardContent>
+          </Card>
         )}
 
         {!state.loading && state.error && (
@@ -88,9 +98,12 @@ export function SecretsContent() {
             </CardHeader>
             <CardContent>
               {!state.data || state.data.active_secrets.length === 0 ? (
-                <p data-testid="secrets-empty" className="text-sm text-muted-foreground">
-                  No secrets currently in cache.
-                </p>
+                <EmptyState
+                  data-testid="secrets-empty"
+                  icon={KeyRound}
+                  title="No secrets currently in cache"
+                  description="Secrets DSO manages will appear here once they're loaded from a provider."
+                />
               ) : (
                 <Table>
                   <TableHeader>

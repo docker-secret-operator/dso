@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Circle } from 'lucide-react'
+import { Circle, Bell } from 'lucide-react'
 import { useWebSocket, type Event } from '@/hooks/useWebSocket'
 import { fetchEvents } from '@/lib/api/events'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 function statusColor(status?: string): string {
   switch (status) {
@@ -95,9 +97,17 @@ export function EventsContent() {
         </header>
 
         {loading && (
-          <div data-testid="events-loading" className="text-sm text-muted-foreground">
-            Loading events…
-          </div>
+          <Card data-testid="events-loading" className="divide-y divide-border overflow-hidden">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center justify-between px-5 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Skeleton className="h-2 w-2 flex-shrink-0 rounded-full" />
+                  <Skeleton className="h-4 w-48" />
+                </div>
+                <Skeleton className="h-4 w-24" />
+              </div>
+            ))}
+          </Card>
         )}
 
         {!loading && historyError && merged.length === 0 && (
@@ -107,9 +117,14 @@ export function EventsContent() {
         )}
 
         {!loading && merged.length === 0 && !historyError && (
-          <div data-testid="events-empty" className="text-sm text-muted-foreground">
-            No events yet.
-          </div>
+          <Card>
+            <EmptyState
+              data-testid="events-empty"
+              icon={Bell}
+              title="No events yet"
+              description="Secret rotation and injection activity will appear here in real time."
+            />
+          </Card>
         )}
 
         {merged.length > 0 && (

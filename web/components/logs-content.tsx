@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Circle } from 'lucide-react'
+import { Circle, ScrollText } from 'lucide-react'
 import type { Event } from '@/hooks/useWebSocket'
 import { fetchLogs } from '@/lib/api/logs'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 const SEVERITY_OPTIONS = [
   { value: '', label: 'All severities' },
@@ -83,9 +85,17 @@ export function LogsContent() {
         </header>
 
         {loading && (
-          <div data-testid="logs-loading" className="text-sm text-muted-foreground">
-            Loading logs…
-          </div>
+          <Card data-testid="logs-loading" className="divide-y divide-border overflow-hidden">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center justify-between px-5 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Skeleton className="h-2 w-2 flex-shrink-0 rounded-full" />
+                  <Skeleton className="h-4 w-48" />
+                </div>
+                <Skeleton className="h-4 w-24" />
+              </div>
+            ))}
+          </Card>
         )}
 
         {!loading && error && (
@@ -95,9 +105,14 @@ export function LogsContent() {
         )}
 
         {!loading && !error && logs.length === 0 && (
-          <div data-testid="logs-empty" className="text-sm text-muted-foreground">
-            No logs yet.
-          </div>
+          <Card>
+            <EmptyState
+              data-testid="logs-empty"
+              icon={ScrollText}
+              title="No logs yet"
+              description="Runtime events from the DSO agent will show up here as they happen."
+            />
+          </Card>
         )}
 
         {!loading && !error && logs.length > 0 && (

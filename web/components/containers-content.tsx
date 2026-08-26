@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Boxes } from 'lucide-react'
 import { fetchContainers, type ContainerSummary } from '@/lib/api/containers'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 /**
  * Real containers content: GET /api/containers (see
@@ -47,9 +50,13 @@ export function ContainersContent() {
         </header>
 
         {loading && (
-          <div data-testid="containers-loading" className="text-sm text-muted-foreground">
-            Loading containers…
-          </div>
+          <Card data-testid="containers-loading" className="overflow-hidden px-5 py-4">
+            <div className="space-y-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+            </div>
+          </Card>
         )}
 
         {!loading && error && (
@@ -59,9 +66,14 @@ export function ContainersContent() {
         )}
 
         {!loading && !error && containers.length === 0 && (
-          <div data-testid="containers-empty" className="text-sm text-muted-foreground">
-            No containers are currently tracked.
-          </div>
+          <Card>
+            <EmptyState
+              data-testid="containers-empty"
+              icon={Boxes}
+              title="No containers are currently tracked"
+              description="Containers DSO manages for secret rotation and reload will appear here once discovered."
+            />
+          </Card>
         )}
 
         {!loading && !error && containers.length > 0 && (

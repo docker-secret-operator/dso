@@ -6,6 +6,8 @@ import { fetchHealth, fetchSecrets, fetchDiscovery, type SecretsResponse, type D
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 interface DashboardState {
   loading: boolean
@@ -69,8 +71,29 @@ export function DashboardContent() {
         </header>
 
         {state.loading && (
-          <div data-testid="dashboard-loading" className="text-sm text-muted-foreground">
-            Loading dashboard…
+          <div data-testid="dashboard-loading" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
+                  <Skeleton className="h-5 w-5 rounded-full" />
+                  <Skeleton className="h-4 w-28" />
+                </CardHeader>
+                <CardContent>
+                  <Skeleton className="h-8 w-16" />
+                </CardContent>
+              </Card>
+            ))}
+            <Card className="sm:col-span-3">
+              <CardHeader className="flex-row items-center gap-2 space-y-0">
+                <Skeleton className="h-5 w-5 rounded-full" />
+                <Skeleton className="h-4 w-20" />
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-8 w-full" />
+                ))}
+              </CardContent>
+            </Card>
           </div>
         )}
 
@@ -113,7 +136,7 @@ export function DashboardContent() {
                 <p className="text-2xl font-semibold text-foreground">{state.secrets?.total_count ?? 0}</p>
                 {state.secrets && state.secrets.total_count === 0 && (
                   <p data-testid="dashboard-secrets-empty" className="mt-2 text-xs text-muted-foreground">
-                    No secrets currently in cache.
+                    None cached yet — secrets appear here once DSO loads them.
                   </p>
                 )}
               </CardContent>
@@ -140,7 +163,11 @@ export function DashboardContent() {
               </CardHeader>
               <CardContent>
                 {!state.secrets || state.secrets.active_secrets.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No secrets to display.</p>
+                  <EmptyState
+                    icon={KeyRound}
+                    title="No secrets to display"
+                    description="Secrets managed by DSO will show up here once they're loaded."
+                  />
                 ) : (
                   <Table>
                     <TableHeader>

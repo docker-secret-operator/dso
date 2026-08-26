@@ -7,6 +7,8 @@ import { fetchConfigRaw, ConfigFetchError, type ConfigRawResponse } from '@/lib/
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 
 type LoadStatus = 'loading' | 'ok' | 'unauthorized' | 'error'
 
@@ -84,8 +86,20 @@ export function ConfigurationContent() {
         </header>
 
         {state.status === 'loading' && (
-          <div data-testid="configuration-loading" className="text-sm text-muted-foreground">
-            Loading configuration…
+          <div data-testid="configuration-loading" className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader className="flex-row items-center gap-2 space-y-0">
+                  <Skeleton className="h-5 w-5 rounded-full" />
+                  <Skeleton className="h-4 w-24" />
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, j) => (
+                    <Skeleton key={j} className="h-6 w-full" />
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
           </div>
         )}
 
@@ -120,9 +134,12 @@ export function ConfigurationContent() {
               </CardHeader>
               <CardContent>
                 {!state.data || state.data.providers.length === 0 ? (
-                  <p data-testid="configuration-providers-empty" className="text-sm text-muted-foreground">
-                    No providers configured.
-                  </p>
+                  <EmptyState
+                    data-testid="configuration-providers-empty"
+                    icon={Settings}
+                    title="No providers configured"
+                    description="Secret providers set up for DSO will be listed here."
+                  />
                 ) : (
                   <ul className="space-y-1.5">
                     {state.data.providers.map((p) => (
@@ -142,9 +159,12 @@ export function ConfigurationContent() {
               </CardHeader>
               <CardContent>
                 {!state.data || state.data.secrets.length === 0 ? (
-                  <p data-testid="configuration-secrets-empty" className="text-sm text-muted-foreground">
-                    No secrets configured.
-                  </p>
+                  <EmptyState
+                    data-testid="configuration-secrets-empty"
+                    icon={Lock}
+                    title="No secrets configured"
+                    description="Secrets declared in the loaded configuration will be listed here."
+                  />
                 ) : (
                   <Table>
                     <TableHeader>
