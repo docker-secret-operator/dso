@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Circle, ScrollText } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Circle, ScrollText, Search } from 'lucide-react'
 import type { Event } from '@/hooks/useWebSocket'
 import { fetchLogs } from '@/lib/api/logs'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 
@@ -40,6 +41,7 @@ export function LogsContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [severity, setSeverity] = useState('')
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -62,26 +64,47 @@ export function LogsContent() {
     }
   }, [severity])
 
+  const query = search.trim().toLowerCase()
+  const filteredLogs = useMemo(() => {
+    if (!query) return logs
+    return logs.filter((ev) => {
+      const haystack = [ev.event_type, ev.secret, ev.container, ev.error, ev.status].filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [logs, query])
+
   return (
     <div className="px-8 py-8">
       <div className="mx-auto max-w-4xl">
-        <header className="mb-8 flex items-center justify-between">
+        <header className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-xl font-semibold text-foreground">Logs</h1>
             <p className="mt-1 text-sm text-muted-foreground">Recent runtime events from the DSO agent</p>
           </div>
-          <select
-            data-testid="logs-severity-filter"
-            value={severity}
-            onChange={(e) => setSeverity(e.target.value)}
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground"
-          >
-            {SEVERITY_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                data-testid="logs-search"
+                placeholder="Search logs..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-48 pl-9"
+              />
+            </div>
+            <select
+              data-testid="logs-severity-filter"
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value)}
+              className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground"
+            >
+              {SEVERITY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </header>
 
         {loading && (
@@ -115,9 +138,20 @@ export function LogsContent() {
           </Card>
         )}
 
-        {!loading && !error && logs.length > 0 && (
+        {!loading && !error && logs.length > 0 && filteredLogs.length === 0 && (
+          <Card>
+            <EmptyState
+              data-testid="logs-no-match"
+              icon={Search}
+              title={`No logs match "${search.trim()}"`}
+              description="Try a different search term."
+            />
+          </Card>
+        )}
+
+        {!loading && !error && filteredLogs.length > 0 && (
           <Card data-testid="logs-list" className="divide-y divide-border overflow-hidden">
-            {logs.map((ev, idx) => (
+            {filteredLogs.map((ev, idx) => (
               <div key={`${ev.timestamp}-${idx}`} className="flex items-center justify-between px-5 py-3 text-sm">
                 <div className="flex min-w-0 items-center gap-3">
                   <Circle className={`h-2 w-2 flex-shrink-0 fill-current ${statusColor(ev.status)}`} />

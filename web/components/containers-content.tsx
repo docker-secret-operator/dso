@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Boxes } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Boxes, Search } from 'lucide-react'
 import { fetchContainers, type ContainerSummary } from '@/lib/api/containers'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -19,6 +20,7 @@ export function ContainersContent() {
   const [containers, setContainers] = useState<ContainerSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -41,6 +43,14 @@ export function ContainersContent() {
     }
   }, [])
 
+  const query = search.trim().toLowerCase()
+  const filteredContainers = useMemo(() => {
+    if (!query) return containers
+    return containers.filter(
+      (c) => c.id.toLowerCase().includes(query) || c.secrets.some((s) => s.toLowerCase().includes(query))
+    )
+  }, [containers, query])
+
   return (
     <div className="px-8 py-8">
       <div className="mx-auto max-w-4xl">
@@ -48,6 +58,19 @@ export function ContainersContent() {
           <h1 className="text-xl font-semibold text-foreground">Containers</h1>
           <p className="mt-1 text-sm text-muted-foreground">Containers currently tracked for secret rotation and reload</p>
         </header>
+
+        {!loading && !error && containers.length > 0 && (
+          <div className="relative mb-4 max-w-xs">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              data-testid="containers-search"
+              placeholder="Search by container ID or secret..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+        )}
 
         {loading && (
           <Card data-testid="containers-loading" className="overflow-hidden px-5 py-4">
@@ -76,7 +99,18 @@ export function ContainersContent() {
           </Card>
         )}
 
-        {!loading && !error && containers.length > 0 && (
+        {!loading && !error && containers.length > 0 && filteredContainers.length === 0 && (
+          <Card>
+            <EmptyState
+              data-testid="containers-no-match"
+              icon={Search}
+              title={`No containers match "${search.trim()}"`}
+              description="Try a different search term."
+            />
+          </Card>
+        )}
+
+        {!loading && !error && filteredContainers.length > 0 && (
           <Card data-testid="containers-list" className="overflow-hidden px-5 py-2">
             <Table>
               <TableHeader>
@@ -88,7 +122,7 @@ export function ContainersContent() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {containers.map((c) => (
+                {filteredContainers.map((c) => (
                   <TableRow key={c.id}>
                     <TableCell className="font-mono text-xs">{c.id}</TableCell>
                     <TableCell>

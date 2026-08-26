@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
@@ -86,5 +87,50 @@ describe('SecretsContent', () => {
     await waitFor(() => expect(screen.getByTestId('secrets-content')).toBeInTheDocument())
     expect(screen.queryByText('super-secret-plaintext-value')).not.toBeInTheDocument()
     expect(screen.queryByText('another-secret-plaintext-value')).not.toBeInTheDocument()
+  })
+
+  it('narrows visible rows when typing into the search box, and restores them when cleared', async () => {
+    fetchSecretsMock.mockResolvedValue({
+      total_count: 2,
+      active_secrets: [
+        { name: 'db-password', provider: 'vault', status: 'synced', injection_type: 'env', rotation_enabled: true, auto_sync_enabled: true },
+        { name: 'api-key', provider: 'aws', status: 'synced', injection_type: 'env', rotation_enabled: false, auto_sync_enabled: true },
+      ],
+    })
+
+    const user = userEvent.setup()
+    render(<SecretsContent />)
+
+    await waitFor(() => expect(screen.getByTestId('secrets-content')).toBeInTheDocument())
+    expect(screen.getByText('db-password')).toBeInTheDocument()
+    expect(screen.getByText('api-key')).toBeInTheDocument()
+
+    const search = screen.getByTestId('secrets-search')
+    await user.type(search, 'db-pass')
+
+    expect(screen.getByText('db-password')).toBeInTheDocument()
+    expect(screen.queryByText('api-key')).not.toBeInTheDocument()
+
+    await user.clear(search)
+
+    expect(screen.getByText('db-password')).toBeInTheDocument()
+    expect(screen.getByText('api-key')).toBeInTheDocument()
+  })
+
+  it('shows a distinct "no match" state when the search matches nothing', async () => {
+    fetchSecretsMock.mockResolvedValue({
+      total_count: 1,
+      active_secrets: [
+        { name: 'db-password', provider: 'vault', status: 'synced', injection_type: 'env', rotation_enabled: true, auto_sync_enabled: true },
+      ],
+    })
+
+    const user = userEvent.setup()
+    render(<SecretsContent />)
+
+    await waitFor(() => expect(screen.getByTestId('secrets-content')).toBeInTheDocument())
+    await user.type(screen.getByTestId('secrets-search'), 'nonexistent')
+
+    expect(screen.getByTestId('secrets-no-match')).toBeInTheDocument()
   })
 })

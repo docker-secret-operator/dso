@@ -1,13 +1,16 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
-import { KeyRound } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { KeyRound, Search } from 'lucide-react'
 import { fetchSecrets, type SecretsResponse } from '@/lib/api/dashboard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
+import { ProviderIcon } from '@/components/provider-icon'
 
 interface SecretsState {
   loading: boolean
@@ -33,6 +36,8 @@ const initialState: SecretsState = { loading: true, error: null, data: null }
  */
 export function SecretsContent() {
   const [state, setState] = useState<SecretsState>(initialState)
+  const [search, setSearch] = useState('')
+  const [providerFilter, setProviderFilter] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }))
@@ -51,6 +56,21 @@ export function SecretsContent() {
   useEffect(() => {
     load()
   }, [load])
+
+  const providers = useMemo(() => {
+    const all = state.data?.active_secrets.map((s) => s.provider) ?? []
+    return Array.from(new Set(all)).sort()
+  }, [state.data])
+
+  const filteredSecrets = useMemo(() => {
+    const all = state.data?.active_secrets ?? []
+    const query = search.trim().toLowerCase()
+    return all.filter((sec) => {
+      if (providerFilter && sec.provider !== providerFilter) return false
+      if (!query) return true
+      return sec.name.toLowerCase().includes(query) || sec.provider.toLowerCase().includes(query)
+    })
+  }, [state.data, search, providerFilter])
 
   return (
     <div className="px-8 py-8">
@@ -96,6 +116,42 @@ export function SecretsContent() {
                 {state.data?.total_count ?? 0} managed secret{state.data?.total_count === 1 ? '' : 's'}
               </CardTitle>
             </CardHeader>
+            {state.data && state.data.active_secrets.length > 0 && (
+              <div className="flex flex-col gap-3 px-6 pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="relative w-full sm:max-w-xs">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    data-testid="secrets-search"
+                    placeholder="Search by name or provider..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+                {providers.length > 1 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge
+                      variant={providerFilter === null ? 'default' : 'secondary'}
+                      className="cursor-pointer select-none"
+                      onClick={() => setProviderFilter(null)}
+                    >
+                      All
+                    </Badge>
+                    {providers.map((p) => (
+                      <Badge
+                        key={p}
+                        variant={providerFilter === p ? 'default' : 'secondary'}
+                        className="cursor-pointer select-none"
+                        onClick={() => setProviderFilter(p === providerFilter ? null : p)}
+                      >
+                        <ProviderIcon provider={p} />
+                        {p}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <CardContent>
               {!state.data || state.data.active_secrets.length === 0 ? (
                 <EmptyState
@@ -103,6 +159,13 @@ export function SecretsContent() {
                   icon={KeyRound}
                   title="No secrets currently in cache"
                   description="Secrets DSO manages will appear here once they're loaded from a provider."
+                />
+              ) : filteredSecrets.length === 0 ? (
+                <EmptyState
+                  data-testid="secrets-no-match"
+                  icon={Search}
+                  title={search.trim() ? `No secrets match "${search.trim()}"` : 'No secrets match the selected provider'}
+                  description="Try a different search term or clear the filter."
                 />
               ) : (
                 <Table>
@@ -116,10 +179,15 @@ export function SecretsContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {state.data.active_secrets.map((sec) => (
+                    {filteredSecrets.map((sec) => (
                       <TableRow key={`${sec.provider}:${sec.name}`}>
                         <TableCell>{sec.name}</TableCell>
-                        <TableCell className="text-muted-foreground">{sec.provider}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          <span className="inline-flex items-center gap-1.5">
+                            <ProviderIcon provider={sec.provider} />
+                            {sec.provider}
+                          </span>
+                        </TableCell>
                         <TableCell>{sec.status}</TableCell>
                         <TableCell className="text-muted-foreground">{sec.injection_type}</TableCell>
                         <TableCell className="text-muted-foreground">
