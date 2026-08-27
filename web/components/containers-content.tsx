@@ -117,6 +117,7 @@ export function ContainersContent() {
                 <TableRow>
                   <TableHead>Container ID</TableHead>
                   <TableHead>Strategy</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Compose Path</TableHead>
                   <TableHead>Secrets</TableHead>
                 </TableRow>
@@ -127,6 +128,15 @@ export function ContainersContent() {
                     <TableCell className="font-mono text-xs">{c.id}</TableCell>
                     <TableCell>
                       <Badge variant={c.strategy === 'restart' ? 'warning' : 'secondary'}>{c.strategy}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {c.degraded ? (
+                        <Badge variant="destructive" title={c.degraded_reason}>
+                          Degraded
+                        </Badge>
+                      ) : (
+                        <Badge variant="success">Healthy</Badge>
+                      )}
                     </TableCell>
                     <TableCell className="max-w-xs truncate text-xs text-muted-foreground">
                       {c.compose_path || '—'}

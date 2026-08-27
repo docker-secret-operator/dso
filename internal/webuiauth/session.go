@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -154,6 +155,40 @@ func (m *Manager) Logout(token string) {
 	m.mu.Lock()
 	delete(m.sessions, token)
 	m.mu.Unlock()
+}
+
+// ListSessions returns every currently active session for the single
+// operator identity, oldest first. Since there is only one operator, each
+// entry typically represents a distinct browser/device login rather than a
+// distinct user. Callers must not expose Session.Token to the client -- it
+// is a live bearer credential.
+func (m *Manager) ListSessions() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]*Session, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		out = append(out, sess)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
+}
+
+// LogoutOthers invalidates every session except the one matching keepToken
+// and returns the number of sessions removed. Used by the "sign out other
+// sessions" control -- it never signs out the caller's own session.
+func (m *Manager) LogoutOthers(keepToken string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	removed := 0
+	for token := range m.sessions {
+		if token != keepToken {
+			delete(m.sessions, token)
+			removed++
+		}
+	}
+	return removed
 }
 
 // SessionCookie builds the Set-Cookie header value for a freshly created

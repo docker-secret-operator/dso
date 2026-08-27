@@ -50,7 +50,12 @@ export interface LogoutResponse {
   status: string
 }
 
-/** Matches the real body written by handleAuthSession. */
+/**
+ * Matches the real body written by handleAuthSession. `username` was added
+ * alongside the Phase 1 Users/Access page -- DSO's session already knows the
+ * operator's username server-side, this just exposes that existing fact.
+ */
 export interface SessionCheckResponse {
   authenticated: boolean
+  username?: string
 }

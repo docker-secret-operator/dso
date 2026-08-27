@@ -45,17 +45,66 @@ type TriggerEngine struct {
 	Dispatcher *notify.Dispatcher
 }
 
-// emitEvent dispatches a rotation/recovery outcome event when a Dispatcher
-// is configured. containerIDs is the comma-joined form StateTracker uses.
+// emitEvent records a rotation outcome onto observability.EventStream,
+// unconditionally -- this is what makes rotation outcomes visible via
+// /api/audit and /api/events, which previously only ever saw SIGHUP signal
+// outcomes (see internal/injector/docker.go's LogInjectionEvent). Metadata
+// only: secret/provider/container identifiers, status, and a redacted
+// error string -- never a secret value. containerIDs is the comma-joined
+// form StateTracker uses.
+//
+// Phase 4.1: this no longer calls t.Dispatcher.Dispatch directly.
+// internal/alert.Evaluator now owns the sole decision of whether a
+// rotation_failed/rotation_succeeded notification is actually sent
+// (deduplicated and cooldown-gated) -- it subscribes to the same
+// EventStream this function pushes to, from internal/server.
+// StartRESTServer's single consumer loop. t.Dispatcher is still wired at
+// startup (internal/cli/agent.go) and handed to that same Evaluator; this
+// function keeps the field only because internal/agent/recovery.go's
+// crash-recovery events (RecoverySucceeded/RecoveryFailed -- a distinct,
+// narrower signal than rotation_failed, out of Phase 4.1's alert scope)
+// still dispatch directly.
 func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secretName, containerIDs string, duration time.Duration, err error) {
-	if t.Dispatcher == nil {
-		return
-	}
 	var containers []string
 	if containerIDs != "" {
 		containers = strings.Split(containerIDs, ",")
 	}
-	t.Dispatcher.Dispatch(notify.NewEvent(eventType, providerName, secretName, containers, duration, err))
+	ev := notify.NewEvent(eventType, providerName, secretName, containers, duration, err)
+
+	status := "success"
+	if eventType == notify.RotationFailed || eventType == notify.RecoveryFailed {
+		status = "failure"
+	}
+
+	// Phase 3 Analytics Overview counters -- process-lifetime-only, reset
+	// on restart (see pkg/observability/counters.go). Only rotation
+	// outcomes are counted here; recovery outcomes (RecoverySucceeded/
+	// RecoveryFailed) are a distinct signal and deliberately left uncounted
+	// for this MVP rather than conflated with rotation counts.
+	switch eventType {
+	case notify.RotationSucceeded:
+		observability.RotationSuccessTotal.Add(1)
+	case notify.RotationFailed:
+		observability.RotationFailureTotal.Add(1)
+	}
+
+	streamEvent := map[string]interface{}{
+		"timestamp":  ev.Timestamp.Format(time.RFC3339),
+		"secret":     ev.SecretName,
+		"container":  strings.Join(ev.Containers, ","),
+		"event_type": string(ev.Type),
+		"status":     status,
+	}
+	if ev.Provider != "" {
+		streamEvent["provider"] = ev.Provider
+	}
+	if ev.ErrorMessage != "" {
+		streamEvent["error"] = ev.ErrorMessage
+	}
+	select {
+	case observability.EventStream <- streamEvent:
+	default:
+	}
 }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {

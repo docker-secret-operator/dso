@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { JetBrains_Mono, Plus_Jakarta_Sans } from 'next/font/google'
 import './globals.css'
 import { AppShell } from '@/components/app-shell'
+import { ToastSystemProvider } from '@/components/toast-provider'
 import { cn } from '@/lib/utils'
 
 const fontSans = Plus_Jakarta_Sans({
@@ -38,7 +39,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={cn(fontSans.variable, fontMono.variable, 'font-sans')}>
-        <AppShell>{children}</AppShell>
+        <ToastSystemProvider>
+          <AppShell>{children}</AppShell>
+        </ToastSystemProvider>
       </body>
     </html>
   )

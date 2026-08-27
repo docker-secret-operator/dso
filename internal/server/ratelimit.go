@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,22 @@ func (m *rateLimitMiddleware) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// WebSocket upgrades are long-lived connections — skip per-request limiting.
 		if r.URL.Path == "/api/events/ws" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Static WebUI shell assets (embedded Next.js export) are exempt: this
+		// mirrors RESTServer.ServeHTTP's own routing split (see rest.go), which
+		// treats anything outside "/api" and "/health" as the public SPA
+		// shell. A single page navigation triggers many chunk/CSS/font
+		// requests, plus Next.js prefetches every visible sidebar <Link>'s JS
+		// chunk -- as the sidebar grows (Phase 1 took it from 6 to 10 items),
+		// that background prefetch volume alone can exceed a per-IP API rate
+		// budget and produce spurious ChunkLoadErrors with no security
+		// benefit, since static assets carry no per-request cost worth
+		// throttling. Every data-bearing "/api/*" route (and "/health")
+		// remains rate-limited exactly as before.
+		if r.URL.Path != "/health" && !strings.HasPrefix(r.URL.Path, "/api") {
 			next.ServeHTTP(w, r)
 			return
 		}

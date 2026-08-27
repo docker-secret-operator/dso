@@ -34,6 +34,13 @@ type WebhookConfig struct {
 type NotificationsConfig struct {
 	Enabled  bool                  `yaml:"enabled"`
 	Webhooks []NotificationWebhook `yaml:"webhooks,omitempty"`
+	// AlertCooldown bounds how often a repeated identical alert (same
+	// dedup key: rotation_failed:<secret>, injection_failed:<container>,
+	// degraded:<container>) may send another notification, e.g. "5m".
+	// Empty/invalid -> internal/alert's 5-minute default. Does not affect
+	// resolution notifications (service_recovered, rotation_succeeded),
+	// which always fire exactly once per firing->resolved transition.
+	AlertCooldown string `yaml:"alert_cooldown,omitempty"`
 }
 
 // NotificationWebhook is one outbound notification destination.

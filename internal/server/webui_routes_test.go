@@ -27,11 +27,15 @@ func newTestRESTServer(t *testing.T) (*RESTServer, string) {
 	mgr := webuiauth.NewManager("operator", hash, 0)
 	mgr.Secure = false // plain-http test server
 
+	// Isolated temp dir, not the real /var/run/dso path: EventStore now
+	// replays events.jsonl on construction, so using the real path here
+	// would pick up unrelated history from any actual dso agent process
+	// running on the same host.
 	return &RESTServer{
 		Cache:      agent.NewSecretCache(5 * time.Minute),
 		Logger:     zap.NewNop(),
 		Hub:        NewHub(zap.NewNop()),
-		EventStore: NewEventStore(10, nil),
+		EventStore: newEventStoreAt(10, nil, t.TempDir(), "events.jsonl"),
 		Auth:       auth.NewAuthenticator(),
 		WebUIAuth:  mgr,
 	}, "test-bearer-token-16bytes"

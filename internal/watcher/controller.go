@@ -1041,7 +1041,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
 				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
-				r.degraded.Delete(serviceName)
+				r.clearDegraded(serviceName)
 				finish(nil)
 			}(target, releaseLock, serviceName)
 		} else {
@@ -1150,9 +1150,103 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 			zap.String("service", serviceName))
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
-	r.degraded.Store(serviceName, "Rotation failed, rollback failed after 3 attempts")
+	r.markDegraded(serviceName, "Rotation failed, rollback failed after 3 attempts")
 	r.Logger.Error("CRITICAL: New container failed and rollback failed after all retries",
 		zap.String("service", serviceName))
+}
+
+// DegradedService is a read-only snapshot of one currently degraded
+// service/container. Fields are strictly safe metadata -- never secret
+// material.
+type DegradedService struct {
+	Service string `json:"service"`
+	Reason  string `json:"reason"`
+}
+
+// DegradedServices returns a snapshot of every currently degraded
+// service. This reflects only the in-memory degraded map's CURRENT state
+// -- it is rebuilt from scratch on every agent restart (populateInitialTargets
+// re-derives Targets from live Docker state, and this map starts empty),
+// so it deliberately does not claim to survive a restart.
+func (r *ReloaderController) DegradedServices() []DegradedService {
+	out := make([]DegradedService, 0)
+	r.degraded.Range(func(k, v interface{}) bool {
+		service, _ := k.(string)
+		reason, _ := v.(string)
+		out = append(out, DegradedService{Service: service, Reason: reason})
+		return true
+	})
+	return out
+}
+
+// IsDegraded reports whether serviceName is currently marked degraded, and
+// its reason if so. serviceName here follows the same key convention
+// executeRollback/the restart-rotation goroutine already use: the
+// container ID by default, or the container's
+// "com.docker.compose.service" label when present (see the "EXTRACT
+// SERVICE NAME FOR LOCKING" comment above) -- callers matching against
+// ContainerSummary.ID will only match the container-ID-keyed case; a
+// compose-service-named entry needs the resolved service name instead.
+func (r *ReloaderController) IsDegraded(serviceName string) (string, bool) {
+	v, ok := r.degraded.Load(serviceName)
+	if !ok {
+		return "", false
+	}
+	reason, _ := v.(string)
+	return reason, true
+}
+
+// markDegraded marks serviceName as degraded and pushes a metadata-only
+// "service_degraded" event onto observability.EventStream, but ONLY on a
+// real healthy->degraded transition (Swap's `loaded` return tells us
+// whether the key already existed). This prevents a service that fails
+// repeatedly, or a second unrelated secret failing on the same service,
+// from re-emitting the same degraded-entry event over and over.
+func (r *ReloaderController) markDegraded(serviceName, reason string) {
+	_, alreadyDegraded := r.degraded.Swap(serviceName, reason)
+	if alreadyDegraded {
+		return
+	}
+	pushOperationalEvent(map[string]interface{}{
+		"timestamp":  time.Now().Format(time.RFC3339),
+		"container":  serviceName,
+		"event_type": "service_degraded",
+		"status":     "failure",
+		"error":      reason,
+	})
+}
+
+// clearDegraded clears serviceName's degraded state and pushes a
+// metadata-only "service_recovered" event onto observability.EventStream,
+// but ONLY when the service was actually degraded (LoadAndDelete's
+// `loaded` return confirms a real transition happened) -- a healthy
+// service completing a normal rotation must never emit a spurious
+// recovery event.
+func (r *ReloaderController) clearDegraded(serviceName string) {
+	_, wasDegraded := r.degraded.LoadAndDelete(serviceName)
+	if !wasDegraded {
+		return
+	}
+	pushOperationalEvent(map[string]interface{}{
+		"timestamp":  time.Now().Format(time.RFC3339),
+		"container":  serviceName,
+		"event_type": "service_recovered",
+		"status":     "success",
+	})
+}
+
+// pushOperationalEvent is a thin, non-blocking wrapper around
+// observability.EventStream -- the same fire-and-forget, never-blocks
+// pattern already used by internal/injector/docker.go's LogInjectionEvent
+// and internal/agent/trigger.go's emitEvent. A full EventStream (1000
+// buffered) drops the event rather than ever blocking the caller, which
+// here is inline in the rotation/rollback goroutine and must never stall
+// on observability.
+func pushOperationalEvent(ev map[string]interface{}) {
+	select {
+	case observability.EventStream <- ev:
+	default:
+	}
 }
 
 // cloneContainerConfig returns a deep copy of a *container.Config that is safe to

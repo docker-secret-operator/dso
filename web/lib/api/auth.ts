@@ -49,3 +49,20 @@ export async function checkSession(): Promise<boolean> {
     return false
   }
 }
+
+/**
+ * Returns the authenticated operator's identity, or null if the session is
+ * invalid. Backs the Users/Access page -- DSO's single-operator model means
+ * this is "who am I", not a user lookup.
+ */
+export async function fetchOperatorIdentity(): Promise<{ username: string } | null> {
+  try {
+    const response = await apiClient.client.get<SessionCheckResponse>(`${API_BASE}/session`)
+    if (response.data.authenticated !== true || !response.data.username) {
+      return null
+    }
+    return { username: response.data.username }
+  } catch {
+    return null
+  }
+}

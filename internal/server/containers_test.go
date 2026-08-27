@@ -92,3 +92,45 @@ func TestRESTServer_Containers_ReturnsRealData(t *testing.T) {
 		t.Errorf("unexpected secrets list: %+v", got.Secrets)
 	}
 }
+
+// TestRESTServer_Containers_DegradedFieldsPresent verifies the Phase 3
+// additive degraded/degraded_reason fields serialize correctly for a
+// healthy (non-degraded) container -- degraded=false, no
+// degraded_reason key at all (omitempty), never a fabricated true.
+func TestRESTServer_Containers_DegradedFieldsPresent(t *testing.T) {
+	s, token := newTestRESTServer(t)
+
+	reloader := &watcher.ReloaderController{}
+	reloader.Targets.Store("container-abc", &watcher.TargetContainer{
+		ID:       "container-abc",
+		Strategy: "restart",
+		Secrets:  []string{"db-password"},
+	})
+	s.Reloader = reloader
+
+	req := httptest.NewRequest(http.MethodGet, "/api/containers", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var raw struct {
+		Containers []map[string]interface{} `json:"containers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(raw.Containers) != 1 {
+		t.Fatalf("expected 1 container, got %+v", raw.Containers)
+	}
+	c := raw.Containers[0]
+	if degraded, ok := c["degraded"].(bool); !ok || degraded {
+		t.Errorf("expected degraded=false for a healthy container, got %v", c["degraded"])
+	}
+	if _, present := c["degraded_reason"]; present {
+		t.Errorf("expected degraded_reason to be omitted (omitempty) for a healthy container, got %v", c["degraded_reason"])
+	}
+}

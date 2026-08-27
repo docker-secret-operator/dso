@@ -6,6 +6,9 @@ export interface ContainerSummary {
   strategy: string
   compose_path?: string
   secrets: string[]
+  /** Phase 3: current-state only, from ReloaderController.IsDegraded -- does not survive an agent restart. */
+  degraded: boolean
+  degraded_reason?: string
 }
 
 /** Matches internal/server/rest.go handleContainers response body. */

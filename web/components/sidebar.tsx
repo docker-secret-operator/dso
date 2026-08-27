@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, Lock, Bell, Settings, LogOut, ScrollText, Boxes } from 'lucide-react'
+import { BarChart3, Lock, Bell, Settings, LogOut, ScrollText, Boxes, FileClock, Plug, Users, GitCompare, LineChart, AlertTriangle } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { logout as apiLogout } from '@/lib/api/auth'
@@ -10,11 +10,18 @@ import { Logo } from '@/components/logo'
 
 const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: BarChart3 },
-  { name: 'Secrets', href: '/secrets', icon: Lock },
   { name: 'Events', href: '/events', icon: Bell },
-  { name: 'Logs', href: '/logs', icon: ScrollText },
-  { name: 'Containers', href: '/containers', icon: Boxes },
+  { name: 'Audit', href: '/audit', icon: FileClock },
+  { name: 'Analytics', href: '/analytics', icon: LineChart },
+  { name: 'Alerts', href: '/alerts', icon: AlertTriangle },
+  { name: 'Drift', href: '/drift', icon: GitCompare },
+  { name: 'Secrets', href: '/secrets', icon: Lock },
   { name: 'Configuration', href: '/configuration', icon: Settings },
+  { name: 'Containers', href: '/containers', icon: Boxes },
+  { name: 'Integrations', href: '/integrations', icon: Plug },
+  { name: 'Logs', href: '/logs', icon: ScrollText },
+  { name: 'Users / Access', href: '/users', icon: Users },
+  { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
 export function Sidebar() {

@@ -25,6 +25,18 @@ const (
 	RotationFailed    EventType = "rotation_failed"
 	RecoverySucceeded EventType = "recovery_succeeded"
 	RecoveryFailed    EventType = "recovery_failed"
+
+	// Phase 4.1 alert event types. ServiceDegraded/ServiceRecovered mirror
+	// the internal/watcher event_type strings ("service_degraded" /
+	// "service_recovered") emitted onto observability.EventStream.
+	// InjectionFailed does NOT mirror an EventStream event_type string --
+	// the injector emits "signal_failed" (see internal/injector/docker.go)
+	// -- it exists purely as the notify-layer identity for that alert once
+	// internal/alert has translated it, so a webhook destination can filter
+	// on notify.InjectionFailed the same way it filters on RotationFailed.
+	ServiceDegraded  EventType = "service_degraded"
+	ServiceRecovered EventType = "service_recovered"
+	InjectionFailed  EventType = "injection_failed"
 )
 
 // RotationEvent is the provider-neutral notification payload. Every field
