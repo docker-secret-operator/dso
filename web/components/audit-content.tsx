@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Circle, FileClock, Search, Info } from 'lucide-react'
+import { FileClock, Search, Info } from 'lucide-react'
 import type { Event } from '@/hooks/useWebSocket'
 import { fetchAudit } from '@/lib/api/audit'
 import { Card } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -154,20 +154,7 @@ export function AuditContent() {
                     <TableCell className="text-foreground">
                       {ev.secret ?? ev.container ?? '—'}
                     </TableCell>
-                    <TableCell>
-                      {ev.status ? (
-                        <Badge
-                          variant={
-                            ev.status === 'success' ? 'success' : ev.status === 'failure' ? 'destructive' : 'warning'
-                          }
-                        >
-                          <Circle className="h-1.5 w-1.5 fill-current" />
-                          {ev.status}
-                        </Badge>
-                      ) : (
-                        '—'
-                      )}
-                    </TableCell>
+                    <TableCell>{ev.status ? <StatusBadge status={ev.status} /> : '—'}</TableCell>
                     <TableCell className="pr-5 max-w-xs truncate text-xs text-muted-foreground">
                       {ev.error ?? '—'}
                     </TableCell>

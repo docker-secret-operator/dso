@@ -97,14 +97,28 @@ protects the REST API for non-browser consumers:
 ## Development
 
 The frontend lives under `web/` (Next.js 14, App Router, static export).
+`web/next.config.js` sets `output: 'export'`, so there is no
+`next start`/`next dev` server involved in production — the Go binary
+embeds a static export and serves it directly.
 
-```bash
-cd web
-npm ci
-npm run build      # produces web/out/
-```
+### Source → build → embed
 
-Copy `web/out/*` into `internal/webui/assets/` to embed a new build into
-the Go binary; `internal/webui/embed.go` picks it up via `//go:embed`.
-`web/next.config.js` is configured for `output: 'export'` — there is no
-`next start`/`next dev` server involved in production.
+1. Edit the frontend under `web/`.
+2. Regenerate the embedded assets: `make webui-build` (this runs
+   `scripts/build-webui.sh`, which does a deterministic `npm ci` +
+   `npm run build` in `web/` and copies the static export output from
+   `web/out/` into `internal/webui/assets/`, which
+   `internal/webui/embed.go` embeds via `//go:embed assets/*`).
+3. Commit the resulting diff in `internal/webui/assets/` together with
+   your `web/` source change.
+
+Do not hand-edit files under `internal/webui/assets/` or copy `web/out/`
+into it manually — always go through `make webui-build` so the two stay
+byte-for-byte reproducible from the same source.
+
+CI (`.github/workflows/ci.yml`, `webui` job) reruns `scripts/build-webui.sh`
+on every push/PR and fails the build if the regenerated
+`internal/webui/assets/` differs from what's committed, so a stale or
+hand-edited build cannot merge unnoticed. `scripts/build-release.sh` runs
+the same script before packaging a release, so a release build never
+trusts whatever happens to be checked in.

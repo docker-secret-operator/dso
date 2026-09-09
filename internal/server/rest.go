@@ -266,8 +266,12 @@ func (s *RESTServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.WebUIAuth.Login(creds.Username, creds.Password)
+	sess, err := s.WebUIAuth.LoginFromRequest(r, creds.Username, creds.Password)
 	if err != nil {
+		if err == webuiauth.ErrTooManyLoginAttempts {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -1126,7 +1130,11 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 			}
 		}
 		mgr := webuiauth.NewManager(cfg.WebUI.Username, cfg.WebUI.PasswordHash, idleTimeout)
-		mgr.Secure = bindsPublic(addr)
+		secure, warning := resolveCookieSecure(cfg.WebUI.CookieSecure, addr)
+		mgr.Secure = secure
+		if warning != "" {
+			logger.Warn(warning)
+		}
 		restServer.WebUIAuth = mgr
 
 		// Mount the embedded WebUI static assets onto this same listener.
@@ -1195,6 +1203,32 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 			logger.Error("REST API server shutdown error", zap.Error(err))
 		}
 	}, nil
+}
+
+// resolveCookieSecure decides the Secure attribute for the WebUI session
+// cookie from the configured webui.cookie_secure mode and the REST API bind
+// address. "auto"/"" preserves the historical inference-from-bind-address
+// behavior but, since DSO has no trusted-proxy mechanism to detect
+// TLS-terminating reverse proxies, that inference can be wrong in both
+// directions -- so a non-empty warning is returned whenever auto mode
+// resolves to Secure=true on a public bind, prompting the operator to pin
+// an explicit mode instead of relying on a guess.
+func resolveCookieSecure(mode string, addr string) (secure bool, warning string) {
+	switch mode {
+	case "always":
+		return true, ""
+	case "never":
+		return false, ""
+	default: // "auto" or unset
+		secure = bindsPublic(addr)
+		if secure {
+			warning = "WebUI is bound to a public address with cookie_secure=auto, so the session cookie will require HTTPS. " +
+				"If this deployment is NOT behind TLS (reverse proxy or direct TLS), logins will appear to succeed but the " +
+				"browser will silently discard the session cookie. Set webui.cookie_secure explicitly to \"always\" (if " +
+				"behind TLS) or \"never\" (plain HTTP only, not recommended) to silence this warning."
+		}
+		return secure, warning
+	}
 }
 
 func bindsPublic(addr string) bool {

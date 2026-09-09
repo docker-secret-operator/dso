@@ -29,6 +29,13 @@ const (
 
 	// DefaultIdleTimeout is used when no session_idle_timeout is configured.
 	DefaultIdleTimeout = 30 * time.Minute
+
+	// MaxConcurrentSessions caps the number of live sessions kept for the
+	// single operator identity. This is a reasonable ceiling for multiple
+	// browser tabs/devices, not a multi-user quota. When exceeded, the
+	// oldest session (by CreatedAt) is evicted -- never the session that
+	// was just created.
+	MaxConcurrentSessions = 10
 )
 
 var (
@@ -40,7 +47,10 @@ var (
 // Session is one authenticated browser session for the single operator
 // identity.
 type Session struct {
-	Token      string
+	// Token is a live bearer credential and must never be serialized to
+	// JSON -- it is only ever handed to the browser via the HttpOnly
+	// Set-Cookie header (see SessionCookie), never in a response body.
+	Token      string `json:"-"`
 	Username   string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
@@ -59,6 +69,10 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	// limiter tracks failed login attempts per client IP for
+	// LoginFromRequest (see loginlimiter.go). Lazily initialized.
+	limiter *loginLimiter
 
 	// now is overridable for tests.
 	now func() time.Time
@@ -120,9 +134,31 @@ func (m *Manager) Login(username, password string) (*Session, error) {
 
 	m.mu.Lock()
 	m.sessions[token] = sess
+	if len(m.sessions) > MaxConcurrentSessions {
+		m.evictOldestLocked(token)
+	}
 	m.mu.Unlock()
 
 	return sess, nil
+}
+
+// evictOldestLocked removes the oldest session (by CreatedAt) other than
+// keepToken. Callers must hold m.mu.
+func (m *Manager) evictOldestLocked(keepToken string) {
+	var oldestToken string
+	var oldestAt time.Time
+	for token, sess := range m.sessions {
+		if token == keepToken {
+			continue
+		}
+		if oldestToken == "" || sess.CreatedAt.Before(oldestAt) {
+			oldestToken = token
+			oldestAt = sess.CreatedAt
+		}
+	}
+	if oldestToken != "" {
+		delete(m.sessions, oldestToken)
+	}
 }
 
 // Validate checks the session token, refreshing its idle timer on success.

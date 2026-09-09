@@ -114,7 +114,7 @@ export function UsersContent() {
             </Card>
 
             <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <Monitor className="h-4 w-4 text-primary" />
                   Active sessions
@@ -125,6 +125,7 @@ export function UsersContent() {
                   disabled={revoking || otherSessionCount === 0}
                   onClick={handleRevokeOthers}
                   data-testid="revoke-others-button"
+                  className="self-start sm:self-auto"
                 >
                   <LogOut className="mr-1.5 h-3.5 w-3.5" />
                   Sign out other sessions

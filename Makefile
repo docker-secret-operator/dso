@@ -10,12 +10,19 @@ BIN_DIR_SYSTEM    := /usr/local/bin
 PLUGIN_DIR_USER   := $(HOME)/.docker/cli-plugins
 BIN_DIR_USER      := $(HOME)/.local/bin
 
-.PHONY: all build test lint clean install install-user fmt vet docs
+.PHONY: all build test lint clean install install-user fmt vet docs webui-build
 
 all: build
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
+
+# Regenerates internal/webui/assets/ from the Next.js source in web/. This is
+# the project's single source of truth for that step -- see
+# scripts/build-webui.sh for details and scripts/build-release.sh / CI
+# (.github/workflows/ci.yml "webui" job), both of which call it.
+webui-build:
+	./scripts/build-webui.sh
 
 test:
 	go test ./...

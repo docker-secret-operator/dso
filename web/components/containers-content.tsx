@@ -5,6 +5,7 @@ import { Boxes, Search } from 'lucide-react'
 import { fetchContainers, type ContainerSummary } from '@/lib/api/containers'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -131,11 +132,9 @@ export function ContainersContent() {
                     </TableCell>
                     <TableCell>
                       {c.degraded ? (
-                        <Badge variant="destructive" title={c.degraded_reason}>
-                          Degraded
-                        </Badge>
+                        <StatusBadge status="Degraded" title={c.degraded_reason} />
                       ) : (
-                        <Badge variant="success">Healthy</Badge>
+                        <StatusBadge status="Healthy" />
                       )}
                     </TableCell>
                     <TableCell className="max-w-xs truncate text-xs text-muted-foreground">

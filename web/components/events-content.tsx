@@ -1,37 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Circle, Bell } from 'lucide-react'
+import { Bell } from 'lucide-react'
 import { useWebSocket, type Event } from '@/hooks/useWebSocket'
 import { fetchEvents } from '@/lib/api/events'
 import { Card } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
-
-function statusColor(status?: string): string {
-  switch (status) {
-    case 'success':
-      return 'text-emerald-400'
-    case 'failure':
-      return 'text-red-400'
-    case 'pending':
-      return 'text-amber-400'
-    default:
-      return 'text-slate-500'
-  }
-}
-
-function connectionColor(state: string): string {
-  switch (state) {
-    case 'connected':
-      return 'text-emerald-400'
-    case 'reconnecting':
-      return 'text-amber-400'
-    default:
-      return 'text-red-400'
-  }
-}
 
 /**
  * Real events content: GET /api/events for initial history, then
@@ -87,13 +63,11 @@ export function EventsContent() {
             <h1 className="text-xl font-semibold text-foreground">Events</h1>
             <p className="mt-1 text-sm text-muted-foreground">Live secret rotation and injection activity</p>
           </div>
-          <Badge
-            variant={connectionState === 'connected' ? 'success' : connectionState === 'reconnecting' ? 'warning' : 'destructive'}
+          <StatusBadge
+            status={connectionState}
+            tone={connectionState === 'connected' ? 'success' : connectionState === 'reconnecting' ? 'warning' : 'destructive'}
             data-testid="ws-connection-state"
-          >
-            <Circle className="h-2 w-2 fill-current" />
-            {connectionState}
-          </Badge>
+          />
         </header>
 
         {loading && (
@@ -130,9 +104,8 @@ export function EventsContent() {
         {merged.length > 0 && (
           <Card data-testid="events-list" className="divide-y divide-border overflow-hidden">
             {merged.map((ev, idx) => (
-              <div key={`${ev.timestamp}-${idx}`} className="flex items-center justify-between px-5 py-3 text-sm">
+              <div key={`${ev.timestamp}-${idx}`} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
                 <div className="flex min-w-0 items-center gap-3">
-                  <Circle className={`h-2 w-2 flex-shrink-0 fill-current ${statusColor(ev.status)}`} />
                   <div className="min-w-0">
                     <p className="truncate text-foreground">
                       {ev.event_type ?? 'event'}
@@ -144,9 +117,10 @@ export function EventsContent() {
                     {ev.error && <p className="truncate text-xs text-red-400/80">{ev.error}</p>}
                   </div>
                 </div>
-                <span className="ml-4 flex-shrink-0 text-xs text-muted-foreground">
-                  {new Date(ev.timestamp).toLocaleString()}
-                </span>
+                <div className="flex flex-shrink-0 items-center gap-3">
+                  {ev.status && <StatusBadge status={ev.status} />}
+                  <span className="text-xs text-muted-foreground">{new Date(ev.timestamp).toLocaleString()}</span>
+                </div>
               </div>
             ))}
           </Card>

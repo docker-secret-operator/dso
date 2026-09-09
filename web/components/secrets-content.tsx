@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -78,7 +79,7 @@ export function SecretsContent() {
         <header className="mb-8">
           <h1 className="text-xl font-semibold text-foreground">Secrets</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Managed secret metadata — read-only, no values ever exposed
+            Managed secret metadata — values are never exposed to the browser
           </p>
         </header>
 
@@ -173,25 +174,33 @@ export function SecretsContent() {
                     <TableRow>
                       <TableHead>Name</TableHead>
                       <TableHead>Provider</TableHead>
-                      <TableHead>Status</TableHead>
                       <TableHead>Injection</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Rotation</TableHead>
+                      <TableHead>Version</TableHead>
+                      <TableHead>Last updated</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredSecrets.map((sec) => (
-                      <TableRow key={`${sec.provider}:${sec.name}`}>
-                        <TableCell>{sec.name}</TableCell>
+                      <TableRow key={`${sec.provider}:${sec.name}`} className="hover:bg-accent/40">
+                        <TableCell className="font-medium text-foreground">{sec.name}</TableCell>
                         <TableCell className="text-muted-foreground">
                           <span className="inline-flex items-center gap-1.5">
                             <ProviderIcon provider={sec.provider} />
                             {sec.provider}
                           </span>
                         </TableCell>
-                        <TableCell>{sec.status}</TableCell>
                         <TableCell className="text-muted-foreground">{sec.injection_type}</TableCell>
+                        <TableCell>
+                          <StatusBadge status={sec.status} />
+                        </TableCell>
                         <TableCell className="text-muted-foreground">
                           {sec.rotation_enabled ? 'on' : 'off'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{sec.version ?? '—'}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {sec.last_updated_at ? new Date(sec.last_updated_at).toLocaleString() : '—'}
                         </TableCell>
                       </TableRow>
                     ))}

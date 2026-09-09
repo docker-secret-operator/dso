@@ -1,8 +1,11 @@
 package webuiauth
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,6 +180,79 @@ func TestCheckHandshake_ValidCookie(t *testing.T) {
 	req.AddCookie(m.SessionCookie(sess))
 	if _, err := m.CheckHandshake(req); err != nil {
 		t.Fatalf("expected valid handshake, got %v", err)
+	}
+}
+
+func TestSession_JSONMarshal_OmitsToken(t *testing.T) {
+	m, _ := testManager(t, 0)
+	sess, err := m.Login("operator", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	b, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	out := string(b)
+	if strings.Contains(out, sess.Token) {
+		t.Fatalf("marshaled session must not contain the token value: %s", out)
+	}
+	if strings.Contains(out, `"Token"`) {
+		t.Fatalf("marshaled session must not contain a Token field: %s", out)
+	}
+}
+
+func TestLogin_EvictsOldestSessionWhenOverLimit(t *testing.T) {
+	m, _ := testManager(t, 0)
+
+	base := m.now()
+	var sessions []*Session
+	for i := 0; i < MaxConcurrentSessions; i++ {
+		frozen := base.Add(time.Duration(i) * time.Second)
+		m.now = func() time.Time { return frozen }
+		sess, err := m.Login("operator", "correct-horse-battery-staple")
+		if err != nil {
+			t.Fatalf("login %d: %v", i, err)
+		}
+		sessions = append(sessions, sess)
+	}
+
+	// One more login should push us over MaxConcurrentSessions and evict the
+	// very first (oldest) session, never the newest.
+	frozen := base.Add(time.Duration(MaxConcurrentSessions) * time.Second)
+	m.now = func() time.Time { return frozen }
+	newest, err := m.Login("operator", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("final login: %v", err)
+	}
+
+	if _, err := m.Validate(sessions[0].Token); err != ErrNoSession {
+		t.Fatalf("expected oldest session to be evicted, got %v", err)
+	}
+	if _, err := m.Validate(newest.Token); err != nil {
+		t.Fatalf("expected newest session to remain valid, got %v", err)
+	}
+	if got := len(m.ListSessions()); got != MaxConcurrentSessions {
+		t.Fatalf("expected %d sessions after eviction, got %d", MaxConcurrentSessions, got)
+	}
+}
+
+func TestLogin_Concurrent(t *testing.T) {
+	m, _ := testManager(t, 0)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = m.Login("operator", "correct-horse-battery-staple")
+		}()
+	}
+	wg.Wait()
+
+	if got := len(m.ListSessions()); got > MaxConcurrentSessions {
+		t.Fatalf("expected session count capped at %d, got %d", MaxConcurrentSessions, got)
 	}
 }
 

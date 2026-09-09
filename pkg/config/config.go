@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -79,6 +80,14 @@ type WebUIConfig struct {
 	// SessionIdleTimeout is how long an unused session stays valid, e.g.
 	// "30m". Defaults to 30m if empty.
 	SessionIdleTimeout string `yaml:"session_idle_timeout,omitempty"`
+	// CookieSecure controls the Secure attribute on the WebUI session cookie.
+	// "auto" (default/empty) infers it from the bind address (existing
+	// behavior, preserved for backward compatibility). "always" forces
+	// Secure=true -- use this when DSO is behind a TLS-terminating reverse
+	// proxy (the browser talks HTTPS to the proxy even though DSO itself
+	// speaks plain HTTP on a loopback or internal address). "never" forces
+	// Secure=false -- local plain-HTTP development only.
+	CookieSecure string `yaml:"cookie_secure,omitempty"`
 }
 
 type RotationConfigV2 struct {
@@ -358,6 +367,21 @@ func (c *Config) Validate() error {
 
 		// Sync back
 		c.Secrets[i] = sec
+	}
+
+	// Validate WebUI auth config: an enabled WebUI with no username or an
+	// unparsable password hash would fail every login attempt at runtime
+	// instead of at startup, so catch it here.
+	if c.WebUI.Enabled {
+		if c.WebUI.Username == "" {
+			return fmt.Errorf("webui.enabled is true but webui.username is missing")
+		}
+		if c.WebUI.PasswordHash == "" {
+			return fmt.Errorf("webui.enabled is true but webui.password_hash is missing")
+		}
+		if _, err := bcrypt.Cost([]byte(c.WebUI.PasswordHash)); err != nil {
+			return fmt.Errorf("webui.password_hash is not a valid bcrypt hash: %w", err)
+		}
 	}
 
 	// Validate Docker socket accessibility

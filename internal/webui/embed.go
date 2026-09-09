@@ -5,10 +5,19 @@
 // to be a plain http.Handler that internal/server mounts directly onto its
 // existing mux for any path that isn't /api/* or /health.
 //
-// The assets/ directory embedded here is currently a placeholder -- see
-// assets/index.html for why. Porting the real Next.js static export into
-// assets/ is tracked as a separate step and is explicitly out of scope for
-// this package's initial version.
+// The assets/ directory embedded here is the production static export of
+// the Next.js dashboard whose source lives in web/. It is generated, not
+// hand-written: run `make webui-build` (or scripts/build-webui.sh directly)
+// to rebuild it from web/ via `npm ci` + `npm run build` (web/next.config.js
+// sets `output: 'export'`), and commit the resulting diff in assets/ along
+// with the web/ source change that produced it. assets/ is intentionally
+// tracked in git (see the note next to the web/node_modules|.next|out
+// exclusions in .gitignore) so the binary can be built with plain `go
+// build` and no Node toolchain. The "webui" job in
+// .github/workflows/ci.yml regenerates assets/ fresh on every push/PR and
+// fails the build if it differs from what's committed, so this directory
+// cannot silently drift out of sync with web/. See docs/webui-build.md for
+// the full source -> build -> embed flow.
 package webui
 
 import (
@@ -16,11 +25,8 @@ import (
 	"io/fs"
 )
 
-// rawAssets contains the embedded WebUI static assets. Built (eventually)
-// from `npm run build` in web/, with output copied to internal/webui/assets/.
-// As of this version, assets/ contains only a placeholder index.html so the
-// serving mechanism (embed -> mux -> SPA fallback) can be built and tested
-// ahead of the real frontend port.
+// rawAssets contains the embedded WebUI static assets, built from web/ via
+// `make webui-build` (scripts/build-webui.sh) and copied into assets/.
 //
 //go:embed assets/*
 var rawAssets embed.FS

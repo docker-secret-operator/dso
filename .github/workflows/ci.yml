@@ -207,13 +207,26 @@ jobs:
         working-directory: web
         run: npx tsc --noEmit
 
-      - name: Build (static export)
-        working-directory: web
-        run: npm run build
-
       - name: Test
         working-directory: web
         run: npm test
+
+      - name: Regenerate internal/webui/assets from web/ source
+        # Reuses the same build script as `make webui-build` and
+        # scripts/build-release.sh (single source of truth), so this job
+        # exercises the exact commands a contributor is expected to run.
+        run: ./scripts/build-webui.sh
+
+      - name: Verify committed assets match the regenerated build
+        run: |
+          if [ -n "$(git status --porcelain internal/webui/assets)" ]; then
+            echo "❌ internal/webui/assets/ is out of date with web/ source."
+            echo "   Run 'make webui-build' locally, then commit the diff in internal/webui/assets/."
+            git status --porcelain internal/webui/assets
+            git diff internal/webui/assets || true
+            exit 1
+          fi
+          echo "✅ internal/webui/assets/ matches web/ source"
 
   dco:
     name: DCO Sign-off

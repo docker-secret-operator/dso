@@ -79,17 +79,40 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
   const reconnectAttemptsRef = useRef(0)
   const isFirstConnectRef = useRef(true)
   const mountedRef = useRef(true)
+  const connectingRef = useRef(false)
+
+  // Latest-callback refs: onConnect/onReconnect/onDisconnect/onError are
+  // read from these inside `connect`, so a caller passing new inline
+  // function references on every render doesn't change `connect`'s own
+  // identity and doesn't tear down/reopen the socket.
+  const onErrorRef = useRef(onError)
+  const onConnectRef = useRef(onConnect)
+  const onReconnectRef = useRef(onReconnect)
+  const onDisconnectRef = useRef(onDisconnect)
+  useEffect(() => {
+    onErrorRef.current = onError
+    onConnectRef.current = onConnect
+    onReconnectRef.current = onReconnect
+    onDisconnectRef.current = onDisconnect
+  }, [onError, onConnect, onReconnect, onDisconnect])
 
   const connect = useCallback(() => {
     if (typeof window === 'undefined' || !mountedRef.current) return
+    // Guard against overlapping connect() calls creating duplicate sockets
+    // (e.g. a reconnect timer firing while a previous connect is still
+    // pending, or a caller invoking the manual reconnect while one is live).
+    if (connectingRef.current || wsRef.current) return
 
     try {
       // Check max reconnection attempts
       if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setConnectionState('disconnected')
         const error = new Error('WebSocket: Max reconnection attempts reached')
-        onError?.(error)
+        onErrorRef.current?.(error)
         return
       }
+
+      connectingRef.current = true
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
@@ -101,16 +124,16 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
       const ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
+        connectingRef.current = false
         if (!mountedRef.current) { ws.close(); return }
-        if (process.env.NODE_ENV === 'development') console.log('[WebSocket] Connected')
         setConnectionState('connected')
         const wasReconnect = !isFirstConnectRef.current
         isFirstConnectRef.current = false
         reconnectAttemptsRef.current = 0
         if (wasReconnect) {
-          onReconnect?.()
+          onReconnectRef.current?.()
         } else {
-          onConnect?.()
+          onConnectRef.current?.()
         }
       }
 
@@ -120,9 +143,6 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
 
           // Validate message schema - must have required Event fields
           if (!isValidEvent(data)) {
-            if (process.env.NODE_ENV === 'development') {
-              console.error('[WebSocket] Invalid event schema:', data)
-            }
             return
           }
 
@@ -133,70 +153,70 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
             const bounded = prev.slice(0, maxMessageHistory - 1)
             return [validEvent, ...bounded]
           })
-        } catch (err) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error('[WebSocket] Failed to parse message:', err)
-          }
+        } catch {
+          // Malformed frame -- drop it silently, nothing actionable to log
+          // without a real logging convention in this project.
         }
       }
 
-      ws.onerror = (err) => {
-        if (process.env.NODE_ENV === 'development') console.error('[WebSocket] Error:', err)
-        onError?.(new Error('WebSocket error'))
+      ws.onerror = () => {
+        onErrorRef.current?.(new Error('WebSocket error'))
       }
 
       ws.onclose = () => {
+        connectingRef.current = false
+        wsRef.current = null
         if (!mountedRef.current) return
-        if (process.env.NODE_ENV === 'development') console.log('[WebSocket] Disconnected')
-        setConnectionState('reconnecting')
-        onDisconnect?.()
+        onDisconnectRef.current?.()
 
         // Check if we've exceeded max reconnection attempts
         if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          setConnectionState('disconnected')
           const error = new Error('WebSocket: Max reconnection attempts reached')
-          onError?.(error)
+          onErrorRef.current?.(error)
           return
         }
+
+        setConnectionState('reconnecting')
 
         // Progress through fixed delay sequence
         const idx = Math.min(reconnectAttemptsRef.current, BACKOFF_DELAYS.length - 1)
         const delay = BACKOFF_DELAYS[idx]
         reconnectAttemptsRef.current += 1
-        if (process.env.NODE_ENV === 'development') {
-          console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
-        }
         // Schedule reconnection with error handling
         reconnectTimeoutRef.current = setTimeout(() => {
+          if (!mountedRef.current) return
           try {
             connect()
           } catch (err) {
             const error = err instanceof Error ? err : new Error('Reconnection failed')
-            onError?.(error)
+            onErrorRef.current?.(error)
           }
         }, delay)
       }
 
       wsRef.current = ws
     } catch (err) {
-      onError?.(err instanceof Error ? err : new Error('Unknown WebSocket error'))
+      connectingRef.current = false
+      onErrorRef.current?.(err instanceof Error ? err : new Error('Unknown WebSocket error'))
     }
-  }, [path, maxMessageHistory, onConnect, onReconnect, onDisconnect, onError])
+  }, [path, maxMessageHistory])
 
   // Safe send wrapper that validates connection state before sending
   const send = useCallback((message: string) => {
     if (connectionState !== 'connected' || !wsRef.current) {
       const error = new Error('WebSocket not connected')
-      onError?.(error)
+      onErrorRef.current?.(error)
       throw error
     }
     try {
       wsRef.current.send(message)
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to send message')
-      onError?.(error)
+      onErrorRef.current?.(error)
       throw error
     }
-  }, [connectionState, onError])
+  }, [connectionState])
 
   useEffect(() => {
     mountedRef.current = true
@@ -204,6 +224,7 @@ export function useWebSocket(path = '/api/events/ws', options: UseWebSocketOptio
 
     return () => {
       mountedRef.current = false
+      connectingRef.current = false
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       if (wsRef.current) wsRef.current.close()
     }

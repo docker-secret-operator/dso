@@ -96,7 +96,12 @@ CLAUDE.md
 scripts/bump-version.sh
 
 # Web UI build artifacts (source under web/ is tracked; see web/.gitignore
-# for node_modules/.next/out exclusions within that tree)
+# for node_modules/.next/out exclusions within that tree). The BUILT output
+# of this source, internal/webui/assets/, is intentionally NOT ignored --
+# it is committed and embedded via go:embed in internal/webui/embed.go.
+# Regenerate it with `make webui-build` (scripts/build-webui.sh) after
+# changing web/; the "webui" job in .github/workflows/ci.yml fails the
+# build if internal/webui/assets/ drifts out of sync with web/.
 web/node_modules/
 web/.next/
 web/out/

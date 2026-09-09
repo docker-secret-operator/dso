@@ -5,7 +5,7 @@ import { Plug, Webhook, Database } from 'lucide-react'
 
 import { fetchIntegrations, type IntegrationInfo } from '@/lib/api/integrations'
 import { Card } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
@@ -110,9 +110,7 @@ export function IntegrationsContent() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">{it.type}</TableCell>
                       <TableCell>
-                        <Badge variant={it.enabled ? 'success' : 'outline'}>
-                          {it.enabled ? 'Enabled' : 'Disabled'}
-                        </Badge>
+                        <StatusBadge status={it.enabled ? 'Enabled' : 'Disabled'} />
                       </TableCell>
                       <TableCell className="pr-5 text-xs text-muted-foreground">
                         {it.type === 'webhook' && (it.auth_configured ? 'Auth token configured' : 'No auth token set')}

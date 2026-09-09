@@ -11,6 +11,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
+# NOTE: this must pick up internal/webui/assets/ (the committed, pre-built
+# Next.js static export embedded via go:embed in internal/webui/embed.go).
+# There is no Node toolchain in this image and no `npm run build` step here
+# -- the image relies entirely on assets/ already being in sync with web/
+# source. CI (.github/workflows/ci.yml "webui" job) enforces that sync by
+# regenerating assets/ and diffing against git. Do not add
+# internal/webui/assets/ to .gitignore or exclude it via .dockerignore.
 COPY . .
 
 # Build DSO Core

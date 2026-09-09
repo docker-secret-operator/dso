@@ -6,6 +6,7 @@ import { BellRing, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { fetchAlerts, type Alert } from '@/lib/api/alerts'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
@@ -178,7 +179,7 @@ export function AlertsContent() {
                         <TableCell className="font-mono text-xs text-foreground">{a.resource}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{a.message}</TableCell>
                         <TableCell>
-                          <Badge variant="success">Resolved</Badge>
+                          <StatusBadge status="Resolved" />
                         </TableCell>
                         <TableCell className="pr-5 text-xs text-muted-foreground">
                           {formatTime(a.last_triggered_at)}
