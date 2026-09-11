@@ -59,9 +59,19 @@ module.exports = {
           from: { opacity: '0', transform: 'translateY(4px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
+        'breathe': {
+          '0%, 100%': { opacity: '0.5', transform: 'scale(1)' },
+          '50%': { opacity: '0.7', transform: 'scale(1.03)' },
+        },
+        'blink-cursor': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.15s ease-out',
+        breathe: 'breathe 5s ease-in-out infinite',
+        'blink-cursor': 'blink-cursor 1s step-end infinite',
       },
     },
   },

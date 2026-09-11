@@ -131,14 +131,15 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                     key={item.href}
                     href={item.href}
                     onClick={onClose}
+                    aria-current={isActive ? 'page' : undefined}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      'flex items-center gap-2.5 rounded-md border-l-2 py-1.5 pl-[11px] pr-3 text-sm font-medium transition-colors',
                       isActive
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                        ? 'border-primary bg-accent-dim text-primary'
+                        : 'border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                     )}
                   >
-                    <Icon className="h-4 w-4" />
+                    <Icon className={cn('h-4 w-4', isActive ? 'text-primary' : 'text-muted-foreground/70')} />
                     {item.name}
                   </Link>
                 )
