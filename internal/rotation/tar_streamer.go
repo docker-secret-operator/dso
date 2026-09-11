@@ -11,6 +11,18 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// FileSecretSpec describes one secret that must be delivered into a
+// container's filesystem via StreamSecretToContainer rather than merged into
+// Config.Env. Path is the target directory inside the container
+// (SecretMapping.Inject.Path); Data maps provider field name -> secret value,
+// mirroring the shape StreamSecretToContainer already expects.
+type FileSecretSpec struct {
+	Path string
+	Data map[string]string
+	UID  int
+	GID  int
+}
+
 // StreamSecretToContainer uploads secrets into a container's tmpfs mount using an in-memory tar stream.
 // It enforces 0400 permissions and prevents path traversal by using filepath.Base.
 func StreamSecretToContainer(ctx context.Context, cli *client.Client, containerID string, targetPath string, data map[string]string, uid, gid int) error {

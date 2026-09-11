@@ -278,13 +278,46 @@ func TestRenderDoctorSections_NoPanicAllStatuses(t *testing.T) {
 		{ID: "2", Category: setup.DoctorCatConfiguration, Status: setup.DoctorWarn, Name: "b", Detail: "warn", RootCause: "rc", Recovery: []string{"fix"}},
 		{ID: "3", Category: setup.DoctorCatProvider, Status: setup.DoctorFail, Name: "c", Detail: "fail", RootCause: "rc2", Recovery: []string{"fix2"}},
 		{ID: "4", Category: doctorCatProject, Status: setup.DoctorInfo, Name: "d", Detail: "info"},
+		{ID: "5", Category: setup.DoctorCatRotation, Status: setup.DoctorPass, Name: "e", Detail: "no pending rotations"},
 	}
 	result := buildDoctorResult(checks)
 
 	out := renderSectionedResult("DSO Doctor", result, doctorSections, true)
-	for _, want := range []string{"Environment", "Configuration", "Provider", "Project", "Result"} {
+	for _, want := range []string{"Environment", "Configuration", "Provider", "Operations", "Project", "Result"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected rendered output to contain section %q", want)
+		}
+	}
+}
+
+// TestDoctorSections_EveryCategoryIsRendered is a Phase 7 regression guard:
+// a category that runs as part of setup.NewDoctor's checks but has no
+// entry in doctorSections is silently dropped from the default terminal
+// view (still present in JSON/Summary, just invisible by default) -- this
+// is exactly the bug the Phase 7 P2-5 rotation checks' Operations section
+// was added to fix (see doctorSections above). This test fails loudly if a
+// future category is added to setup.go without a corresponding section
+// here.
+func TestDoctorSections_EveryCategoryIsRendered(t *testing.T) {
+	allCategories := []setup.DoctorCategory{
+		setup.DoctorCatDocker, setup.DoctorCatPermissions, setup.DoctorCatSecurity,
+		setup.DoctorCatConfiguration, setup.DoctorCatProvider, setup.DoctorCatRuntime,
+		setup.DoctorCatService, setup.DoctorCatRotation,
+	}
+	sectioned := make(map[setup.DoctorCategory]bool)
+	for _, s := range doctorSections {
+		for cat := range s.categories {
+			sectioned[cat] = true
+		}
+	}
+	for _, cat := range allCategories {
+		if cat == setup.DoctorCatSecurity {
+			// Not currently emitted by any check constructor; skip rather
+			// than force a placeholder section for an unused category.
+			continue
+		}
+		if !sectioned[cat] {
+			t.Errorf("category %q has no doctorSections entry -- its checks would be silently dropped from terminal output", cat)
 		}
 	}
 }

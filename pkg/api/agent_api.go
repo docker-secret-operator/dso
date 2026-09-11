@@ -56,10 +56,22 @@ type ProviderStatusInfo struct {
 	Message string
 }
 
+// DegradedServiceInfo mirrors watcher.DegradedService's wire shape --
+// service identifier and safe reason text only, never a secret value.
+type DegradedServiceInfo struct {
+	Service string
+	Reason  string
+}
+
 type StatusResponse struct {
 	CacheEntries     int
 	PendingRotations int
 	Providers        []ProviderStatusInfo
+	// DegradedServices lists services the running agent's ReloaderController
+	// currently considers degraded (Phase 7 / P2-5, for `dso doctor`'s
+	// operational-visibility check). Empty when nothing is degraded or when
+	// no Reloader is wired (e.g. an older/minimal agent build).
+	DegradedServices []DegradedServiceInfo
 }
 
 // ProviderCheckRequest carries the exact provider configuration to test —

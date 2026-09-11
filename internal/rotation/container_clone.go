@@ -38,6 +38,12 @@ func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID 
 	copy(newEnv, config.Env)
 	config.Env = newEnv
 
+	// Drop the deprecated container-level MAC as well: on older API versions
+	// this is the field that pins the address, and a shadow sharing the
+	// original's MAC corrupts the bridge while both are running (see the
+	// networking note below).
+	config.MacAddress = "" //nolint:staticcheck // deprecated field, cleared deliberately
+
 	// DEEP COPY: Labels
 	if config.Labels != nil {
 		newLabels := make(map[string]string)
@@ -66,14 +72,25 @@ func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID 
 		hostConfig.Mounts = newMounts
 	}
 
-	// DEEP COPY: Networking configuration
+	// DEEP COPY: Networking configuration.
+	//
+	// Only the operator's INTENT is carried over (which networks to join, and
+	// any aliases/links/driver options). Runtime identity assigned by Docker
+	// to the original -- MacAddress, IPAddress, EndpointID, NetworkID,
+	// gateways -- is deliberately dropped.
+	//
+	// Copying those verbatim is not cosmetic: the shadow runs ALONGSIDE the
+	// original for the length of the health check, and Docker honours a
+	// supplied MacAddress, so the clone joined the bridge with the same MAC as
+	// the container still serving traffic. Two ports with one MAC corrupts the
+	// bridge forwarding table, and frames for the original's IP start landing
+	// on the wrong veth -- observed as "no route to host"/dial timeouts
+	// against a container that was demonstrably healthy. IPAMConfig IS
+	// preserved because it is explicit operator configuration (a pinned
+	// address); if that genuinely collides, Docker rejects the create loudly
+	// instead of silently poisoning the network.
 	networkConfig := &network.NetworkingConfig{
-		EndpointsConfig: make(map[string]*network.EndpointSettings),
-	}
-	for name, endpoint := range inspect.NetworkSettings.Networks {
-		// Endpoint settings may be shared; create a copy
-		epCopy := *endpoint
-		networkConfig.EndpointsConfig[name] = &epCopy
+		EndpointsConfig: SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
 	}
 
 	// Create Shadow Name
@@ -96,4 +113,32 @@ func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID 
 	}
 
 	return &config, &hostConfig, networkConfig, shadowName, nil
+}
+
+// SanitizedEndpointsConfig builds the network configuration for a replacement
+// container: it joins exactly the same networks as the original and keeps the
+// operator's intent (aliases, links, driver options, an explicitly pinned
+// IPAMConfig), but drops every field Docker assigned to the original at
+// runtime -- MacAddress, IPAddress, EndpointID, NetworkID, gateways.
+//
+// This matters because a replacement runs ALONGSIDE the original until the
+// handoff completes. Docker honours a supplied MacAddress, so reusing the
+// original's put two live containers on the bridge with one MAC, corrupting
+// the forwarding table: traffic to the ORIGINAL, still-healthy container
+// began failing with "no route to host"/dial timeouts. Every rotation path
+// that creates a replacement must use this.
+func SanitizedEndpointsConfig(networks map[string]*network.EndpointSettings) map[string]*network.EndpointSettings {
+	out := make(map[string]*network.EndpointSettings, len(networks))
+	for name, endpoint := range networks {
+		if endpoint == nil {
+			continue
+		}
+		out[name] = &network.EndpointSettings{
+			IPAMConfig: endpoint.IPAMConfig,
+			Aliases:    append([]string(nil), endpoint.Aliases...),
+			Links:      append([]string(nil), endpoint.Links...),
+			DriverOpts: endpoint.DriverOpts,
+		}
+	}
+	return out
 }

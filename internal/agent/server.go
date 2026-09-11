@@ -163,6 +163,19 @@ func (s *AgentServer) GetStatus(_ *api.StatusRequest, resp *api.StatusResponse) 
 		resp.PendingRotations = len(s.Trigger.StateTracker.GetPendingRotations())
 	}
 
+	// Phase 7 / P2-5: expose the live agent's degraded-service state so
+	// `dso doctor` (a separate process) can report on it -- this is
+	// in-memory-only state (internal/watcher's ReloaderController.degraded),
+	// so the running agent process is the only place it can come from.
+	if s.Trigger != nil && s.Trigger.Reloader != nil {
+		for _, d := range s.Trigger.Reloader.DegradedServices() {
+			resp.DegradedServices = append(resp.DegradedServices, api.DegradedServiceInfo{
+				Service: d.Service,
+				Reason:  d.Reason,
+			})
+		}
+	}
+
 	for name := range s.Config.Providers {
 		info := api.ProviderStatusInfo{Name: name}
 		healthy, known := s.Store.Health(name)

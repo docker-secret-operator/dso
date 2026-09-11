@@ -16,6 +16,34 @@ type RollingStrategy struct {
 	cli           *client.Client
 	logger        *zap.Logger
 	renameTimeout time.Duration
+
+	// OnShadowCreated, if set, is called synchronously immediately after the
+	// shadow container is created and BEFORE it is started. It exists so the
+	// caller can suppress the proxy registration that would otherwise happen
+	// when Docker emits this container's "start" event -- an unready shadow
+	// must never be selected by the router. Called at most once per Execute.
+	OnShadowCreated func(newContainerID string)
+
+	// OnReady, if set, is called after the shadow has passed every readiness
+	// gate (health check plus any file-secret probes) and BEFORE the atomic
+	// rename swap or any change to the old container. This is where a caller
+	// performs the proxy handoff. Returning an error aborts the rotation:
+	// the shadow is torn down and the old container is left untouched and
+	// still serving.
+	OnReady func(ctx context.Context, newContainerID string) error
+
+	// PreCleanupDelay is how long to leave the OLD container running and
+	// reachable after traffic has been handed to the replacement, before
+	// stopping and removing it. It exists because marking a proxy backend
+	// "draining" only stops NEW connections being routed there -- connections
+	// that selected it moments earlier are still dialing or mid-response, and
+	// killing the container out from under them is a client-visible failure.
+	//
+	// Callers performing a proxy handoff should set this to the proxy's drain
+	// window. Zero (the default) preserves the previous behaviour for
+	// rotations with no proxy involvement, where the old container holds no
+	// traffic and can be reclaimed immediately.
+	PreCleanupDelay time.Duration
 }
 
 func NewRollingStrategy(cli *client.Client) *RollingStrategy {
@@ -114,12 +142,22 @@ func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, contai
 // The rotation follows these atomic steps:
 // 1. Prepare new container config (no state changes)
 // 2. Create new container with temporary name
-// 3. Start new container
-// 4. Verify health with timeout
-// 5. Rename old -> backup, new -> original (atomic swap point)
-// 6. Cleanup backup container
+// 3. Stream file-mode secrets into the new container's filesystem
+// 4. Start new container
+// 5. Verify health with timeout
+// 6. Verify file-mode secrets actually landed (exec probe)
+// 7. Rename old -> backup, new -> original (atomic swap point)
+// 8. Cleanup backup container
 // If any step fails before the swap, full rollback occurs with no state changes.
-func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, timeout time.Duration) error {
+//
+// newEnvs must contain ONLY secrets configured for env-mode injection
+// (SecretMapping.Inject.Type == "env", DSO's documented, intentionally-visible
+// mode). Secrets configured for file-mode injection belong in fileSecrets
+// instead -- PrepareShadowConfig merges newEnvs directly into Config.Env, so
+// a file-mode secret placed there would leak into `docker inspect` output.
+// See internal/watcher/controller.go's callers, which build these two maps
+// by checking Inject.Type.
+func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, fileSecrets []FileSecretSpec, timeout time.Duration) error {
 	rs.logger.Info("Starting rotation",
 		zap.String("container_id", containerID),
 		zap.Duration("health_timeout", timeout))
@@ -170,6 +208,31 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 	newContainerID := createResp.ID
 
+	// Suppress proxy registration for this shadow before it is ever started.
+	// Docker emits "start" the moment ContainerStart returns, and the
+	// watcher's start handler would otherwise register it as an ACTIVE
+	// backend while the application inside is still booting -- routing real
+	// client traffic at a container that is not listening yet.
+	if rs.OnShadowCreated != nil {
+		rs.OnShadowCreated(newContainerID)
+	}
+
+	// Step 3.5: Stream file-mode secrets into the new container's filesystem
+	// before it starts, so the app never starts without them present (same
+	// ordering already used by the compose-recreation path in
+	// internal/watcher/controller.go). CopyToContainer works on a
+	// created-but-not-started container.
+	for _, fs := range fileSecrets {
+		if err := StreamSecretToContainer(ctx, rs.cli, newContainerID, fs.Path, fs.Data, fs.UID, fs.GID); err != nil {
+			rs.logger.Error("Failed to stream file-mode secret into new container, rolling back",
+				zap.String("new_container_id", newContainerID),
+				zap.String("path", fs.Path),
+				zap.Error(err))
+			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			return fmt.Errorf("failed to stream file-mode secret to new container: %w", err)
+		}
+	}
+
 	// Step 4: Start new container
 	rs.logger.Info("Starting new container", zap.String("new_container_id", newContainerID))
 	if err := rs.cli.ContainerStart(ctx, newContainerID, container.StartOptions{}); err != nil {
@@ -194,6 +257,38 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
 		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("health verification failed: %w", err)
+	}
+
+	// Step 5.5: Verify file-mode secrets actually landed on disk before we
+	// commit to the swap -- catches a partially-completed injection (e.g. the
+	// stream succeeded but something removed/overwrote the file) rather than
+	// swapping traffic onto a container missing a secret it needs.
+	for _, fs := range fileSecrets {
+		if err := ExecProbe(ctx, rs.cli, newContainerID, fs.Path, 15*time.Second, 3); err != nil {
+			rs.logger.Warn("File-mode secret probe failed, rolling back",
+				zap.String("new_container_id", newContainerID),
+				zap.String("path", fs.Path),
+				zap.Error(err))
+			_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
+			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			return fmt.Errorf("file-mode secret probe failed for %s: %w", fs.Path, err)
+		}
+	}
+
+	// Step 6: Proxy handoff. The shadow has now passed every readiness gate,
+	// so it is finally safe for it to receive production traffic. This runs
+	// BEFORE the renames and before the old container is touched, so a failed
+	// handoff costs nothing: we tear down the shadow and the old container is
+	// still named correctly, still running, and still the only active backend.
+	if rs.OnReady != nil {
+		if err := rs.OnReady(ctx, newContainerID); err != nil {
+			rs.logger.Error("Proxy handoff failed, rolling back (old container keeps serving)",
+				zap.String("new_container_id", newContainerID),
+				zap.Error(err))
+			_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
+			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			return fmt.Errorf("proxy handoff failed: %w", err)
+		}
 	}
 
 	// ATOMIC SWAP POINT: All previous steps are reversible. After this point,
@@ -295,6 +390,22 @@ verifySwap:
 	rs.logger.Info("Rotation complete, new container is active",
 		zap.String("original_name", originalName),
 		zap.String("backup_name", backupName))
+
+	// Let connections that selected the old backend just before the handoff
+	// finish against a container that is still alive. Without this the drain
+	// is only nominal: the registry entry drains, but the process serving
+	// those connections is killed immediately below.
+	if rs.PreCleanupDelay > 0 {
+		rs.logger.Info("Holding old container for connection drain before cleanup",
+			zap.String("backup_name", backupName),
+			zap.Duration("drain", rs.PreCleanupDelay))
+		select {
+		case <-time.After(rs.PreCleanupDelay):
+		case <-ctx.Done():
+			// Shutting down: fall through and reclaim the container anyway
+			// rather than leaking it.
+		}
+	}
 
 	// Step 8: Cleanup backup container with retry
 	rs.logger.Info("Cleaning up backup container with retry",

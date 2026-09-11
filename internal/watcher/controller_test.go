@@ -873,7 +873,7 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"})
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"}, nil)
 	if err != nil {
 		t.Fatalf("L5 regression: unexpected error: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestExecuteSimpleRestart_InspectFailure(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil)
+	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil, nil)
 	if err == nil {
 		t.Error("expected error when inspect fails, got nil")
 	}
@@ -941,7 +941,7 @@ func TestExecuteSimpleRestart_StartFailureRollsBack(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, nil)
+	err := rc.executeSimpleRestart(context.Background(), origID, nil, nil)
 	if err == nil {
 		t.Error("expected error when new container start fails")
 	}

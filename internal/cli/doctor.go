@@ -41,6 +41,7 @@ var doctorSections = []doctorSection{
 	},
 	{title: "Configuration", categories: map[setup.DoctorCategory]bool{setup.DoctorCatConfiguration: true}},
 	{title: "Provider", categories: map[setup.DoctorCategory]bool{setup.DoctorCatProvider: true}},
+	{title: "Operations", categories: map[setup.DoctorCategory]bool{setup.DoctorCatRotation: true}},
 	{title: "Project", categories: map[setup.DoctorCategory]bool{doctorCatProject: true}},
 }
 
@@ -137,11 +138,16 @@ func configuredProviderNames(cfgPath string) []string {
 // engine internal/setup/repair.go uses. Reused wholesale rather than
 // reimplemented: this is a read-only diagnostic call, no state mutation.
 func runEnvironmentChecks(ctx context.Context, mode setup.SetupMode, cfgPath string, providerNames []string) []setup.DoctorCheck {
+	// Matches internal/cli/status.go's own DSO_SOCKET_PATH override -- the
+	// Phase 7 rotation/degraded-service checks dial the same agent socket
+	// `docker dso status` already does.
+	socketPath := os.Getenv("DSO_SOCKET_PATH")
+
 	if len(providerNames) == 0 {
-		return setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath}).Run(ctx).Checks
+		return setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, SocketPath: socketPath}).Run(ctx).Checks
 	}
 
-	base := setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, Provider: providerNames[0]}).Run(ctx)
+	base := setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, Provider: providerNames[0], SocketPath: socketPath}).Run(ctx)
 	checks := base.Checks
 
 	// Multiple providers configured: the first run above already covers

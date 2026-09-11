@@ -1,8 +1,12 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +64,7 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 	rotationCtx, rotationCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer rotationCancel()
 
-	err = rs.Execute(rotationCtx, containerID, newEnvs, 5*time.Second)
+	err = rs.Execute(rotationCtx, containerID, newEnvs, nil, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Rotation failed: %v", err)
 	}
@@ -69,6 +73,129 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 
 	// Verify rotation completed
 	t.Logf("Container ID after rotation: %s", containerID[:12])
+}
+
+// TestRotation_FileModeSecret_NeverInDockerInspect is the P0 secret-exposure
+// regression test (Phase 4) run against a real Docker daemon rather than a
+// mocked transport. It rotates a container with a file-mode secret carrying
+// a unique sentinel value and asserts, against the daemon's real
+// ContainerInspect response, that the sentinel never appears in:
+//   - Config.Env
+//   - Config.Cmd / Config.Entrypoint (command arguments)
+//   - Config.Labels
+//   - the full raw inspect JSON (catches any other field)
+//
+// and, for functional correctness (the fix must not silently drop the
+// secret), that the sentinel DOES land in the container's filesystem at the
+// configured path.
+func TestRotation_FileModeSecret_NeverInDockerInspect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	const sentinel = "DSO_TEST_SECRET_UNIQUE_9f31c8e7"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := testcontainers.ContainerRequest{
+		Image: "alpine:latest",
+		Cmd:   []string{"sh", "-c", "while true; do sleep 1; done"},
+	}
+
+	testContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to start test container: %v", err)
+	}
+	defer func() { _ = testContainer.Terminate(ctx) }()
+
+	containerID := testContainer.GetContainerID()
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("Failed to create Docker client: %v", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	// Rotation is an atomic name swap: the ORIGINAL container's ID stops
+	// existing (renamed to a backup name then removed) and a NEW container
+	// takes over the original NAME. So post-rotation lookups must use the
+	// name, not the pre-rotation ID.
+	preRotationInspect, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		t.Fatalf("Failed to inspect container before rotation: %v", err)
+	}
+	originalName := strings.TrimPrefix(preRotationInspect.Name, "/")
+
+	logger, _ := zap.NewProduction()
+	rs := rotation.NewRollingStrategyWithLogger(cli, logger)
+
+	fileSecrets := []rotation.FileSecretSpec{
+		{Path: "/run/secrets/dso", Data: map[string]string{"db-password": sentinel}, UID: 0, GID: 0},
+	}
+	newEnvs := map[string]string{"UNRELATED_ENV": "fine-to-be-visible"}
+
+	rotationCtx, rotationCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer rotationCancel()
+
+	if err := rs.Execute(rotationCtx, containerID, newEnvs, fileSecrets, 5*time.Second); err != nil {
+		t.Fatalf("Rotation with file-mode secret failed: %v", err)
+	}
+
+	inspect, err := cli.ContainerInspect(ctx, originalName)
+	if err != nil {
+		t.Fatalf("Failed to inspect rotated container by name %q: %v", originalName, err)
+	}
+
+	rawJSON, err := json.Marshal(inspect)
+	if err != nil {
+		t.Fatalf("Failed to marshal inspect result: %v", err)
+	}
+	if bytes.Contains(rawJSON, []byte(sentinel)) {
+		t.Fatalf("SECURITY REGRESSION: sentinel secret value found in `docker inspect` output")
+	}
+
+	for _, e := range inspect.Config.Env {
+		if strings.Contains(e, sentinel) {
+			t.Fatalf("SECURITY REGRESSION: sentinel found in Config.Env: %s", e)
+		}
+	}
+	for _, c := range inspect.Config.Cmd {
+		if strings.Contains(c, sentinel) {
+			t.Fatalf("SECURITY REGRESSION: sentinel found in Config.Cmd: %s", c)
+		}
+	}
+	for k, v := range inspect.Config.Labels {
+		if strings.Contains(v, sentinel) {
+			t.Fatalf("SECURITY REGRESSION: sentinel found in label %s: %s", k, v)
+		}
+	}
+
+	t.Log("✅ Sentinel secret confirmed absent from docker inspect output")
+
+	// Functional check: the secret must still have actually been delivered.
+	execCtx, execCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer execCancel()
+	execResp, err := cli.ContainerExecCreate(execCtx, inspect.ID, container.ExecOptions{
+		Cmd:          []string{"cat", "/run/secrets/dso/db-password"},
+		AttachStdout: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create exec to verify file delivery: %v", err)
+	}
+	attach, err := cli.ContainerExecAttach(execCtx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		t.Fatalf("Failed to attach exec to verify file delivery: %v", err)
+	}
+	defer attach.Close()
+	out, _ := io.ReadAll(attach.Reader)
+	if !strings.Contains(string(out), sentinel) {
+		t.Fatalf("File-mode secret was not delivered to the container's filesystem; got: %q", string(out))
+	}
+	t.Log("✅ Sentinel secret confirmed present in container filesystem at /run/secrets/dso/db-password")
 }
 
 // TestRotation_Concurrent_MultipleContainers tests concurrent rotations are safe
@@ -125,7 +252,7 @@ func TestRotation_Concurrent_MultipleContainers(t *testing.T) {
 
 			err := rs.Execute(rotCtx, container.GetContainerID(), map[string]string{
 				"ROTATION_ID": fmt.Sprintf("rotation-%d", idx),
-			}, 5*time.Second)
+			}, nil, 5*time.Second)
 			errCh <- err
 		}(i, c)
 	}
@@ -188,7 +315,7 @@ func TestRotation_HealthCheck_Timeout(t *testing.T) {
 
 	err = rs.Execute(rotationCtx, containerID, map[string]string{
 		"NEW_VAR": "value",
-	}, 5*time.Second)
+	}, nil, 5*time.Second)
 
 	if err != nil {
 		t.Logf("Rotation failed (expected if no health check): %v", err)

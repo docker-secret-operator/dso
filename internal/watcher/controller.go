@@ -53,6 +53,70 @@ type ReloaderController struct {
 	rotationLocks sync.Map          // map[string]*lockInfo (key: service name)
 	degraded      sync.Map          // map[string]string (key: service name, val: error)
 	eventQueue    *eventqueue.BoundedEventQueue
+
+	// pendingProxy holds container IDs of rotation replacements that have been
+	// created (and may already be running) but have NOT yet passed their
+	// readiness gate. The "start" event handler refuses to register these as
+	// proxy backends, because the router would immediately send real client
+	// traffic to an application that is still booting. The rotation path
+	// clears the entry at the moment it performs the proxy handoff.
+	//
+	// This is deliberately in-memory and transient rather than a container
+	// label: a label would persist on the container after promotion, so a
+	// later operator-initiated `docker restart` would be skipped forever.
+	// Losing this map on daemon restart is safe -- reconciliation re-registers
+	// whatever is actually running, and recovery removes orphaned shadows.
+	pendingProxy sync.Map // map[string]struct{} (key: container ID)
+}
+
+// markProxyPending marks containerID as not-yet-eligible for proxy traffic.
+// Must be called before the container is started.
+func (r *ReloaderController) markProxyPending(containerID string) {
+	r.pendingProxy.Store(containerID, struct{}{})
+}
+
+// clearProxyPending removes the not-yet-ready marker, either because the
+// container was promoted or because the rotation was abandoned.
+func (r *ReloaderController) clearProxyPending(containerID string) {
+	r.pendingProxy.Delete(containerID)
+}
+
+// isProxyPending reports whether containerID is a rotation replacement that
+// has not yet passed its readiness gate.
+func (r *ReloaderController) isProxyPending(containerID string) bool {
+	_, pending := r.pendingProxy.Load(containerID)
+	return pending
+}
+
+// recoverRotationPanic returns a function meant to be `defer`red as the
+// first statement of a rotation goroutine (the rolling, restart, and
+// compose-restart branches of TriggerReload). If that goroutine panics,
+// this recovers it -- converting an otherwise fatal, whole-process crash
+// into an ordinary rotation failure -- logs a safe diagnostic (container/
+// path identifier and the panic value only; Go's own panic messages never
+// carry secret material, and no secret is threaded through this call), and
+// invokes onPanic exactly once so the caller can run its normal
+// failure-path cleanup (idempotent lock release, marking the service
+// degraded, recording the async error) through the SAME code its ordinary
+// error-return path already uses, rather than a second, divergent cleanup
+// path that could double-release a lock or double-clear pending-proxy
+// state.
+//
+// P2-2 (Phase 6 audit): before this existed, a panic inside any of these
+// goroutines was unrecovered and took down the entire DSO agent process.
+func (r *ReloaderController) recoverRotationPanic(logCtx, idForLog string, onPanic func(err error, rec interface{})) func() {
+	return func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		err := fmt.Errorf("panic during %s: %v", logCtx, rec)
+		r.Logger.Error("Recovered from panic in rotation goroutine; agent remains running",
+			zap.String("context", logCtx),
+			zap.String("id", idForLog),
+			zap.Any("panic", rec))
+		onPanic(err, rec)
+	}
 }
 
 func NewReloaderController(logger *zap.Logger) (*ReloaderController, error) {
@@ -421,8 +485,14 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 					zap.String("strategy", strategy))
 			}
 		}
-		// Register with proxy for any container that has DSO-managed host ports
-		if r.ProxyManager != nil {
+		// Register with proxy for any container that has DSO-managed host ports.
+		//
+		// A rotation replacement is deliberately excluded here: it is started
+		// long before its health check completes, so registering it now would
+		// make the router select an application that is not listening yet and
+		// drop real client requests. The rotation path registers it itself,
+		// after readiness, via the proxy handoff (see markProxyPending).
+		if r.ProxyManager != nil && !r.isProxyPending(msg.Actor.ID) {
 			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
 				inspect, ierr := r.cli.ContainerInspect(ctx, msg.Actor.ID)
 				if ierr == nil {
@@ -672,7 +742,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		// DE-DUPLICATE RESTART STRATEGY BY COMPOSE PATH
 		if target.ComposePath != "" && activeStrategy == "restart" {
 			if _, exists := projectsToRestart[target.ComposePath]; !exists {
-				// Build the pre-injected secrets map from cache
+				// Build the pre-injected secrets map from cache.
+				//
+				// SEC: file-mode secrets (Inject.Type == "file") are excluded
+				// -- this map is merged into the `docker compose up` subprocess
+				// environment (core.RunComposeUpWithEnv), which can end up as
+				// plaintext container env vars via compose interpolation. A
+				// secret the operator configured for file-mode delivery has no
+				// business flowing through env at all.
 				preInjected := make(map[string]string)
 				if r.Cache != nil && r.Config != nil {
 					for _, sec := range r.Config.Secrets {
@@ -683,6 +760,15 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 								break
 							}
 						}
+
+						injectConfig := sec.Inject
+						if injectConfig.Type == "" {
+							injectConfig = r.Config.Defaults.Inject
+						}
+						if injectConfig.Type == "file" {
+							continue
+						}
+
 						cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
 						if data, found := r.Cache.Get(cacheKey); found {
 							for provKey, envName := range sec.Mappings {
@@ -728,7 +814,17 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// Build the new secret values from cache so the new container gets
 			// the rotated secrets. Without this, rolling creates an identical
 			// container with the old secrets and the rotation has no effect.
+			//
+			// SEC: only secrets configured for env-mode injection go into
+			// rollingEnvs -- that map is merged directly into the new
+			// container's Config.Env (PrepareShadowConfig/executeSimpleRestart),
+			// which is visible via `docker inspect`. File-mode secrets
+			// (Inject.Type == "file") are collected separately into
+			// rollingFileSecrets and delivered via the existing
+			// StreamSecretToContainer tar-copy mechanism instead, matching how
+			// the compose-recreation path below already handles them.
 			rollingEnvs := make(map[string]string)
+			var rollingFileSecrets []rotation.FileSecretSpec
 			if r.Cache != nil && r.Config != nil {
 				for _, sec := range r.Config.Secrets {
 					pName := sec.Provider
@@ -749,13 +845,31 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						continue
 					}
 					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
-					if data, found := r.Cache.Get(cacheKey); found {
-						for provKey, envName := range sec.Mappings {
-							if val, ok := data[envName]; ok {
-								rollingEnvs[envName] = val
-							} else if val, ok := data[provKey]; ok {
-								rollingEnvs[envName] = val
-							}
+					data, found := r.Cache.Get(cacheKey)
+					if !found {
+						continue
+					}
+
+					injectConfig := sec.Inject
+					if injectConfig.Type == "" {
+						injectConfig = r.Config.Defaults.Inject
+					}
+
+					if injectConfig.Type == "file" {
+						rollingFileSecrets = append(rollingFileSecrets, rotation.FileSecretSpec{
+							Path: injectConfig.Path,
+							Data: data,
+							UID:  injectConfig.UID,
+							GID:  injectConfig.GID,
+						})
+						continue
+					}
+
+					for provKey, envName := range sec.Mappings {
+						if val, ok := data[envName]; ok {
+							rollingEnvs[envName] = val
+						} else if val, ok := data[provKey]; ok {
+							rollingEnvs[envName] = val
 						}
 					}
 				}
@@ -771,6 +885,83 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
 			auditProvider := r.resolveSecretProvider(secretName)
 
+			// Zero-downtime proxy handoff. The shadow is kept out of the proxy
+			// until it is actually ready (OnShadowCreated), then traffic is
+			// moved to it and the old backend is drained (OnReady) before the
+			// old container is stopped by Execute's cleanup step.
+			rollingPortsLabel := ""
+			if inspect.Config != nil {
+				rollingPortsLabel = inspect.Config.Labels["dso.host_ports"]
+			}
+			rollingOldID := target.ID
+			rollingServiceName := serviceName
+			// Only proxy-owned containers carry traffic that needs draining;
+			// everything else keeps the previous immediate-cleanup behaviour.
+			if r.ProxyManager != nil && rollingPortsLabel != "" {
+				rs.PreCleanupDelay = dsoProxy.DrainWindow
+			}
+			// Written and read only by the rotation goroutine below (the hook
+			// is invoked synchronously from inside rs.Execute), so no
+			// synchronisation is needed here.
+			var rollingShadowID string
+			rs.OnShadowCreated = func(newID string) {
+				rollingShadowID = newID
+				r.markProxyPending(newID)
+			}
+			rs.OnReady = func(hctx context.Context, newID string) error {
+				// Nothing to hand off when this container's ports aren't
+				// proxy-owned: rotation is a pure Docker rename swap.
+				if r.ProxyManager == nil || rollingPortsLabel == "" {
+					r.clearProxyPending(newID)
+					return nil
+				}
+				newInspect, ierr := r.cli.ContainerInspect(hctx, newID)
+				if ierr != nil {
+					return fmt.Errorf("proxy handoff: inspect new container: %w", ierr)
+				}
+				newIP := ""
+				for _, ep := range newInspect.NetworkSettings.Networks {
+					if ep.IPAddress != "" {
+						newIP = ep.IPAddress
+						break
+					}
+				}
+				if newIP == "" {
+					return fmt.Errorf("proxy handoff: new container %s has no IP address", util.ShortID(newID))
+				}
+				portMaps := dsoProxy.ParseHostPorts(rollingPortsLabel)
+				if len(portMaps) == 0 {
+					r.clearProxyPending(newID)
+					return nil
+				}
+				// Every declared host port needs a bound listener.
+				for _, pm := range portMaps {
+					if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+						return fmt.Errorf("proxy handoff: ensure port %d: %w", pm.HostPort, err)
+					}
+				}
+				// The registry holds exactly ONE backend entry per container
+				// (keyed by container ID), so the swap is performed once --
+				// looping it over ports would make every call after the first
+				// fail with "already registered". That mattered: aborting on
+				// that error after the first swap had already committed left
+				// the new backend ACTIVE while the caller tore its container
+				// down, black-holing all traffic. One swap, one outcome:
+				// either nothing is committed and we abort safely, or the
+				// handoff is complete.
+				if err := r.ProxyManager.SwapBackend(
+					rollingOldID, newID, newIP, portMaps[0].ContainerPort, portMaps[0].HostPort,
+				); err != nil {
+					return fmt.Errorf("proxy handoff: swap backend on port %d: %w", portMaps[0].HostPort, err)
+				}
+				// Promoted: future events for this container are normal.
+				r.clearProxyPending(newID)
+				r.Logger.Info("proxy: rotation handoff complete, new backend serving",
+					zap.String("old", util.ShortID(rollingOldID)),
+					zap.String("new", util.ShortID(newID)))
+				return nil
+			}
+
 			// CQ-C4: pass target and releaseLock as explicit arguments so the
 			// goroutine holds a stable, independent reference rather than capturing
 			// the sync.Map range variable by reference. secretName/auditProvider are
@@ -778,22 +969,80 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// directly would be safe too, but passing them explicitly keeps this
 			// goroutine's inputs self-contained, matching the existing convention.
 			asyncWG.Add(1)
-			go func(tc *TargetContainer, release func(), newEnvs map[string]string, hTimeout time.Duration, secret, provider string) {
+			go func(tc *TargetContainer, release func(), newEnvs map[string]string, fileSecrets []rotation.FileSecretSpec, hTimeout time.Duration, secret, provider string) {
 				defer asyncWG.Done()
+				// Safety net: whatever happens (health-check failure, secret
+				// injection failure, failed handoff, panic-free early return),
+				// never leave a stale not-ready marker behind. A leaked entry
+				// would permanently suppress proxy registration for that ID.
+				defer func() {
+					if rollingShadowID != "" {
+						r.clearProxyPending(rollingShadowID)
+					}
+				}()
+
+				// P2-2: releaseOnce makes the lock release idempotent so the
+				// panic-recovery defer below and the normal-path release()
+				// call further down can never double-release the same lock,
+				// regardless of which one fires.
+				var released bool
+				releaseOnce := func() {
+					if !released {
+						released = true
+						release()
+					}
+				}
+				// P2-2: converts an unexpected panic (rs.Execute, or anything
+				// it calls) into an ordinary rotation failure instead of
+				// crashing the agent -- lock released, outcome audited
+				// failed, and (when proxy-owned) the service marked
+				// degraded with the old container left running, matching
+				// the existing non-panic failure branch below.
+				defer r.recoverRotationPanic("rolling rotation", util.ShortID(tc.ID), func(err error, rec interface{}) {
+					recordAsyncErr(err)
+					audit.Log(ctx, "rotate", "system", provider, secret, tc.ID, "failed")
+					if r.ProxyManager != nil && rollingPortsLabel != "" {
+						r.markDegraded(rollingServiceName, fmt.Sprintf("rotation panicked, still serving previous secret: %v", rec))
+					}
+					releaseOnce()
+				})()
+
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
 						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", util.ShortID(tc.ID)))
 					}
 				}
 
-				err := rs.Execute(ctx, tc.ID, newEnvs, hTimeout)
-				release()
+				err := rs.Execute(ctx, tc.ID, newEnvs, fileSecrets, hTimeout)
+				releaseOnce()
 				recordAsyncErr(err)
 				if err != nil {
 					// AUDIT-3: compliance trail for "secret X was rotated into
 					// container Y" -- this is the point where the rolling
 					// (blue-green) rotation's real, final outcome is known.
 					audit.Log(ctx, "rotate", "system", provider, secret, tc.ID, "failed")
+
+					// When this container's traffic is proxy-owned, the
+					// fallback restart is NOT safe: it stops the old container
+					// to recreate it, and it performs no readiness-gated proxy
+					// handoff, so the proxy is left with no backend and clients
+					// see a hard outage. A rotation that could not prove the
+					// new secret healthy must not cost availability -- the old
+					// container keeps serving the previous secret and the
+					// service is flagged degraded for the operator instead.
+					if r.ProxyManager != nil && rollingPortsLabel != "" {
+						r.Logger.Error("Rolling rotation failed; keeping old container in service (proxy-managed, fallback restart would drop traffic)",
+							zap.String("id", util.ShortID(tc.ID)),
+							zap.Error(err))
+						r.markDegraded(rollingServiceName, fmt.Sprintf("rotation failed, still serving previous secret: %v", err))
+						if r.Server != nil {
+							if as, ok := r.Server.(interface{ Emit(string) }); ok {
+								as.Emit(fmt.Sprintf("\033[1;31m[DSO ROTATION]\033[0m\nRolling failed: %v → old container kept in service (no downtime); service marked degraded", err))
+							}
+						}
+						return
+					}
+
 					r.Logger.Error("Rolling rotation failed, triggering fallback restart", zap.Error(err))
 					if r.Server != nil {
 						if as, ok := r.Server.(interface{ Emit(string) }); ok {
@@ -801,13 +1050,19 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 					}
 					// Fallback: full container recreation via shared helper (L5).
-					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs); ferr != nil {
+					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs, fileSecrets); ferr != nil {
 						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
 					}
 					return
 				}
 				audit.Log(ctx, "rotate", "system", provider, secret, tc.ID, "success")
-			}(target, releaseLock, rollingEnvs, healthTimeout, secretName, auditProvider)
+				// A previous failed rotation may have marked this service
+				// degraded while keeping the old secret in service. It has now
+				// rotated successfully, so clear that state -- otherwise a
+				// recovered service stays flagged forever, matching what the
+				// restart path already does on success.
+				r.clearDegraded(rollingServiceName)
+			}(target, releaseLock, rollingEnvs, rollingFileSecrets, healthTimeout, secretName, auditProvider)
 
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
@@ -826,10 +1081,27 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			asyncWG.Add(1)
 			go func(target *TargetContainer, releaseLock func(), serviceName string) {
 				defer asyncWG.Done()
+				// P2-2: finished guards finish() so it can never fire twice --
+				// once from an explicit call on a normal error/success path,
+				// and again from the panic-recovery defer below.
+				var finished bool
 				finish := func(err error) {
+					if finished {
+						return
+					}
+					finished = true
 					recordAsyncErr(err)
 					releaseLock()
 				}
+				// P2-2: converts an unexpected panic into an ordinary
+				// rotation failure instead of crashing the agent -- lock
+				// released via finish() and the service marked degraded,
+				// matching how every other failure branch below already
+				// leaves the operator a visible signal.
+				defer r.recoverRotationPanic("restart rotation", util.ShortID(target.ID), func(err error, rec interface{}) {
+					r.markDegraded(serviceName, fmt.Sprintf("rotation panicked: %v", rec))
+					finish(err)
+				})()
 
 				// 1. Inspect original container
 				inspect, err := r.cli.ContainerInspect(ctx, target.ID)
@@ -842,7 +1114,13 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				originalName := strings.TrimPrefix(inspect.Name, "/")
 				tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
 
-				// 2. Fetch latest environment variables from Cache
+				// 2. Fetch latest environment variables from Cache.
+				//
+				// SEC: file-mode secrets (Inject.Type == "file") are
+				// deliberately excluded here -- they're delivered via
+				// StreamSecretToContainer in step 5.1 below (PRE-START SECRET
+				// INJECTION). Including them here too would additionally
+				// leak them as plaintext into Config.Env / `docker inspect`.
 				newEnvs := make(map[string]string)
 				if r.Cache != nil && r.Config != nil {
 					for _, sec := range r.Config.Secrets {
@@ -865,15 +1143,25 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							}
 						}
 
-						if containerUsesSecret {
-							cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
-							if data, found := r.Cache.Get(cacheKey); found {
-								for keyInProvider, envName := range sec.Mappings {
-									if val, ok := data[envName]; ok {
-										newEnvs[envName] = val
-									} else if val, ok := data[keyInProvider]; ok {
-										newEnvs[envName] = val
-									}
+						if !containerUsesSecret {
+							continue
+						}
+
+						injectConfig := sec.Inject
+						if injectConfig.Type == "" {
+							injectConfig = r.Config.Defaults.Inject
+						}
+						if injectConfig.Type == "file" {
+							continue
+						}
+
+						cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
+						if data, found := r.Cache.Get(cacheKey); found {
+							for keyInProvider, envName := range sec.Mappings {
+								if val, ok := data[envName]; ok {
+									newEnvs[envName] = val
+								} else if val, ok := data[keyInProvider]; ok {
+									newEnvs[envName] = val
 								}
 							}
 						}
@@ -910,7 +1198,11 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				// 5. Create new instance with ORIGINAL name (STOPPED)
 				networkingConfig := &network.NetworkingConfig{
-					EndpointsConfig: inspect.NetworkSettings.Networks,
+					// Strip the original's runtime network identity (MAC in
+					// particular): this replacement runs alongside it until the
+					// proxy handoff completes, and a duplicate MAC corrupts the
+					// bridge for the container still serving traffic.
+					EndpointsConfig: rotation.SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
 				}
 				created, err := r.cli.ContainerCreate(ctx, config, inspect.HostConfig, networkingConfig, nil, originalName)
 				if err != nil {
@@ -919,6 +1211,15 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					finish(err)
 					return
 				}
+
+				// Keep the replacement out of the proxy until it passes the
+				// health check and exec probes below. Without this the "start"
+				// event registers it as an active backend immediately, which
+				// both routes traffic at a booting application and makes the
+				// SwapBackend call further down fail with "already
+				// registered" -- which would skip draining the old backend.
+				r.markProxyPending(created.ID)
+				defer r.clearProxyPending(created.ID)
 
 				// 5.1 PRE-START SECRET INJECTION (TAR STREAMING)
 				for _, secretName := range target.Secrets {
@@ -1035,7 +1336,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							}
 						}
 					}
-					// Traffic is on new container; safe to stop old now
+					// New connections now go to the replacement, but connections
+					// that selected the old backend moments before the swap are
+					// still dialing or mid-response. Marking a backend draining
+					// only stops NEW routing -- killing the container now would
+					// drop those in-flight requests, making the drain nominal.
+					// Hold the old container for the proxy's drain window first.
+					select {
+					case <-time.After(dsoProxy.DrainWindow):
+					case <-ctx.Done():
+					}
 					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
 				}
 
@@ -1062,6 +1372,27 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		asyncWG.Add(1)
 		go func(p string, t *TargetContainer, pi map[string]string, rl func()) {
 			defer asyncWG.Done()
+
+			// P2-2: releaseOnce mirrors the same idempotent-release pattern
+			// used by the rolling/restart goroutines above, so a panic
+			// recovered below and the normal-path release() call further
+			// down can never double-release this lock.
+			var released bool
+			releaseOnce := func() {
+				if !released {
+					released = true
+					rl()
+				}
+			}
+			// P2-2: converts an unexpected panic (e.g. inside
+			// core.RunComposeUpWithEnv) into an ordinary rotation failure
+			// instead of crashing the agent -- lock released exactly once,
+			// failure recorded the same way an ordinary error return does.
+			defer r.recoverRotationPanic("compose rotation", p, func(err error, _ interface{}) {
+				recordAsyncErr(err)
+				releaseOnce()
+			})()
+
 			RecordDSOAction(filepath.Base(filepath.Dir(p)))
 
 			if r.Server != nil {
@@ -1072,7 +1403,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 			// Pass pre-injected secrets directly — avoids calling back into the agent socket (deadlock fix)
 			err := core.RunComposeUpWithEnv(p, []string{"-d", "--remove-orphans"}, "", false, pi)
-			rl()
+			releaseOnce()
 			recordAsyncErr(err)
 
 			if err != nil {
@@ -1122,6 +1453,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 	if onComplete != nil {
 		go func() {
+			// P2-2: onComplete is a caller-supplied callback; a panic inside
+			// it must not take down the agent process either. No lock/proxy
+			// state is held by this goroutine, so recovery here only needs
+			// to log, not run any cleanup path.
+			defer func() {
+				if rec := recover(); rec != nil {
+					r.Logger.Error("Recovered from panic in rotation onComplete callback; agent remains running",
+						zap.Any("panic", rec))
+				}
+			}()
 			asyncWG.Wait()
 			asyncMu.Lock()
 			err := asyncFirstErr
@@ -1259,6 +1600,9 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 		return nil
 	}
 	dst := *src // copy value fields (Hostname, Image, etc.)
+	// Never inherit the original's MAC: a replacement coexists with it during
+	// rotation, and a duplicate MAC poisons the bridge forwarding table.
+	dst.MacAddress = "" //nolint:staticcheck // deprecated field, cleared deliberately
 	if src.Env != nil {
 		dst.Env = make([]string, len(src.Env))
 		copy(dst.Env, src.Env)
@@ -1281,7 +1625,13 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 // executeSimpleRestart recreates containerID with envOverrides merged into its environment.
 // Used by the rolling-strategy fallback path (L5). It does not perform health checks,
 // exec probes, or proxy swaps — those belong to the primary restart strategy path.
-func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string) error {
+//
+// envOverrides must contain only env-mode secrets; fileSecrets carries any
+// file-mode secrets (Inject.Type == "file") that the container depends on,
+// streamed into its filesystem via StreamSecretToContainer instead of
+// Config.Env -- see the SEC comment on the rolling-branch env-building loop
+// this fallback is fed from.
+func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string, fileSecrets []rotation.FileSecretSpec) error {
 	inspect, err := r.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("executeSimpleRestart: inspect failed: %w", err)
@@ -1311,12 +1661,24 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		}
 	}
 
-	networkingConfig := &network.NetworkingConfig{EndpointsConfig: inspect.NetworkSettings.Networks}
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: rotation.SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
+	}
 	created, err := r.cli.ContainerCreate(ctx, cfg, inspect.HostConfig, networkingConfig, nil, originalName)
 	if err != nil {
 		// Rename back so the original container keeps its name.
 		_ = r.cli.ContainerRename(ctx, containerID, originalName)
 		return fmt.Errorf("executeSimpleRestart: container create failed: %w", err)
+	}
+
+	// Stream file-mode secrets before starting, same ordering as the primary
+	// restart/rolling paths -- the app must never start without them present.
+	for _, fs := range fileSecrets {
+		if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, fs.Path, fs.Data, fs.UID, fs.GID); err != nil {
+			_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+			_ = r.cli.ContainerRename(ctx, containerID, originalName)
+			return fmt.Errorf("executeSimpleRestart: file secret injection failed: %w", err)
+		}
 	}
 
 	stopTO := 10

@@ -14,6 +14,20 @@ import (
 	"github.com/docker-secret-operator/dso/internal/util"
 )
 
+// DrainWindow is how long a backend stays in the registry as "draining"
+// after SwapBackend hands traffic to its replacement. It bounds two things
+// that must both hold for a rotation to be genuinely zero-downtime:
+//
+//   - a connection that selected the old backend just before the swap still
+//     has time to dial it and complete, and
+//   - the caller must not stop or remove the old CONTAINER until this has
+//     elapsed, or those in-flight connections are killed anyway and the
+//     drain is only nominal.
+//
+// Exported so the rotation path can honour the second requirement without
+// duplicating the constant.
+const DrainWindow = 5 * time.Second
+
 // PortMap is a single host-port → container-port mapping parsed from the
 // dso.host_ports label, e.g. "3306:3306".
 type PortMap struct {
@@ -158,7 +172,7 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 		// connections are not dropped; this just ensures we don't remove the backend
 		// entry while something is still dialing it.
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(DrainWindow):
 		case <-m.ctx.Done():
 			// Manager is shutting down; the whole registry is being torn down
 			// with it, so there is nothing useful left to remove.
