@@ -99,6 +99,15 @@ func Log(_ context.Context, action string, user string, provider string, secretN
 	if containerID != "" {
 		streamEvent["container"] = containerID
 	}
+	// Phase 5: surface the caller-supplied identity (the Unix-socket peer's
+	// resolved OS username -- see internal/agent/server.go's resolveAuditUser
+	// -- never a secret or credential) so /api/audit can show a real Actor
+	// instead of fabricating "System" for every row. Only added here, not to
+	// the other EventStream producers, since "secret_fetch" is the only
+	// event type that already carries a meaningful caller identity today.
+	if user != "" {
+		streamEvent["user"] = user
+	}
 	select {
 	case observability.EventStream <- streamEvent:
 	default:

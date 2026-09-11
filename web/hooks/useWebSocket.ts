@@ -3,19 +3,30 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 
 /**
- * PASS 3 SCOPE: this Event type matches the REAL backend event shape, not
- * the aspirational feature/web-ui shape Pass 1 stubbed in. The Go side
- * (internal/server/eventstore.go) defines `Event` as a bare
- * `map[string]interface{}` -- the actual fields written onto it come from
- * internal/injector/docker.go's LogInjectionEvent:
+ * PASS 3 SCOPE, extended in Phase 5: this Event type matches the REAL
+ * backend event shape, not an aspirational feature/web-ui shape. The Go
+ * side (internal/server/eventstore.go) defines `Event` as a bare
+ * `map[string]interface{}` -- the actual fields come from whichever
+ * producer pushed onto observability.EventStream:
  *
- *   { "timestamp": RFC3339 string, "secret": string, "container": string,
- *     "event_type": string, "status": string, "error"?: string }
+ *   internal/injector/docker.go's LogInjectionEvent, internal/agent/
+ *   trigger.go's emitEvent, and internal/watcher/controller.go's
+ *   pushOperationalEvent all write a subset of:
+ *     { "timestamp": RFC3339 string, "secret"?: string, "container"?: string,
+ *       "event_type": string, "status": string, "provider"?: string,
+ *       "error"?: string }
  *
- * There is no "action", "severity", or "message" field server-side. Fields
- * beyond timestamp/status are treated as optional/best-effort since the
- * EventStore is a generic map and other producers could shape events
- * differently in the future.
+ *   internal/audit/audit.go's Log additionally sets "user" (a real OS
+ *   username resolved from the Unix-socket peer -- see
+ *   internal/agent/server.go's resolveAuditUser), but ONLY for the
+ *   "secret_fetch" event type; every other event has no actor identity at
+ *   all today. Never fabricate one for those.
+ *
+ * There is no "action", "severity", "message", "resource name" (only a raw
+ * container ID or service-name string), or correlation/event ID field
+ * server-side. Fields beyond timestamp/status are treated as optional/
+ * best-effort since the EventStore is a generic map and other producers
+ * could shape events differently in the future.
  */
 export interface Event {
   timestamp: string
@@ -23,7 +34,10 @@ export interface Event {
   container?: string
   event_type?: string
   status?: string
+  provider?: string
   error?: string
+  /** Only ever present on "secret_fetch" events (see doc comment above). */
+  user?: string
   // Any other producer-specific fields are tolerated but not relied on.
   [key: string]: unknown
 }
