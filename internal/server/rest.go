@@ -573,18 +573,44 @@ type ContainerSummary struct {
 	// here -- a known, documented limitation of this MVP, not a silent gap.
 	Degraded       bool   `json:"degraded"`
 	DegradedReason string `json:"degraded_reason,omitempty"`
+	// Name/Image/Status/Health/Ports are additive (Phase 4), sourced from
+	// watcher.ListDockerContainerInfo -- an explicit, hand-built DTO that
+	// never serializes a raw Docker inspect object. Empty/omitted when the
+	// container no longer exists in Docker (e.g. a stale target) so the
+	// frontend can render "Not available" honestly rather than a fabricated
+	// value.
+	Name   string   `json:"name,omitempty"`
+	Image  string   `json:"image,omitempty"`
+	Status string   `json:"status,omitempty"`
+	Health string   `json:"health,omitempty"`
+	Ports  []string `json:"ports,omitempty"`
 }
 
 // handleContainers returns the containers DSO currently tracks for
-// rotation/reload, read live from the ReloaderController's Targets map.
-// Read-only: this endpoint never mutates Targets or triggers any action
-// against a container -- exposing a "rotate now" style write is explicitly
-// out of scope here.
+// rotation/reload, read live from the ReloaderController's Targets map,
+// enriched with safe Docker metadata (name/image/status/health/ports) from
+// a single ListDockerContainerInfo call. Read-only: this endpoint never
+// mutates Targets or triggers any action against a container -- exposing a
+// "rotate now" style write is explicitly out of scope here.
 func (s *RESTServer) handleContainers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	res := []ContainerSummary{}
 	if s.Reloader != nil {
+		var dockerInfo map[string]watcher.DockerContainerInfo
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		info, err := s.Reloader.ListDockerContainerInfo(ctx)
+		if err != nil {
+			// Docker metadata is enrichment, not the source of truth for
+			// which containers DSO tracks -- a Docker-side failure here
+			// degrades individual rows to "Not available" fields rather
+			// than failing the whole endpoint.
+			s.Logger.Warn("Failed to list Docker container metadata", zap.Error(err))
+		} else {
+			dockerInfo = info
+		}
+
 		s.Reloader.Targets.Range(func(key, value interface{}) bool {
 			tc, ok := value.(*watcher.TargetContainer)
 			if !ok || tc == nil {
@@ -595,14 +621,22 @@ func (s *RESTServer) handleContainers(w http.ResponseWriter, r *http.Request) {
 				secrets = []string{}
 			}
 			reason, degraded := s.Reloader.IsDegraded(tc.ID)
-			res = append(res, ContainerSummary{
+			summary := ContainerSummary{
 				ID:             tc.ID,
 				Strategy:       tc.Strategy,
 				ComposePath:    tc.ComposePath,
 				Secrets:        secrets,
 				Degraded:       degraded,
 				DegradedReason: reason,
-			})
+			}
+			if di, found := dockerInfo[tc.ID]; found {
+				summary.Name = di.Name
+				summary.Image = di.Image
+				summary.Status = di.Status
+				summary.Health = di.Health
+				summary.Ports = di.Ports
+			}
+			res = append(res, summary)
 			return true
 		})
 	}
