@@ -26,8 +26,11 @@ type WatchConfig struct {
 //
 //	dso:"secret"        every scalar under this field is a credential
 //	dso:"url"           URL whose userinfo/path/query may carry a credential
-//	dso:"secret-by-key" map whose entries are credentials when the KEY looks
-//	                    like one (token, password, secret, key, ...)
+//	dso:"free-form"     free-form map (provider settings, legacy config): every
+//	                    value is redacted EXCEPT those under a short allowlist
+//	                    of known non-sensitive keys (region, namespace, ...);
+//	                    URL values keep only scheme://host. Fail-closed: an
+//	                    unrecognised key is treated as sensitive.
 //
 // Any new field that holds a credential MUST carry one of these tags;
 // TestSchemaCredentialFieldsAreTagged fails if a credential-looking field
@@ -37,7 +40,10 @@ type WebhookConfig struct {
 	// AuthToken is the LEGACY shared bearer credential
 	// ("Authorization: Bearer <auth_token>"). It has no body integrity and no
 	// replay protection and is deprecated in favor of HMACSecret. It is still
-	// honored for one release unless DisableLegacyAuth is set.
+	// honored when it is the ONLY webhook credential. When HMACSecret is also
+	// set it is IGNORED unless AllowLegacyAuth is true, so configuring HMAC
+	// cannot leave the weaker credential silently bypassing timestamp and
+	// replay protection.
 	AuthToken string `yaml:"auth_token" dso:"secret"`
 	Endpoint  string `yaml:"endpoint,omitempty"`
 	// HMACSecret is the shared key used to verify HMAC-SHA256 request
@@ -51,6 +57,13 @@ type WebhookConfig struct {
 	// DisableLegacyAuth rejects the deprecated bearer-token form so only
 	// signed requests are accepted.
 	DisableLegacyAuth bool `yaml:"disable_legacy_auth,omitempty"`
+	// AllowLegacyAuth is the explicit compatibility opt-in for accepting the
+	// legacy bearer token while HMACSecret is configured (a migration window
+	// for senders that cannot sign yet). It has no effect without HMACSecret
+	// (legacy is already accepted then) and is overridden by
+	// DisableLegacyAuth. While active, an unsigned request authenticated by
+	// the bearer token has NO timestamp, body-integrity or replay protection.
+	AllowLegacyAuth bool `yaml:"allow_legacy_auth,omitempty"`
 }
 
 // NotificationsConfig configures outbound rotation-event notifications
@@ -157,7 +170,7 @@ type ProviderConfig struct {
 	Region string            `yaml:"region,omitempty"`
 	Auth   AuthConfig        `yaml:"auth,omitempty"`
 	Retry  RetryConfig       `yaml:"retry,omitempty"`
-	Config map[string]string `yaml:"config,omitempty" dso:"secret-by-key"`
+	Config map[string]string `yaml:"config,omitempty" dso:"free-form"`
 }
 
 type InjectionConfig struct {
@@ -223,7 +236,7 @@ type Config struct {
 
 	// Legacy fields for backward compatibility detection
 	LegacyProvider string            `yaml:"provider,omitempty"`
-	LegacyConfig   map[string]string `yaml:"config,omitempty" dso:"secret-by-key"`
+	LegacyConfig   map[string]string `yaml:"config,omitempty" dso:"free-form"`
 }
 
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {

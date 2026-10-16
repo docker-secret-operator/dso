@@ -87,6 +87,9 @@ func showConfig(configPath string) error {
 	fmt.Println()
 	fmt.Println(string(redacted))
 	fmt.Fprintln(os.Stderr, "Note: credential values are redacted; open the file directly (with sufficient permissions) to see them.")
+	if advisory := dsoconfig.PermissionAdvisory(configPath); advisory != "" {
+		fmt.Fprintln(os.Stderr, "WARNING: "+advisory)
+	}
 
 	return nil
 }

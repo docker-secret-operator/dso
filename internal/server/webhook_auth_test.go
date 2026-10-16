@@ -356,9 +356,10 @@ func TestWebhookLegacy_BearerStillAcceptedWithDeprecationWarning(t *testing.T) {
 }
 
 func TestWebhookLegacy_CanCoexistWithHMAC_AndBeDisabled(t *testing.T) {
-	both, _ := newWebhookServer(t, func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken })
+	// With HMAC configured the legacy token needs the explicit opt-in.
+	both, _ := newWebhookServer(t, func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken; w.AllowLegacyAuth = true })
 	if w := serve(both, legacyReq(testLegacyToken, webhookBody("1"))); w.Code != authenticated {
-		t.Errorf("legacy while HMAC also configured = %d, want %d", w.Code, authenticated)
+		t.Errorf("legacy in compatibility mode = %d, want %d", w.Code, authenticated)
 	}
 	strict, _ := newWebhookServer(t, func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken; w.DisableLegacyAuth = true })
 	if w := serve(strict, legacyReq(testLegacyToken, webhookBody("2"))); w.Code != http.StatusUnauthorized {
@@ -613,5 +614,136 @@ func TestValidateWebhookConfig_WarnsOnShortButAcceptedHMACSecret(t *testing.T) {
 	}
 	if err := validateWebhookConfig(mk("0123456789abcde"), logger); err == nil {
 		t.Error("15-byte secret must still be rejected")
+	}
+}
+
+// ---- credential matrix (review finding M0-5) -------------------------------------
+//
+// Before the fix, setting hmac_secret AND auth_token let a request that simply
+// omitted X-DSO-Signature authenticate with the weaker bearer token, skipping
+// the timestamp and replay protections.
+
+func TestWebhookAuthMatrix(t *testing.T) {
+	const (
+		unauthorized = http.StatusUnauthorized
+		forbidden    = http.StatusForbidden
+	)
+	type tc struct {
+		name   string
+		mutate func(*config.WebhookConfig)
+		// request builders, each expected status
+		hmacValid     int
+		legacyBearer  int
+		noCredentials int
+		badSignature  int // signed with the wrong key
+		badSigPlusTok int // wrong signature AND a valid legacy token
+	}
+	cases := []tc{
+		{"hmac only", func(w *config.WebhookConfig) {},
+			authenticated, unauthorized, unauthorized, unauthorized, unauthorized},
+		{"legacy only", func(w *config.WebhookConfig) { w.HMACSecret = ""; w.AuthToken = testLegacyToken },
+			unauthorized /* signature header without hmac_secret */, authenticated, unauthorized, unauthorized, unauthorized},
+		{"both, no opt-in (HMAC mandatory)", func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken },
+			authenticated, unauthorized, unauthorized, unauthorized, unauthorized},
+		{"both, compatibility opt-in", func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken; w.AllowLegacyAuth = true },
+			authenticated, authenticated, unauthorized, unauthorized, unauthorized},
+		{"both, legacy disabled wins over opt-in", func(w *config.WebhookConfig) {
+			w.AuthToken = testLegacyToken
+			w.AllowLegacyAuth = true
+			w.DisableLegacyAuth = true
+		}, authenticated, unauthorized, unauthorized, unauthorized, unauthorized},
+		{"legacy only, disabled", func(w *config.WebhookConfig) {
+			w.HMACSecret = ""
+			w.AuthToken = testLegacyToken
+			w.DisableLegacyAuth = true
+		}, forbidden, forbidden, forbidden, forbidden, forbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			check := func(label string, want int, build func() *http.Request) {
+				t.Helper()
+				s, _ := newWebhookServer(t, c.mutate)
+				if w := serve(s, build()); w.Code != want {
+					t.Errorf("%s = %d, want %d", label, w.Code, want)
+				}
+			}
+			now := time.Now().Unix()
+			check("valid HMAC", c.hmacValid, func() *http.Request { return signedRequest(testHMACSecret, now, webhookBody("a")) })
+			check("legacy bearer, no signature", c.legacyBearer, func() *http.Request { return legacyReq(testLegacyToken, webhookBody("b")) })
+			check("no credentials", c.noCredentials, func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, webhookPath, bytes.NewReader(webhookBody("c")))
+			})
+			check("signature with wrong key", c.badSignature, func() *http.Request {
+				return signedRequest("not-the-configured-hmac-key-0123456789", now, webhookBody("d"))
+			})
+			// An invalid signature must never fall back to the legacy token.
+			check("wrong signature + valid legacy token", c.badSigPlusTok, func() *http.Request {
+				r := signedRequest("not-the-configured-hmac-key-0123456789", now, webhookBody("e"))
+				r.Header.Set("Authorization", "Bearer "+testLegacyToken)
+				return r
+			})
+		})
+	}
+}
+
+// With HMAC configured and no opt-in, an unsigned legacy-token request must not
+// get a replay-immune free pass: it is rejected, and replaying a SIGNED request
+// is still rejected.
+func TestWebhookHMACConfigured_LegacyTokenCannotBypassReplayProtection(t *testing.T) {
+	s, _ := newWebhookServer(t, func(w *config.WebhookConfig) { w.AuthToken = testLegacyToken })
+	body := webhookBody("replay")
+	req1 := signedRequest(testHMACSecret, time.Now().Unix(), body)
+	if w := serve(s, req1); w.Code != authenticated {
+		t.Fatalf("first signed delivery = %d", w.Code)
+	}
+	again := signedRequest(testHMACSecret, time.Now().Unix(), body)
+	if w := serve(s, again); w.Code != http.StatusConflict {
+		t.Fatalf("replayed signed delivery = %d, want 409", w.Code)
+	}
+	// The bearer token is the "cheap way around" the replay table; it must be closed.
+	for i := 0; i < 3; i++ {
+		if w := serve(s, legacyReq(testLegacyToken, body)); w.Code != http.StatusUnauthorized {
+			t.Fatalf("legacy token accepted alongside HMAC without opt-in (attempt %d): %d", i, w.Code)
+		}
+	}
+}
+
+func TestValidateWebhookConfig_LegacyDowngradeMessages(t *testing.T) {
+	run := func(w config.WebhookConfig) string {
+		core, logs := observer.New(zapcore.DebugLevel)
+		c := &config.Config{}
+		c.Agent.Watch.Webhook = w
+		if err := validateWebhookConfig(c, zap.New(core)); err != nil {
+			t.Fatal(err)
+		}
+		var sb strings.Builder
+		for _, e := range logs.All() {
+			sb.WriteString(e.Level.String() + ": " + e.Message + "\n")
+		}
+		return sb.String()
+	}
+	base := config.WebhookConfig{Enabled: true, HMACSecret: testHMACSecret, AuthToken: testLegacyToken}
+
+	if out := run(base); !strings.Contains(out, "ignored because hmac_secret is configured") {
+		t.Errorf("no notice that the legacy token is ignored:\n%s", out)
+	}
+	optIn := base
+	optIn.AllowLegacyAuth = true
+	if out := run(optIn); !strings.Contains(out, "COMPATIBILITY MODE") || !strings.Contains(out, "WITHOUT timestamp") {
+		t.Errorf("compatibility mode not warned about loudly:\n%s", out)
+	}
+	disabled := optIn
+	disabled.DisableLegacyAuth = true
+	if out := run(disabled); strings.Contains(out, "COMPATIBILITY MODE") || strings.Contains(out, "DEPRECATED") {
+		t.Errorf("disabled legacy still warned about:\n%s", out)
+	}
+	for _, out := range []string{run(base), run(optIn)} {
+		if strings.Contains(out, testLegacyToken) || strings.Contains(out, testHMACSecret) {
+			t.Errorf("credential in log output:\n%s", out)
+		}
+	}
+	legacyOnly := config.WebhookConfig{Enabled: true, AuthToken: testLegacyToken}
+	if out := run(legacyOnly); !strings.Contains(out, "DEPRECATED") {
+		t.Errorf("legacy-only config lost its deprecation warning:\n%s", out)
 	}
 }

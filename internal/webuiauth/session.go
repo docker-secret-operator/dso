@@ -122,6 +122,10 @@ func (m *Manager) SetMaxLifetime(d time.Duration) {
 	m.mu.Unlock()
 }
 
+// compareHash is bcrypt verification; a variable so tests can count how many
+// verifications actually start.
+var compareHash = bcrypt.CompareHashAndPassword
+
 // HashPassword bcrypt-hashes a plaintext password for storage in
 // webui.password_hash.
 func HashPassword(plaintext string) (string, error) {
@@ -141,7 +145,7 @@ func (m *Manager) Login(username, password string) (*Session, error) {
 	// Constant-time-ish: always run bcrypt compare regardless of username
 	// match, to avoid trivially timing out valid usernames.
 	userOK := username == m.username
-	pwErr := bcrypt.CompareHashAndPassword([]byte(m.passwordHash), []byte(password))
+	pwErr := compareHash([]byte(m.passwordHash), []byte(password))
 	if !userOK || pwErr != nil {
 		return nil, ErrInvalidCredentials
 	}

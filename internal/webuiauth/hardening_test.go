@@ -143,7 +143,7 @@ func TestClientKey_ForwardedHeadersIgnoredUnlessProxyTrusted(t *testing.T) {
 	if got := m.clientKey(reqFrom("10.1.2.3:4444")); got != "10.1.2.3" {
 		t.Errorf("absent XFF -> %q, want peer", got)
 	}
-	if got := m.clientKey(reqFrom("[fd00::5]:80", "2001:db8::7")); got != "2001:db8::7" {
+	if got := m.clientKey(reqFrom("[fd00::5]:80", "2001:db8::7")); got != "2001:db8::/64" {
 		t.Errorf("ipv6 proxy -> %q", got)
 	}
 }

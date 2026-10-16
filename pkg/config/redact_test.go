@@ -332,7 +332,7 @@ func TestSchemaTagsCoverTheFieldsNamedInTheSecurityReview(t *testing.T) {
 		{reflect.TypeOf(WebUIConfig{}), "PasswordHash", kindSecret},
 		{reflect.TypeOf(AuthConfig{}), "Params", kindSecret},
 		{reflect.TypeOf(NotificationWebhook{}), "URL", kindURL},
-		{reflect.TypeOf(ProviderConfig{}), "Config", kindSecretByKey},
+		{reflect.TypeOf(ProviderConfig{}), "Config", kindFreeForm},
 	} {
 		f, ok := tc.typ.FieldByName(tc.field)
 		if !ok {

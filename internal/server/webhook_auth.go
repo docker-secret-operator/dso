@@ -180,14 +180,34 @@ func validateWebhookConfig(cfg *config.Config, logger *zap.Logger) error {
 		// Length only: the value itself is never logged.
 		logger.Warn(fmt.Sprintf("agent.watch.webhook.hmac_secret is only %d bytes; use at least %d random bytes (for example: openssl rand -hex 32)", n, recommendedWebhookSecretBytes))
 	}
-	legacy := wh.AuthToken != "" && !wh.DisableLegacyAuth
-	if legacy {
+	legacy := legacyAuthActive(wh)
+	switch {
+	case legacy && wh.HMACSecret != "":
+		logger.Warn("COMPATIBILITY MODE: agent.watch.webhook.allow_legacy_auth is set while hmac_secret is configured, so an unsigned request carrying the legacy bearer token (auth_token) is accepted WITHOUT timestamp, body-integrity or replay protection; anyone holding that token can bypass the HMAC controls. Migrate senders to signed requests, then remove allow_legacy_auth")
+	case legacy:
 		logger.Warn("DEPRECATED: webhook bearer authentication (agent.watch.webhook.auth_token) has no body integrity or replay protection and will be removed in a future release; configure agent.watch.webhook.hmac_secret and sign requests (X-DSO-Timestamp / X-DSO-Signature), then set disable_legacy_auth: true")
+	case wh.AuthToken != "" && wh.HMACSecret != "" && !wh.DisableLegacyAuth:
+		logger.Info("agent.watch.webhook.auth_token is ignored because hmac_secret is configured; only signed requests are accepted. Set allow_legacy_auth: true only if senders cannot sign yet, or remove auth_token")
 	}
 	if wh.HMACSecret == "" && !legacy {
 		logger.Warn("webhooks are enabled but no usable credential is configured; every webhook request will be rejected")
 	}
 	return nil
+}
+
+// legacyAuthActive reports whether the deprecated bearer token is accepted on
+// the webhook:
+//
+//	auth_token only                   -> yes (the pre-HMAC behaviour)
+//	hmac_secret only                  -> n/a (no token)
+//	both, no allow_legacy_auth        -> NO: HMAC is mandatory
+//	both, allow_legacy_auth: true     -> yes (explicit, warned compatibility mode)
+//	disable_legacy_auth: true         -> NO, always
+func legacyAuthActive(wh config.WebhookConfig) bool {
+	if wh.AuthToken == "" || wh.DisableLegacyAuth {
+		return false
+	}
+	return wh.HMACSecret == "" || wh.AllowLegacyAuth
 }
 
 func (s *RESTServer) webhookDeny(r *http.Request, reason string) {
@@ -220,7 +240,7 @@ func (s *RESTServer) authenticateWebhook(w http.ResponseWriter, r *http.Request)
 	}
 	wh := s.Config.Agent.Watch.Webhook
 	hmacOn := wh.HMACSecret != ""
-	legacyOn := wh.AuthToken != "" && !wh.DisableLegacyAuth
+	legacyOn := legacyAuthActive(wh)
 	if !hmacOn && !legacyOn {
 		http.Error(w, "Webhook authentication is required when webhooks are enabled", http.StatusForbidden)
 		return nil, false

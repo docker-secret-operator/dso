@@ -22,14 +22,14 @@ const RedactedMarker = "[REDACTED]"
 // never applied to keys the schema DOES define: those are governed solely by
 // their `dso` tag, so ordinary fields such as `secrets:` (the mapping list) or
 // `session_idle_timeout` are not mangled.
-var credentialKeyPattern = regexp.MustCompile(`(?i)(secret|token|passw(or)?d|credential|api[-_]?key|access[-_]?key|private[-_]?key|hmac|bearer|dsn)`)
+var credentialKeyPattern = regexp.MustCompile(`(?i)(secret|token|passw(or)?d|credential|api[-_]?key|access[-_]?key|private[-_]?key|hmac|bearer|dsn|role[-_]?id|secret[-_]?id|jwt|connection|conn[-_]?str|certificate|signature|salt|otp)`)
 
 type redactKind int
 
 const (
-	kindSecret      redactKind = iota + 1 // replace every scalar leaf
-	kindURL                               // keep scheme://host, drop userinfo/path/query
-	kindSecretByKey                       // map: redact entries whose key looks like a credential
+	kindSecret   redactKind = iota + 1 // replace every scalar leaf
+	kindURL                            // keep scheme://host, drop userinfo/path/query
+	kindFreeForm                       // map: redact entries whose key looks like a credential
 )
 
 func parseDSOTag(tag string) (redactKind, bool) {
@@ -38,8 +38,8 @@ func parseDSOTag(tag string) (redactKind, bool) {
 		return kindSecret, true
 	case "url":
 		return kindURL, true
-	case "secret-by-key":
-		return kindSecretByKey, true
+	case "free-form":
+		return kindFreeForm, true
 	}
 	return 0, false
 }
@@ -152,6 +152,12 @@ func (r *redactor) walk(n *yaml.Node, t reflect.Type, inFlow bool) {
 		}
 	case yaml.AliasNode:
 		r.walk(n.Alias, t, flow)
+	case yaml.ScalarNode:
+		// Schema-known scalar that is not tagged: leave it unless its value is,
+		// by its own shape, a credential (userinfo URL, JWT, PEM, vendor token).
+		// A real credential must not survive merely because it sits under an
+		// ordinary field name.
+		r.markIfSensitive(n, flow, false)
 	case yaml.MappingNode:
 		switch {
 		case t != nil && t.Kind() == reflect.Struct:
@@ -188,8 +194,8 @@ func (r *redactor) walkStruct(n *yaml.Node, t reflect.Type, flow bool) {
 			continue
 		}
 		if kind, tagged := parseDSOTag(f.Tag.Get("dso")); tagged {
-			if kind == kindSecretByKey {
-				r.markByKey(v, flow)
+			if kind == kindFreeForm {
+				r.markFreeForm(v, flow)
 			} else {
 				r.markAll(v, kind, flow)
 			}
@@ -213,6 +219,8 @@ func (r *redactor) walkUnknown(n *yaml.Node, inFlow bool) {
 		}
 	case yaml.AliasNode:
 		r.walkUnknown(n.Alias, flow)
+	case yaml.ScalarNode:
+		r.markIfSensitive(n, flow, true)
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			if credentialKeyPattern.MatchString(n.Content[i].Value) {
@@ -228,19 +236,45 @@ func (r *redactor) walkUnknown(n *yaml.Node, inFlow bool) {
 	}
 }
 
-// markByKey redacts the values of a map whose KEY looks like a credential.
-func (r *redactor) markByKey(n *yaml.Node, inFlow bool) {
+// markIfSensitive registers scalar n when its value is a credential by shape
+// (and, where heuristic is set, when it looks like an opaque random token).
+func (r *redactor) markIfSensitive(n *yaml.Node, inFlow, heuristic bool) {
+	if n.Kind != yaml.ScalarNode || n.Tag == "!!null" {
+		return
+	}
+	if kind, ok := valueKind(n.Value, heuristic); ok {
+		r.markAll(n, kind, inFlow)
+	}
+}
+
+// markFreeForm applies the free-form policy (see freeFormKind): inside the map
+// every value is a credential unless its key is on the benign allowlist AND
+// the value itself does not look like one. Non-scalar values are redacted
+// wholesale. Fail-closed by construction.
+func (r *redactor) markFreeForm(n *yaml.Node, inFlow bool) {
 	flow := inFlow || n.Style&yaml.FlowStyle != 0
 	if n.Kind == yaml.AliasNode {
-		r.markByKey(n.Alias, flow)
+		r.markFreeForm(n.Alias, flow)
 		return
 	}
 	if n.Kind != yaml.MappingNode {
+		// A tagged free-form field that is not a map (scalar or list): treat
+		// the whole value as sensitive.
+		r.markAll(n, kindSecret, flow)
 		return
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
-		if credentialKeyPattern.MatchString(n.Content[i].Value) {
-			r.markAll(n.Content[i+1], kindSecret, flow)
+		k, v := n.Content[i].Value, n.Content[i+1]
+		target := v
+		for target.Kind == yaml.AliasNode && target.Alias != nil {
+			target = target.Alias
+		}
+		if target.Kind != yaml.ScalarNode {
+			r.markAll(v, kindSecret, flow)
+			continue
+		}
+		if kind, sensitive := freeFormKind(k, target.Value); sensitive {
+			r.markAll(v, kind, flow)
 		}
 	}
 }
@@ -255,6 +289,9 @@ func (r *redactor) markAll(n *yaml.Node, kind redactKind, inFlow bool) {
 	case yaml.ScalarNode:
 		if n.Value == "" || n.Tag == "!!null" || alreadyRedacted(kind, n.Value) {
 			return // unset stays visibly unset; redacted output stays stable
+		}
+		if kind == kindURL && redactedValue(kind, n.Value) == n.Value {
+			return // bare scheme://host[:port]: nothing sensitive to hide
 		}
 		if _, dup := r.targets[n]; !dup {
 			r.targets[n] = kind
@@ -327,7 +364,11 @@ func alreadyRedacted(kind redactKind, v string) bool {
 	if v == RedactedMarker {
 		return true
 	}
-	return kind == kindURL && redactedURLPattern.MatchString(v)
+	// scheme://host[:port]/[REDACTED] is this package's rendering of a URL
+	// credential. It is recognised whatever kind the second pass would assign
+	// (a key-name match can pick kindSecret), otherwise a second pass would
+	// collapse it to the bare marker and the output would not be stable.
+	return redactedURLPattern.MatchString(v)
 }
 
 // redactedValue is what a credential scalar is replaced with.

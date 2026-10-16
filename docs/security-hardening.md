@@ -203,14 +203,35 @@ body is read through a 64 KiB limit, and the MAC is compared in constant time.
   the same second produce the same signature and the second is a replay. Put a
   delivery id or timestamp in the JSON body.
 
-### Legacy bearer mode (deprecated)
+### Legacy bearer mode (deprecated) and when it is accepted
 
-`auth_token` with `Authorization: Bearer <auth_token>` keeps working for one
-release unless `disable_legacy_auth: true`. It has no body integrity or replay
-protection. A startup warning and a once-per-process request warning are logged
-(neither contains the token). It no longer needs to equal `DSO_AUTH_TOKEN`.
-Rejection details log only a reason code and the peer address, never
-credentials, signatures or bodies.
+`auth_token` with `Authorization: Bearer <auth_token>` has no body integrity,
+timestamp or replay protection. Whether it is accepted depends on what else is
+configured:
+
+| `hmac_secret` | `auth_token` | `allow_legacy_auth` | `disable_legacy_auth` | Unsigned request with the bearer token |
+|---|---|---|---|---|
+| set | — | — | — | rejected (401); signature required |
+| — | set | — | — | **accepted** (pre-HMAC behavior, deprecation warning) |
+| set | set | false (default) | false | **rejected (401)** — HMAC is mandatory; startup notice says the token is ignored |
+| set | set | **true** | false | accepted, under a loud `COMPATIBILITY MODE` startup warning |
+| any | set | any | **true** | rejected; only signed requests (or 403 if none configured) |
+
+Further rules, all covered by `TestWebhookAuthMatrix`:
+
+* A request that carries `X-DSO-Signature` is judged **only** on the signature;
+  an invalid signature never falls back to the bearer token.
+* The bearer token never needs to equal `DSO_AUTH_TOKEN`.
+* Logs contain a reason code and the peer address only — never the token, the
+  signature or the body.
+
+**Behavior change (Milestone 0 remediation):** configuring `hmac_secret` next to
+an existing `auth_token` used to leave the weaker token working, which let anyone
+holding only that token skip the timestamp/replay checks. Migration procedure:
+configure `hmac_secret`, deploy signing senders, and if some senders cannot sign
+yet set `allow_legacy_auth: true` temporarily; finally remove `auth_token`.
+Milestone 0 has not been released, so no released workflow changes; the
+pre-HMAC `auth_token`-only configuration keeps working unchanged.
 
 ## 3. Vault write safety
 
@@ -270,11 +291,27 @@ credentials, signatures or bodies.
 * New absolute lifetime `webui.session_max_lifetime` (default `24h`, `0`
   disables). **Behavior change:** a session that has been continuously active
   for 24 h now ends; set `0` to keep the previous behavior.
-* Login throttling is per client IP. `X-Forwarded-For` is honored only when the
+* Login throttling is per client key: an **IPv4 address** or an **IPv6 /64
+  prefix** (a single host or customer normally controls a whole /64, so counting
+  per IPv6 address would give an attacker 2^64 separate budgets; IPv4-mapped
+  IPv6 addresses count as IPv4). `X-Forwarded-For` is honored only when the
   immediate peer is in `webui.trusted_proxies`, taking the right-most address
-  that is not itself a trusted proxy. Without that setting, all clients behind
-  a reverse proxy share one throttle bucket (by design: forwarded headers are
-  never trusted by default).
+  that is not itself a trusted proxy (the chosen client address is then keyed
+  the same way). Without that setting, all clients behind a reverse proxy share
+  one throttle bucket (by design: forwarded headers are never trusted by
+  default).
+* **Attempts are reserved before the password is checked.** At most 5 failed
+  attempts per key per 15 minutes, counting attempts still in flight, so 40
+  concurrent guesses cannot all reach bcrypt (previously 29 of 40 did). A wrong
+  password counts as a failure; a correct one clears the key and refunds the
+  global token; an internal error or panic releases the reservation without
+  counting. Over budget, bcrypt is not run and HTTP 429 is returned.
+* **Global backstop:** the number of password verifications across *all*
+  clients is also bounded (sustained 1 per 2 s, burst 20; about 450 guesses per
+  15 minutes in total), so an attacker who rotates through many prefixes is
+  still limited. Trade-off: during a sustained distributed attack the real
+  operator may also receive 429 until tokens refill; successful logins cost
+  nothing. The in-memory limiter state is per process and is lost on restart.
 
 ### `trusted_proxies`: list exact proxy addresses
 
@@ -330,25 +367,56 @@ world bit or group-write bit). Local mode already used `0600`.
   trusted.
 
 **Existing installations are NOT changed by upgrading the binary.** The new mode
-is applied when bootstrap/permission setup is re-run. To remediate by hand:
+is applied when bootstrap/permission setup is re-run. DSO never changes the
+mode or owner of a config path by itself (it may be a user-supplied location);
+instead it tells you:
+
+* `dso agent` logs a **warning at startup** and `dso config show` prints a
+  warning on stderr when the config file has any world access or group-write
+  bit (anything looser than `0640`), with the exact commands below. Neither
+  command modifies the file.
+* `dso doctor` check DSO-DOCTOR-009 reports the same condition and now prints the
+  same `chown`/`chmod 0640` remediation.
+
+Upgrade procedure for an existing install:
 
 ```bash
+ls -l /etc/dso/dso.yaml                   # e.g. -rw-r--r-- root root  (too open)
 sudo chown root:dso /etc/dso/dso.yaml     # if your install uses the dso group
-sudo chmod 0640 /etc/dso/dso.yaml
+sudo chmod 0640 /etc/dso/dso.yaml         # or 0600 if the agent runs as the owner
 ls -l /etc/dso/dso.yaml                   # verify: -rw-r----- root dso
+sudo dso doctor                           # DSO-DOCTOR-009 should now pass
 ```
 
-`dso doctor` reports a file that is still too permissive. If a config that
-contained `hmac_secret`, `auth_token` or provider credentials was ever
-world-readable, treat those credentials as exposed and rotate them.
+If a config that contained `hmac_secret`, `auth_token` or provider credentials
+was ever world-readable, treat those credentials as exposed and rotate them.
 
-**`dso config show` redacts credentials.** It prints the file with credential
-values replaced by `"[REDACTED]"` (keys, comments and everything else are kept;
-unset credentials stay visibly empty). Redaction is schema-aware: fields tagged
-`dso:"secret"`, `dso:"url"` (keeps scheme/host/port, drops userinfo, path and
-query) or `dso:"secret-by-key"` in `pkg/config`, plus a name-based backstop
-(`secret`, `token`, `password`, `credential`, `api_key`, `access_key`,
-`private_key`, `hmac`, `bearer`, `dsn`) for keys the schema does not define.
-A file that is not valid YAML is **refused** rather than printed raw. A test
-fails if a credential-looking field is added to the schema without a tag.
+**`dso config show` redacts credentials — by field, by value shape, and
+fail-closed for free-form settings.** It prints the file with credential values
+replaced by `"[REDACTED]"`; keys, comments and everything else are kept, and
+unset credentials stay visibly empty. Rules, in order:
+
+1. Fields tagged in `pkg/config`: `dso:"secret"` (every scalar), `dso:"url"`
+   (keeps `scheme://host[:port]`, drops userinfo/path/query).
+2. **Free-form maps** (`providers.*.config`, legacy top-level `config`,
+   tagged `dso:"free-form"`) are **fail-closed**: every value is redacted unless
+   its key is on a short allowlist of non-secret settings (`region`, `location`,
+   `namespace`, `mount`, `version`, `engine`, `type`, `project`, `name`, ...)
+   *and* the value itself does not look like a credential. URL values keep only
+   `scheme://host[:port]`. UUID-shaped values (e.g. `role_id`) are redacted.
+3. **By value, everywhere** (any scalar, whatever its key): URLs with embedded
+   `user:password@`, JWTs, PEM blocks, and well-known token formats (AWS access
+   key ids, GitHub, Slack, GitLab, Google API keys, Vault tokens, ...).
+4. For keys the schema does not define: the key-name backstop (`secret`,
+   `token`, `password`, `credential`, `api_key`, `access_key`, `private_key`,
+   `hmac`, `bearer`, `dsn`, `role_id`, `secret_id`, `jwt`, `connection`,
+   `certificate`, `signature`, `salt`, `otp`) plus an opaque-random-token
+   heuristic (20+ token characters, mixed classes, high entropy).
+5. A final scrub removes any other copy of a redacted value of 8+ characters.
+
+Known limits: a credential that is an ordinary-looking word under an *unknown*
+key outside a free-form map (for example a typo'd key containing a plain
+password) can still be shown; keep credentials in the documented fields. A file
+that is not valid YAML is **refused** rather than printed raw. A test fails if
+a credential-looking field is added to the schema without a tag.
 To see a value, open the file directly with sufficient permissions.

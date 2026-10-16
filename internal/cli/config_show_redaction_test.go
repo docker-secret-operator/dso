@@ -132,3 +132,70 @@ func TestConfigShow_MissingFileErrorUnchanged(t *testing.T) {
 		t.Errorf("missing file error changed: %v", err)
 	}
 }
+
+// Regression for review finding M0-3: free-form provider settings carried
+// credentials under ordinary-looking keys and were printed verbatim.
+func TestConfigShow_FreeFormProviderValuesAreRedactedByValue(t *testing.T) {
+	const doc = `providers:
+  p1:
+    type: custom
+    config:
+      endpoint: "https://admin:hunter2pass@vault.internal:8200"
+      connection: "postgres://svc:dbpassword99@db/app"
+      region: us-east-1
+      role_id: "11111111-2222-3333-4444-555555555555"
+      jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop"
+      notes: "ssn 123-45-6789"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dso.yaml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := captureShow(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"hunter2pass", "dbpassword99", "11111111-2222-3333-4444-555555555555",
+		"eyJhbGciOiJIUzI1NiJ9", "abcdefghijklmnop", "123-45-6789"} {
+		if strings.Contains(stdout, leak) || strings.Contains(stderr, leak) {
+			t.Errorf("dso config show printed %q:\n%s", leak, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "region: us-east-1") {
+		t.Errorf("benign setting hidden:\n%s", stdout)
+	}
+}
+
+// Review finding M0-4: an existing /etc/dso/dso.yaml created by an older
+// bootstrap stays 0644. `config show` must say so and must not change it.
+func TestConfigShow_WarnsAboutPermissiveConfigWithoutChangingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dso.yaml")
+	if err := os.WriteFile(path, []byte(showConfigFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := captureShow(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, "0644") || !strings.Contains(stderr, "chmod") {
+		t.Errorf("no actionable permission warning on stderr: %q", stderr)
+	}
+	if strings.Contains(stderr, showHMAC) {
+		t.Error("warning leaked a credential")
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+		t.Errorf("config show modified the file mode to %04o", fi.Mode().Perm())
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, _ := captureShow(t, path); strings.Contains(stderr, "WARNING") {
+		t.Errorf("0600 config produced a warning: %q", stderr)
+	}
+}
