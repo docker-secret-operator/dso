@@ -205,7 +205,18 @@ func fetchEvents(url string) []map[string]interface{} {
 	// #nosec G107 -- every caller of fetchEvents passes a URL built from
 	// apiAddr after runAPILogs has already called validateLoopbackURL,
 	// which resolves the host and rejects anything but a loopback address.
-	resp, err := http.Get(url) //nolint:noctx — short CLI helper, no streaming
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx — short CLI helper, no streaming
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Invalid API request: %v\033[0m\n", err)
+		return nil
+	}
+	// The agent REST API requires credentials whenever DSO_AUTH_TOKEN is set
+	// (and, since the WebUI auth fix, whenever the WebUI is enabled). Send the
+	// same token the agent was started with if it is available here.
+	if token := os.Getenv("DSO_AUTH_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req) // #nosec G107 -- URL validated as loopback above.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Cannot reach agent API at %s: %v\033[0m\n", url, err)
 		fmt.Fprintf(os.Stderr, "\033[33m      Is the agent running? Try: sudo systemctl start dso-agent\033[0m\n")
@@ -214,6 +225,12 @@ func fetchEvents(url string) []map[string]interface{} {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		fmt.Fprintf(os.Stderr, "\033[31m[DSO] The agent API rejected the request (401 Unauthorized).\033[0m\n")
+		fmt.Fprintf(os.Stderr, "\033[33m      Set DSO_AUTH_TOKEN to the agent's token and retry, or read events with: sudo docker dso logs\033[0m\n")
+		return nil
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

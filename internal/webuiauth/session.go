@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
@@ -29,6 +30,11 @@ const (
 
 	// DefaultIdleTimeout is used when no session_idle_timeout is configured.
 	DefaultIdleTimeout = 30 * time.Minute
+
+	// DefaultMaxLifetime is the absolute session lifetime applied when no
+	// session_max_lifetime is configured. Unlike the idle timeout it is not
+	// extended by activity, so a stolen-but-kept-alive session still dies.
+	DefaultMaxLifetime = 24 * time.Hour
 
 	// MaxConcurrentSessions caps the number of live sessions kept for the
 	// single operator identity. This is a reasonable ceiling for multiple
@@ -62,6 +68,15 @@ type Manager struct {
 	username     string
 	passwordHash string
 	idleTimeout  time.Duration
+	// maxLifetime is the absolute lifetime measured from CreatedAt; zero
+	// disables the cap.
+	maxLifetime time.Duration
+	// trustedProxies are the networks whose X-Forwarded-For is honored for
+	// login throttling (see SetTrustedProxies). Empty means never trust it.
+	trustedProxies []*net.IPNet
+	// trustedProxyWarnings describes risky entries in trustedProxies (see
+	// TrustedProxyWarnings).
+	trustedProxyWarnings []string
 	// Secure controls whether issued cookies set the Secure attribute.
 	// Should be true in production (TLS); tests over plain HTTP set it
 	// false.
@@ -89,10 +104,22 @@ func NewManager(username, passwordHash string, idleTimeout time.Duration) *Manag
 		username:     username,
 		passwordHash: passwordHash,
 		idleTimeout:  idleTimeout,
+		maxLifetime:  DefaultMaxLifetime,
 		Secure:       true,
 		sessions:     make(map[string]*Session),
 		now:          time.Now,
 	}
+}
+
+// SetMaxLifetime sets the absolute session lifetime. Zero disables the cap.
+// Must be called before the Manager serves requests.
+func (m *Manager) SetMaxLifetime(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	m.mu.Lock()
+	m.maxLifetime = d
+	m.mu.Unlock()
 }
 
 // HashPassword bcrypt-hashes a plaintext password for storage in
@@ -181,6 +208,10 @@ func (m *Manager) Validate(token string) (*Session, error) {
 		delete(m.sessions, token)
 		return nil, ErrSessionExpired
 	}
+	if m.maxLifetime > 0 && now.Sub(sess.CreatedAt) > m.maxLifetime {
+		delete(m.sessions, token)
+		return nil, ErrSessionExpired
+	}
 
 	sess.LastSeenAt = now
 	return sess, nil
@@ -227,9 +258,32 @@ func (m *Manager) LogoutOthers(keepToken string) int {
 	return removed
 }
 
-// SessionCookie builds the Set-Cookie header value for a freshly created
-// session: HttpOnly, SameSite=Strict, and Secure per m.Secure.
+// SessionCookie builds the Set-Cookie header value for a session:
+// HttpOnly, SameSite=Strict, and Secure per m.Secure. The cookie lifetime is
+// the idle timeout, capped by what remains of the absolute lifetime, so the
+// browser never keeps a cookie the server would already reject. It is
+// re-issued on each authenticated request (see internal/server) so that
+// activity extends the cookie exactly as it extends the server-side idle
+// timer.
 func (m *Manager) SessionCookie(sess *Session) *http.Cookie {
+	m.mu.Lock()
+	maxLifetime := m.maxLifetime
+	now := m.now()
+	m.mu.Unlock()
+
+	life := m.idleTimeout
+	if maxLifetime > 0 {
+		if remaining := maxLifetime - now.Sub(sess.CreatedAt); remaining < life {
+			life = remaining
+		}
+	}
+	maxAge := int(life.Seconds())
+	if maxAge < 1 {
+		// MaxAge 0 would mean "no Max-Age attribute" (a browser-session
+		// cookie); -1 deletes the cookie, which is the right outcome for an
+		// already-exhausted lifetime.
+		maxAge = -1
+	}
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    sess.Token,
@@ -237,7 +291,7 @@ func (m *Manager) SessionCookie(sess *Session) *http.Cookie {
 		HttpOnly: true,
 		Secure:   m.Secure,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(m.idleTimeout.Seconds()),
+		MaxAge:   maxAge,
 	}
 }
 

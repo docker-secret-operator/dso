@@ -280,13 +280,30 @@ func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
 	return nil
 }
 
+// dsoConfigFileMode is the most permissive mode DSO gives its configuration
+// file: owner read/write, group (dso) read-only, no access for others. The
+// file can contain credentials (webhook hmac_secret / auth_token, the WebUI
+// password_hash, provider auth parameters), so it must never be world-readable
+// or group-writable -- the same standard `dso doctor` (DSO-DOCTOR-009) checks.
+const dsoConfigFileMode os.FileMode = 0640
+
+// tightenMode returns the permission bits present in BOTH current and limit:
+// it can only remove access, never add it. Applying it to an existing file
+// means an upgrade tightens 0664/0644/0660 to 0640 but leaves an already
+// stricter file (0600, 0400) exactly as the administrator set it.
+func tightenMode(current, limit os.FileMode) os.FileMode {
+	return current.Perm() & limit.Perm()
+}
+
 // setupDSOFiles configures permissions on DSO configuration files
 func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 	files := []struct {
 		path string
 		perm os.FileMode
 	}{
-		{"/etc/dso/dso.yaml", 0664}, // rw-rw-r--: dso group members can read and write config
+		// rw-r-----: dso group members can read the config; changing it needs
+		// root (sudo). Group-write was removed because the file holds secrets.
+		{"/etc/dso/dso.yaml", dsoConfigFileMode},
 	}
 
 	for _, file := range files {
@@ -308,8 +325,13 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 			return err
 		}
 
-		// Set permissions
-		if err := os.Chmod(file.path, file.perm); err != nil {
+		// Set permissions. Tighten-only: an existing file keeps any stricter
+		// mode its administrator chose; it is never made more permissive.
+		target := file.perm
+		if cur, err := os.Stat(file.path); err == nil {
+			target = tightenMode(cur.Mode(), file.perm)
+		}
+		if err := os.Chmod(file.path, target); err != nil {
 			return fmt.Errorf("failed to chmod %s: %w", file.path, err)
 		}
 
@@ -318,10 +340,16 @@ func (pm *PermissionManager) setupDSOFiles(dsoGID int) error {
 			return fmt.Errorf("failed to chown %s: %w", file.path, err)
 		}
 
-		pm.logger.Info("File configured", "path", file.path, "perm", fmt.Sprintf("%o", file.perm))
+		pm.logger.Info("File configured", "path", file.path, "perm", fmt.Sprintf("%o", target))
 	}
 
 	return nil
+}
+
+// configModeTooPermissive reports whether perm grants anything beyond
+// dsoConfigFileMode (any world access, or any group bit other than read).
+func configModeTooPermissive(perm os.FileMode) bool {
+	return perm.Perm()&^dsoConfigFileMode != 0
 }
 
 // validateDockerGroupAccess checks if user can access Docker
@@ -429,11 +457,12 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 		}
 
 		perm := info.Mode().Perm()
-		if perm != 0664 {
-			pm.logger.Warn("Config file permissions incorrect",
+		if configModeTooPermissive(perm) {
+			pm.logger.Warn("Config file permissions too permissive (may expose credentials)",
 				"path", configPath,
-				"expected", "0664",
-				"actual", fmt.Sprintf("%o", perm))
+				"expected", fmt.Sprintf("%04o or stricter", dsoConfigFileMode),
+				"actual", fmt.Sprintf("%04o", perm),
+				"fix", "chown root:dso "+configPath+" && chmod 0640 "+configPath)
 		}
 	}
 
@@ -463,8 +492,9 @@ After bootstrap, the following permission structure is in place:
    - Provides least-privilege access to DSO components
 
 2. Configuration Access
-   - /etc/dso/dso.yaml: 0664 (root:dso) - Owner and group read/write, others read-only
-   - Users in 'dso' group can read and write configuration
+   - /etc/dso/dso.yaml: 0640 (root:dso) - Owner read/write, group read-only, no access for others
+   - The file can hold credentials, so it is never world-readable or group-writable
+   - Users in 'dso' group can read configuration; changing it requires root (sudo)
 
 3. State Directory
    - /var/lib/dso: 0770 (root:dso) - Owner and group can read/write

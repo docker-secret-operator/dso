@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	dsoconfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -71,10 +72,21 @@ func showConfig(configPath string) error {
 		return fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
 
+	// The file can contain credentials (webhook hmac_secret / auth_token, the
+	// WebUI password_hash, provider auth parameters, notification URLs).
+	// Display a schema-aware redacted rendering, never the raw bytes. If the
+	// file cannot be parsed we cannot know what is secret, so fail closed
+	// instead of printing it.
+	redacted, err := dsoconfig.RedactYAML(data)
+	if err != nil {
+		return fmt.Errorf("refusing to display %s: %w (open the file directly to inspect it)", configPath, err)
+	}
+
 	fmt.Println()
 	fmt.Printf("Config file: %s\n", configPath)
 	fmt.Println()
-	fmt.Println(string(data))
+	fmt.Println(string(redacted))
+	fmt.Fprintln(os.Stderr, "Note: credential values are redacted; open the file directly (with sufficient permissions) to see them.")
 
 	return nil
 }

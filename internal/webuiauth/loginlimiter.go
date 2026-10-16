@@ -1,8 +1,10 @@
 package webuiauth
 
 import (
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,6 +127,136 @@ func clientKeyFromRequest(r *http.Request) string {
 	return ip
 }
 
+// SetTrustedProxies configures the reverse proxies (IPs or CIDRs) whose
+// X-Forwarded-For header is honored for login throttling. Without it every
+// client behind a proxy shares the proxy's IP, so five failed logins from
+// anyone would lock the real operator out. Entries that do not parse are
+// rejected so a typo cannot silently widen or narrow trust.
+func (m *Manager) SetTrustedProxies(entries []string) error {
+	nets := make([]*net.IPNet, 0, len(entries))
+	var ignored []*net.IPNet
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if !strings.Contains(e, "/") {
+			ip := net.ParseIP(e)
+			if ip == nil {
+				return fmt.Errorf("invalid trusted proxy %q", e)
+			}
+			bits := 128
+			if ip4 := ip.To4(); ip4 != nil {
+				ip = ip4
+				bits = 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(e)
+		if err != nil {
+			return fmt.Errorf("invalid trusted proxy %q: %w", e, err)
+		}
+		if ones, _ := n.Mask.Size(); ones == 0 {
+			// A /0 entry is never trusted. It identifies no proxy, and it is NOT
+			// a safe "trust everyone": net.IPNet.Contains never matches an IPv4
+			// address against an IPv6 network (or vice versa), so with 0.0.0.0/0
+			// a client escapes the trusted set by putting IPv6 hops in
+			// X-Forwarded-For (and with ::/0, IPv4 hops) and then picks its own
+			// throttle identity. Ignoring the entry keeps throttling keyed on the
+			// connection address, which a client cannot choose.
+			ignored = append(ignored, n)
+			continue
+		}
+		nets = append(nets, n)
+	}
+	warnings := trustedProxyRangeWarnings(nets, ignored)
+	m.mu.Lock()
+	m.trustedProxies = nets
+	m.trustedProxyWarnings = warnings
+	m.mu.Unlock()
+	return nil
+}
+
+// Ranges wider than this are reported by TrustedProxyWarnings: more than 256
+// IPv4 addresses (shorter than /24) or more than 256 IPv6 addresses (shorter
+// than /120).
+const (
+	broadTrustedIPv4Prefix = 24
+	broadTrustedIPv6Prefix = 120
+)
+
+// trustedProxyRangeWarnings flags entries that are probably not "just the
+// reverse proxy". A trusted peer's X-Forwarded-For is believed, so every host
+// inside a listed range can pick its own login-throttle identity; the safe
+// configuration lists the exact proxy address(es).
+func trustedProxyRangeWarnings(nets, ignored []*net.IPNet) []string {
+	var out []string
+	for _, n := range ignored {
+		out = append(out, fmt.Sprintf(
+			"webui.trusted_proxies entry %s matches EVERY address and is IGNORED: it identifies no proxy, and trusting "+
+				"every address would let clients choose their own login-throttle identity. X-Forwarded-For is not used "+
+				"for it. List your reverse proxy's exact address(es) instead.", n))
+	}
+	for _, n := range nets {
+		ones, bits := n.Mask.Size()
+		switch {
+		case (bits == 32 && ones < broadTrustedIPv4Prefix) || (bits == 128 && ones < broadTrustedIPv6Prefix):
+			out = append(out, fmt.Sprintf(
+				"webui.trusted_proxies entry %s is a broad range: any host inside it can choose its own login-throttle "+
+					"identity via X-Forwarded-For and so evade the per-client limit. Prefer the exact proxy address(es) "+
+					"(e.g. 10.0.0.5) over a network range.", n))
+		}
+	}
+	return out
+}
+
+// TrustedProxyWarnings returns the warnings produced by the last
+// SetTrustedProxies call (empty when every entry is narrow). Callers log them
+// at startup; they are advisory and never change behavior.
+func (m *Manager) TrustedProxyWarnings() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.trustedProxyWarnings...)
+}
+
+// isTrustedProxy requires m.mu to be held.
+func (m *Manager) isTrustedProxy(ip net.IP) bool {
+	for _, n := range m.trustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientKey returns the throttling key for r. The socket peer is used unless
+// it is a configured trusted proxy, in which case X-Forwarded-For is walked
+// right-to-left and the first address that is not itself a trusted proxy is
+// used (the rightmost entries are appended by infrastructure we trust; the
+// leftmost are client-controlled and spoofable). Any parse problem falls back
+// to the socket peer.
+func (m *Manager) clientKey(r *http.Request) string {
+	peer := clientKeyFromRequest(r)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	peerIP := net.ParseIP(peer)
+	if len(m.trustedProxies) == 0 || peerIP == nil || !m.isTrustedProxy(peerIP) {
+		return peer
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(hops[i]))
+		if ip == nil {
+			return peer
+		}
+		if !m.isTrustedProxy(ip) {
+			return ip.String()
+		}
+	}
+	return peer
+}
+
 // ErrTooManyLoginAttempts is returned by LoginFromRequest when the calling
 // IP has exceeded maxLoginFailures within loginFailureWindow. bcrypt is not
 // run in this case, so the attack retains its full per-attempt cost.
@@ -149,7 +281,7 @@ func (e *loginRateLimitError) Error() string {
 // than any other rejected request, actually blunting the credential
 // stuffing attack rather than just labeling it.
 func (m *Manager) LoginFromRequest(r *http.Request, username, password string) (*Session, error) {
-	key := clientKeyFromRequest(r)
+	key := m.clientKey(r)
 
 	if !m.loginLimiter().allowed(key) {
 		return nil, ErrTooManyLoginAttempts

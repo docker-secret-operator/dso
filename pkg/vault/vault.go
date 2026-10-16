@@ -44,6 +44,9 @@ func getVaultDir() (string, error) {
 // getMasterKey resolves the master key from the environment variable or file.
 func getMasterKey() (string, error) {
 	if key := os.Getenv("DSO_MASTER_KEY"); key != "" {
+		if strings.TrimSpace(key) == "" {
+			return "", errors.New("DSO_MASTER_KEY is set but blank; set it to a real key or unset it")
+		}
 		return key, nil
 	}
 
@@ -64,7 +67,18 @@ func getMasterKey() (string, error) {
 	if err := os.Chmod(keyPath, 0600); err != nil {
 		return "", fmt.Errorf("failed to secure master key file permissions: %w", err)
 	}
-	return strings.TrimSpace(string(data)), nil
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		// An empty key would still "work" (Argon2id accepts it) and silently
+		// encrypt the vault under a publicly known key. Never allow that. This
+		// is what an interrupted `docker dso init` of an older version left
+		// behind.
+		return "", fmt.Errorf("master key file %s is empty; refusing to use an empty key. "+
+			"If no vault exists yet, delete the file and re-run 'docker dso init'. "+
+			"If %s already exists it may have been created under an empty key by an older version: "+
+			"back up both files before changing anything", keyPath, filepath.Join(filepath.Dir(keyPath), "vault.enc"))
+	}
+	return key, nil
 }
 
 func generateMasterKey() (string, error) {
@@ -75,7 +89,41 @@ func generateMasterKey() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// lockTimeout bounds how long a writer waits for another dso process.
+var lockTimeout = 30 * time.Second
+
+// Hooks so tests can inject failures at the exact points where a real crash or
+// I/O error could occur. Production code never reassigns them.
+var (
+	renameFile = os.Rename
+	linkFile   = os.Link
+	syncFile   = func(f *os.File) error { return f.Sync() }
+	syncDir    = syncDirectory
+)
+
+// DurabilityError reports that a vault update WAS committed -- the new file is
+// renamed into place and visible to every reader -- but a later step needed to
+// make it durable across power loss (fsync of the directory) failed. It is
+// distinct from every pre-commit failure, after which the previous vault is
+// untouched. Callers can use IsCommitted to tell the two apart.
+type DurabilityError struct{ Err error }
+
+func (e *DurabilityError) Error() string {
+	return "vault update committed but durability not confirmed: " + e.Err.Error()
+}
+func (e *DurabilityError) Unwrap() error { return e.Err }
+
+// IsCommitted reports whether err means the update is in place on disk even
+// though the operation returned an error (see DurabilityError).
+func IsCommitted(err error) bool {
+	var de *DurabilityError
+	return errors.As(err, &de)
+}
+
 // InitDefault creates the .dso directory, a master key if one doesn't exist, and an empty vault.
+// The whole check-then-create sequence runs under the vault lock: without it
+// two concurrent inits could each generate a master key, and the loser's key
+// would overwrite the winner's, leaving a vault encrypted under a lost key.
 func InitDefault() error {
 	dir, err := getVaultDir()
 	if err != nil {
@@ -86,18 +134,24 @@ func InitDefault() error {
 		return fmt.Errorf("failed to create vault dir: %w", err)
 	}
 
+	vaultPath := filepath.Join(dir, "vault.enc")
+	release, err := acquireFileLock(vaultPath+".lock", lockTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to lock vault: %w", err)
+	}
+	defer func() { _ = release() }()
+
 	keyPath := filepath.Join(dir, "master.key")
 	if _, err := os.Stat(keyPath); errors.Is(err, fs.ErrNotExist) {
 		key, err := generateMasterKey()
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(keyPath, []byte(key+"\n"), 0600); err != nil {
-			return fmt.Errorf("failed to write master key: %w", err)
+		if err := installMasterKey(dir, keyPath, key); err != nil {
+			return err
 		}
 	}
 
-	vaultPath := filepath.Join(dir, "vault.enc")
 	if _, err := os.Stat(vaultPath); errors.Is(err, fs.ErrNotExist) {
 		v := &Vault{
 			store: &VaultStore{
@@ -112,9 +166,56 @@ func InitDefault() error {
 			return err
 		}
 		v.masterKey = masterKey
-		return v.Save() // Save will encrypt and create the file securely
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return v.saveLocked() // lock already held above
 	}
 
+	return nil
+}
+
+// installMasterKey publishes key at keyPath all-or-nothing: the key is written
+// to a unique 0600 temp file in the same directory, fsynced, and only then made
+// visible under its final name with link(2), which fails if the name already
+// exists. A crash at any point therefore leaves either no master.key or a
+// complete one -- never a partial or empty file that a later run could mistake
+// for a valid key -- and an existing key is never replaced.
+//
+// On filesystems without hard links it falls back to rename(2); that is safe
+// here because the caller holds the vault lock and has just seen keyPath absent.
+func installMasterKey(dir, keyPath, key string) error {
+	tmp, err := os.CreateTemp(dir, ".master.key.tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to write master key: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to secure master key file: %w", err)
+	}
+	if _, err := tmp.WriteString(key + "\n"); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write master key: %w", err)
+	}
+	if err := syncFile(tmp); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to sync master key: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to write master key: %w", err)
+	}
+	if err := linkFile(tmpName, keyPath); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil // another initializer won; keep its key
+		}
+		if err := renameFile(tmpName, keyPath); err != nil {
+			return fmt.Errorf("failed to install master key: %w", err)
+		}
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("master key installed but directory sync failed: %w", err)
+	}
 	return nil
 }
 
@@ -131,6 +232,20 @@ func LoadDefault() (*Vault, error) {
 		return nil, err
 	}
 
+	store, err := readStore(vaultPath, masterKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Vault{
+		store:     store,
+		vaultPath: vaultPath,
+		masterKey: masterKey,
+	}, nil
+}
+
+// readStore reads, decrypts and integrity-checks the vault file at path.
+func readStore(vaultPath, masterKey string) (*VaultStore, error) {
 	data, err := os.ReadFile(vaultPath) // #nosec G304 -- vaultPath is always under the current user's DSO vault directory.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read vault: %w", err)
@@ -163,19 +278,97 @@ func LoadDefault() (*Vault, error) {
 	if store.Metadata == nil {
 		store.Metadata = make(map[string]string)
 	}
-
-	return &Vault{
-		store:     &store,
-		vaultPath: vaultPath,
-		masterKey: masterKey,
-	}, nil
+	return &store, nil
 }
 
 // Save securely encrypts and atomically writes the vault to disk.
+//
+// Save persists the in-memory state wholesale (it does NOT merge changes other
+// processes made since this Vault was loaded); use Set/SetBatch for
+// read-modify-write updates that are safe against concurrent writers.
 func (v *Vault) Save() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.vaultPath == "" {
+		return errors.New("vault has no backing path")
+	}
+	release, err := acquireFileLock(v.vaultPath+".lock", lockTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to lock vault: %w", err)
+	}
+	defer func() { _ = release() }()
 	return v.saveLocked()
+}
+
+// mutate runs fn as one atomic read-modify-write transaction across
+// processes: take the exclusive file lock, RELOAD the vault from disk (so
+// writes committed by other processes since this Vault was loaded are kept),
+// apply fn, and save -- all before releasing the lock. If fn or the save fails
+// before the atomic rename, the previous vault is untouched and the in-memory
+// state is left as it was, so a later Save cannot persist a half-applied
+// change. A failure AFTER the rename (directory fsync) is different: the new
+// vault is already committed, memory keeps matching it, and the returned error
+// satisfies IsCommitted.
+func (v *Vault) mutate(fn func(*VaultStore) error) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.vaultPath == "" {
+		return errors.New("vault has no backing path")
+	}
+
+	release, err := acquireFileLock(v.vaultPath+".lock", lockTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to lock vault: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	if _, statErr := os.Stat(v.vaultPath); statErr == nil {
+		fresh, err := readStore(v.vaultPath, v.masterKey)
+		if err != nil {
+			return err // never overwrite a vault we cannot read
+		}
+		v.store = fresh
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("failed to stat vault: %w", statErr)
+	}
+	working := cloneStore(v.store)
+	if err := fn(working); err != nil {
+		return err // v.store still mirrors disk
+	}
+	applied := v.store
+	v.store = working
+	if err := v.saveLocked(); err != nil {
+		if IsCommitted(err) {
+			// The new vault is already in place on disk, so memory must keep
+			// matching it. The caller gets the error (durability unconfirmed).
+			return err
+		}
+		v.store = applied // not committed: the previous vault is untouched
+		return err
+	}
+	return nil
+}
+
+func cloneStore(in *VaultStore) *VaultStore {
+	out := &VaultStore{Version: in.Version, Metadata: map[string]string{}, Projects: map[string]map[string]Secret{}}
+	for k, val := range in.Metadata {
+		out.Metadata[k] = val
+	}
+	for name, proj := range in.Projects {
+		cp := make(map[string]Secret, len(proj))
+		for path, sec := range proj {
+			meta := make(map[string]string, len(sec.Meta))
+			for mk, mv := range sec.Meta {
+				meta[mk] = mv
+			}
+			if sec.Meta == nil {
+				meta = nil
+			}
+			cp[path] = Secret{Value: sec.Value, Meta: meta}
+		}
+		out.Projects[name] = cp
+	}
+	return out
 }
 
 func (v *Vault) saveLocked() error {
@@ -201,17 +394,56 @@ func (v *Vault) saveLocked() error {
 		return fmt.Errorf("failed to encrypt vault: %w", err)
 	}
 
-	// Atomic write
-	tmpFile := v.vaultPath + ".tmp"
-	if err := os.WriteFile(tmpFile, ciphertext, 0600); err != nil {
+	return writeFileAtomic(v.vaultPath, ciphertext, 0600)
+}
+
+// writeFileAtomic replaces path with data so that a reader (or a crash) sees
+// either the old complete file or the new complete file, never a partial one:
+// write to a unique temp file in the same directory, flush it to stable
+// storage, rename over the target, then fsync the directory so the rename
+// itself is durable. Every step's error is returned. The temp file is removed
+// on any failure before the rename.
+//
+// Durability caveat: fsync is the strongest guarantee POSIX offers, but
+// whether data survives power loss still depends on the filesystem and
+// storage honoring it (write caches, some network filesystems). This function
+// does not and cannot promise more than that.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp vault file: %w", err)
+	}
+	tmpName := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to set temp vault file permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("failed to write temp vault file: %w", err)
 	}
-
-	if err := os.Rename(tmpFile, v.vaultPath); err != nil {
-		_ = os.Remove(tmpFile) // clean up temp file on failure
+	if err := syncFile(tmp); err != nil {
+		return fmt.Errorf("failed to sync temp vault file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp vault file: %w", err)
+	}
+	if err := renameFile(tmpName, path); err != nil {
 		return fmt.Errorf("failed to commit vault file: %w", err)
 	}
-
+	renamed = true
+	if err := syncDir(dir); err != nil {
+		// The new file is in place but its directory entry may not be durable.
+		// Report it: success here would overstate the guarantee.
+		return &DurabilityError{Err: fmt.Errorf("directory sync failed: %w", err)}
+	}
 	return nil
 }
 
@@ -251,21 +483,18 @@ func (v *Vault) Set(project, path, value string) error {
 		return errors.New("secret exceeds max size of 1MB")
 	}
 
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if _, ok := v.store.Projects[project]; !ok {
-		v.store.Projects[project] = make(map[string]Secret)
-	}
-
-	v.store.Projects[project][path] = Secret{
-		Value: value,
-		Meta: map[string]string{
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		},
-	}
-
-	return v.saveLocked()
+	return v.mutate(func(st *VaultStore) error {
+		if _, ok := st.Projects[project]; !ok {
+			st.Projects[project] = make(map[string]Secret)
+		}
+		st.Projects[project][path] = Secret{
+			Value: value,
+			Meta: map[string]string{
+				"updated_at": time.Now().UTC().Format(time.RFC3339),
+			},
+		}
+		return nil
+	})
 }
 
 // List returns all secret paths for a given project.
@@ -303,14 +532,8 @@ func (v *Vault) SetBatch(project string, secrets map[string]string) error {
 		return errors.New("invalid project: contains '..'")
 	}
 
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if _, ok := v.store.Projects[project]; !ok {
-		v.store.Projects[project] = make(map[string]Secret)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	// Validate everything before touching state so a bad entry cannot leave
+	// a partially applied batch.
 	for path, value := range secrets {
 		path = strings.TrimSpace(path)
 		if path == "" {
@@ -322,13 +545,23 @@ func (v *Vault) SetBatch(project string, secrets map[string]string) error {
 		if len(value) > 1<<20 {
 			return fmt.Errorf("secret exceeds max size of 1MB: %s", path)
 		}
-		v.store.Projects[project][path] = Secret{
-			Value: value,
-			Meta: map[string]string{
-				"updated_at": now,
-			},
-		}
 	}
 
-	return v.saveLocked()
+	return v.mutate(func(st *VaultStore) error {
+		if _, ok := st.Projects[project]; !ok {
+			st.Projects[project] = make(map[string]Secret)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		for path, value := range secrets {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				continue
+			}
+			st.Projects[project][path] = Secret{
+				Value: value,
+				Meta:  map[string]string{"updated_at": now},
+			}
+		}
+		return nil
+	})
 }

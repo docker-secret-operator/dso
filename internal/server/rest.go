@@ -2,13 +2,12 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"strconv"
@@ -18,7 +17,6 @@ import (
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/watcher"
-	"github.com/docker-secret-operator/dso/internal/webui"
 	"github.com/docker-secret-operator/dso/internal/webuiauth"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
@@ -118,6 +116,23 @@ type RESTServer struct {
 	// Alerts is optional (nil only in older test constructions that predate
 	// this field). Backs GET /api/alerts -- see internal/alert.Evaluator.
 	Alerts *alert.Evaluator
+
+	// AllowedOrigins are extra browser origins accepted by the CSRF origin
+	// check (webui.allowed_origins). Same-origin is always accepted.
+	AllowedOrigins []string
+	// HostGuard, when non-nil, rejects /api requests whose Host header is
+	// neither loopback nor explicitly allowed (DNS-rebinding defense). It is
+	// installed by StartRESTServer; nil (the zero value) disables the check.
+	HostGuard *hostGuard
+
+	// webhookGuard holds replay state and the restart floor for signed
+	// webhooks. StartRESTServer creates it via initWebhookGuard before the
+	// listener starts; struct-literal servers (tests) get a lazy fallback.
+	webhookGuard *replayGuard
+	webhookOnce  sync.Once
+	// legacyWarned limits the per-request legacy-webhook deprecation warning to
+	// once per server; the startup warning is the primary notice.
+	legacyWarned sync.Once
 }
 
 // secureHeaders wraps a handler and adds security response headers to every reply.
@@ -155,10 +170,14 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	}
 
-	// Public endpoints that don't require authorization.
-	// SEC-C3: /api/events/secret-update is intentionally NOT public. The webhook
-	// endpoint must pass through the global DSO auth middleware first (defense in
-	// depth), and then perform its own webhook-token check as a second factor.
+	// DNS-rebinding defense (see hostGuard). /health is exempt so container
+	// health checks addressing the service by name keep working.
+	if s.HostGuard != nil && r.URL.Path != "/health" && !s.HostGuard.allows(r.Host) {
+		http.Error(w, "Forbidden: unrecognized Host header", http.StatusForbidden)
+		return
+	}
+
+	// Public endpoints that don't require the global credential.
 	publicPaths := map[string]bool{
 		"/health":          true,
 		"/api/auth/login":  true,
@@ -166,11 +185,39 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// NOTE: /api/auth/session is intentionally NOT in publicPaths -- its whole
 	// purpose is to report whether the caller's session cookie is valid, so it
-	// must go through the same authorized() gate as any other protected route.
+	// must go through the same gate as any other protected route.
 
-	isPublic := publicPaths[r.URL.Path]
-	if !isPublic && !s.authorized(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	// The webhook (POST only) authenticates itself with its own HMAC credential
+	// in handleSecretUpdate -> authenticateWebhook, which is the sole handler
+	// for this method+path and rejects every request lacking a valid
+	// credential. It must not also require DSO_AUTH_TOKEN: the two credentials
+	// belong to different parties. Any other method on this path (e.g. the GET
+	// that falls through to the events list) still goes through the global gate.
+	isWebhook := r.Method == http.MethodPost && r.URL.Path == webhookPath
+
+	method := authNone
+	if !publicPaths[r.URL.Path] && !isWebhook {
+		var sess *webuiauth.Session
+		method, sess = s.authenticate(r)
+		if method == authNone {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if method == authSession {
+			// Keep the browser cookie lifetime in step with the server-side
+			// idle timer and absolute cap.
+			http.SetCookie(w, s.WebUIAuth.SessionCookie(sess))
+		}
+	}
+
+	// CSRF: state-changing requests (and the WebSocket upgrade, which carries
+	// the ambient cookie) that are not bearer-authenticated must come from an
+	// allowed origin. Bearer-only clients are unaffected. The webhook is
+	// authenticated by signature, not by an ambient credential.
+	if !isWebhook && method != authBearer &&
+		(isUnsafeMethod(r.Method) || r.URL.Path == "/api/events/ws") &&
+		!s.originAllowed(r) {
+		http.Error(w, "Forbidden: cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 
@@ -218,29 +265,12 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authorized implements the composed dual-auth gate: a request is allowed in
-// if EITHER a valid DSO_AUTH_TOKEN bearer token OR (when the WebUI is
-// enabled) a valid webui session cookie is present. This composes the two
-// independent mechanisms rather than replacing either -- see
-// internal/webuiauth's package doc for why they must coexist.
+// authorized reports whether r carries acceptable credentials. See
+// authenticate for the decision table; in particular, enabling the WebUI means
+// an unset DSO_AUTH_TOKEN no longer makes the API open.
 func (s *RESTServer) authorized(r *http.Request) bool {
-	tokenOK := s.Auth == nil || s.Auth.GetToken() == ""
-	if !tokenOK {
-		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		token := strings.TrimPrefix(header, "Bearer ")
-		tokenOK = s.Auth.Verify(token) == nil
-	}
-	if tokenOK {
-		return true
-	}
-
-	if s.WebUIAuth != nil {
-		if _, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
-			return true
-		}
-	}
-
-	return false
+	m, _ := s.authenticate(r)
+	return m != authNone
 }
 
 // handleAuthLogin authenticates the single configured webui operator
@@ -451,30 +481,15 @@ func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) {
-	if s.Config == nil || !s.Config.Agent.Watch.Webhook.Enabled {
-		http.Error(w, "Webhooks are disabled", http.StatusForbidden)
-		return
-	}
-	if s.Config.Agent.Watch.Webhook.AuthToken == "" {
-		http.Error(w, "Webhook auth token is required when webhooks are enabled", http.StatusForbidden)
-		return
-	}
-
-	// SEC-C4: use a constant-time comparison to avoid leaking the webhook token
-	// via response timing. The endpoint is reachable from external systems, so a
-	// byte-by-byte short-circuiting comparison is a directly exploitable timing
-	// oracle. crypto/subtle.ConstantTimeCompare is already the project-wide pattern
-	// (see internal/auth/auth.go, pkg/provider/load.go).
-	authHeader := r.Header.Get("Authorization")
-	expectedToken := "Bearer " + s.Config.Agent.Watch.Webhook.AuthToken
-	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
-		observability.BackendFailuresTotal.WithLabelValues("webhook", "unauthorized").Inc()
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	// Authentication (HMAC signature, or the deprecated bearer token) and the
+	// bounded body read happen here; see webhook_auth.go.
+	body, ok := s.authenticateWebhook(w, r)
+	if !ok {
 		return
 	}
 
 	var payload WebhookPayload
-	if ierr := json.NewDecoder(r.Body).Decode(&payload); ierr != nil {
+	if ierr := json.Unmarshal(body, &payload); ierr != nil {
 		http.Error(w, "Invalid Payload", http.StatusBadRequest)
 		return
 	}
@@ -961,7 +976,7 @@ func (s *RESTServer) handleIntegrations(w http.ResponseWriter, r *http.Request) 
 			Name:           "secret-update-webhook",
 			Type:           "webhook",
 			Enabled:        webhook.Enabled,
-			AuthConfigured: webhook.AuthToken != "",
+			AuthConfigured: webhook.AuthToken != "" || webhook.HMACSecret != "",
 		})
 
 		providerCount := len(s.Config.Providers)
@@ -1074,13 +1089,18 @@ const (
 )
 
 func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger, reloader *watcher.ReloaderController) (func(), error) {
-	if bindsPublic(addr) && os.Getenv("DSO_AUTH_TOKEN") == "" {
+	// One Authenticator is the single source of truth for "is a bearer token
+	// configured": the startup guards below, the legacy-open-mode decision in
+	// buildAccessWiring and RESTServer.authenticate all consult it.
+	authn := auth.NewAuthenticator()
+
+	if bindsPublic(addr) && !authn.Enabled() {
 		return nil, fmt.Errorf(
 			"refusing to start REST API on non-loopback address %q without authentication: "+
 				"set DSO_AUTH_TOKEN, or bind the API to a loopback address (e.g. 127.0.0.1)", addr)
 	}
 
-	if token := os.Getenv("DSO_AUTH_TOKEN"); token != "" {
+	if token := authn.GetToken(); token != "" {
 		if len(token) < minAuthTokenBytes {
 			return nil, fmt.Errorf(
 				"DSO_AUTH_TOKEN is too short (%d bytes); minimum is %d bytes — use a random token of at least 16 characters",
@@ -1091,6 +1111,17 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 				"DSO_AUTH_TOKEN exceeds maximum length (%d bytes); maximum is %d bytes",
 				len(token), maxAuthTokenBytes)
 		}
+	}
+
+	if err := validateWebhookConfig(cfg, logger); err != nil {
+		return nil, err
+	}
+
+	// Computed before anything is allocated so a bad webui.* setting fails
+	// startup cleanly.
+	access, err := buildAccessWiring(cfg, authn, addr, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	hub := NewHub(logger)
@@ -1144,48 +1175,14 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Logger:        logger,
 		Hub:           hub,
 		EventStore:    eventStore,
-		Auth:          auth.NewAuthenticator(),
+		Auth:          authn,
 		Reloader:      reloader,
 		Alerts:        alertEvaluator,
 	}
-
-	// Only construct a webuiauth.Manager (and thereby expose /api/auth/*)
-	// when the operator has explicitly enabled the WebUI in config. This
-	// keeps existing deployments' behavior byte-for-byte identical unless
-	// they opt in.
-	if cfg != nil && cfg.WebUI.Enabled {
-		idleTimeout := webuiauth.DefaultIdleTimeout
-		if cfg.WebUI.SessionIdleTimeout != "" {
-			if d, err := time.ParseDuration(cfg.WebUI.SessionIdleTimeout); err == nil {
-				idleTimeout = d
-			} else {
-				logger.Warn("Invalid webui.session_idle_timeout, using default",
-					zap.String("value", cfg.WebUI.SessionIdleTimeout), zap.Error(err))
-			}
-		}
-		mgr := webuiauth.NewManager(cfg.WebUI.Username, cfg.WebUI.PasswordHash, idleTimeout)
-		secure, warning := resolveCookieSecure(cfg.WebUI.CookieSecure, addr)
-		mgr.Secure = secure
-		if warning != "" {
-			logger.Warn(warning)
-		}
-		restServer.WebUIAuth = mgr
-
-		// Mount the embedded WebUI static assets onto this same listener.
-		// WebUIConfig.ListenAddress is documented as "if empty, mounts onto
-		// the existing REST API listener" -- that is the only mode
-		// implemented here. A second, independently-addressed listener is
-		// explicitly out of scope for this integration (DSO is one binary,
-		// one process, one mux), so a non-empty ListenAddress is currently
-		// ignored other than being available for a future iteration to act
-		// on; it does not cause a second http.Server to start.
-		assets, err := webui.Assets()
-		if err != nil {
-			logger.Warn("Failed to load embedded WebUI assets; WebUI will not be served", zap.Error(err))
-		} else {
-			restServer.WebUI = webui.NewHandler(assets)
-		}
-	}
+	restServer.applyAccessWiring(access)
+	// Establish webhook replay state and its restart floor now, before the
+	// listener below accepts a single request (not lazily on the first webhook).
+	restServer.initWebhookGuard(time.Now())
 
 	// Rate-limit: 10 requests/second sustained, burst of 30.
 	// This is generous for any legitimate DSO client while stopping floods.

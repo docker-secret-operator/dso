@@ -21,10 +21,36 @@ type WatchConfig struct {
 	Webhook         WebhookConfig `yaml:"webhook"`
 }
 
+// Struct-tag vocabulary used by RedactYAML (see redact.go) to keep credentials
+// out of `dso config show` and any other human-readable dump of the file:
+//
+//	dso:"secret"        every scalar under this field is a credential
+//	dso:"url"           URL whose userinfo/path/query may carry a credential
+//	dso:"secret-by-key" map whose entries are credentials when the KEY looks
+//	                    like one (token, password, secret, key, ...)
+//
+// Any new field that holds a credential MUST carry one of these tags;
+// TestSchemaCredentialFieldsAreTagged fails if a credential-looking field
+// is added without one.
 type WebhookConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	AuthToken string `yaml:"auth_token"`
+	Enabled bool `yaml:"enabled"`
+	// AuthToken is the LEGACY shared bearer credential
+	// ("Authorization: Bearer <auth_token>"). It has no body integrity and no
+	// replay protection and is deprecated in favor of HMACSecret. It is still
+	// honored for one release unless DisableLegacyAuth is set.
+	AuthToken string `yaml:"auth_token" dso:"secret"`
 	Endpoint  string `yaml:"endpoint,omitempty"`
+	// HMACSecret is the shared key used to verify HMAC-SHA256 request
+	// signatures (X-DSO-Timestamp / X-DSO-Signature). Minimum 16 bytes. It is
+	// independent of DSO_AUTH_TOKEN and of AuthToken.
+	HMACSecret string `yaml:"hmac_secret,omitempty" dso:"secret"`
+	// TimestampTolerance is the maximum clock difference accepted between the
+	// signed timestamp and the server clock, as a Go duration (default "5m",
+	// maximum "1h"). It also bounds how long replay-protection state is kept.
+	TimestampTolerance string `yaml:"timestamp_tolerance,omitempty"`
+	// DisableLegacyAuth rejects the deprecated bearer-token form so only
+	// signed requests are accepted.
+	DisableLegacyAuth bool `yaml:"disable_legacy_auth,omitempty"`
 }
 
 // NotificationsConfig configures outbound rotation-event notifications
@@ -46,7 +72,7 @@ type NotificationsConfig struct {
 
 // NotificationWebhook is one outbound notification destination.
 type NotificationWebhook struct {
-	URL string `yaml:"url"`
+	URL string `yaml:"url" dso:"url"`
 	// Timeout per delivery attempt, e.g. "10s". Default 10s.
 	Timeout string `yaml:"timeout,omitempty"`
 	// MaxRetries for transient failures (network errors, HTTP 5xx).
@@ -76,7 +102,7 @@ type WebUIConfig struct {
 	Username string `yaml:"username,omitempty"`
 	// PasswordHash is a bcrypt hash of the operator's password. Never
 	// store a plaintext password here.
-	PasswordHash string `yaml:"password_hash,omitempty"`
+	PasswordHash string `yaml:"password_hash,omitempty" dso:"secret"`
 	// SessionIdleTimeout is how long an unused session stays valid, e.g.
 	// "30m". Defaults to 30m if empty.
 	SessionIdleTimeout string `yaml:"session_idle_timeout,omitempty"`
@@ -88,6 +114,25 @@ type WebUIConfig struct {
 	// speaks plain HTTP on a loopback or internal address). "never" forces
 	// Secure=false -- local plain-HTTP development only.
 	CookieSecure string `yaml:"cookie_secure,omitempty"`
+	// SessionMaxLifetime is the absolute lifetime of a session regardless of
+	// activity, as a Go duration (default "24h"). "0" disables the cap.
+	SessionMaxLifetime string `yaml:"session_max_lifetime,omitempty"`
+	// AllowedOrigins lists additional browser origins (e.g.
+	// "https://dso.example.com") permitted to make cookie-authenticated
+	// state-changing requests. Same-origin requests are always allowed. Needed
+	// only when a reverse proxy rewrites the Host header. Their hosts are also
+	// accepted by the Host check.
+	AllowedOrigins []string `yaml:"allowed_origins,omitempty"`
+	// AllowedHosts lists additional Host header values (hostnames, no port)
+	// accepted by the REST API. Loopback names are always accepted. When the
+	// API runs without any authentication (legacy loopback mode) a Host check
+	// is always enforced to defeat DNS rebinding; list your reverse proxy's
+	// public hostname here if you front that mode with one.
+	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
+	// TrustedProxies lists IPs/CIDRs of reverse proxies whose X-Forwarded-For
+	// header is honored for per-client login throttling. Empty (default)
+	// means forwarded headers are never trusted.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
 }
 
 type RotationConfigV2 struct {
@@ -99,7 +144,7 @@ type RotationConfigV2 struct {
 
 type AuthConfig struct {
 	Method string            `yaml:"method"` // iam_role, access_key, token, env
-	Params map[string]string `yaml:"params,omitempty"`
+	Params map[string]string `yaml:"params,omitempty" dso:"secret"`
 }
 
 type RetryConfig struct {
@@ -112,7 +157,7 @@ type ProviderConfig struct {
 	Region string            `yaml:"region,omitempty"`
 	Auth   AuthConfig        `yaml:"auth,omitempty"`
 	Retry  RetryConfig       `yaml:"retry,omitempty"`
-	Config map[string]string `yaml:"config,omitempty"`
+	Config map[string]string `yaml:"config,omitempty" dso:"secret-by-key"`
 }
 
 type InjectionConfig struct {
@@ -178,7 +223,7 @@ type Config struct {
 
 	// Legacy fields for backward compatibility detection
 	LegacyProvider string            `yaml:"provider,omitempty"`
-	LegacyConfig   map[string]string `yaml:"config,omitempty"`
+	LegacyConfig   map[string]string `yaml:"config,omitempty" dso:"secret-by-key"`
 }
 
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
