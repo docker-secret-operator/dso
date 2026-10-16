@@ -7,45 +7,67 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 const (
 	// maxLoginFailures is the number of failed login attempts allowed from a
-	// single client IP within loginFailureWindow before further attempts are
-	// throttled.
+	// single client key (an IPv4 address or an IPv6 /64) within
+	// loginFailureWindow before further attempts are throttled.
 	maxLoginFailures = 5
 
 	// loginFailureWindow is the sliding window during which failures are
-	// counted. A key that has gone this long since its last failure is
-	// treated as recovered.
+	// counted. A key that has gone this long since its first counted failure
+	// is treated as recovered.
 	loginFailureWindow = 15 * time.Minute
 
 	// loginLimiterCleanupInterval mirrors rateLimitMiddleware's cleanup
-	// cadence (internal/server/ratelimit.go) so stale per-IP entries don't
+	// cadence (internal/server/ratelimit.go) so stale per-key entries don't
 	// grow the map unboundedly.
 	loginLimiterCleanupInterval = 5 * time.Minute
+
+	// loginIPv6PrefixBits is the IPv6 aggregation prefix. A single customer or
+	// host is normally delegated a /64 (SLAAC requires it), so an attacker can
+	// cheaply rotate through 2^64 addresses inside it; counting per address
+	// would give them an unlimited guessing budget. IPv4 is counted per
+	// address.
+	loginIPv6PrefixBits = 64
+
+	// Global backstop. Per-key accounting cannot stop an attacker who owns many
+	// prefixes, so the number of password verifications (bcrypt runs) that may
+	// start across ALL clients is also bounded: a sustained rate of one per
+	// globalLoginInterval with a burst of globalLoginBurst. That is ~450
+	// guesses per 15 minutes in total, versus unbounded without it. A
+	// successful login refunds its token. Trade-off: during a sustained
+	// distributed attack the real operator may also see HTTP 429 until the
+	// bucket refills; their own successful logins cost nothing.
+	globalLoginInterval = 2 * time.Second
+	globalLoginBurst    = 20
 )
 
-// loginAttempts tracks failed login attempts for one client key (IP).
+// loginAttempts tracks one client key.
 type loginAttempts struct {
-	failures    int
-	windowStart time.Time
+	failures    int       // counted failures in the current window
+	inflight    int       // reserved attempts whose outcome is not yet known
+	windowStart time.Time // start of the current failure window
 	lastSeen    time.Time
 }
 
-// loginLimiter is a bounded, concurrency-safe tracker of failed WebUI login
-// attempts, keyed by client IP rather than username -- this is a
-// single-operator model with exactly one valid username, so keying by
-// username would let an off-path attacker lock out the real operator simply
-// by submitting failed logins for their name from anywhere.
+// loginLimiter is a bounded, concurrency-safe tracker of login attempts keyed
+// by client key rather than username -- this is a single-operator model with
+// exactly one valid username, so keying by username would let an off-path
+// attacker lock out the real operator.
 //
-// It follows the same self-cleaning map + periodic sweep pattern as
-// internal/server/ratelimit.go's rateLimitMiddleware, kept here in
-// webuiauth because this is auth-domain policy (credential stuffing
-// protection), not generic HTTP throttling.
+// Accounting is by reservation: reserve() atomically checks AND claims a slot
+// (failures + inflight < maxLoginFailures) before any expensive password
+// verification starts, and finish() resolves it. Check-then-record would let
+// N concurrent requests all pass the check before the first failure is
+// recorded, multiplying the budget by the burst size.
 type loginLimiter struct {
 	mu       sync.Mutex
 	attempts map[string]*loginAttempts
+	global   *rate.Limiter
 
 	// now is overridable for tests.
 	now func() time.Time
@@ -54,52 +76,103 @@ type loginLimiter struct {
 func newLoginLimiter() *loginLimiter {
 	l := &loginLimiter{
 		attempts: make(map[string]*loginAttempts),
+		global:   rate.NewLimiter(rate.Every(globalLoginInterval), globalLoginBurst),
 		now:      time.Now,
 	}
 	go l.cleanupLoop()
 	return l
 }
 
-// allowed reports whether a login attempt from key may proceed (i.e. run
-// bcrypt at all). It does not itself record anything -- callers record the
-// outcome via recordFailure/recordSuccess once the attempt has been made.
-func (l *loginLimiter) allowed(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// outcome of a reserved attempt.
+type loginOutcome int
 
-	a, ok := l.attempts[key]
-	if !ok {
-		return true
-	}
-	if l.now().Sub(a.windowStart) > loginFailureWindow {
-		// Window has elapsed; treat as recovered.
-		delete(l.attempts, key)
-		return true
-	}
-	return a.failures < maxLoginFailures
+const (
+	// outcomeNeutral releases the reservation without counting anything: the
+	// attempt did not test the credential (internal error, panic).
+	outcomeNeutral loginOutcome = iota
+	outcomeFailure
+	outcomeSuccess
+)
+
+// reservation is a claimed slot. Exactly one finish call must follow.
+type reservation struct {
+	l    *loginLimiter
+	key  string
+	glob *rate.Reservation
+	done bool
 }
 
-// recordFailure increments the failure count for key, starting a new window
-// if none is active or the previous one has expired.
-func (l *loginLimiter) recordFailure(key string) {
+// reserve claims an attempt for key. It returns nil when the key is over its
+// budget (counting attempts still in flight) or the global bucket is empty. No
+// state is changed in the denied case, so denied requests cost nothing.
+func (l *loginLimiter) reserve(key string) *reservation {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := l.now()
 	a, ok := l.attempts[key]
-	if !ok || now.Sub(a.windowStart) > loginFailureWindow {
-		a = &loginAttempts{windowStart: now}
+	if ok && a.failures > 0 && now.Sub(a.windowStart) > loginFailureWindow {
+		a.failures = 0 // window elapsed: recovered
+	}
+	if ok && a.failures+a.inflight >= maxLoginFailures {
+		return nil
+	}
+	g := l.global.ReserveN(now, 1)
+	if !g.OK() || g.DelayFrom(now) > 0 {
+		g.CancelAt(now)
+		return nil
+	}
+	if !ok {
+		a = &loginAttempts{}
 		l.attempts[key] = a
 	}
-	a.failures++
+	if a.failures == 0 {
+		a.windowStart = now
+	}
+	a.inflight++
 	a.lastSeen = now
+	return &reservation{l: l, key: key, glob: g}
 }
 
-// recordSuccess resets the failure counter for key on a successful login.
-func (l *loginLimiter) recordSuccess(key string) {
+// finish resolves the reservation. Safe to call more than once (later calls
+// are no-ops), which makes `defer r.finish(outcomeNeutral)` a correct panic
+// safety net.
+func (r *reservation) finish(o loginOutcome) {
+	if r == nil {
+		return
+	}
+	l := r.l
 	l.mu.Lock()
-	delete(l.attempts, key)
-	l.mu.Unlock()
+	defer l.mu.Unlock()
+	if r.done {
+		return
+	}
+	r.done = true
+	now := l.now()
+	a := l.attempts[r.key]
+	if a == nil { // swept (cannot happen while inflight > 0, but stay safe)
+		a = &loginAttempts{windowStart: now}
+		l.attempts[r.key] = a
+	}
+	if a.inflight > 0 {
+		a.inflight--
+	}
+	a.lastSeen = now
+	switch o {
+	case outcomeFailure:
+		if a.failures == 0 {
+			a.windowStart = now
+		}
+		a.failures++
+	case outcomeSuccess:
+		a.failures = 0
+		r.glob.CancelAt(now) // a correct password is not a guess: refund the global token
+	case outcomeNeutral:
+		r.glob.CancelAt(now)
+	}
+	if a.failures == 0 && a.inflight == 0 {
+		delete(l.attempts, r.key)
+	}
 }
 
 func (l *loginLimiter) cleanupLoop() {
@@ -107,14 +180,30 @@ func (l *loginLimiter) cleanupLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		l.mu.Lock()
-		cutoff := time.Now().Add(-loginLimiterCleanupInterval)
+		cutoff := l.now().Add(-loginLimiterCleanupInterval)
 		for key, a := range l.attempts {
-			if a.lastSeen.Before(cutoff) {
+			if a.inflight == 0 && a.lastSeen.Before(cutoff) {
 				delete(l.attempts, key)
 			}
 		}
 		l.mu.Unlock()
 	}
+}
+
+// throttleKey normalizes a client address into the accounting key: IPv4 (and
+// IPv4-mapped IPv6) per address, IPv6 per /loginIPv6PrefixBits prefix.
+// Anything that is not an IP is used verbatim (it cannot be attacker-chosen
+// beyond what the socket layer reports).
+func throttleKey(addr string) string {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return addr
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String()
+	}
+	masked := ip.Mask(net.CIDRMask(loginIPv6PrefixBits, 128))
+	return fmt.Sprintf("%s/%d", masked, loginIPv6PrefixBits)
 }
 
 // clientKeyFromRequest extracts the client IP from a request's RemoteAddr,
@@ -242,19 +331,19 @@ func (m *Manager) clientKey(r *http.Request) string {
 	defer m.mu.Unlock()
 	peerIP := net.ParseIP(peer)
 	if len(m.trustedProxies) == 0 || peerIP == nil || !m.isTrustedProxy(peerIP) {
-		return peer
+		return throttleKey(peer)
 	}
 	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		ip := net.ParseIP(strings.TrimSpace(hops[i]))
 		if ip == nil {
-			return peer
+			return throttleKey(peer)
 		}
 		if !m.isTrustedProxy(ip) {
-			return ip.String()
+			return throttleKey(ip.String())
 		}
 	}
-	return peer
+	return throttleKey(peer)
 }
 
 // ErrTooManyLoginAttempts is returned by LoginFromRequest when the calling
@@ -273,27 +362,38 @@ func (e *loginRateLimitError) Error() string {
 	return "webuiauth: too many failed login attempts"
 }
 
-// LoginFromRequest wraps Login with per-client-IP failure throttling. On
-// success it resets the IP's failure counter. On failure it records the
-// failure and returns ErrInvalidCredentials as before. If the IP has
-// already exceeded the failure budget, it returns ErrTooManyLoginAttempts
-// without calling bcrypt at all -- so the request has no more compute cost
-// than any other rejected request, actually blunting the credential
-// stuffing attack rather than just labeling it.
+// LoginFromRequest wraps Login with failure throttling per client key (IPv4
+// address or IPv6 /64) plus a global bound on password verifications.
+//
+// An attempt is RESERVED before bcrypt runs, so concurrent requests cannot
+// all pass a budget check before any failure is recorded. The reservation is
+// resolved as follows:
+//
+//   - wrong credentials: counted as a failure for the key;
+//   - correct credentials: the key's failure counter is reset and the global
+//     token refunded;
+//   - any other outcome (internal error, panic): released without counting,
+//     because the credential was not actually tested.
+//
+// Over budget, it returns ErrTooManyLoginAttempts without running bcrypt, so
+// a throttled request costs no more than any other rejected request.
 func (m *Manager) LoginFromRequest(r *http.Request, username, password string) (*Session, error) {
-	key := m.clientKey(r)
-
-	if !m.loginLimiter().allowed(key) {
+	res := m.loginLimiter().reserve(m.clientKey(r))
+	if res == nil {
 		return nil, ErrTooManyLoginAttempts
 	}
+	defer res.finish(outcomeNeutral) // panic safety net; no-op after an explicit finish
 
 	sess, err := m.Login(username, password)
-	if err != nil {
-		m.loginLimiter().recordFailure(key)
-		return nil, err
+	switch {
+	case err == nil:
+		res.finish(outcomeSuccess)
+	case err == ErrInvalidCredentials:
+		res.finish(outcomeFailure)
+	default:
+		res.finish(outcomeNeutral)
 	}
-	m.loginLimiter().recordSuccess(key)
-	return sess, nil
+	return sess, err
 }
 
 // loginLimiter lazily initializes m.limiter under m.mu so existing callers

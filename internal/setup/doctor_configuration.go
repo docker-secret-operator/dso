@@ -112,10 +112,10 @@ func (cc *ConfigurationChecks) checkConfigMode() DoctorCheck {
 	// group-write (0020) — the only allowed group bit is group-read (0040).
 	if mode&0027 != 0 {
 		return warnCheck(id, name, desc,
-			fmt.Sprintf("config mode is %04o — more permissive than recommended 0600", mode),
+			fmt.Sprintf("config mode is %04o — more permissive than the allowed 0640 (no world access, no group write)", mode),
 			"Overly permissive config may expose secret provider credentials to other users",
 			DoctorCatConfiguration,
-			fmt.Sprintf("Tighten permissions: chmod 600 %s", cc.configPath),
+			fmt.Sprintf("Tighten permissions: chown root:dso %[1]s && chmod 0640 %[1]s (or chmod 0600 %[1]s if the agent runs as the file owner)", cc.configPath),
 		)
 	}
 	return passCheck(id, name, desc,

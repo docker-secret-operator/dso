@@ -85,6 +85,10 @@ func NewAgentCmd() *cobra.Command {
 					zap.String("config_path", cfgPath))
 			}
 
+			if advisory := config.PermissionAdvisory(cfgPath); advisory != "" {
+				logger.Warn(advisory)
+			}
+
 			// Initialize Cache & Store
 			cache := agent.NewSecretCache(5 * time.Minute)
 			defer cache.Close()
