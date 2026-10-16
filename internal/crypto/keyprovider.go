@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/docker-secret-operator/dso/internal/securefs"
 )
 
 // KeyProvider protects project DEKs with a root key that is never stored in
@@ -105,10 +107,12 @@ func InstallKeyFile(path string) (keyIDOut string, err error) {
 
 func installExclusive(path string, content []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating key directory: %w", err)
+	// The directory must not let another account replace the key (see
+	// securefs); it is created 0700 when missing and never re-moded.
+	if err := securefs.EnsureDir(dir); err != nil {
+		return fmt.Errorf("key directory is not safe: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".dso-key-*")
+	tmp, err := os.CreateTemp(dir, staleTempPrefix+"*")
 	if err != nil {
 		return fmt.Errorf("creating temporary key file: %w", err)
 	}
@@ -142,37 +146,29 @@ func installExclusive(path string, content []byte) error {
 	return nil
 }
 
-// readKeyFile opens path without following symlinks, requires a regular file
-// owned by the current user and not accessible by group/other, and returns its
-// contents.
+// readKeyFile reads a key or KDF-parameter file. securefs checks the whole
+// directory chain (no group/other-writable or foreign-owned directories, no
+// planted symlinks) and the file itself on the open descriptor (regular, owned
+// by the current user, no group/other access).
 func readKeyFile(path string) ([]byte, error) {
-	f, err := openNoFollow(path)
+	b, err := securefs.ReadPrivateFile(path, 1<<16)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrKeyMaterial, sanitizeOpenErr(err))
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrKeyMaterial, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s is not a regular file", ErrKeyMaterial, path)
-	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("%w: %s has mode %04o; it must not be accessible by group or others (chmod 400 %s)",
-			ErrKeyMaterial, path, fi.Mode().Perm(), path)
-	}
-	if !ownedByCurrentUser(fi) {
-		return nil, fmt.Errorf("%w: %s is not owned by the current user", ErrKeyMaterial, path)
-	}
-	if fi.Size() > 1<<16 {
-		return nil, fmt.Errorf("%w: %s is too large", ErrKeyMaterial, path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 1<<16))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrKeyMaterial, err)
+		return nil, fmt.Errorf("%w: %s", ErrKeyMaterial, sanitizeOpenErr(err))
 	}
 	return b, nil
+}
+
+// staleTempPrefix names the temporary file InstallKeyFile writes before linking
+// it into place. A crash can leave one behind; it holds key material.
+const staleTempPrefix = ".dso-key-"
+
+// StaleTempKeyFiles lists leftover temporary key files in dir (left by a crash
+// during installation). They are reported, never deleted: a leftover may be the
+// only copy of a key that was about to be installed, and removing key material
+// automatically is not this package's call.
+func StaleTempKeyFiles(dir string) []string {
+	matches, _ := filepath.Glob(filepath.Join(dir, staleTempPrefix+"*"))
+	return matches
 }
 
 func sanitizeOpenErr(err error) string {

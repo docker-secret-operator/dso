@@ -127,6 +127,13 @@ func SecretAAD(projectID, environmentID, secretID, name string, version int, dek
 }
 
 // DEKAAD is the authenticated context of a wrapped project DEK.
+// BindingAAD is the authenticated context of the database-to-root-key canary.
+// It names the root key id, so a canary wrapped under one key cannot verify as
+// another's.
+func BindingAAD(keyID string) []byte {
+	return aad("dso/store-binding/v1", keyID)
+}
+
 func DEKAAD(projectID, keyID string, dekVersion int) []byte {
 	return aad("dso/project-dek/v1", projectID, keyID, fmt.Sprintf("dek%d", dekVersion))
 }

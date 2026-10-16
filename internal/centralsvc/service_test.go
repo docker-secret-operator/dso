@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 	_ "modernc.org/sqlite"
@@ -36,7 +38,7 @@ type env struct {
 
 func setup(t *testing.T) *env {
 	t.Helper()
-	dir := t.TempDir()
+	dir := securefstest.TempDir(t)
 	e := &env{dbPath: filepath.Join(dir, "data", "c.db"), keyPath: filepath.Join(dir, "keys", "root.key")}
 	if _, err := crypto.InstallKeyFile(e.keyPath); err != nil {
 		t.Fatal(err)
@@ -154,8 +156,18 @@ func TestDisableAndDelete(t *testing.T) {
 	if err := e.svc.DisableVersion(ctx, "app", "prod", "K", 2, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustGet(t, e, "app", "prod", "K", 0); got != "one" {
-		t.Fatalf("latest after disabling v2 = %q", got)
+	// Disabling the newest version must NOT silently serve v1 (review M1-6).
+	if v, err := e.svc.GetValue(ctx, "app", "prod", "K", 0); !errors.Is(err, store.ErrLatestVersionDisabled) || len(v.Plaintext) != 0 {
+		t.Fatalf("latest after disabling v2 must fail closed, got %q err=%v", v.Plaintext, err)
+	}
+	if got := mustGet(t, e, "app", "prod", "K", 1); got != "one" { // explicit version still readable
+		t.Fatalf("explicit v1 = %q", got)
+	}
+	if _, err := e.svc.AddVersion(ctx, "app", "prod", "K", []byte("three"), "a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, e, "app", "prod", "K", 0); got != "three" {
+		t.Fatalf("latest after adding v3 = %q", got)
 	}
 	if _, err := e.svc.GetValue(ctx, "app", "prod", "K", 2); !errors.Is(err, store.ErrVersionDisabled) {
 		t.Fatalf("disabled read: %v", err)
@@ -441,7 +453,7 @@ func TestWrongRootKeyFailsClosedAndWritesNothing(t *testing.T) {
 	e.project(t, "app", "prod")
 	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
 
-	otherKey := filepath.Join(t.TempDir(), "other.key")
+	otherKey := filepath.Join(securefstest.TempDir(t), "other.key")
 	crypto.InstallKeyFile(otherKey)
 	kp, _ := crypto.NewFileKeyProvider(otherKey)
 	bad := New(e.st, kp, nil)
@@ -518,7 +530,7 @@ func TestRestartPersistenceWithFreshKeyProviderAndMissingKey(t *testing.T) {
 }
 
 func TestPassphraseProviderEndToEnd(t *testing.T) {
-	dir := t.TempDir()
+	dir := securefstest.TempDir(t)
 	kf := filepath.Join(dir, "k", "root.pass")
 	pass := []byte("a sufficiently long passphrase")
 	if _, err := crypto.InstallPassphraseKeyFile(kf, pass); err != nil {

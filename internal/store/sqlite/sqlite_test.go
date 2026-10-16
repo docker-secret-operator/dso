@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/store"
@@ -22,7 +24,7 @@ var ctx = context.Background()
 
 func open(t *testing.T) (*Store, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "db", "central.db")
+	path := filepath.Join(securefstest.TempDir(t), "db", "central.db")
 	s, err := Open(ctx, path, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +60,7 @@ func sealN(tag string) store.SealFunc {
 
 func TestSchemaInitialisation(t *testing.T) {
 	s, path := open(t)
-	if v, err := s.SchemaVersion(ctx); err != nil || v != 1 {
+	if v, err := s.SchemaVersion(ctx); err != nil || v != curV {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	var mode string
@@ -76,7 +78,7 @@ func TestSchemaInitialisation(t *testing.T) {
 	if sync != 2 { // FULL
 		t.Fatalf("synchronous=%d, want FULL(2)", sync)
 	}
-	for _, tbl := range []string{"projects", "environments", "secrets", "secret_versions", "schema_migrations"} {
+	for _, tbl := range []string{"projects", "environments", "secrets", "secret_versions", "schema_migrations", "store_meta"} {
 		var n int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("table %s missing", tbl)
@@ -99,7 +101,7 @@ func TestSchemaInitialisation(t *testing.T) {
 }
 
 func TestOpenRefusesInsecureOrInvalidFiles(t *testing.T) {
-	d := t.TempDir()
+	d := securefstest.TempDir(t)
 	loose := filepath.Join(d, "loose.db")
 	os.WriteFile(loose, nil, 0o644)
 	os.Chmod(loose, 0o644)
@@ -122,7 +124,7 @@ func TestOpenRefusesInsecureOrInvalidFiles(t *testing.T) {
 }
 
 func TestPathCannotInjectDSNOptions(t *testing.T) {
-	d := filepath.Join(t.TempDir(), "a?b#c%d")
+	d := filepath.Join(securefstest.TempDir(t), "a?b#c%d")
 	path := filepath.Join(d, "x.db?mode=ro&_pragma=foreign_keys(0)")
 	s, err := Open(ctx, path, Options{})
 	if err != nil {
@@ -165,14 +167,14 @@ func TestRestartPersistence(t *testing.T) {
 	if err != nil || string(rec.Ciphertext) != "x-v2" || rec.Comment != "second" {
 		t.Fatalf("version lost: %+v %v", rec, err)
 	}
-	if v, _ := s2.SchemaVersion(ctx); v != 1 {
+	if v, _ := s2.SchemaVersion(ctx); v != curV {
 		t.Fatal("schema version not persisted")
 	}
 }
 
 func TestCrashRecoveryUncheckpointedWAL(t *testing.T) {
 	// Write, then abandon the handle without Close (no checkpoint), and reopen.
-	path := filepath.Join(t.TempDir(), "c.db")
+	path := filepath.Join(securefstest.TempDir(t), "c.db")
 	s, err := Open(ctx, path, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -193,26 +195,29 @@ func TestCrashRecoveryUncheckpointedWAL(t *testing.T) {
 // ---- migrations -------------------------------------------------------------
 
 func TestMigrationUpgradePreservesDataAndBacksUp(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "m.db")
+	path := filepath.Join(securefstest.TempDir(t), "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
 	s.CreateSecret(ctx, newSecret("s1", "A"))
 	s.Close()
 
 	embedded, _ := EmbeddedMigrations()
-	more := append(append([]Migration{}, embedded...), Migration{Version: 2, SQL: `ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT ''`})
+	more := append(append([]Migration{}, embedded...), Migration{Version: curV + 1, SQL: `ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT ''`})
 	s2, err := Open(ctx, path, Options{Migrations: more})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s2.Close()
-	if v, _ := s2.SchemaVersion(ctx); v != 2 {
+	if v, _ := s2.SchemaVersion(ctx); v != curV+1 {
 		t.Fatalf("version %d", v)
 	}
 	if _, err := s2.GetSecret(ctx, "e1", "A"); err != nil {
 		t.Fatalf("data lost in migration: %v", err)
 	}
-	bak := path + ".pre-migration-v1.bak"
+	bak := s2.LastMigrationBackup()
+	if !strings.HasPrefix(bak, path+".pre-migration-v"+strconv.Itoa(curV)+"-") || !strings.HasSuffix(bak, ".bak") {
+		t.Fatalf("unexpected backup name %q", bak)
+	}
 	fi, err := os.Stat(bak)
 	if err != nil {
 		t.Fatalf("no pre-migration backup: %v", err)
@@ -225,21 +230,21 @@ func TestMigrationUpgradePreservesDataAndBacksUp(t *testing.T) {
 		t.Fatalf("backup unusable: %v", err)
 	}
 	defer b.Close()
-	if v, _ := b.SchemaVersion(ctx); v != 1 {
+	if v, _ := b.SchemaVersion(ctx); v != curV {
 		t.Fatalf("backup should be at the old schema, got %d", v)
 	}
 }
 
 func TestFailedMigrationRollsBackCompletely(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "f.db")
+	path := filepath.Join(securefstest.TempDir(t), "f.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
 	s.Close()
 	embedded, _ := EmbeddedMigrations()
-	bad := append(append([]Migration{}, embedded...), Migration{Version: 2, SQL: `
+	bad := append(append([]Migration{}, embedded...), Migration{Version: curV + 1, SQL: `
 		ALTER TABLE projects ADD COLUMN half_applied TEXT;
 		INSERT INTO no_such_table VALUES (1);`})
-	if _, err := Open(ctx, path, Options{Migrations: bad}); err == nil || !strings.Contains(err.Error(), "migration 2") {
+	if _, err := Open(ctx, path, Options{Migrations: bad}); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("migration %d", curV+1)) {
 		t.Fatalf("expected migration failure naming version 2, got %v", err)
 	}
 	s2, err := Open(ctx, path, Options{})
@@ -247,7 +252,7 @@ func TestFailedMigrationRollsBackCompletely(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s2.Close()
-	if v, _ := s2.SchemaVersion(ctx); v != 1 {
+	if v, _ := s2.SchemaVersion(ctx); v != curV {
 		t.Fatalf("version advanced to %d after failed migration", v)
 	}
 	if _, err := s2.db.Exec(`SELECT half_applied FROM projects`); err == nil {
@@ -259,9 +264,9 @@ func TestFailedMigrationRollsBackCompletely(t *testing.T) {
 }
 
 func TestNewerSchemaIsRefusedAndUntouched(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "n.db")
+	path := filepath.Join(securefstest.TempDir(t), "n.db")
 	embedded, _ := EmbeddedMigrations()
-	newer := append(append([]Migration{}, embedded...), Migration{Version: 2, SQL: `CREATE TABLE future(x)`})
+	newer := append(append([]Migration{}, embedded...), Migration{Version: curV + 1, SQL: `CREATE TABLE future(x)`})
 	s, err := Open(ctx, path, Options{Migrations: newer})
 	if err != nil {
 		t.Fatal(err)
@@ -271,13 +276,13 @@ func TestNewerSchemaIsRefusedAndUntouched(t *testing.T) {
 	if !errors.Is(err, store.ErrSchemaTooNew) {
 		t.Fatalf("expected ErrSchemaTooNew, got %v", err)
 	}
-	if _, err := os.Stat(path + ".pre-migration-v2.bak"); err == nil {
+	if m, _ := filepath.Glob(path + ".pre-migration-*"); len(m) != 0 {
 		t.Fatal("refusal created a backup / modified the database")
 	}
 }
 
 func TestMigrationListValidation(t *testing.T) {
-	p := func() string { return filepath.Join(t.TempDir(), "v.db") }
+	p := func() string { return filepath.Join(securefstest.TempDir(t), "v.db") }
 	for name, ms := range map[string][]Migration{
 		"starts-at-2": {{Version: 2, SQL: "SELECT 1"}},
 		"duplicate":   {{Version: 1, SQL: "SELECT 1"}, {Version: 1, SQL: "SELECT 1"}},
@@ -456,23 +461,34 @@ func TestVersionRetrievalAndDisable(t *testing.T) {
 	if err := s.DisableVersion(ctx, "s1", 3, "t"); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := s.GetLatestVersion(ctx, "s1"); err != nil || r.Version != 2 {
-		t.Fatalf("latest should skip disabled: %+v %v", r, err)
+	// Review finding M1-6: disabling the newest version must not silently serve
+	// an older one (it may be the very credential being replaced).
+	if r, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrLatestVersionDisabled) || len(r.Ciphertext) != 0 {
+		t.Fatalf("latest with a disabled newest version must fail closed: %+v %v", r, err)
 	}
 	if r, err := s.GetVersion(ctx, "s1", 3); !errors.Is(err, store.ErrVersionDisabled) || len(r.Ciphertext) != 0 {
 		t.Fatalf("disabled version returned data: %+v %v", r, err)
 	}
-	if m, _ := s.GetSecret(ctx, "e1", "A"); m.LatestVersion != 2 || m.VersionCount != 3 {
+	if m, _ := s.GetSecret(ctx, "e1", "A"); m.LatestVersion != 3 || !m.LatestVersionDisabled || m.VersionCount != 3 {
 		t.Fatalf("meta %+v", m)
 	}
 	s.DisableVersion(ctx, "s1", 2, "t")
 	s.DisableVersion(ctx, "s1", 1, "t")
-	if _, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrNoActiveVersion) {
+	if _, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrLatestVersionDisabled) {
 		t.Fatalf("all disabled: %v", err)
 	}
 	// a new version after all are disabled gets the next number, never reuses one
 	if v, err := s.AddVersion(ctx, "s1", "t", "", sealN("a")); err != nil || v != 4 {
 		t.Fatalf("version number reused or failed: %d %v", v, err)
+	}
+	// ...and becomes the readable latest again
+	if r, err := s.GetLatestVersion(ctx, "s1"); err != nil || r.Version != 4 {
+		t.Fatalf("new version not served as latest: %+v %v", r, err)
+	}
+	// an older ENABLED version never substitutes for a disabled newest one
+	s.DisableVersion(ctx, "s1", 4, "t")
+	if _, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrLatestVersionDisabled) {
+		t.Fatalf("fell back after disabling v4: %v", err)
 	}
 	if err := s.DisableVersion(ctx, "s1", 42, "t"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("disable missing: %v", err)

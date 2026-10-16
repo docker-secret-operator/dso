@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
+
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +19,7 @@ type centralEnv struct {
 
 func newCentralEnv(t *testing.T) *centralEnv {
 	t.Helper()
-	d := t.TempDir()
+	d := securefstest.TempDir(t)
 	return &centralEnv{dir: d, db: filepath.Join(d, "data", "c.db"), key: filepath.Join(d, "keys", "root.key"), pass: filepath.Join(d, "pass.txt")}
 }
 
@@ -85,9 +87,13 @@ func TestCentralCLIEndToEnd(t *testing.T) {
 	if _, _, err := e.run(t, "", append([]string{"secret", "disable-version", "app", "prod", "db/pass", "2"}, e.file()...)...); err != nil {
 		t.Fatal(err)
 	}
-	out, _, _ = e.run(t, "", append([]string{"secret", "get", "app", "prod", "db/pass", "--reveal"}, e.file()...)...)
+	out, _, err = e.run(t, "", append([]string{"secret", "get", "app", "prod", "db/pass", "--reveal"}, e.file()...)...)
+	if err == nil || out != "" || !strings.Contains(err.Error(), "latest version is disabled") {
+		t.Fatalf("latest after disabling the newest version must fail, got out=%q err=%v", out, err)
+	}
+	out, _, _ = e.run(t, "", append([]string{"secret", "get", "app", "prod", "db/pass", "--reveal", "--version", "1"}, e.file()...)...)
 	if out != secret {
-		t.Fatalf("latest after disable = %q", out)
+		t.Fatalf("explicit v1 after disable = %q", out)
 	}
 	if _, _, err := e.run(t, "", append([]string{"secret", "delete", "app", "prod", "db/pass"}, e.file()...)...); err != nil {
 		t.Fatal(err)

@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/centralsvc"
 	"github.com/docker-secret-operator/dso/internal/crypto"
+	"github.com/docker-secret-operator/dso/internal/securefs"
 	"github.com/docker-secret-operator/dso/internal/store/sqlite"
 )
 
@@ -40,8 +42,9 @@ type centralFlags struct {
 func NewCentralCmd() *cobra.Command {
 	f := &centralFlags{}
 	cmd := &cobra.Command{
-		Use:   "central",
-		Short: "Local administration of the central secrets store (experimental, local-only, no authentication)",
+		Use:          "central",
+		Short:        "Local administration of the central secrets store (experimental, local-only, no authentication)",
+		SilenceUsage: true,
 		Long: `Experimental M1 interface to the central secrets store.
 
 This command operates directly on a local SQLite database and root key. It
@@ -68,17 +71,15 @@ func (f *centralFlags) requireCommon() error {
 	return nil
 }
 
+// readPassphraseFile reads a passphrase from a private file. It applies the
+// same rules as a key file (securefs): the directory chain must not be
+// writable by others, the leaf must not be a symlink, and -- judged on the open
+// descriptor, so a swap after the check cannot change what is read -- it must be
+// a regular file owned by the current user with no group/other access.
 func readPassphraseFile(path string) ([]byte, error) {
-	fi, err := os.Stat(path)
+	b, err := securefs.ReadPrivateFile(path, 4096)
 	if err != nil {
-		return nil, err
-	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("%s must not be accessible by group or others (chmod 600)", path)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("passphrase file: %w", err)
 	}
 	return bytes.TrimRight(b, "\r\n"), nil
 }
@@ -152,51 +153,142 @@ func actorName() string {
 	return "local-cli:unknown"
 }
 
+// centralInitAfterKey, when non-nil, runs after the root key is in place and
+// before the database is created. Tests use it to simulate a failure at the
+// one point that leaves key material without a database.
+var centralInitAfterKey func() error
+
 func centralInitCmd(f *centralFlags) *cobra.Command {
-	var allowColocated bool
+	var allowColocated, useExistingKey bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create the root key and an empty database",
+		Short: "Create the root key and an empty, key-bound database",
+		Long: `Create the root key, an empty database, and bind the database to that key.
+
+Everything that can be checked is checked BEFORE any key material is written
+(directory safety, an existing database, an existing key), so the usual
+failures leave nothing behind. If the key is installed but the database cannot
+be created, the key is kept (it is never deleted or overwritten) and the
+database files this run created are removed; fix the cause and re-run with
+--use-existing-key to build the database around the key that is already there.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := f.requireCommon(); err != nil {
 				return err
 			}
-			dbDir, _ := filepath.Abs(filepath.Dir(f.db))
-			keyDir, _ := filepath.Abs(filepath.Dir(f.keyFile))
-			if dbDir == keyDir && !allowColocated {
+			// ---- preflight: no key material is written until all of this passes ----
+			dbDir, keyDir := filepath.Dir(f.db), filepath.Dir(f.keyFile)
+			for _, d := range []string{dbDir, keyDir} {
+				if err := securefs.EnsureDir(d); err != nil {
+					return fmt.Errorf("refusing to initialise: %w", err)
+				}
+			}
+			if sameDir(dbDir, keyDir) && !allowColocated {
 				return errors.New("the key file is in the same directory as the database; a copy of that directory (backup, snapshot) would contain both. " +
-					"Store the key elsewhere, or pass --allow-colocated-key to accept this for testing")
+					"Store the key in a different directory (ideally on separate storage -- DSO cannot verify that), or pass --allow-colocated-key to accept this for testing")
 			}
-			if _, err := os.Stat(f.db); err == nil {
-				return fmt.Errorf("%s already exists; refusing to initialise over it", f.db)
+			dbExisted := false
+			if fi, err := os.Lstat(f.db); err == nil {
+				if fi.Size() > 0 || !fi.Mode().IsRegular() {
+					return fmt.Errorf("%s already exists; refusing to initialise over it", f.db)
+				}
+				dbExisted = true // empty leftover of an earlier failed init; reuse it
 			}
-			var keyID string
+			if stale := crypto.StaleTempKeyFiles(keyDir); len(stale) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: leftover temporary key file(s) from an interrupted installation: %s\n"+
+					"They contain key material and are not removed automatically. Delete them yourself once you are sure no database depends on them.\n",
+					strings.Join(stale, ", "))
+			}
+			_, keyErr := os.Lstat(f.keyFile)
+			keyExists := keyErr == nil
+			if keyExists && !useExistingKey {
+				return fmt.Errorf("key file %s already exists and will not be overwritten.\n"+
+					"  - If it was left behind by an `init` that failed after installing the key and NO database was created from it, "+
+					"re-run with --use-existing-key to build the database around it.\n"+
+					"  - If a database already uses it, do not re-initialise: pass the same --db to the other commands.\n"+
+					"  - To start over with a new key, move this key file away yourself first", f.keyFile)
+			}
+			if !keyExists && useExistingKey {
+				return fmt.Errorf("--use-existing-key was given but %s does not exist", f.keyFile)
+			}
+
+			// ---- key ----
+			var kp crypto.KeyProvider
 			var err error
-			if f.provider == "file" {
-				keyID, err = crypto.InstallKeyFile(f.keyFile)
-			} else {
-				var p []byte
-				if p, err = f.passphrase(cmd, true); err != nil {
+			if keyExists {
+				if kp, err = f.keyProvider(cmd); err != nil { // validates it loads, with the passphrase if applicable
+					return fmt.Errorf("existing key cannot be used: %w", err)
+				}
+			} else if f.provider == "file" {
+				if _, err = crypto.InstallKeyFile(f.keyFile); err != nil {
 					return err
 				}
+				kp, err = crypto.NewFileKeyProvider(f.keyFile)
+			} else {
+				p, perr := f.passphrase(cmd, true)
+				if perr != nil {
+					return perr
+				}
 				defer crypto.Zero(p)
-				keyID, err = crypto.InstallPassphraseKeyFile(f.keyFile, p)
+				if _, err = crypto.InstallPassphraseKeyFile(f.keyFile, p); err != nil {
+					return err
+				}
+				kp, err = crypto.NewPassphraseKeyProvider(f.keyFile, p)
 			}
 			if err != nil {
-				return err
+				return keptKeyError(f.keyFile, err)
+			}
+
+			// ---- database + binding ----
+			fail := func(err error) error {
+				if !dbExisted {
+					for _, p := range []string{f.db, f.db + "-wal", f.db + "-shm"} {
+						_ = os.Remove(p) // only files this run created
+					}
+				}
+				return keptKeyError(f.keyFile, err)
+			}
+			if centralInitAfterKey != nil {
+				if err := centralInitAfterKey(); err != nil {
+					return fail(err)
+				}
 			}
 			st, err := sqlite.Open(cmd.Context(), f.db, sqlite.Options{})
 			if err != nil {
-				return err
+				return fail(err)
 			}
 			defer st.Close()
-			fmt.Fprintf(cmd.OutOrStdout(), "Initialised %s with root key id %s (%s provider).\n", f.db, keyID, f.provider)
+			if err := centralsvc.New(st, kp, nil).Bind(cmd.Context()); err != nil {
+				_ = st.Close()
+				return fail(err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Initialised %s, bound to root key id %s (%s provider).\n", f.db, kp.ID(), f.provider)
 			fmt.Fprintln(cmd.OutOrStdout(), "Back up the root key separately from the database. Without it the data is unrecoverable.")
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&allowColocated, "allow-colocated-key", false, "allow the key file in the same directory as the database (testing only)")
+	cmd.Flags().BoolVar(&useExistingKey, "use-existing-key", false, "build the database around a key file that already exists (recovery after a failed init); the key is never modified")
 	return cmd
+}
+
+// keptKeyError explains the state after a failure that happened once the key
+// existed, so the operator never has to guess whether to delete it.
+func keptKeyError(keyFile string, err error) error {
+	return fmt.Errorf("%w\n\nThe root key at %s was NOT deleted or changed. No usable database exists yet. "+
+		"After fixing the cause, re-run `dso central init ... --use-existing-key` to continue with the same key. "+
+		"Do not delete the key unless you are certain no database was ever created with it", err, keyFile)
+}
+
+// sameDir compares directories after resolving symbolic links, so a symlink
+// cannot be used to put both files in one place while appearing separate.
+func sameDir(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		ra, _ = filepath.Abs(a)
+		rb, _ = filepath.Abs(b)
+	}
+	return ra == rb
 }
 
 func tabs(cmd *cobra.Command) *tabwriter.Writer {
@@ -374,7 +466,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			return err
 		},
 	}
-	get.Flags().IntVar(&version, "version", 0, "version number (default: latest enabled)")
+	get.Flags().IntVar(&version, "version", 0, "version number (default: the newest version; fails if it is disabled)")
 	get.Flags().BoolVar(&reveal, "reveal", false, "print the plaintext value")
 
 	list := &cobra.Command{
@@ -392,7 +484,11 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			w := tabs(cmd)
 			fmt.Fprintln(w, "NAME\tLATEST\tVERSIONS\tCREATED BY\tCREATED")
 			for _, m := range ms {
-				fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", m.Name, m.LatestVersion, m.VersionCount, m.CreatedBy, m.CreatedAt.Format("2006-01-02 15:04:05Z"))
+				latest := fmt.Sprint(m.LatestVersion)
+				if m.LatestVersionDisabled {
+					latest += " (DISABLED)"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", m.Name, latest, m.VersionCount, m.CreatedBy, m.CreatedAt.Format("2006-01-02 15:04:05Z"))
 			}
 			return w.Flush()
 		},

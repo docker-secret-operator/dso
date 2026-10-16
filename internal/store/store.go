@@ -16,8 +16,11 @@ var (
 	ErrConflict = errors.New("store: already exists")
 	// ErrVersionDisabled is returned when a disabled version is requested.
 	ErrVersionDisabled = errors.New("store: version is disabled")
-	// ErrNoActiveVersion is returned when a secret has no enabled version.
-	ErrNoActiveVersion = errors.New("store: secret has no enabled version")
+	// ErrLatestVersionDisabled is returned when the newest version of a secret
+	// is disabled. There is deliberately NO fallback to an older version: that
+	// version may be exactly the one being replaced after a compromise. Add a
+	// new version, or ask for a specific version number.
+	ErrLatestVersionDisabled = errors.New("store: the latest version is disabled; add a new version or request an explicit version")
 	// ErrSchemaTooNew is returned when the database was written by a newer DSO.
 	ErrSchemaTooNew = errors.New("store: database schema is newer than this binary supports")
 	// ErrInvalid is returned for inputs the store refuses (e.g. empty ciphertext).
@@ -44,14 +47,15 @@ type Environment struct {
 
 // SecretMeta is a secret without any version payload.
 type SecretMeta struct {
-	ID            string
-	ProjectID     string
-	EnvironmentID string
-	Name          string
-	CreatedAt     time.Time
-	CreatedBy     string
-	LatestVersion int // highest enabled version, 0 if none
-	VersionCount  int
+	ID                    string
+	ProjectID             string
+	EnvironmentID         string
+	Name                  string
+	CreatedAt             time.Time
+	CreatedBy             string
+	LatestVersion         int  // highest version number (enabled or not)
+	LatestVersionDisabled bool // the latest version is disabled: reads of "latest" fail
+	VersionCount          int
 }
 
 // VersionMeta is the metadata of one immutable version.
@@ -116,13 +120,31 @@ type Store interface {
 	AddVersion(ctx context.Context, secretID, actor, comment string, seal SealFunc) (version int, err error)
 	// GetVersion returns an enabled version; ErrVersionDisabled otherwise.
 	GetVersion(ctx context.Context, secretID string, version int) (VersionRecord, error)
-	// GetLatestVersion returns the highest enabled version.
+	// GetLatestVersion returns the NEWEST version (highest number), or
+	// ErrLatestVersionDisabled if that version is disabled. It never falls back
+	// to an older enabled version.
 	GetLatestVersion(ctx context.Context, secretID string) (VersionRecord, error)
 	ListVersions(ctx context.Context, secretID string) ([]VersionMeta, error)
 	// DisableVersion marks a version unreadable. Its ciphertext is retained
 	// and unmodified. Disabling twice is a no-op.
 	DisableVersion(ctx context.Context, secretID string, version int, actor string) error
 
+	// GetMeta reads one database-level metadata value (ErrNotFound if absent).
+	GetMeta(ctx context.Context, key string) ([]byte, error)
+	// ListMeta returns every metadata row whose key starts with prefix, read in a
+	// single statement (one consistent snapshot, unlike several GetMeta calls).
+	ListMeta(ctx context.Context, prefix string) ([]MetaEntry, error)
+	// PutMetaIfAbsent inserts ALL entries atomically, or none: it returns
+	// (false, nil) without changing anything if any of the keys already exists.
+	// Concurrent callers racing to initialise the same keys see exactly one winner.
+	PutMetaIfAbsent(ctx context.Context, entries []MetaEntry) (inserted bool, err error)
+
 	SchemaVersion(ctx context.Context) (int, error)
 	Close() error
+}
+
+// MetaEntry is one database-level metadata row.
+type MetaEntry struct {
+	Key   string
+	Value []byte
 }

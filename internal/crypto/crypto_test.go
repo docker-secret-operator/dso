@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
 )
 
 func mustKey(t *testing.T) []byte {
@@ -172,7 +174,7 @@ func TestAADEncodingIsUnambiguous(t *testing.T) {
 // ---- providers ------------------------------------------------------------
 
 func TestFileProviderLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys", "root.key")
+	path := filepath.Join(securefstest.TempDir(t), "keys", "root.key")
 	id, err := InstallKeyFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +228,7 @@ func TestFileProviderLifecycle(t *testing.T) {
 }
 
 func TestInstallKeyFileNeverOverwrites(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "root.key")
+	path := filepath.Join(securefstest.TempDir(t), "root.key")
 	if _, err := InstallKeyFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +246,7 @@ func TestInstallKeyFileNeverOverwrites(t *testing.T) {
 }
 
 func TestInstallKeyFileConcurrentExactlyOneWins(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "root.key")
+	path := filepath.Join(securefstest.TempDir(t), "root.key")
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	wins := 0
@@ -272,7 +274,7 @@ func TestInstallKeyFileConcurrentExactlyOneWins(t *testing.T) {
 }
 
 func TestFileProviderRejectsBadKeyFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := securefstest.TempDir(t)
 	write := func(name, content string, mode os.FileMode) string {
 		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte(content), mode); err != nil {
@@ -323,7 +325,7 @@ func base64Key() string {
 }
 
 func TestKeyErrorsDoNotContainKeyMaterial(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "k")
+	p := filepath.Join(securefstest.TempDir(t), "k")
 	secret := "SECRETKEYMATERIAL1234567890abcdefghijk"
 	os.WriteFile(p, []byte(fileKeyPrefix+secret), 0o644)
 	_, err := NewFileKeyProvider(p)
@@ -333,7 +335,7 @@ func TestKeyErrorsDoNotContainKeyMaterial(t *testing.T) {
 }
 
 func TestPassphraseProvider(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "root.pass")
+	path := filepath.Join(securefstest.TempDir(t), "root.pass")
 	pass := []byte("correct horse battery staple")
 	id, err := InstallPassphraseKeyFile(path, pass)
 	if err != nil {
@@ -364,13 +366,13 @@ func TestPassphraseProvider(t *testing.T) {
 	if _, err := InstallPassphraseKeyFile(path, pass); err == nil {
 		t.Fatal("overwrote existing passphrase key file")
 	}
-	if _, err := InstallPassphraseKeyFile(filepath.Join(t.TempDir(), "x"), []byte("short")); err == nil {
+	if _, err := InstallPassphraseKeyFile(filepath.Join(securefstest.TempDir(t), "x"), []byte("short")); err == nil {
 		t.Fatal("accepted a short passphrase")
 	}
 }
 
 func TestPassphraseSaltsDiffer(t *testing.T) {
-	d := t.TempDir()
+	d := securefstest.TempDir(t)
 	pass := []byte("same passphrase twice!")
 	a, _ := InstallPassphraseKeyFile(filepath.Join(d, "a"), pass)
 	b, _ := InstallPassphraseKeyFile(filepath.Join(d, "b"), pass)
@@ -380,7 +382,7 @@ func TestPassphraseSaltsDiffer(t *testing.T) {
 }
 
 func TestPassphraseParameterTamperingIsRejected(t *testing.T) {
-	d := t.TempDir()
+	d := securefstest.TempDir(t)
 	pass := []byte("a long enough passphrase")
 	src := filepath.Join(d, "ok")
 	if _, err := InstallPassphraseKeyFile(src, pass); err != nil {

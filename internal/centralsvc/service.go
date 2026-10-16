@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 
@@ -40,6 +41,9 @@ type Service struct {
 	store store.Store
 	keys  crypto.KeyProvider
 	log   *zap.Logger
+
+	bindMu sync.Mutex
+	bound  bool // the database is verified (or newly bound) to keys's root key
 }
 
 // New returns a Service. logger may be nil. The service logs operation
@@ -82,6 +86,9 @@ func ValidateSecretName(n string) error {
 
 // CreateProject creates a project with a fresh random DEK wrapped by the root key.
 func (s *Service) CreateProject(ctx context.Context, slug, name string) (store.Project, error) {
+	if err := s.Bind(ctx); err != nil {
+		return store.Project{}, err
+	}
 	if err := validateSlug("project slug", slug); err != nil {
 		return store.Project{}, err
 	}
@@ -116,6 +123,9 @@ func stripKeyMaterial(p store.Project) store.Project {
 }
 
 func (s *Service) CreateEnvironment(ctx context.Context, projectSlug, slug, name string) (store.Environment, error) {
+	if err := s.Bind(ctx); err != nil {
+		return store.Environment{}, err
+	}
 	if err := validateSlug("environment slug", slug); err != nil {
 		return store.Environment{}, err
 	}
@@ -176,6 +186,9 @@ func checkValue(v []byte) error {
 // CreateSecret creates a new secret with version 1. It fails with
 // store.ErrConflict if a live secret of that name exists.
 func (s *Service) CreateSecret(ctx context.Context, projectSlug, envSlug, name string, value []byte, actor, comment string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
 	if err := ValidateSecretName(name); err != nil {
 		return err
 	}
@@ -213,6 +226,9 @@ func (s *Service) CreateSecret(ctx context.Context, projectSlug, envSlug, name s
 
 // AddVersion appends a new immutable version and returns its number.
 func (s *Service) AddVersion(ctx context.Context, projectSlug, envSlug, name string, value []byte, actor, comment string) (int, error) {
+	if err := s.Bind(ctx); err != nil {
+		return 0, err
+	}
 	if err := checkValue(value); err != nil {
 		return 0, err
 	}
@@ -264,6 +280,9 @@ func (v *Value) Zero() { crypto.Zero(v.Plaintext) }
 // so a row moved to another project, environment, secret or version fails
 // with ErrIntegrity.
 func (s *Service) GetValue(ctx context.Context, projectSlug, envSlug, name string, version int) (Value, error) {
+	if err := s.Bind(ctx); err != nil {
+		return Value{}, err
+	}
 	sc, sec, err := s.lookup(ctx, projectSlug, envSlug, name)
 	if err != nil {
 		return Value{}, err
@@ -296,6 +315,9 @@ func (s *Service) GetValue(ctx context.Context, projectSlug, envSlug, name strin
 
 // ListSecrets returns metadata only.
 func (s *Service) ListSecrets(ctx context.Context, projectSlug, envSlug string) ([]store.SecretMeta, error) {
+	if err := s.Bind(ctx); err != nil {
+		return nil, err
+	}
 	sc, err := s.resolve(ctx, projectSlug, envSlug)
 	if err != nil {
 		return nil, err
@@ -305,6 +327,9 @@ func (s *Service) ListSecrets(ctx context.Context, projectSlug, envSlug string) 
 
 // ListVersions returns version metadata only.
 func (s *Service) ListVersions(ctx context.Context, projectSlug, envSlug, name string) ([]store.VersionMeta, error) {
+	if err := s.Bind(ctx); err != nil {
+		return nil, err
+	}
 	_, sec, err := s.lookup(ctx, projectSlug, envSlug, name)
 	if err != nil {
 		return nil, err
@@ -313,6 +338,9 @@ func (s *Service) ListVersions(ctx context.Context, projectSlug, envSlug, name s
 }
 
 func (s *Service) DisableVersion(ctx context.Context, projectSlug, envSlug, name string, version int, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
 	_, sec, err := s.lookup(ctx, projectSlug, envSlug, name)
 	if err != nil {
 		return err
@@ -327,6 +355,9 @@ func (s *Service) DisableVersion(ctx context.Context, projectSlug, envSlug, name
 
 // DeleteSecret soft-deletes the secret (versions are retained; purge is deferred).
 func (s *Service) DeleteSecret(ctx context.Context, projectSlug, envSlug, name, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
 	_, sec, err := s.lookup(ctx, projectSlug, envSlug, name)
 	if err != nil {
 		return err
@@ -340,6 +371,9 @@ func (s *Service) DeleteSecret(ctx context.Context, projectSlug, envSlug, name, 
 }
 
 func (s *Service) ListProjects(ctx context.Context) ([]store.Project, error) {
+	if err := s.Bind(ctx); err != nil {
+		return nil, err
+	}
 	ps, err := s.store.ListProjects(ctx)
 	for i := range ps {
 		ps[i] = stripKeyMaterial(ps[i])
@@ -348,6 +382,9 @@ func (s *Service) ListProjects(ctx context.Context) ([]store.Project, error) {
 }
 
 func (s *Service) ListEnvironments(ctx context.Context, projectSlug string) ([]store.Environment, error) {
+	if err := s.Bind(ctx); err != nil {
+		return nil, err
+	}
 	p, err := s.store.GetProjectBySlug(ctx, projectSlug)
 	if err != nil {
 		return nil, err

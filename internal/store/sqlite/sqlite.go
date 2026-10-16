@@ -4,8 +4,10 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -19,6 +21,7 @@ import (
 	msqlite "modernc.org/sqlite"
 	sqlitelib "modernc.org/sqlite/lib"
 
+	"github.com/docker-secret-operator/dso/internal/securefs"
 	"github.com/docker-secret-operator/dso/internal/store"
 )
 
@@ -44,8 +47,9 @@ type Options struct {
 
 // Store is the SQLite-backed store.Store.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db         *sql.DB
+	now        func() time.Time
+	lastBackup string
 }
 
 var _ store.Store = (*Store)(nil)
@@ -137,32 +141,26 @@ func escapePath(p string) string {
 }
 
 func prepareFile(path string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating database directory: %w", err)
+	// The directory chain must not let another account replace the database or
+	// pre-create its -wal/-shm companions (see package securefs). Missing
+	// directories are created 0700; existing ones are checked, never re-moded.
+	if err := securefs.EnsureDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("database directory is not safe: %w", err)
 	}
-	fi, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil && !errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("creating database file: %w", err)
-		}
-		if err == nil {
-			return f.Close()
-		}
-		return nil // lost a creation race: the other process made it 0600
-	case err != nil:
-		return fmt.Errorf("inspecting database file: %w", err)
+	// Create exclusively (never follow a planted link); if it already exists it
+	// must pass the same private-file rules as a key file.
+	f, err := securefs.CreateExclusive(path, 0o600)
+	if err == nil {
+		return f.Close()
 	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("database path %s is not a regular file", path)
+	if !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("creating database file: %w", err)
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("database file %s has mode %04o; it must not be accessible by group or others (chmod 600 %s)",
-			path, fi.Mode().Perm(), path)
+	existing, err := securefs.OpenPrivateFile(path)
+	if err != nil {
+		return fmt.Errorf("database file is not safe to use: %w", err)
 	}
-	return nil
+	return existing.Close()
 }
 
 // Close checkpoints the WAL (best effort) and closes the handle.
@@ -198,9 +196,11 @@ func (s *Store) migrate(ctx context.Context, path string, migs []Migration) erro
 	}
 	if cur > 0 {
 		// Existing data: take a restorable copy before changing the schema.
-		if err := s.backupBeforeMigration(ctx, path, cur); err != nil {
+		bak, err := s.backupBeforeMigration(ctx, path, cur)
+		if err != nil {
 			return fmt.Errorf("pre-migration backup failed, migration not attempted: %w", err)
 		}
+		s.lastBackup = bak
 	}
 	for _, m := range migs {
 		if m.Version <= cur {
@@ -237,22 +237,85 @@ func (s *Store) applyMigration(ctx context.Context, m Migration) error {
 	return tx.Commit()
 }
 
-func (s *Store) backupBeforeMigration(ctx context.Context, path string, from int) error {
-	dst := fmt.Sprintf("%s.pre-migration-v%d.bak", path, from)
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil // an earlier attempt already preserved this schema version
+// backupBeforeMigration writes a complete, verified snapshot of the database to
+// a NEW file before any schema change and returns its path. Every migration
+// attempt gets its own backup (name: <db>.pre-migration-v<from>-<UTC time>-<id>.bak,
+// created exclusively with mode 0600): reusing an older file would present a
+// stale snapshot as "the state before this migration" after intervening writes.
+// If the snapshot cannot be created and verified the migration is not attempted.
+// Backups are never deleted automatically.
+func (s *Store) backupBeforeMigration(ctx context.Context, path string, from int) (string, error) {
+	var f *os.File
+	var dst string
+	for attempt := 0; ; attempt++ {
+		var rnd [4]byte
+		if _, err := rand.Read(rnd[:]); err != nil {
+			return "", err
 		}
-		return err
+		dst = fmt.Sprintf("%s.pre-migration-v%d-%s-%s.bak", path, from,
+			s.now().UTC().Format("20060102T150405Z"), hex.EncodeToString(rnd[:]))
+		var err error
+		f, err = securefs.CreateExclusive(dst, 0o600) // VACUUM INTO accepts an empty existing file
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) || attempt >= 5 {
+			return "", err
+		}
 	}
 	f.Close()
+	fail := func(err error) (string, error) {
+		os.Remove(dst) // our own just-created, incomplete file
+		return "", err
+	}
 	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
-		os.Remove(dst)
+		return fail(err)
+	}
+	if err := verifyBackup(ctx, dst, from); err != nil {
+		return fail(fmt.Errorf("backup failed verification: %w", err))
+	}
+	if bf, err := os.OpenFile(dst, os.O_RDWR, 0); err == nil {
+		err = bf.Sync()
+		bf.Close()
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if d, err := os.Open(filepath.Dir(dst)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return dst, os.Chmod(dst, 0o600)
+}
+
+// verifyBackup opens the snapshot read-only and checks SQLite's integrity and
+// that it carries the schema version it is supposed to preserve.
+func verifyBackup(ctx context.Context, path string, wantVersion int) error {
+	q := url.Values{}
+	q.Add("_pragma", "query_only(1)")
+	dsn := (&url.URL{Scheme: "file", Opaque: escapePath(path), RawQuery: q.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
 		return err
 	}
-	return os.Chmod(dst, 0o600)
+	defer db.Close()
+	var res string
+	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&res); err != nil || res != "ok" {
+		return fmt.Errorf("integrity_check = %q (%v)", res, err)
+	}
+	var v sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
+		return err
+	}
+	if int(v.Int64) != wantVersion {
+		return fmt.Errorf("snapshot is at schema %d, expected %d", v.Int64, wantVersion)
+	}
+	return nil
 }
+
+// LastMigrationBackup returns the path of the snapshot taken by the most
+// recent Open that migrated an existing database, or "" if none was needed.
+func (s *Store) LastMigrationBackup() string { return s.lastBackup }
 
 // SchemaVersion returns the highest applied migration (0 for a fresh database).
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
@@ -433,14 +496,15 @@ func (s *Store) CreateSecret(ctx context.Context, n store.NewSecret) error {
 }
 
 const secretSelect = `SELECT s.id, s.project_id, s.environment_id, s.name, s.created_at, s.created_by,
-	COALESCE((SELECT MAX(v.version) FROM secret_versions v WHERE v.secret_id = s.id AND v.disabled_at IS NULL), 0),
+	COALESCE((SELECT MAX(v.version) FROM secret_versions v WHERE v.secret_id = s.id), 0),
+	COALESCE((SELECT v.disabled_at IS NOT NULL FROM secret_versions v WHERE v.secret_id = s.id ORDER BY v.version DESC LIMIT 1), 0),
 	(SELECT COUNT(*) FROM secret_versions v WHERE v.secret_id = s.id)
 	FROM secrets s`
 
 func scanSecret(r interface{ Scan(...any) error }) (store.SecretMeta, error) {
 	var m store.SecretMeta
 	var c int64
-	err := r.Scan(&m.ID, &m.ProjectID, &m.EnvironmentID, &m.Name, &c, &m.CreatedBy, &m.LatestVersion, &m.VersionCount)
+	err := r.Scan(&m.ID, &m.ProjectID, &m.EnvironmentID, &m.Name, &c, &m.CreatedBy, &m.LatestVersion, &m.LatestVersionDisabled, &m.VersionCount)
 	m.CreatedAt = fromTS(c)
 	return m, err
 }
@@ -572,13 +636,13 @@ func (s *Store) GetLatestVersion(ctx context.Context, secretID string) (store.Ve
 	var rec store.VersionRecord
 	m, err := scanVersionMeta(s.db.QueryRowContext(ctx,
 		`SELECT `+versionCols+`, ciphertext, nonce FROM secret_versions
-		 WHERE secret_id = ? AND disabled_at IS NULL ORDER BY version DESC LIMIT 1`, secretID),
+		 WHERE secret_id = ? ORDER BY version DESC LIMIT 1`, secretID),
 		&rec.Ciphertext, &rec.Nonce)
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.VersionRecord{}, store.ErrNoActiveVersion
-	}
 	if err != nil {
 		return store.VersionRecord{}, mapErr(err)
+	}
+	if m.DisabledAt != nil {
+		return store.VersionRecord{VersionMeta: m}, store.ErrLatestVersionDisabled
 	}
 	rec.VersionMeta = m
 	return rec, nil
@@ -630,4 +694,58 @@ func (s *Store) DisableVersion(ctx context.Context, secretID string, version int
 		}
 		return nil
 	})
+}
+
+// ---- metadata ----------------------------------------------------------------
+
+func (s *Store) GetMeta(ctx context.Context, key string) ([]byte, error) {
+	var v []byte
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key = ?`, key).Scan(&v)
+	return v, mapErr(err)
+}
+
+func (s *Store) PutMetaIfAbsent(ctx context.Context, entries []store.MetaEntry) (bool, error) {
+	if len(entries) == 0 {
+		return false, store.ErrInvalid
+	}
+	inserted := false
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		// IMMEDIATE transaction: the existence check and the inserts cannot
+		// interleave with another initialiser, in this or another process.
+		for _, e := range entries {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_meta WHERE key = ?`, e.Key).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				return nil // someone already initialised; change nothing
+			}
+		}
+		for _, e := range entries {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO store_meta(key, value) VALUES (?, ?)`, e.Key, e.Value); err != nil {
+				return err
+			}
+		}
+		inserted = true
+		return nil
+	})
+	return inserted, mapErr(err)
+}
+
+func (s *Store) ListMeta(ctx context.Context, prefix string) ([]store.MetaEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value FROM store_meta WHERE substr(key, 1, length(?)) = ? ORDER BY key`, prefix, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MetaEntry
+	for rows.Next() {
+		var e store.MetaEntry
+		if err := rows.Scan(&e.Key, &e.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
