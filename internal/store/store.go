@@ -25,6 +25,13 @@ var (
 	ErrSchemaTooNew = errors.New("store: database schema is newer than this binary supports")
 	// ErrInvalid is returned for inputs the store refuses (e.g. empty ciphertext).
 	ErrInvalid = errors.New("store: invalid input")
+	// ErrTxActive is returned, without touching the database, when WithTx or a
+	// standalone Store operation is called with the context that a WithTx
+	// callback received (or one derived from it) while that transaction is still
+	// open. It detects misuse of THAT context only: a call made with an unrelated
+	// context, from another Store instance or from another process is an
+	// independent caller and keeps its ordinary behaviour.
+	ErrTxActive = errors.New("store: a transaction is already active on this context")
 )
 
 type Project struct {
@@ -97,7 +104,10 @@ type NewSecret struct {
 // row is inserted; it must be fast and must not call the store.
 type SealFunc func(version int) (ciphertext, nonce []byte, dekVersion int, err error)
 
-type Store interface {
+// Operations is the set of 19 data and metadata operations. Store offers them as
+// standalone calls (each with its own, unchanged, transactional behaviour); Tx
+// offers the same set inside one transaction opened by Store.WithTx.
+type Operations interface {
 	CreateProject(ctx context.Context, p Project) error
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
@@ -138,6 +148,25 @@ type Store interface {
 	// (false, nil) without changing anything if any of the keys already exists.
 	// Concurrent callers racing to initialise the same keys see exactly one winner.
 	PutMetaIfAbsent(ctx context.Context, entries []MetaEntry) (inserted bool, err error)
+}
+
+// Tx is the transaction-scoped view of the operations: every call runs inside the
+// one IMMEDIATE transaction opened by Store.WithTx, so several of them commit or
+// roll back together. A Tx is only valid inside the callback.
+type Tx interface {
+	Operations
+}
+
+type Store interface {
+	Operations
+
+	// WithTx runs fn in one IMMEDIATE transaction. It commits if fn returns nil
+	// and rolls back if fn returns an error, the context is cancelled, or fn
+	// panics (the panic is propagated, not swallowed). fn receives a derived
+	// context marking the open transaction: nested WithTx and standalone
+	// operations called with it (or a context derived from it) return
+	// ErrTxActive immediately.
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx Tx) error) error
 
 	SchemaVersion(ctx context.Context) (int, error)
 	Close() error

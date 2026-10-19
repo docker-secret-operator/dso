@@ -386,15 +386,15 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 // ---- projects / environments ----------------------------------------------
 
-func (s *Store) CreateProject(ctx context.Context, p store.Project) error {
+func (o ops) CreateProject(ctx context.Context, p store.Project) error {
 	if p.ID == "" || p.Slug == "" || len(p.WrappedDEK) == 0 || p.DEKKeyID == "" {
 		return store.ErrInvalid
 	}
 	if p.DEKVersion == 0 {
 		p.DEKVersion = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO projects(id, slug, name, wrapped_dek, dek_key_id, dek_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, p.ID, p.Slug, p.Name, p.WrappedDEK, p.DEKKeyID, p.DEKVersion, s.now().UTC().Unix())
+	_, err := o.q.ExecContext(ctx, `INSERT INTO projects(id, slug, name, wrapped_dek, dek_key_id, dek_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, p.ID, p.Slug, p.Name, p.WrappedDEK, p.DEKKeyID, p.DEKVersion, o.now().UTC().Unix())
 	return mapErr(err)
 }
 
@@ -408,18 +408,18 @@ func scanProject(r interface{ Scan(...any) error }) (store.Project, error) {
 	return p, err
 }
 
-func (s *Store) GetProjectBySlug(ctx context.Context, slug string) (store.Project, error) {
-	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE slug = ?`, slug))
+func (o ops) GetProjectBySlug(ctx context.Context, slug string) (store.Project, error) {
+	p, err := scanProject(o.q.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE slug = ?`, slug))
 	return p, mapErr(err)
 }
 
-func (s *Store) GetProject(ctx context.Context, id string) (store.Project, error) {
-	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE id = ?`, id))
+func (o ops) GetProject(ctx context.Context, id string) (store.Project, error) {
+	p, err := scanProject(o.q.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE id = ?`, id))
 	return p, mapErr(err)
 }
 
-func (s *Store) ListProjects(ctx context.Context) ([]store.Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+projectCols+` FROM projects ORDER BY slug`)
+func (o ops) ListProjects(ctx context.Context) ([]store.Project, error) {
+	rows, err := o.q.QueryContext(ctx, `SELECT `+projectCols+` FROM projects ORDER BY slug`)
 	if err != nil {
 		return nil, err
 	}
@@ -435,12 +435,12 @@ func (s *Store) ListProjects(ctx context.Context) ([]store.Project, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) CreateEnvironment(ctx context.Context, e store.Environment) error {
+func (o ops) CreateEnvironment(ctx context.Context, e store.Environment) error {
 	if e.ID == "" || e.ProjectID == "" || e.Slug == "" {
 		return store.ErrInvalid
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO environments(id, project_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)`,
-		e.ID, e.ProjectID, e.Slug, e.Name, s.now().UTC().Unix())
+	_, err := o.q.ExecContext(ctx, `INSERT INTO environments(id, project_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)`,
+		e.ID, e.ProjectID, e.Slug, e.Name, o.now().UTC().Unix())
 	return mapErr(err)
 }
 
@@ -452,14 +452,14 @@ func scanEnv(r interface{ Scan(...any) error }) (store.Environment, error) {
 	return e, err
 }
 
-func (s *Store) GetEnvironmentBySlug(ctx context.Context, projectID, slug string) (store.Environment, error) {
-	e, err := scanEnv(s.db.QueryRowContext(ctx,
+func (o ops) GetEnvironmentBySlug(ctx context.Context, projectID, slug string) (store.Environment, error) {
+	e, err := scanEnv(o.q.QueryRowContext(ctx,
 		`SELECT id, project_id, slug, name, created_at FROM environments WHERE project_id = ? AND slug = ?`, projectID, slug))
 	return e, mapErr(err)
 }
 
-func (s *Store) ListEnvironments(ctx context.Context, projectID string) ([]store.Environment, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (o ops) ListEnvironments(ctx context.Context, projectID string) ([]store.Environment, error) {
+	rows, err := o.q.QueryContext(ctx,
 		`SELECT id, project_id, slug, name, created_at FROM environments WHERE project_id = ? ORDER BY slug`, projectID)
 	if err != nil {
 		return nil, err
@@ -478,21 +478,27 @@ func (s *Store) ListEnvironments(ctx context.Context, projectID string) ([]store
 
 // ---- secrets ----------------------------------------------------------------
 
-func (s *Store) CreateSecret(ctx context.Context, n store.NewSecret) error {
-	if n.ID == "" || n.ProjectID == "" || n.EnvironmentID == "" || n.Name == "" ||
-		len(n.Ciphertext) == 0 || len(n.Nonce) == 0 || n.DEKVersion < 1 {
+// validNewSecret is checked before any transaction is begun (standalone) and
+// again by the Tx form.
+func validNewSecret(n store.NewSecret) bool {
+	return !(n.ID == "" || n.ProjectID == "" || n.EnvironmentID == "" || n.Name == "" ||
+		len(n.Ciphertext) == 0 || len(n.Nonce) == 0 || n.DEKVersion < 1)
+}
+
+func (o ops) CreateSecret(ctx context.Context, n store.NewSecret) error {
+	if !validNewSecret(n) {
 		return store.ErrInvalid
 	}
-	now := s.now().UTC().Unix()
-	return mapErr(s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO secrets(id, project_id, environment_id, name, created_at, created_by)
-			VALUES (?, ?, ?, ?, ?, ?)`, n.ID, n.ProjectID, n.EnvironmentID, n.Name, now, n.CreatedBy); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO secret_versions(secret_id, version, ciphertext, nonce, dek_version, created_at, created_by, comment)
-			VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, n.ID, n.Ciphertext, n.Nonce, n.DEKVersion, now, n.CreatedBy, n.Comment)
-		return err
-	}))
+	now := o.now().UTC().Unix()
+	// Runs on o.q, which is the open transaction (see Store.CreateSecret): both
+	// inserts commit or roll back together.
+	if _, err := o.q.ExecContext(ctx, `INSERT INTO secrets(id, project_id, environment_id, name, created_at, created_by)
+		VALUES (?, ?, ?, ?, ?, ?)`, n.ID, n.ProjectID, n.EnvironmentID, n.Name, now, n.CreatedBy); err != nil {
+		return mapErr(err)
+	}
+	_, err := o.q.ExecContext(ctx, `INSERT INTO secret_versions(secret_id, version, ciphertext, nonce, dek_version, created_at, created_by, comment)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, n.ID, n.Ciphertext, n.Nonce, n.DEKVersion, now, n.CreatedBy, n.Comment)
+	return mapErr(err)
 }
 
 const secretSelect = `SELECT s.id, s.project_id, s.environment_id, s.name, s.created_at, s.created_by,
@@ -509,14 +515,14 @@ func scanSecret(r interface{ Scan(...any) error }) (store.SecretMeta, error) {
 	return m, err
 }
 
-func (s *Store) GetSecret(ctx context.Context, environmentID, name string) (store.SecretMeta, error) {
-	m, err := scanSecret(s.db.QueryRowContext(ctx,
+func (o ops) GetSecret(ctx context.Context, environmentID, name string) (store.SecretMeta, error) {
+	m, err := scanSecret(o.q.QueryRowContext(ctx,
 		secretSelect+` WHERE s.environment_id = ? AND s.name = ? AND s.deleted_at IS NULL`, environmentID, name))
 	return m, mapErr(err)
 }
 
-func (s *Store) ListSecrets(ctx context.Context, environmentID string) ([]store.SecretMeta, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (o ops) ListSecrets(ctx context.Context, environmentID string) ([]store.SecretMeta, error) {
+	rows, err := o.q.QueryContext(ctx,
 		secretSelect+` WHERE s.environment_id = ? AND s.deleted_at IS NULL ORDER BY s.name`, environmentID)
 	if err != nil {
 		return nil, err
@@ -533,9 +539,9 @@ func (s *Store) ListSecrets(ctx context.Context, environmentID string) ([]store.
 	return out, rows.Err()
 }
 
-func (s *Store) DeleteSecret(ctx context.Context, secretID, actor string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE secrets SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL`,
-		s.now().UTC().Unix(), actor, secretID)
+func (o ops) DeleteSecret(ctx context.Context, secretID, actor string) error {
+	res, err := o.q.ExecContext(ctx, `UPDATE secrets SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL`,
+		o.now().UTC().Unix(), actor, secretID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -547,36 +553,33 @@ func (s *Store) DeleteSecret(ctx context.Context, secretID, actor string) error 
 
 // ---- versions -----------------------------------------------------------------
 
-func (s *Store) AddVersion(ctx context.Context, secretID, actor, comment string, seal store.SealFunc) (int, error) {
-	var version int
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		// The IMMEDIATE transaction holds the write lock from here to commit,
-		// so MAX+1 cannot race with another writer in any process. The
-		// (secret_id, version) primary key is the backstop.
-		var live int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&live); err != nil {
-			return err
-		}
-		if live == 0 {
-			return store.ErrNotFound
-		}
-		var max sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM secret_versions WHERE secret_id = ?`, secretID).Scan(&max); err != nil {
-			return err
-		}
-		version = int(max.Int64) + 1
-		ct, nonce, dekVersion, err := seal(version)
-		if err != nil {
-			return err
-		}
-		if len(ct) == 0 || len(nonce) == 0 || dekVersion < 1 {
-			return store.ErrInvalid
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO secret_versions(secret_id, version, ciphertext, nonce, dek_version, created_at, created_by, comment)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, secretID, version, ct, nonce, dekVersion, s.now().UTC().Unix(), actor, comment)
-		return err
-	})
+func (o ops) AddVersion(ctx context.Context, secretID, actor, comment string, seal store.SealFunc) (int, error) {
+	// Runs on o.q, which is the open transaction (see Store.AddVersion).
+	//
+	// The IMMEDIATE transaction holds the write lock from here to commit,
+	// so MAX+1 cannot race with another writer in any process. The
+	// (secret_id, version) primary key is the backstop.
+	var live int
+	if err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&live); err != nil {
+		return 0, mapErr(err)
+	}
+	if live == 0 {
+		return 0, store.ErrNotFound
+	}
+	var max sql.NullInt64
+	if err := o.q.QueryRowContext(ctx, `SELECT MAX(version) FROM secret_versions WHERE secret_id = ?`, secretID).Scan(&max); err != nil {
+		return 0, mapErr(err)
+	}
+	version := int(max.Int64) + 1
+	ct, nonce, dekVersion, err := seal(version)
 	if err != nil {
+		return 0, mapErr(err)
+	}
+	if len(ct) == 0 || len(nonce) == 0 || dekVersion < 1 {
+		return 0, store.ErrInvalid
+	}
+	if _, err = o.q.ExecContext(ctx, `INSERT INTO secret_versions(secret_id, version, ciphertext, nonce, dek_version, created_at, created_by, comment)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, secretID, version, ct, nonce, dekVersion, o.now().UTC().Unix(), actor, comment); err != nil {
 		return 0, mapErr(err)
 	}
 	return version, nil
@@ -600,9 +603,9 @@ func scanVersionMeta(r interface{ Scan(...any) error }, extra ...any) (store.Ver
 	return v, err
 }
 
-func (s *Store) liveSecret(ctx context.Context, secretID string) error {
+func (o ops) liveSecret(ctx context.Context, secretID string) error {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&n); err != nil {
+	if err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
@@ -611,12 +614,12 @@ func (s *Store) liveSecret(ctx context.Context, secretID string) error {
 	return nil
 }
 
-func (s *Store) GetVersion(ctx context.Context, secretID string, version int) (store.VersionRecord, error) {
-	if err := s.liveSecret(ctx, secretID); err != nil {
+func (o ops) GetVersion(ctx context.Context, secretID string, version int) (store.VersionRecord, error) {
+	if err := o.liveSecret(ctx, secretID); err != nil {
 		return store.VersionRecord{}, err
 	}
 	var rec store.VersionRecord
-	m, err := scanVersionMeta(s.db.QueryRowContext(ctx,
+	m, err := scanVersionMeta(o.q.QueryRowContext(ctx,
 		`SELECT `+versionCols+`, ciphertext, nonce FROM secret_versions WHERE secret_id = ? AND version = ?`, secretID, version),
 		&rec.Ciphertext, &rec.Nonce)
 	if err != nil {
@@ -629,12 +632,12 @@ func (s *Store) GetVersion(ctx context.Context, secretID string, version int) (s
 	return rec, nil
 }
 
-func (s *Store) GetLatestVersion(ctx context.Context, secretID string) (store.VersionRecord, error) {
-	if err := s.liveSecret(ctx, secretID); err != nil {
+func (o ops) GetLatestVersion(ctx context.Context, secretID string) (store.VersionRecord, error) {
+	if err := o.liveSecret(ctx, secretID); err != nil {
 		return store.VersionRecord{}, err
 	}
 	var rec store.VersionRecord
-	m, err := scanVersionMeta(s.db.QueryRowContext(ctx,
+	m, err := scanVersionMeta(o.q.QueryRowContext(ctx,
 		`SELECT `+versionCols+`, ciphertext, nonce FROM secret_versions
 		 WHERE secret_id = ? ORDER BY version DESC LIMIT 1`, secretID),
 		&rec.Ciphertext, &rec.Nonce)
@@ -648,11 +651,11 @@ func (s *Store) GetLatestVersion(ctx context.Context, secretID string) (store.Ve
 	return rec, nil
 }
 
-func (s *Store) ListVersions(ctx context.Context, secretID string) ([]store.VersionMeta, error) {
-	if err := s.liveSecret(ctx, secretID); err != nil {
+func (o ops) ListVersions(ctx context.Context, secretID string) ([]store.VersionMeta, error) {
+	if err := o.liveSecret(ctx, secretID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+versionCols+` FROM secret_versions WHERE secret_id = ? ORDER BY version`, secretID)
+	rows, err := o.q.QueryContext(ctx, `SELECT `+versionCols+` FROM secret_versions WHERE secret_id = ? ORDER BY version`, secretID)
 	if err != nil {
 		return nil, err
 	}
@@ -668,72 +671,68 @@ func (s *Store) ListVersions(ctx context.Context, secretID string) ([]store.Vers
 	return out, rows.Err()
 }
 
-func (s *Store) DisableVersion(ctx context.Context, secretID string, version int, actor string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		var live int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&live); err != nil {
+func (o ops) DisableVersion(ctx context.Context, secretID string, version int, actor string) error {
+	// Runs on o.q, which is the open transaction (see Store.DisableVersion).
+	// Errors are returned unmapped, exactly as in M1.
+	var live int
+	if err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE id = ? AND deleted_at IS NULL`, secretID).Scan(&live); err != nil {
+		return err
+	}
+	if live == 0 {
+		return store.ErrNotFound
+	}
+	res, err := o.q.ExecContext(ctx, `UPDATE secret_versions SET disabled_at = ?, disabled_by = ?
+		WHERE secret_id = ? AND version = ? AND disabled_at IS NULL`, o.now().UTC().Unix(), actor, secretID, version)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var exists int
+		if err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM secret_versions WHERE secret_id = ? AND version = ?`, secretID, version).Scan(&exists); err != nil {
 			return err
 		}
-		if live == 0 {
+		if exists == 0 {
 			return store.ErrNotFound
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE secret_versions SET disabled_at = ?, disabled_by = ?
-			WHERE secret_id = ? AND version = ? AND disabled_at IS NULL`, s.now().UTC().Unix(), actor, secretID, version)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secret_versions WHERE secret_id = ? AND version = ?`, secretID, version).Scan(&exists); err != nil {
-				return err
-			}
-			if exists == 0 {
-				return store.ErrNotFound
-			}
-			// already disabled: idempotent no-op
-		}
-		return nil
-	})
+		// already disabled: idempotent no-op
+	}
+	return nil
 }
 
 // ---- metadata ----------------------------------------------------------------
 
-func (s *Store) GetMeta(ctx context.Context, key string) ([]byte, error) {
+func (o ops) GetMeta(ctx context.Context, key string) ([]byte, error) {
 	var v []byte
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key = ?`, key).Scan(&v)
+	err := o.q.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key = ?`, key).Scan(&v)
 	return v, mapErr(err)
 }
 
-func (s *Store) PutMetaIfAbsent(ctx context.Context, entries []store.MetaEntry) (bool, error) {
+func (o ops) PutMetaIfAbsent(ctx context.Context, entries []store.MetaEntry) (bool, error) {
 	if len(entries) == 0 {
 		return false, store.ErrInvalid
 	}
-	inserted := false
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		// IMMEDIATE transaction: the existence check and the inserts cannot
-		// interleave with another initialiser, in this or another process.
-		for _, e := range entries {
-			var n int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_meta WHERE key = ?`, e.Key).Scan(&n); err != nil {
-				return err
-			}
-			if n > 0 {
-				return nil // someone already initialised; change nothing
-			}
+	// Runs on o.q, which is the open IMMEDIATE transaction (see
+	// Store.PutMetaIfAbsent): the existence check and the inserts cannot
+	// interleave with another initialiser, in this or another process.
+	for _, e := range entries {
+		var n int
+		if err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM store_meta WHERE key = ?`, e.Key).Scan(&n); err != nil {
+			return false, mapErr(err)
 		}
-		for _, e := range entries {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO store_meta(key, value) VALUES (?, ?)`, e.Key, e.Value); err != nil {
-				return err
-			}
+		if n > 0 {
+			return false, nil // someone already initialised; change nothing
 		}
-		inserted = true
-		return nil
-	})
-	return inserted, mapErr(err)
+	}
+	for _, e := range entries {
+		if _, err := o.q.ExecContext(ctx, `INSERT INTO store_meta(key, value) VALUES (?, ?)`, e.Key, e.Value); err != nil {
+			return false, mapErr(err)
+		}
+	}
+	return true, nil
 }
 
-func (s *Store) ListMeta(ctx context.Context, prefix string) ([]store.MetaEntry, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (o ops) ListMeta(ctx context.Context, prefix string) ([]store.MetaEntry, error) {
+	rows, err := o.q.QueryContext(ctx,
 		`SELECT key, value FROM store_meta WHERE substr(key, 1, length(?)) = ? ORDER BY key`, prefix, prefix)
 	if err != nil {
 		return nil, err
