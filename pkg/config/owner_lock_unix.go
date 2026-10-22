@@ -17,8 +17,18 @@ import (
 // the holder dies. It is advisory (it coordinates DSO processes, not a hostile
 // local user) and unreliable on some network filesystems -- keep /etc/dso local.
 func lockOwnerID(path string, timeout time.Duration) (func() error, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- path is the lock file beside the validated config.
+	// O_NOFOLLOW: a symlink at the lock path must not make us open (or create)
+	// its target. The descriptor is then checked to be an ordinary file, so a
+	// directory, FIFO or device at that path fails closed too.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600) // #nosec G304 -- path is the lock file beside the validated config.
 	if err != nil {
+		return nil, err
+	}
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = errors.New("owner lock path is not a regular file")
+		}
 		return nil, err
 	}
 	deadline := time.Now().Add(timeout)
@@ -52,10 +62,20 @@ func syncDir(dir string) error {
 	}
 	syncErr := d.Sync()
 	closeErr := d.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, errors.ErrUnsupported) {
-		return syncErr
+	if err := ignoreUnsupportedSync(syncErr); err != nil {
+		return err
 	}
 	return closeErr
+}
+
+// ignoreUnsupportedSync maps "this filesystem cannot fsync a directory"
+// (EINVAL / errors.ErrUnsupported) to nil; every other failure (EIO, ENOSPC,
+// ...) is a real durability failure and is returned.
+func ignoreUnsupportedSync(err error) error {
+	if err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, errors.ErrUnsupported) {
+		return err
+	}
+	return nil
 }
 
 // preserveFileOwner gives the replacement file the original's owner and group.

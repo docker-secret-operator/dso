@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -529,8 +532,10 @@ func generateOwnerID() (string, error) {
 // every container it created in the prior run, a worse outcome than
 // refusing to start.
 func EnsureOwnerID(cfg *Config, cfgFile string) error {
-	if cfg.Agent.OwnerID != "" {
-		return nil
+	if strings.TrimSpace(cfg.Agent.OwnerID) != "" {
+		// An established identity is never replaced -- but an unusable one is
+		// an error here, before any container is stamped with it.
+		return validateOwnerID(cfg.Agent.OwnerID)
 	}
 	if cfgFile == "" {
 		cfgFile = "dso.yaml"
@@ -572,6 +577,57 @@ var ownerInitMu sync.Mutex
 // osRename is os.Rename, replaceable in tests to inject a write failure.
 var osRename = os.Rename
 
+// syncDirFn is syncDir, replaceable in tests to inject a directory-sync failure.
+var syncDirFn = syncDir
+
+// beforeReplaceCheck runs immediately before the pre-replacement content check;
+// tests use it to modify the config at the worst possible moment.
+var beforeReplaceCheck = func() {}
+
+// validateOwnerID is the one rule for an owner id, applied to ids read from the
+// config (before a container is stamped with them). The id becomes a Docker
+// label value, so it must be non-blank, valid UTF-8, free of control characters
+// (NUL, newline, CR, tab, ...) and free of leading/trailing whitespace. Existing
+// ids are NEVER trimmed or rewritten: an id that breaks the rule is reported and
+// the operator fixes it explicitly, because silently changing an identity would
+// orphan every container stamped with the old value. Generated ids ("dso-"+hex)
+// always satisfy it.
+func validateOwnerID(id string) error {
+	switch {
+	case strings.TrimSpace(id) == "":
+		return fmt.Errorf("agent.owner_id is blank")
+	case !utf8.ValidString(id):
+		return fmt.Errorf("agent.owner_id is not valid UTF-8")
+	case strings.TrimSpace(id) != id:
+		return fmt.Errorf("agent.owner_id has leading or trailing whitespace; remove it (DSO will not change an established identity itself)")
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("agent.owner_id contains a control character (U+%04X); use printable characters only", r)
+		}
+	}
+	return nil
+}
+
+// hasMultipleYAMLDocuments reports whether raw holds more than one YAML
+// document (a second "---" section). Rewriting re-encodes only the first.
+func hasMultipleYAMLDocuments(raw []byte) (bool, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	var first yaml.Node
+	if err := dec.Decode(&first); err != nil {
+		return false, err
+	}
+	var next yaml.Node
+	switch err := dec.Decode(&next); {
+	case err == io.EOF:
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return true, nil
+	}
+}
+
 // ownerIDProbe reads only agent.owner_id; unknown keys are ignored.
 type ownerIDProbe struct {
 	Agent struct {
@@ -595,8 +651,20 @@ type ownerIDProbe struct {
 //   - The replacement is atomic (same-directory temp file, fsync, rename) and
 //     keeps the file's owner and group (an error, not a silent change, if they
 //     cannot be preserved) with a tighten-only mode (perm & 0640). The temp file
-//     is created 0600 and removed on every failure path. The path is checked to
-//     still be the same file immediately before the rename.
+//     is created 0600 and removed on every failure path. Immediately before the
+//     rename the path must still be the same file AND hold exactly the bytes the
+//     replacement was built from, so an operator's in-place edit is never
+//     overwritten (the caller gets a retry error). RESIDUAL: rename(2) has no
+//     compare-and-swap, so a write landing between that check and the rename
+//     cannot be detected.
+//   - A file with several YAML documents is refused (a rewrite would drop the
+//     rest); an owner id that is blank is treated as missing, one with control
+//     characters or surrounding whitespace is an error (validateOwnerID) and is
+//     never rewritten.
+//   - Once the file is replaced it is not rolled back (that could destroy a
+//     concurrent edit). If the directory entry then cannot be synced (anything
+//     but "unsupported"), no id is returned and the error says the file already
+//     holds the new id; the next caller adopts it.
 func ensureOwnerIDInFile(path string) (string, error) {
 	ownerInitMu.Lock()
 	defer ownerInitMu.Unlock()
@@ -631,8 +699,21 @@ func ensureOwnerIDInFile(path string) (string, error) {
 	if err := yaml.Unmarshal(raw, &probe); err != nil {
 		return "", fmt.Errorf("config is not valid YAML (left untouched): %w", err)
 	}
-	if probe.Agent.OwnerID != "" {
-		return probe.Agent.OwnerID, nil // another process won; never overwrite
+	if strings.TrimSpace(probe.Agent.OwnerID) != "" {
+		// Another process won (or the operator set it): never overwrite, but do
+		// not hand out an id that cannot be a label value either.
+		if err := validateOwnerID(probe.Agent.OwnerID); err != nil {
+			return "", err
+		}
+		return probe.Agent.OwnerID, nil
+	}
+	// A rewrite re-encodes the FIRST document only: refuse rather than silently
+	// discard the rest.
+	if multi, err := hasMultipleYAMLDocuments(raw); err != nil {
+		return "", fmt.Errorf("config is not valid YAML (left untouched): %w", err)
+	} else if multi {
+		return "", fmt.Errorf("config contains more than one YAML document (\"---\"); DSO reads only the first and will not rewrite the file " +
+			"because that would discard the rest -- convert it to a single document, or set agent.owner_id yourself")
 	}
 
 	id, err := generateOwnerID()
@@ -686,16 +767,35 @@ func ensureOwnerIDInFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Refuse to replace a file that was swapped since it was read.
+	// Refuse to replace a file that was swapped OR edited in place since it was
+	// read: same inode is not enough, so compare the bytes the replacement was
+	// built from with what is on disk now. rename(2) has no compare-and-swap, so
+	// a write landing between this check and the rename is not detectable (the
+	// window is two syscalls and requires an operator saving at that instant).
+	beforeReplaceCheck()
 	cur, err := os.Lstat(path)
 	if err != nil || !os.SameFile(info, cur) {
-		return "", fmt.Errorf("config file changed while it was being updated; nothing was written")
+		return "", fmt.Errorf("config file was replaced while the owner id was being written; nothing was written, retry")
+	}
+	now, err := os.ReadFile(path) // #nosec G304 -- see above.
+	if err != nil {
+		return "", fmt.Errorf("could not re-read the config before replacing it: %w", err)
+	}
+	if !bytes.Equal(now, raw) {
+		return "", fmt.Errorf("config file was modified while the owner id was being written; nothing was written and your edit is intact, retry")
 	}
 	if err := osRename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("failed to replace config file: %w", err)
 	}
 	replaced = true
-	_ = syncDir(dir) // best effort: the replace itself is already atomic
+	// From here the new file is visible; it cannot be rolled back (that could
+	// destroy a concurrent operator edit). If the directory entry cannot be made
+	// durable, report it instead of claiming a durable id: no id is returned, the
+	// file already holds one, and the next caller adopts that same id.
+	if err := syncDirFn(dir); err != nil {
+		return "", fmt.Errorf("the config was updated with a new agent.owner_id but the directory could not be synced, so its durability is uncertain "+
+			"(the file is not rolled back; re-run to adopt it): %w", err)
+	}
 
 	// The id handed to callers is what is now on disk.
 	got, err := os.ReadFile(path) // #nosec G304 -- see above.
