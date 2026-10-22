@@ -127,6 +127,11 @@ type RESTServer struct {
 	// installed by StartRESTServer; nil (the zero value) disables the check.
 	HostGuard *hostGuard
 
+	// rotationBaseCtx is the lifetime manual rotations run under: StartRESTServer
+	// sets it to the daemon context, so shutting the agent down cancels them.
+	// nil (struct-literal servers in tests) means context.Background().
+	rotationBaseCtx context.Context
+
 	// webhookGuard holds replay state and the restart floor for signed
 	// webhooks. StartRESTServer creates it via initWebhookGuard before the
 	// listener starts; struct-literal servers (tests) get a lazy fallback.
@@ -1009,6 +1014,38 @@ func (s *RESTServer) handleIntegrations(w http.ResponseWriter, r *http.Request) 
 // "is this name one of s.Config.Secrets" below.
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
 
+// manualRotationTimeout bounds one manual rotation (all matched containers).
+// It is a backstop for a hung Docker daemon, deliberately well above the
+// per-container health timeout (60s default) and the stale-lock reclaim (5m)
+// so the rotation's own timeouts and rollback fire first. A variable so tests
+// can shorten it.
+var manualRotationTimeout = 15 * time.Minute
+
+// startManualRotation starts the rotation of secretName under a context that
+// outlives the HTTP request: derived from the daemon context, bounded by
+// manualRotationTimeout and cancelled when the asynchronous work completes (or
+// immediately if nothing was started).
+func (s *RESTServer) startManualRotation(secretName string) error {
+	base := s.rotationBaseCtx
+	if base == nil {
+		base = context.Background()
+	}
+	rotCtx, cancel := context.WithTimeout(base, manualRotationTimeout)
+	err := s.Reloader.TriggerReload(rotCtx, secretName, func(rotErr error) {
+		cancel()
+		if rotErr != nil {
+			s.Logger.Warn("Manual rotation finished with an error",
+				zap.String("secret", secretName), zap.Error(rotErr))
+			return
+		}
+		s.Logger.Info("Manual rotation finished", zap.String("secret", secretName))
+	})
+	if err != nil {
+		cancel() // nothing was started; onComplete will not run
+	}
+	return err
+}
+
 // handleSecretRotate implements POST /api/secrets/{name}/rotate -- the WebUI's
 // one manual-rotation entry point. It is a thin wrapper around the exact same
 // production rotation machinery used by `dso sync --secret NAME`:
@@ -1074,8 +1111,14 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 	// away -- so this handler never blocks the HTTP request on the actual
 	// rotation, which can take much longer than a request timeout should
 	// allow.
+	//
+	// The rotation goroutines keep using the context they were started with,
+	// and net/http cancels r.Context() as soon as this handler returns, so the
+	// request context must NOT be handed to TriggerReload. The rotation runs
+	// under the daemon context instead (cancelled on agent shutdown) bounded by
+	// manualRotationTimeout, and is released when the rotation finishes.
 	ctx := r.Context()
-	err := s.Reloader.TriggerReload(ctx, name, nil)
+	err := s.startManualRotation(name)
 
 	status := "success"
 	if err != nil {
@@ -1328,6 +1371,8 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		Auth:          authn,
 		Reloader:      reloader,
 		Alerts:        alertEvaluator,
+
+		rotationBaseCtx: ctx,
 	}
 	restServer.applyAccessWiring(access)
 	// Establish webhook replay state and its restart floor now, before the
