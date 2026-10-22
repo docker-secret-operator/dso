@@ -45,7 +45,10 @@ func RunTest(ctx context.Context, cfg *config.Config) ([]TestResult, error) {
 			AllowInsecureHTTP: w.AllowInsecureHTTP,
 		}, nil) // nil logger: caller decides how/whether to surface per-destination errors
 		if err != nil {
-			results = append(results, TestResult{Destination: w.URL, Success: false, Error: err.Error()})
+			// err comes from NewWebhookNotifier and never contains the URL,
+			// but the raw URL must not be used as the label either: it may be
+			// malformed and consist of nothing but a credential.
+			results = append(results, TestResult{Destination: SafeDestination(w.URL), Success: false, Error: RedactURLInError(err, w.URL)})
 			continue
 		}
 
@@ -53,7 +56,7 @@ func RunTest(ctx context.Context, cfg *config.Config) ([]TestResult, error) {
 		notifyErr := n.Notify(testCtx, event)
 		cancel()
 		if notifyErr != nil {
-			results = append(results, TestResult{Destination: n.SafeName(), Success: false, Error: notifyErr.Error()})
+			results = append(results, TestResult{Destination: n.SafeName(), Success: false, Error: RedactURLInError(notifyErr, w.URL)})
 			continue
 		}
 		results = append(results, TestResult{Destination: n.SafeName(), Success: true})

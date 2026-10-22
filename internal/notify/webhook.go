@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -61,7 +63,9 @@ type WebhookNotifier struct {
 func NewWebhookNotifier(opts WebhookOptions, logger *zap.Logger) (*WebhookNotifier, error) {
 	u, err := url.Parse(opts.URL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid webhook URL: %w", err)
+		// url.Parse errors embed the complete URL (path, query and user-info
+		// may carry the token), so the parser's message is never propagated.
+		return nil, errors.New("invalid webhook URL: it could not be parsed (check the configured URL)")
 	}
 	switch u.Scheme {
 	case "https":
@@ -70,7 +74,9 @@ func NewWebhookNotifier(opts WebhookOptions, logger *zap.Logger) (*WebhookNotifi
 			return nil, fmt.Errorf("webhook endpoint %s://%s uses plain HTTP; set allow_insecure_http: true to permit this explicitly", u.Scheme, u.Host)
 		}
 	default:
-		return nil, fmt.Errorf("webhook URL must be http(s), got scheme %q", u.Scheme)
+		// The scheme text is attacker/operator-typed and, for a malformed
+		// URL, can be a fragment of a token ("tok:en/..."), so it is not echoed.
+		return nil, errors.New("webhook URL must use http or https")
 	}
 	if u.Host == "" {
 		return nil, fmt.Errorf("webhook URL has no host")
@@ -115,6 +121,81 @@ func NewWebhookNotifier(opts WebhookOptions, logger *zap.Logger) (*WebhookNotifi
 // exposing the path/query, which may contain embedded credentials.
 func (w *WebhookNotifier) SafeName() string { return w.safeName }
 
+// invalidDestination labels a configured URL that cannot be identified safely.
+const invalidDestination = "invalid destination"
+
+// SafeDestination returns a label for a configured webhook URL that is safe to
+// show in API responses and logs: scheme://host for a well-formed http(s) URL,
+// otherwise "invalid destination". The raw string is never echoed and no
+// partially-sanitized form is returned, so a malformed URL (which may be
+// nothing but a token) cannot leak through the fallback.
+func SafeDestination(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return invalidDestination
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// deliveryError is a delivery failure whose text has had the configured URL
+// removed. It keeps the underlying cause for errors.Is / errors.As (for
+// example context.DeadlineExceeded) without ever printing it.
+type deliveryError struct {
+	msg   string
+	cause error
+}
+
+func (e *deliveryError) Error() string { return e.msg }
+func (e *deliveryError) Unwrap() error { return e.cause }
+
+// unwrapURLError drops the *url.Error wrapper (whose text is the request URL).
+func unwrapURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
+	}
+	return err
+}
+
+// RedactURLInError returns err's text with the configured URL's sensitive
+// parts removed: it drops the *url.Error wrapper (which prints the full request
+// URL) and replaces any remaining occurrence of the URL, its path, query or
+// user-info with "[redacted]". It is the single place delivery errors are made
+// safe for logs and API responses.
+func RedactURLInError(err error, rawURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := unwrapURLError(err).Error()
+	for _, secret := range sensitiveURLParts(rawURL) {
+		msg = strings.ReplaceAll(msg, secret, "[redacted]")
+	}
+	return msg
+}
+
+// sensitiveURLParts lists substrings of rawURL that may carry credentials,
+// longest first so a full URL is replaced before its components.
+func sensitiveURLParts(rawURL string) []string {
+	parts := []string{rawURL}
+	if u, err := url.Parse(rawURL); err == nil {
+		if u.User != nil {
+			parts = append(parts, u.User.String())
+			if pw, ok := u.User.Password(); ok {
+				parts = append(parts, pw)
+			}
+			parts = append(parts, u.User.Username())
+		}
+		parts = append(parts, u.RawQuery, strings.Trim(u.EscapedPath(), "/"), strings.Trim(u.Path, "/"))
+	}
+	out := parts[:0]
+	for _, p := range parts {
+		if len(p) >= 3 { // too-short fragments would mangle ordinary words
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Notify delivers one event, retrying transient failures (network errors,
 // HTTP 5xx) up to MaxRetries with linear backoff. HTTP 4xx is treated as
 // permanent (the destination rejected the payload; retrying identical
@@ -156,14 +237,16 @@ func (w *WebhookNotifier) Notify(ctx context.Context, event RotationEvent) error
 func (w *WebhookNotifier) deliver(ctx context.Context, body []byte) (permanent bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.opts.URL, bytes.NewReader(body))
 	if err != nil {
-		return true, err
+		return true, &deliveryError{msg: "webhook " + w.safeName + ": cannot build request: " + RedactURLInError(err, w.opts.URL)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "dso-notify")
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("webhook %s: %w", w.safeName, err)
+		// The HTTP client's error is a *url.Error whose text is the full
+		// request URL (path + query); keep only the underlying cause.
+		return false, &deliveryError{msg: "webhook " + w.safeName + ": " + RedactURLInError(err, w.opts.URL), cause: unwrapURLError(err)}
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
