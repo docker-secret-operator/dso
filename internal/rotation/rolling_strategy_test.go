@@ -103,7 +103,7 @@ func TestRollingStrategy_Execute_Success(t *testing.T) {
 	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
 	rs := NewRollingStrategy(cli)
 
-	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, 1*time.Second)
+	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, nil, 1*time.Second)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRollingStrategy_Execute_HealthTimeout(t *testing.T) {
 	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
 	rs := NewRollingStrategy(cli)
 
-	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, 100*time.Millisecond)
+	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, nil, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("Expected error due to health timeout, got nil")
 	}
@@ -338,7 +338,7 @@ func TestRollingStrategy_Execute_ContextCancellation(t *testing.T) {
 
 	// Execute rotation - this will succeed despite context cancellation
 	// because swapCtx (context.Background()) is used for rename operations
-	err := rs.Execute(ctx, "cid", map[string]string{"SECRET": "val"}, nil, 50*time.Millisecond)
+	err := rs.Execute(ctx, "cid", map[string]string{"SECRET": "val"}, nil, nil, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("Execute failed unexpectedly: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestRollingStrategy_CleanupContainerWithRetry(t *testing.T) {
 	rs := NewRollingStrategy(cli)
 
 	// Execute rotation - cleanup should retry after initial stop failure
-	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, 1*time.Second)
+	err := rs.Execute(context.Background(), "cid", map[string]string{"SECRET": "val"}, nil, nil, 1*time.Second)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestRollingStrategy_Execute_FileSecretStreamFailure_RollsBack(t *testing.T)
 		{Path: "/run/secrets/dso", Data: map[string]string{"db-password": "DSO_TEST_SECRET_UNIQUE_9f31c8e7"}, UID: 1000, GID: 1000},
 	}
 
-	err := rs.Execute(context.Background(), "cid", nil, fileSecrets, 1*time.Second)
+	err := rs.Execute(context.Background(), "cid", nil, fileSecrets, nil, 1*time.Second)
 	if err == nil {
 		t.Fatal("Expected error when file-secret streaming fails, got nil")
 	}
@@ -629,7 +629,7 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 		{Path: "/run/secrets/dso", Data: map[string]string{"db-password": sentinel}, UID: 1000, GID: 1000},
 	}
 
-	err := rs.Execute(context.Background(), "cid", newEnvs, fileSecrets, 1*time.Second)
+	err := rs.Execute(context.Background(), "cid", newEnvs, fileSecrets, nil, 1*time.Second)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -642,5 +642,139 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 	}
 	if streamedData["sentinel_seen_in_tar"] != "true" {
 		t.Error("sentinel was not observed in the file-streaming request -- fix may have dropped the secret instead of safely delivering it")
+	}
+}
+
+// TestRollingStrategy_Execute_StripsStaleManagedSecretEnv is the P0-3
+// regression test. It targets the PRIMARY, successful rolling-rotation path
+// (RollingStrategy.Execute -> PrepareShadowConfig), which is a THIRD,
+// independent instance of the same root cause already fixed for the
+// rolling-fallback (executeSimpleRestart, P0-1) and primary-restart (P0-2)
+// paths: PrepareShadowConfig clones the original container's Config.Env
+// verbatim and only ever adds/updates keys present in newEnvs, so a secret
+// once written to Config.Env (while it was env-mode) would otherwise persist
+// unchanged into the shadow container even after being switched to
+// file-mode or dropped from config entirely.
+//
+// This is the highest-priority instance of the three: it is the default
+// *success* path of DSO's flagship zero-downtime rolling rotation, not a
+// failure fallback -- so it is the path most likely to be exercised in
+// normal production operation.
+func TestRollingStrategy_Execute_StripsStaleManagedSecretEnv(t *testing.T) {
+	const (
+		sentinel = "DSO_P0_3_STALE_SENTINEL"
+		freshVal = "fresh-current-value"
+	)
+
+	inspectResp := getBaseInspect()
+	// The original (already-running) container inherited STALE_SECRET into
+	// its Config.Env from an earlier point when that secret was env-mode.
+	// FOO is unrelated and must survive. CURRENT_SECRET is still env-mode
+	// and must be updated to its fresh rotated value.
+	inspectResp.Config.Env = []string{
+		"FOO=bar",
+		"STALE_SECRET=" + sentinel,
+		"CURRENT_SECRET=old-current-value",
+	}
+
+	createResp := container.CreateResponse{ID: "new-container-id"}
+	bCreate, _ := json.Marshal(createResp)
+
+	containerNames := map[string]string{
+		"cid":              "my-container",
+		"new-container-id": "my-container",
+	}
+
+	var createRequestBody []byte
+
+	httpClient := &http.Client{
+		Transport: &mockTransport{
+			reqFunc: func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
+					resp := inspectResp
+					resp.Name = "/" + containerNames["cid"]
+					bResp, _ := json.Marshal(resp)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
+					createRequestBody, _ = io.ReadAll(req.Body)
+					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/start":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
+					healthyInspect := inspectResp
+					healthyInspect.Name = "/" + containerNames["new-container-id"]
+					healthyInspect.State.Health = &container.Health{Status: "healthy"}
+					bHealthy, _ := json.Marshal(healthyInspect)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bHealthy))}, nil
+				case req.Method == "POST" && strings.Contains(req.URL.Path, "/rename"):
+					newName := req.URL.Query().Get("name")
+					id := "cid"
+					if strings.Contains(req.URL.Path, "new-container-id") {
+						id = "new-container-id"
+					}
+					if newName != "" {
+						containerNames[id] = newName
+					}
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/cid/stop":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/cid":
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				default:
+					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+				}
+			},
+		},
+	}
+
+	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
+	rs := NewRollingStrategy(cli)
+
+	// This rotation no longer supplies STALE_SECRET as an env override (it is
+	// now file-mode), but it is still a managed name for this container.
+	// CURRENT_SECRET, by contrast, IS re-supplied this rotation with a fresh
+	// value -- it must survive with the NEW value, not be treated as stale.
+	newEnvs := map[string]string{"CURRENT_SECRET": freshVal}
+	managedEnvNames := map[string]bool{"STALE_SECRET": true, "CURRENT_SECRET": true}
+
+	err := rs.Execute(context.Background(), "cid", newEnvs, nil, managedEnvNames, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if createRequestBody == nil {
+		t.Fatal("container create request was never captured")
+	}
+	if bytes.Contains(createRequestBody, []byte(sentinel)) {
+		t.Fatalf("P0-3 regression: stale secret value leaked into the shadow container's create request (would appear in `docker inspect`):\n%s", createRequestBody)
+	}
+
+	var created struct {
+		Env []string `json:"Env"`
+	}
+	if err := json.Unmarshal(createRequestBody, &created); err != nil {
+		t.Fatalf("failed to parse create request body: %v", err)
+	}
+	for _, e := range created.Env {
+		if strings.HasPrefix(e, "STALE_SECRET=") {
+			t.Fatalf("P0-3 regression: STALE_SECRET key should have been stripped (secret is now file-mode), got: %q (full env: %v)", e, created.Env)
+		}
+	}
+
+	fooOK, freshOK := false, false
+	for _, e := range created.Env {
+		if e == "FOO=bar" {
+			fooOK = true
+		}
+		if e == "CURRENT_SECRET="+freshVal {
+			freshOK = true
+		}
+	}
+	if !fooOK {
+		t.Errorf("unrelated env var FOO=bar should have been preserved, got: %v", created.Env)
+	}
+	if !freshOK {
+		t.Errorf("current env-mode secret CURRENT_SECRET should have been updated to %q, got: %v", freshVal, created.Env)
 	}
 }

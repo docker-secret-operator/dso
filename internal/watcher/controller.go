@@ -919,6 +919,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// the compose-recreation path below already handles them.
 			rollingEnvs := make(map[string]string)
 			var rollingFileSecrets []rotation.FileSecretSpec
+			// SEC-P0: every env name this container's config ever maps a secret
+			// to, regardless of that secret's *current* inject type or whether
+			// its cache entry is fresh. This is handed to executeSimpleRestart
+			// so it can strip stale values it would otherwise inherit unchanged
+			// from the original container's Config.Env (e.g. a secret that used
+			// to be env-mode and has since been switched to file-mode, or whose
+			// cache entry is temporarily missing) -- without this, a value once
+			// written to Config.Env persists across every future recreation
+			// even after the config no longer calls for it to be there.
+			managedEnvNames := make(map[string]bool)
 			if r.Cache != nil && r.Config != nil {
 				for _, sec := range r.Config.Secrets {
 					pName := sec.Provider
@@ -937,6 +947,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 					if !containerUsesSecret {
 						continue
+					}
+					for _, envName := range sec.Mappings {
+						managedEnvNames[envName] = true
 					}
 					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
 					data, found := r.Cache.Get(cacheKey)
@@ -1063,7 +1076,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// directly would be safe too, but passing them explicitly keeps this
 			// goroutine's inputs self-contained, matching the existing convention.
 			asyncWG.Add(1)
-			go func(tc *TargetContainer, release func(), newEnvs map[string]string, fileSecrets []rotation.FileSecretSpec, hTimeout time.Duration, secret, provider string) {
+			go func(tc *TargetContainer, release func(), newEnvs map[string]string, fileSecrets []rotation.FileSecretSpec, managedEnvs map[string]bool, hTimeout time.Duration, secret, provider string) {
 				defer asyncWG.Done()
 				// Safety net: whatever happens (health-check failure, secret
 				// injection failure, failed handoff, panic-free early return),
@@ -1107,7 +1120,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 
-				err := rs.Execute(ctx, tc.ID, newEnvs, fileSecrets, hTimeout)
+				err := rs.Execute(ctx, tc.ID, newEnvs, fileSecrets, managedEnvs, hTimeout)
 				releaseOnce()
 				recordAsyncErr(err)
 				if err != nil {
@@ -1144,7 +1157,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 					}
 					// Fallback: full container recreation via shared helper (L5).
-					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs, fileSecrets); ferr != nil {
+					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs, fileSecrets, managedEnvs); ferr != nil {
 						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
 					}
 					return
@@ -1156,7 +1169,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// recovered service stays flagged forever, matching what the
 				// restart path already does on success.
 				r.clearDegraded(rollingServiceName)
-			}(target, releaseLock, rollingEnvs, rollingFileSecrets, healthTimeout, secretName, auditProvider)
+			}(target, releaseLock, rollingEnvs, rollingFileSecrets, managedEnvNames, healthTimeout, secretName, auditProvider)
 
 		} else if activeStrategy == "restart" {
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
@@ -1215,7 +1228,20 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// StreamSecretToContainer in step 5.1 below (PRE-START SECRET
 				// INJECTION). Including them here too would additionally
 				// leak them as plaintext into Config.Env / `docker inspect`.
+				//
+				// SEC-P0-2: managedEnvNames tracks every env name this
+				// container's config maps ANY of its secrets to, regardless
+				// of that secret's *current* inject type -- mirrors the fix
+				// applied to executeSimpleRestart (the rolling-strategy
+				// fallback path) for the same root cause: this branch clones
+				// the original container's Config.Env verbatim below and
+				// only ever adds/updates keys present in newEnvs, so without
+				// this a secret's value once written to Config.Env (e.g.
+				// while it was env-mode) would persist unchanged across
+				// every future recreation even after it is switched to
+				// file-mode or dropped from config entirely.
 				newEnvs := make(map[string]string)
+				managedEnvNames := make(map[string]bool)
 				if r.Cache != nil && r.Config != nil {
 					for _, sec := range r.Config.Secrets {
 						// 2.1 Identify Provider
@@ -1239,6 +1265,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 						if !containerUsesSecret {
 							continue
+						}
+
+						for _, envName := range sec.Mappings {
+							managedEnvNames[envName] = true
 						}
 
 						injectConfig := sec.Inject
@@ -1274,6 +1304,22 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				config := cloneContainerConfig(inspect.Config)
 				// Clean up state that shouldn't be copied
 				config.Hostname = ""
+
+				// SEC-P0-2: drop any inherited env entry this rotation manages
+				// but did not supply a fresh value for (e.g. switched to
+				// file-mode, or dropped from config) -- see the doc comment
+				// on managedEnvNames above for why this can't be skipped.
+				if len(managedEnvNames) > 0 {
+					filtered := make([]string, 0, len(config.Env))
+					for _, e := range config.Env {
+						k, _, _ := strings.Cut(e, "=")
+						if _, stillOverridden := newEnvs[k]; managedEnvNames[k] && !stillOverridden {
+							continue
+						}
+						filtered = append(filtered, e)
+					}
+					config.Env = filtered
+				}
 
 				// Merge new envs
 				for k, v := range newEnvs {
@@ -1725,7 +1771,18 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 // streamed into its filesystem via StreamSecretToContainer instead of
 // Config.Env -- see the SEC comment on the rolling-branch env-building loop
 // this fallback is fed from.
-func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string, fileSecrets []rotation.FileSecretSpec) error {
+//
+// SEC-P0: managedEnvNames is every env var name this container's config ever
+// maps a secret to (see the rolling-branch env-building loop), independent of
+// each secret's current inject type. The replacement container's Config.Env
+// starts as a verbatim copy of the original's (cloneContainerConfig), so
+// without this, a secret value once written to env-mode Config.Env would
+// persist unchanged across every future recreation even after the config
+// switches that secret to file-mode or drops it entirely -- envOverrides
+// alone only ever adds/updates keys, it never removes ones that shouldn't be
+// there anymore. Any managedEnvNames entry not present in envOverrides for
+// this rotation is stripped from the inherited env before recreation.
+func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string, fileSecrets []rotation.FileSecretSpec, managedEnvNames map[string]bool) error {
 	inspect, err := r.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("executeSimpleRestart: inspect failed: %w", err)
@@ -1741,6 +1798,22 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	// CQ-H5: deep-copy before mutating so we never modify the Docker-returned struct.
 	cfg := cloneContainerConfig(inspect.Config)
 	cfg.Hostname = ""
+
+	// SEC-P0: drop any inherited env entry this rotation manages but did not
+	// supply a fresh value for (e.g. switched to file-mode, or dropped from
+	// config) -- see the doc comment above for why this can't be skipped.
+	if len(managedEnvNames) > 0 {
+		filtered := make([]string, 0, len(cfg.Env))
+		for _, e := range cfg.Env {
+			k, _, _ := strings.Cut(e, "=")
+			if _, stillOverridden := envOverrides[k]; managedEnvNames[k] && !stillOverridden {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		cfg.Env = filtered
+	}
+
 	for k, v := range envOverrides {
 		found := false
 		for i, e := range cfg.Env {

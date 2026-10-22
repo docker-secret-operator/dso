@@ -77,7 +77,7 @@ func TestStress_ConcurrentRotations(t *testing.T) {
 			err := rs.Execute(rotCtx, container.GetContainerID(), map[string]string{
 				"ROTATION_NUM": fmt.Sprintf("%d", idx),
 				"TIMESTAMP":    time.Now().Format(time.RFC3339),
-			}, nil, 5*time.Second)
+			}, nil, nil, 5*time.Second)
 
 			if err != nil {
 				atomic.AddInt32(&failureCount, 1)

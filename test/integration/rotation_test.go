@@ -64,7 +64,7 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 	rotationCtx, rotationCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer rotationCancel()
 
-	err = rs.Execute(rotationCtx, containerID, newEnvs, nil, 5*time.Second)
+	err = rs.Execute(rotationCtx, containerID, newEnvs, nil, nil, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Rotation failed: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestRotation_FileModeSecret_NeverInDockerInspect(t *testing.T) {
 	rotationCtx, rotationCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer rotationCancel()
 
-	if err := rs.Execute(rotationCtx, containerID, newEnvs, fileSecrets, 5*time.Second); err != nil {
+	if err := rs.Execute(rotationCtx, containerID, newEnvs, fileSecrets, nil, 5*time.Second); err != nil {
 		t.Fatalf("Rotation with file-mode secret failed: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestRotation_Concurrent_MultipleContainers(t *testing.T) {
 
 			err := rs.Execute(rotCtx, container.GetContainerID(), map[string]string{
 				"ROTATION_ID": fmt.Sprintf("rotation-%d", idx),
-			}, nil, 5*time.Second)
+			}, nil, nil, 5*time.Second)
 			errCh <- err
 		}(i, c)
 	}
@@ -315,7 +315,7 @@ func TestRotation_HealthCheck_Timeout(t *testing.T) {
 
 	err = rs.Execute(rotationCtx, containerID, map[string]string{
 		"NEW_VAR": "value",
-	}, nil, 5*time.Second)
+	}, nil, nil, 5*time.Second)
 
 	if err != nil {
 		t.Logf("Rotation failed (expected if no health check): %v", err)

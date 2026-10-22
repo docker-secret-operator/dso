@@ -102,7 +102,7 @@ func TestShadowClone_DoesNotDuplicateNetworkIdentity(t *testing.T) {
 
 	// Clone exactly the way the rolling strategy does.
 	cloner := rotation.NewContainerCloner(cli)
-	cfg, hostCfg, netCfg, _, err := cloner.PrepareShadowConfig(ctx, origID, map[string]string{"ROTATED": "1"})
+	cfg, hostCfg, netCfg, _, err := cloner.PrepareShadowConfig(ctx, origID, map[string]string{"ROTATED": "1"}, nil)
 	if err != nil {
 		t.Fatalf("PrepareShadowConfig: %v", err)
 	}

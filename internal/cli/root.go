@@ -10,6 +10,15 @@ import (
 
 var CfgFile string
 
+// cfgFileExplicit records whether -c/--config was actually passed on the
+// command line, set from cmd.Flags().Changed("config") in NewRootCmd's
+// PersistentPreRun. CfgFile alone can't tell us this: its flag default is
+// literally "dso.yaml" (see NewRootCmd), so an operator who explicitly runs
+// `-c dso.yaml` -- the single most obvious filename, used in every doc
+// example -- ends up with the exact same CfgFile value as someone who never
+// passed -c at all.
+var cfgFileExplicit bool
+
 var (
 	Version   = "dev"
 	Commit    = "none"
@@ -17,8 +26,12 @@ var (
 )
 
 func ResolveConfig() string {
-	// Priority 1: CLI flag (-c)
-	if CfgFile != "" && CfgFile != "dso.yaml" {
+	// Priority 1: CLI flag (-c). CfgFile != "dso.yaml" already proves intent
+	// for any other filename; cfgFileExplicit additionally covers the one
+	// ambiguous case where the operator explicitly passed "dso.yaml" itself
+	// -- without it, that case was silently indistinguishable from -c never
+	// being passed, and fell through to /etc/dso/dso.yaml instead.
+	if CfgFile != "" && (CfgFile != "dso.yaml" || cfgFileExplicit) {
 		return CfgFile
 	}
 
@@ -59,6 +72,7 @@ Quick reference:
 
 DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault.`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			cfgFileExplicit = cmd.Flags().Changed("config")
 			_, _ = observability.NewLogger("info", "console", false)
 		},
 	}

@@ -22,7 +22,20 @@ func NewContainerCloner(cli *client.Client) *ContainerCloner {
 
 // PrepareShadowConfig extracts and modifies the configuration of an existing container for rolling update.
 // All config objects are defensively copied to prevent race conditions with concurrent operations.
-func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID string, newEnvs map[string]string) (*container.Config, *container.HostConfig, *network.NetworkingConfig, string, error) {
+//
+// SEC-P0-3: managedEnvNames is every env var name this container's config
+// maps ANY of its secrets to, independent of each secret's *current* inject
+// type. config.Env starts as a verbatim deep copy of the original container's
+// (below), and the newEnvs merge loop only ever adds/updates keys present in
+// newEnvs -- it never removes one. Without stripping managedEnvNames entries
+// that are no longer present in newEnvs first, a secret's value once written
+// to Config.Env (while it was env-mode) would persist unchanged into every
+// future shadow container even after that secret is switched to file-mode or
+// dropped from config -- this is the exact mechanism already fixed for the
+// rolling-fallback (executeSimpleRestart) and primary-restart paths; this is
+// the third and, being the default *successful* rolling path, most commonly
+// exercised instance of the same defect.
+func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID string, newEnvs map[string]string, managedEnvNames map[string]bool) (*container.Config, *container.HostConfig, *network.NetworkingConfig, string, error) {
 	inspect, err := cc.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("failed to inspect container: %w", err)
@@ -96,6 +109,22 @@ func (cc *ContainerCloner) PrepareShadowConfig(ctx context.Context, containerID 
 	// Create Shadow Name
 	originalName := strings.TrimPrefix(inspect.Name, "/")
 	shadowName := originalName + "_dso_shadow"
+
+	// SEC-P0-3: drop any inherited env entry this rotation manages but did
+	// not supply a fresh value for (e.g. switched to file-mode, or dropped
+	// from config) -- see the doc comment above for why this can't be
+	// skipped.
+	if len(managedEnvNames) > 0 {
+		filtered := make([]string, 0, len(config.Env))
+		for _, e := range config.Env {
+			k, _, _ := strings.Cut(e, "=")
+			if _, stillOverridden := newEnvs[k]; managedEnvNames[k] && !stillOverridden {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		config.Env = filtered
+	}
 
 	// Inject new environment variables into our copy (safe now)
 	for k, v := range newEnvs {

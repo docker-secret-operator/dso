@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -873,7 +874,7 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"}, nil)
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"}, nil, nil)
 	if err != nil {
 		t.Fatalf("L5 regression: unexpected error: %v", err)
 	}
@@ -894,7 +895,7 @@ func TestExecuteSimpleRestart_InspectFailure(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil, nil)
+	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil, nil, nil)
 	if err == nil {
 		t.Error("expected error when inspect fails, got nil")
 	}
@@ -941,11 +942,107 @@ func TestExecuteSimpleRestart_StartFailureRollsBack(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, nil, nil)
+	err := rc.executeSimpleRestart(context.Background(), origID, nil, nil, nil)
 	if err == nil {
 		t.Error("expected error when new container start fails")
 	}
 	if atomic.LoadInt32(&origRestarted) == 0 {
 		t.Error("original container was not restarted after new container start failure")
+	}
+}
+
+// TestExecuteSimpleRestart_StripsStaleManagedSecretEnv is the P0 regression
+// test (Phase 9A live finding): a secret env var inherited from the original
+// container (e.g. left over from when that secret was env-mode, or from a
+// secret since dropped from config) must NOT survive into the replacement
+// container's Config.Env when it is present in managedEnvNames but absent
+// from this rotation's envOverrides -- e.g. because the secret has since been
+// switched to file-mode injection. Before the fix, cloneContainerConfig
+// copied the original's Env verbatim and executeSimpleRestart only ever
+// added/updated keys present in envOverrides, so a value once written to
+// Config.Env persisted unchanged across every future recreation.
+func TestExecuteSimpleRestart_StripsStaleManagedSecretEnv(t *testing.T) {
+	const (
+		origID   = "orig-container-id"
+		newID    = "new-container-id"
+		origName = "myapp"
+	)
+	inspect := minimalInspect(origName, origID)
+	// Simulate a secret that leaked into Config.Env on some earlier
+	// recreation (e.g. before it was switched to file-mode injection).
+	inspect.Config.Env = []string{"EXISTING=old", "STALE_SECRET=leaked-value", "FRESH_SECRET=old-value"}
+	inspectJSON, _ := json.Marshal(inspect)
+	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
+
+	var createdEnv []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case strings.Contains(p, "/containers/"+origID+"/json"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(inspectJSON)
+		case strings.Contains(p, "/rename"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/create"):
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				Env []string `json:"Env"`
+			}
+			_ = json.Unmarshal(body, &req)
+			createdEnv = req.Env
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(createJSON)
+		case strings.Contains(p, "/containers/"+origID+"/stop"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+newID+"/start"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(p, "/containers/"+origID) && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	rc := newMockController(t, handler)
+	// This rotation no longer supplies STALE_SECRET as an env override (e.g.
+	// it is now file-mode), but it is still a managed name for this container.
+	// FRESH_SECRET, by contrast, IS re-supplied this rotation (e.g. it is
+	// still env-mode and has just rotated to a new value) -- it must survive
+	// with the NEW value, not be stripped as stale.
+	managedEnvNames := map[string]bool{"STALE_SECRET": true, "FRESH_SECRET": true}
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"FRESH_SECRET": "new-value"}, nil, managedEnvNames)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, e := range createdEnv {
+		if strings.HasPrefix(e, "STALE_SECRET=") {
+			t.Fatalf("P0 regression: stale managed secret leaked into replacement container's Config.Env: %q (full env: %v)", e, createdEnv)
+		}
+	}
+	found := false
+	for _, e := range createdEnv {
+		if e == "EXISTING=old" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unmanaged env var EXISTING=old should have been preserved, got: %v", createdEnv)
+	}
+
+	// A managed secret WITH a fresh override this rotation must still get the
+	// new value -- the stale-stripping logic must not also strip current,
+	// re-supplied overrides.
+	freshCount := 0
+	for _, e := range createdEnv {
+		if e == "FRESH_SECRET=new-value" {
+			freshCount++
+		} else if strings.HasPrefix(e, "FRESH_SECRET=") {
+			t.Fatalf("FRESH_SECRET should have been updated to the new override value, got stale entry: %q (full env: %v)", e, createdEnv)
+		}
+	}
+	if freshCount != 1 {
+		t.Errorf("expected exactly one FRESH_SECRET=new-value entry, got %d (full env: %v)", freshCount, createdEnv)
 	}
 }

@@ -157,7 +157,10 @@ func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, contai
 // a file-mode secret placed there would leak into `docker inspect` output.
 // See internal/watcher/controller.go's callers, which build these two maps
 // by checking Inject.Type.
-func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, fileSecrets []FileSecretSpec, timeout time.Duration) error {
+// managedEnvNames (SEC-P0-3) is every env var name this container's config
+// maps ANY of its secrets to, independent of each secret's current inject
+// type -- see the doc comment on PrepareShadowConfig for why it's required.
+func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, fileSecrets []FileSecretSpec, managedEnvNames map[string]bool, timeout time.Duration) error {
 	rs.logger.Info("Starting rotation",
 		zap.String("container_id", containerID),
 		zap.Duration("health_timeout", timeout))
@@ -189,7 +192,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("backup_name", backupName))
 
 	// Step 2: Prepare new container config
-	config, hostConfig, networkingConfig, _, err := cloner.PrepareShadowConfig(ctx, containerID, newEnvs)
+	config, hostConfig, networkingConfig, _, err := cloner.PrepareShadowConfig(ctx, containerID, newEnvs, managedEnvNames)
 	if err != nil {
 		rs.logger.Error("Failed to prepare shadow config",
 			zap.String("container_id", containerID),

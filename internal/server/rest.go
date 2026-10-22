@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/alert"
+	"github.com/docker-secret-operator/dso/internal/audit"
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/watcher"
@@ -234,6 +236,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDiscovery(w, r)
 	case r.URL.Path == "/api/config/raw":
 		s.handleConfigRaw(w, r)
+	case strings.HasSuffix(r.URL.Path, "/rotate") && strings.HasPrefix(r.URL.Path, "/api/secrets/") && r.Method == http.MethodPost:
+		s.handleSecretRotate(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/secrets"):
 		s.handleListSecrets(w, r)
 	case r.URL.Path == "/api/events/ws":
@@ -993,6 +997,102 @@ func (s *RESTServer) handleIntegrations(w http.ResponseWriter, r *http.Request) 
 		"total_count":  len(out),
 	}); err != nil {
 		s.Logger.Error("Failed to encode integrations response", zap.Error(err))
+	}
+}
+
+// secretNamePattern bounds what a valid secret name may look like -- the
+// same conservative charset DSO's config already expects for Compose
+// secret/env names. Used only to reject obviously-malformed input before it
+// ever reaches TriggerReload; the authoritative existence check is still
+// "is this name one of s.Config.Secrets" below.
+var secretNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
+
+// handleSecretRotate implements POST /api/secrets/{name}/rotate -- the WebUI's
+// one manual-rotation entry point. It is a thin wrapper around the exact same
+// production rotation machinery used by `dso sync --secret NAME`:
+// ReloaderController.TriggerReload. No second rotation engine is created
+// here; rolling rotation, restart fallback, health validation, proxy
+// handoff, rollback/recovery, cleanup, concurrency (per-service rotation
+// locks), and failure handling are all unchanged -- this handler only
+// decides whether to call TriggerReload and how to report the outcome.
+//
+// SECURITY: this handler never reads, logs, or returns a secret value -- it
+// only ever handles the secret's *name*, which is metadata, not the secret
+// itself. The response body is a bare synchronous accept/reject signal; the
+// actual rotation *outcome* (success/failure) is reported asynchronously via
+// the existing EventStore/WebSocket rotation_succeeded/rotation_failed
+// events (see internal/agent/trigger.go's emitEvent), exactly like every
+// other rotation trigger (sync, watcher, webhook). The WebUI is expected to
+// watch those events rather than treat HTTP 200 here as "rotation done".
+func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.Reloader == nil {
+		http.Error(w, "Rotation is not available on this agent", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Path is "/api/secrets/{name}/rotate".
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/secrets/")
+	name := strings.TrimSuffix(trimmed, "/rotate")
+	name = strings.TrimSpace(name)
+
+	if name == "" || !secretNamePattern.MatchString(name) {
+		http.Error(w, "Invalid or missing secret name", http.StatusBadRequest)
+		return
+	}
+
+	// Confirm the name refers to an actually-configured secret before
+	// invoking any rotation machinery -- this is the authoritative existence
+	// check (the regex above only rejects garbage input shapes).
+	known := false
+	if s.Config != nil {
+		for _, sec := range s.Config.Secrets {
+			if sec.Name == name {
+				known = true
+				break
+			}
+		}
+	}
+	if !known {
+		http.Error(w, "Unknown secret", http.StatusNotFound)
+		return
+	}
+
+	actor := "webui"
+	if s.WebUIAuth != nil {
+		if sess, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
+			actor = sess.Username
+		}
+	}
+
+	// TriggerReload returns quickly: synchronously it either finds no
+	// managed containers for this secret (error, no rotation happened) or
+	// kicks off the real rotation work asynchronously and returns nil right
+	// away -- so this handler never blocks the HTTP request on the actual
+	// rotation, which can take much longer than a request timeout should
+	// allow.
+	ctx := r.Context()
+	err := s.Reloader.TriggerReload(ctx, name, nil)
+
+	status := "success"
+	if err != nil {
+		status = "failure"
+	}
+	audit.Log(ctx, "manual_rotation_triggered", actor, "", name, "", status)
+
+	if err != nil {
+		s.Logger.Warn("Manual rotation request rejected", zap.String("secret", name), zap.Error(err))
+		http.Error(w, "No managed containers use this secret", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "accepted",
+		"secret": name,
+	}); encErr != nil {
+		s.Logger.Error("Failed to encode rotate response", zap.Error(encErr))
 	}
 }
 
