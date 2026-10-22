@@ -2,9 +2,18 @@
 
 DSO's agent can optionally serve a small browser dashboard alongside its
 REST API. It is a **read-mostly client of the existing DSO backend** —
-login, dashboard, events, secrets (metadata), and configuration (read-only)
-— not a second backend, not a second authentication system, and not a
-replacement for `DSO_AUTH_TOKEN`.
+login, dashboard, events, secrets (metadata), containers, audit, drift,
+integrations, and configuration are all read-only views — not a second
+backend, not a second authentication system, and not a replacement for
+`DSO_AUTH_TOKEN`.
+
+It does support exactly three write operations, each a thin entry point
+into existing backend functionality (see [Write operations](#write-operations)
+below): triggering a manual secret rotation, sending a test notification,
+and revoking the operator's other sessions. It does not support creating,
+editing, or viewing secrets; editing provider configuration; redeploying
+Compose workloads; restarting arbitrary containers; rolling back a
+rotation; or any other mutation beyond those three.
 
 ## Enabling it
 
@@ -31,19 +40,71 @@ operator credential.
 
 ## Pages
 
-| Page | What it shows |
-|---|---|
-| `/login` | Operator login |
-| `/dashboard` | Agent health, secret count, webhook capability flag |
-| `/events` | Recent rotation/recovery events + a live feed over `/api/events/ws` |
-| `/secrets` | Secret metadata (name, provider, status, injection type, rotation flag) — **never plaintext** |
-| `/configuration` | Read-only view of `/api/config/raw` (redacted — secret names and provider names only) |
+| Page | What it shows | Write action |
+|---|---|---|
+| `/login` | Operator login | — |
+| `/dashboard` | Agent health, secret count, webhook capability flag | — |
+| `/secrets` | Secret metadata (name, provider, status, injection type, rotation flag) — **never plaintext** | **Trigger rotation** (see below) |
+| `/containers` | Container status (name, image, health, strategy, secret count) | — |
+| `/events` | Recent rotation/recovery events + a live feed over `/api/events/ws` | — |
+| `/audit` | Audit log | — |
+| `/drift` | Config-vs-runtime drift status (diagnostic only) | — |
+| `/integrations` | Configured notification integrations | **Send test notification** (see below) |
+| `/users` | This operator's active sessions | **Revoke other sessions** (see below) |
+| `/alerts` | Current alerts (auto-resolve when the underlying condition clears; no manual acknowledge) | — |
+| `/analytics` | Rotation/health metrics | — |
+| `/configuration` | Read-only view of `/api/config/raw` (redacted — secret names and provider names only) | — |
+| `/logs` | Log tail (same underlying event store as `/events`) | — |
+| `/settings` | Connection/auth status | — |
+
+Every page above other than the three write actions is read-only: it
+displays data DSO already tracks and cannot mutate agent, secret,
+provider, or container state.
 
 Deliberately not shipped: anything requiring functionality DSO doesn't
-have today (autonomy, forecasting, correlation, drift, scheduling,
-plugins, policy engines, multi-user accounts). A container/secret
+have today (autonomy, forecasting, correlation, scheduling, plugins,
+policy engines, drift *reconciliation*, full multi-user/RBAC account
+management). Specifically out of scope for the web UI: creating or
+editing secrets, revealing plaintext secret values, changing provider
+configuration, applying or redeploying Compose workloads, restarting an
+arbitrary container, rolling back a rotation, changing rotation strategy,
+changing `owner_id` or adopting ownerless containers, managing Compose
+projects, and acknowledging/resolving alerts. A container/secret
 discovery UI is also deferred — it doesn't correspond to any existing
 backend feature.
+
+## Write operations
+
+The web UI's three write actions are thin, audited entry points into
+functionality that already exists independently of the UI (the same
+underlying mechanisms the CLI and REST API already use) — the UI does
+not implement a second copy of any of this logic.
+
+- **Manual secret rotation** — `POST /api/secrets/{name}/rotate`, exposed
+  from the `/secrets` page. Triggering it calls the same rotation
+  machinery used by scheduled/automatic rotation. The request is
+  asynchronous: the POST response only confirms the request was
+  accepted, not that rotation succeeded. The page's displayed status
+  (in progress / succeeded / failed) reflects the real
+  `rotation_succeeded`/`rotation_failed` event delivered over the
+  existing `/api/events/ws` stream, not a fabricated timer. This action
+  never exposes, returns, or logs the secret's value — only its name and
+  the rotation outcome.
+- **Test notification** — `POST /api/integrations/notifications/test`,
+  exposed from the `/integrations` page. Sends one real, synthetic test
+  event through your already-configured notification destination(s), so
+  you can confirm delivery is working. It does not let you add, edit, or
+  remove a notification destination from the UI — that remains a
+  `dso.yaml` configuration change.
+- **Revoke other sessions** — `POST /api/sessions/revoke-others`, exposed
+  from the `/users` page. Invalidates every session for the single
+  configured operator identity other than the current one. This is
+  session housekeeping, not user/RBAC administration — there is still
+  only one operator identity (see Authentication below).
+
+Every write action is logged to the audit trail (`manual_rotation_triggered`,
+`test_notification_sent`) with the actor, target name, and outcome — never
+a secret value or credential.
 
 ## Authentication
 
