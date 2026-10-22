@@ -71,6 +71,28 @@ func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, n
 	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)
 }
 
+// discardShadow removes the not-yet-promoted replacement ("shadow") container
+// after a failed or abandoned rotation. It runs on a bounded cleanup context
+// that survives cancellation of the rotation context (see CleanupContext), so a
+// timeout or daemon shutdown still removes the shadow. The original container
+// is never touched here. A failure is logged as an error with the manual
+// recovery command, because a leaked shadow keeps running with the new secrets.
+func (rs *RollingStrategy) discardShadow(ctx context.Context, shadowID, shadowName string, stop bool) {
+	cctx, cancel := CleanupContext(ctx)
+	defer cancel()
+	if stop {
+		if err := rs.cli.ContainerStop(cctx, shadowID, container.StopOptions{}); err != nil {
+			rs.logger.Warn("Could not stop shadow container during rollback (removal is forced)",
+				zap.String("shadow_id", shadowID), zap.Error(err))
+		}
+	}
+	if err := rs.cli.ContainerRemove(cctx, shadowID, container.RemoveOptions{Force: true}); err != nil {
+		rs.logger.Error("ROLLBACK INCOMPLETE: could not remove the replacement container; it may still be running with the new secrets. "+
+			"The original container was not modified. Recover with: docker rm -f "+shadowID,
+			zap.String("shadow_id", shadowID), zap.String("shadow_name", shadowName), zap.Error(err))
+	}
+}
+
 // cleanupContainerWithRetry attempts to stop and remove a container with exponential backoff retry.
 // Makes 3 attempts: immediate, after 1s, after 2s. Logs at each attempt.
 func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, containerID, backupName string, timeout int) {
@@ -231,7 +253,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 				zap.String("new_container_id", newContainerID),
 				zap.String("path", fs.Path),
 				zap.Error(err))
-			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			rs.discardShadow(ctx, newContainerID, tempNewName, false)
 			return fmt.Errorf("failed to stream file-mode secret to new container: %w", err)
 		}
 	}
@@ -243,7 +265,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		rs.logger.Warn("Failed to start new container, rolling back",
 			zap.String("new_container_id", newContainerID),
 			zap.Error(err))
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, false)
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
@@ -257,8 +279,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		rs.logger.Warn("Health check failed, rolling back",
 			zap.String("new_container_id", newContainerID),
 			zap.Error(err))
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
 		return fmt.Errorf("health verification failed: %w", err)
 	}
 
@@ -272,8 +293,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 				zap.String("new_container_id", newContainerID),
 				zap.String("path", fs.Path),
 				zap.Error(err))
-			_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
 			return fmt.Errorf("file-mode secret probe failed for %s: %w", fs.Path, err)
 		}
 	}
@@ -288,8 +308,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			rs.logger.Error("Proxy handoff failed, rolling back (old container keeps serving)",
 				zap.String("new_container_id", newContainerID),
 				zap.Error(err))
-			_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-			_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
 			return fmt.Errorf("proxy handoff failed: %w", err)
 		}
 	}
@@ -314,8 +333,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		// At this point, the original container is still active with its original name,
 		// and the new container is running under the temp name. This is a recoverable state.
 		// The operator must manually fix this by removing the new container.
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
 		return fmt.Errorf("FATAL: Failed to rename original container to backup: %w", err)
 	}
 
@@ -357,8 +375,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		}
 
 		// Restore succeeded, cleanup the new container
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
 		return fmt.Errorf("failed to finalize swap: %w", err)
 	}
 
@@ -383,8 +400,7 @@ verifySwap:
 
 		// If we got here, managed to restore original container to original name
 		// Remove the new container that's stuck with temp/wrong name
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
 
 		return fmt.Errorf("atomic swap verification failed, rolled back to original state")
 	}

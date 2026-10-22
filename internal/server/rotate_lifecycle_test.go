@@ -56,6 +56,19 @@ func (d *dockerCalls) countReq(method, sub string) int {
 	}
 	return n
 }
+
+// countEnds counts requests with the given method whose request line ends with suffix.
+func (d *dockerCalls) countEnds(method, suffix string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, method+" ") && strings.HasSuffix(c, suffix) {
+			n++
+		}
+	}
+	return n
+}
 func (d *dockerCalls) aborted() int { d.mu.Lock(); defer d.mu.Unlock(); return d.abort }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -95,12 +108,34 @@ func rotationFixture(t *testing.T, createMode string) (*RESTServer, *httptest.Se
 	release := make(chan struct{})
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
+		// A call made on an already-cancelled context may still reach the
+		// server but the client has abandoned it; only record calls whose
+		// client is still waiting after a short delay (the hanging ones are
+		// recorded immediately, they are what the test waits on).
+		hangs := strings.Contains(p, "/containers/create") || strings.Contains(p, "/containers/"+newID+"/json")
+		if !hangs {
+			time.Sleep(15 * time.Millisecond)
+			if r.Context().Err() != nil {
+				return
+			}
+		}
 		calls.add(r.Method + " " + p + "?" + r.URL.RawQuery)
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(p, "/containers/"+origID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(inspectJSON)
 		case r.Method == http.MethodGet && strings.Contains(p, "/containers/"+newID+"/json"):
+			if createMode == "health-hang" {
+				_, _ = io.Copy(io.Discard, r.Body)
+				select {
+				case <-r.Context().Done(): // the client gave up waiting for health
+					calls.mu.Lock()
+					calls.abort++
+					calls.mu.Unlock()
+				case <-release:
+				}
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(healthyJSON)
 		case strings.Contains(p, "/containers/create"):
@@ -206,10 +241,13 @@ func TestManualRotate_TimeoutAbandonsHungDockerCall(t *testing.T) {
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("abandoned after %v, want roughly the 300ms timeout", d)
 	}
-	// What happens to the rename after a TIMEOUT is a property of TriggerReload
-	// (rollback shares the rotation context); record it, do not assert it.
-	time.Sleep(100 * time.Millisecond)
-	t.Logf("rename calls after timeout: %d (rename-back after expiry is not attempted when the context is already done)", calls.count("/containers/orig-1/rename"))
+	// The abandoned rotation must still undo itself: the original was renamed
+	// away before the create, so it must be renamed BACK, even though the
+	// rotation context has expired (bounded cleanup context).
+	waitFor(t, "original renamed back after the timeout", func() bool { return calls.countEnds("POST", "/containers/orig-1/rename?name=myapp") > 0 })
+	if calls.countReq("DELETE", "/containers/orig-1") != 0 {
+		t.Fatal("original must not be removed")
+	}
 }
 
 // Shutdown: cancelling the daemon context cancels in-flight manual rotations.
@@ -222,4 +260,41 @@ func TestManualRotate_DaemonShutdownCancelsRotation(t *testing.T) {
 	waitFor(t, "rotation reached the hung create call", func() bool { return calls.count("/containers/create") > 0 })
 	cancel()
 	waitFor(t, "in-flight create to be cancelled on daemon shutdown", func() bool { return calls.aborted() > 0 })
+}
+
+// Health check cut short by the timeout: the replacement is removed, the
+// original gets its name back and is running again, and it is never deleted.
+func TestManualRotate_TimeoutDuringHealthCheck_RollsBackCleanly(t *testing.T) {
+	old := manualRotationTimeout
+	manualRotationTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { manualRotationTimeout = old })
+
+	_, ts, calls := rotationFixture(t, "health-hang")
+	postRotate(t, ts)
+
+	waitFor(t, "health check abandoned", func() bool { return calls.aborted() > 0 })
+	waitFor(t, "replacement removed", func() bool { return calls.countReq("DELETE", "/containers/new-1") > 0 })
+	waitFor(t, "original name restored", func() bool { return calls.countEnds("POST", "/containers/orig-1/rename?name=myapp") > 0 })
+	waitFor(t, "original restarted", func() bool { return calls.countReq("POST", "/containers/orig-1/start") > 0 })
+	if calls.countReq("DELETE", "/containers/orig-1") != 0 {
+		t.Fatal("original must not be deleted when the replacement never became healthy")
+	}
+}
+
+// Daemon shutdown during the health check: same clean rollback.
+func TestManualRotate_ShutdownDuringHealthCheck_RollsBackCleanly(t *testing.T) {
+	s, ts, calls := rotationFixture(t, "health-hang")
+	base, cancel := context.WithCancel(context.Background())
+	s.rotationBaseCtx = base
+	postRotate(t, ts)
+
+	waitFor(t, "rotation reached the health check", func() bool { return calls.countReq("POST", "/containers/new-1/start") > 0 })
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	waitFor(t, "replacement removed", func() bool { return calls.countReq("DELETE", "/containers/new-1") > 0 })
+	waitFor(t, "original name restored", func() bool { return calls.countEnds("POST", "/containers/orig-1/rename?name=myapp") > 0 })
+	waitFor(t, "original restarted", func() bool { return calls.countReq("POST", "/containers/orig-1/start") > 0 })
+	if calls.countReq("DELETE", "/containers/orig-1") != 0 {
+		t.Fatal("original must not be deleted")
+	}
 }

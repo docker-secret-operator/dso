@@ -1347,7 +1347,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				created, err := r.cli.ContainerCreate(ctx, config, inspect.HostConfig, networkingConfig, nil, originalName)
 				if err != nil {
 					r.Logger.Error("Failed to create new container, rolling back name", zap.Error(err))
-					_ = r.cli.ContainerRename(ctx, target.ID, originalName)
+					r.restoreOriginalName(ctx, target.ID, originalName)
 					finish(err)
 					return
 				}
@@ -1427,7 +1427,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 				if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
 					r.Logger.Error("New container unhealthy, rolling back with retries", zap.Error(err))
-					_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
+					r.stopReplacement(ctx, created.ID, stopTimeout)
 					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
 					finish(err)
 					return
@@ -1445,7 +1445,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					if targetMapping != nil && targetMapping.Inject.Type == "file" {
 						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Inject.Path, 15*time.Second, 3); err != nil {
 							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Inject.Path))
-							_ = r.cli.ContainerStop(ctx, created.ID, container.StopOptions{Timeout: &stopTimeout})
+							r.stopReplacement(ctx, created.ID, stopTimeout)
 							r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
 							finish(err)
 							return
@@ -1619,21 +1619,92 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 // On persistent failure it marks the service degraded.
 // Callers must release the rotation lock after this returns.
 func (r *ReloaderController) executeRollback(ctx context.Context, createdID, originalID, originalName, serviceName string) {
+	if ctx.Err() != nil {
+		r.Logger.Warn("Rotation context ended before rollback; rolling back on a bounded cleanup context",
+			zap.String("service", serviceName), zap.Error(ctx.Err()))
+	}
 	for i := 0; i < 3; i++ {
-		_ = r.cli.ContainerRemove(ctx, createdID, container.RemoveOptions{Force: true})
-		_ = r.cli.ContainerRename(ctx, originalID, originalName)
-		if err := r.cli.ContainerStart(ctx, originalID, container.StartOptions{}); err == nil {
+		// Each attempt gets its own bounded context that survives cancellation
+		// of the rotation context (timeout / daemon shutdown): the rollback
+		// must be able to undo the half-finished rotation.
+		cctx, cancel := rotation.CleanupContext(ctx)
+		if err := r.cli.ContainerRemove(cctx, createdID, container.RemoveOptions{Force: true}); err != nil {
+			r.Logger.Warn("Rollback: could not remove replacement container",
+				zap.String("replacement_id", createdID), zap.Error(err))
+		}
+		if err := r.cli.ContainerRename(cctx, originalID, originalName); err != nil {
+			r.Logger.Warn("Rollback: could not restore original container name",
+				zap.String("original_id", originalID), zap.Error(err))
+		}
+		err := r.cli.ContainerStart(cctx, originalID, container.StartOptions{})
+		cancel()
+		if err == nil {
 			r.Logger.Info("Rollback successful", zap.Int("attempt", i+1), zap.String("service", serviceName))
 			return
 		}
 		r.Logger.Warn("Rollback attempt failed, retrying",
 			zap.Int("attempt", i+1),
 			zap.String("service", serviceName))
-		time.Sleep(time.Duration(i+1) * time.Second)
+		time.Sleep(time.Duration(i+1) * rollbackRetryUnit)
 	}
 	r.markDegraded(serviceName, "Rotation failed, rollback failed after 3 attempts")
-	r.Logger.Error("CRITICAL: New container failed and rollback failed after all retries",
-		zap.String("service", serviceName))
+	r.Logger.Error("CRITICAL: New container failed and rollback failed after all retries. Manual recovery: "+
+		"docker rm -f "+createdID+" ; docker rename "+originalID+" "+originalName+" ; docker start "+originalID,
+		zap.String("service", serviceName),
+		zap.String("original_id", originalID),
+		zap.String("replacement_id", createdID))
+}
+
+// rollbackRetryUnit is the backoff unit between rollback attempts (1x, 2x, 3x).
+// A variable so tests do not wait six real seconds.
+var rollbackRetryUnit = time.Second
+
+// restoreOriginalName renames a container back to its original name on a
+// bounded cleanup context (it must work after the rotation context ended) and
+// logs an error with the manual recovery command if that fails.
+func (r *ReloaderController) restoreOriginalName(ctx context.Context, containerID, originalName string) {
+	cctx, cancel := rotation.CleanupContext(ctx)
+	defer cancel()
+	if err := r.cli.ContainerRename(cctx, containerID, originalName); err != nil {
+		r.Logger.Error("ROLLBACK INCOMPLETE: could not restore the original container name; it keeps its temporary name. "+
+			"Recover with: docker rename "+containerID+" "+originalName,
+			zap.String("container_id", containerID), zap.String("original_name", originalName), zap.Error(err))
+	}
+}
+
+// stopReplacement stops a replacement container that failed its checks, on a
+// bounded cleanup context. Best effort: executeRollback force-removes it next.
+func (r *ReloaderController) stopReplacement(ctx context.Context, containerID string, timeoutSec int) {
+	cctx, cancel := rotation.CleanupContext(ctx)
+	defer cancel()
+	if err := r.cli.ContainerStop(cctx, containerID, container.StopOptions{Timeout: &timeoutSec}); err != nil {
+		r.Logger.Warn("Could not stop replacement container before rollback (removal is forced)",
+			zap.String("replacement_id", containerID), zap.Error(err))
+	}
+}
+
+// discardReplacement force-removes a replacement container that must not
+// survive a failed restart, on a bounded cleanup context.
+func (r *ReloaderController) discardReplacement(ctx context.Context, containerID string) {
+	cctx, cancel := rotation.CleanupContext(ctx)
+	defer cancel()
+	if err := r.cli.ContainerRemove(cctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+		r.Logger.Error("ROLLBACK INCOMPLETE: could not remove the replacement container; it may still exist. "+
+			"The original container was not deleted. Recover with: docker rm -f "+containerID,
+			zap.String("replacement_id", containerID), zap.Error(err))
+	}
+}
+
+// restartOriginal starts the original container again after a failed restart
+// attempt, on a bounded cleanup context.
+func (r *ReloaderController) restartOriginal(ctx context.Context, containerID, originalName string) {
+	cctx, cancel := rotation.CleanupContext(ctx)
+	defer cancel()
+	if err := r.cli.ContainerStart(cctx, containerID, container.StartOptions{}); err != nil {
+		r.Logger.Error("ROLLBACK INCOMPLETE: could not restart the original container; it may be stopped. "+
+			"Recover with: docker start "+containerID+" (expected name: "+originalName+")",
+			zap.String("container_id", containerID), zap.Error(err))
+	}
 }
 
 // DegradedService is a read-only snapshot of one currently degraded
@@ -1834,7 +1905,7 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	created, err := r.cli.ContainerCreate(ctx, cfg, inspect.HostConfig, networkingConfig, nil, originalName)
 	if err != nil {
 		// Rename back so the original container keeps its name.
-		_ = r.cli.ContainerRename(ctx, containerID, originalName)
+		r.restoreOriginalName(ctx, containerID, originalName)
 		return fmt.Errorf("executeSimpleRestart: container create failed: %w", err)
 	}
 
@@ -1842,8 +1913,8 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	// restart/rolling paths -- the app must never start without them present.
 	for _, fs := range fileSecrets {
 		if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, fs.Path, fs.Data, fs.UID, fs.GID); err != nil {
-			_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
-			_ = r.cli.ContainerRename(ctx, containerID, originalName)
+			r.discardReplacement(ctx, created.ID)
+			r.restoreOriginalName(ctx, containerID, originalName)
 			return fmt.Errorf("executeSimpleRestart: file secret injection failed: %w", err)
 		}
 	}
@@ -1852,9 +1923,9 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	_ = r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTO})
 
 	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
-		_ = r.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
-		_ = r.cli.ContainerRename(ctx, containerID, originalName)
-		_ = r.cli.ContainerStart(ctx, containerID, container.StartOptions{})
+		r.discardReplacement(ctx, created.ID)
+		r.restoreOriginalName(ctx, containerID, originalName)
+		r.restartOriginal(ctx, containerID, originalName)
 		return fmt.Errorf("executeSimpleRestart: start failed: %w", err)
 	}
 
