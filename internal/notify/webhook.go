@@ -185,7 +185,7 @@ func sensitiveURLParts(rawURL string) []string {
 			}
 			parts = append(parts, u.User.Username())
 		}
-		parts = append(parts, u.RawQuery, strings.Trim(u.EscapedPath(), "/"), strings.Trim(u.Path, "/"))
+		parts = append(parts, u.RawQuery, strings.Trim(u.EscapedPath(), "/"), strings.Trim(u.Path, "/"), u.Fragment, u.EscapedFragment())
 	}
 	out := parts[:0]
 	for _, p := range parts {
