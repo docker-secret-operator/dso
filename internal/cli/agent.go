@@ -113,6 +113,7 @@ func NewAgentCmd() *cobra.Command {
 			// with the dso.host_ports label and binds their ports immediately so traffic
 			// is never interrupted during secret rotation.
 			proxyManager := dsoProxy.NewManager(logger)
+			proxyManager.SetOwnerID(cfg.Agent.OwnerID)
 			if len(cfg.Proxy.AllowedHostPorts) > 0 {
 				// SEC-7 full fix: cross-check container-declared host ports
 				// against an operator-supplied allow-list before ScanAndRegister

@@ -82,6 +82,38 @@ type AutomaticRecovery struct {
 	// authoritative MarkRecovered/MarkCriticalError transition, never
 	// before, and never in a way recovery logic can observe.
 	Dispatcher *notify.Dispatcher
+
+	// OwnerID is this agent's dso.owner identity (SEC-P0 discovery-isolation
+	// fix). Set via SetOwnerID before RecoverFromCrash/CleanupOrphanedContainers
+	// run. Recovery/cleanup act purely on Docker-visible naming conventions
+	// and label filters, which -- like normal discovery before this fix --
+	// carry no per-agent identity of their own; without this, a crash-
+	// recovery or orphan sweep on a host running a second, independent DSO
+	// agent could stop/remove a container that agent owns merely because it
+	// happens to match DSO's rotation-artifact naming pattern (e.g. an
+	// unrelated "*_dso_backup_*"-named container it created). Empty means
+	// ownership enforcement is skipped (matches pre-fix behavior; not
+	// reachable from a real `dso agent` process, which always has an
+	// OwnerID from EnsureOwnerID).
+	OwnerID string
+}
+
+// SetOwnerID wires this agent's dso.owner identity into the recovery/cleanup
+// paths below so they enforce the same ownership boundary as normal
+// discovery (internal/watcher.ReloaderController.checkOwnership).
+func (ar *AutomaticRecovery) SetOwnerID(id string) {
+	ar.OwnerID = id
+}
+
+// ownedByMe reports whether labels carries this agent's dso.owner value.
+// Default-deny: a missing/empty dso.owner label, or one that names a
+// different agent, is NOT owned by me. See OwnerID's doc comment for why an
+// empty ar.OwnerID (no Config wired up) instead skips enforcement entirely.
+func (ar *AutomaticRecovery) ownedByMe(labels map[string]string) bool {
+	if ar.OwnerID == "" {
+		return true
+	}
+	return labels["dso.owner"] == ar.OwnerID
 }
 
 func (ar *AutomaticRecovery) emitRecoveryEvent(t notify.EventType, rotation *RotationState, err error) {
@@ -135,14 +167,27 @@ func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 		return nil
 	}
 
-	// Index containers by name for O(1) lookup
+	// Index containers by name for O(1) lookup. SEC-P0: only containers this
+	// agent owns are eligible for recovery actions below -- a dso.reloader
+	// container without a matching dso.owner label (or none at all) must
+	// never be touched by crash recovery, exactly as normal discovery
+	// refuses to register it.
 	containersByName := make(map[string]string)
+	skippedUnowned := 0
 	for _, c := range containers {
+		if !ar.ownedByMe(c.Labels) {
+			skippedUnowned++
+			continue
+		}
 		for _, name := range c.Names {
 			// Remove leading slash from Docker's name format
 			cleanName := strings.TrimPrefix(name, "/")
 			containersByName[cleanName] = c.ID
 		}
+	}
+	if skippedUnowned > 0 {
+		ar.logger.Warn("Crash recovery: skipped dso.reloader containers not owned by this agent",
+			zap.Int("count", skippedUnowned))
 	}
 
 	// Perform recovery for each pending rotation
@@ -387,6 +432,25 @@ func (ar *AutomaticRecovery) CleanupOrphanedContainers(ctx context.Context) erro
 
 	var cleanedUp int
 	for _, c := range containers {
+		// SEC-P0: a rotation-artifact-shaped NAME alone is not proof this
+		// agent created the container -- an independent DSO agent on the
+		// same host can produce identically-shaped names
+		// ("*_dso_backup_*", "*_dso_new_*", "*_old_<ts>"). Require this
+		// agent's own dso.owner label before touching it; default-deny
+		// (skip + warn) an unowned or foreign-owned match instead of
+		// silently sweeping it up.
+		if !ar.ownedByMe(c.Labels) {
+			for _, name := range c.Names {
+				cleanName := strings.TrimPrefix(name, "/")
+				if isDSOBackupContainerName(cleanName) || isDSONewContainerName(cleanName) || isDSORestartOldContainerName(cleanName) {
+					ar.logger.Warn("Orphan cleanup: skipping rotation-artifact-named container not owned by this agent",
+						zap.String("container_id", shortID(c.ID)),
+						zap.String("container_name", cleanName))
+					break
+				}
+			}
+			continue
+		}
 		for _, name := range c.Names {
 			cleanName := strings.TrimPrefix(name, "/")
 

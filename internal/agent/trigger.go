@@ -167,6 +167,9 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	// Create a recovery handler
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
 	ar.Dispatcher = t.Dispatcher
+	if t.Config != nil {
+		ar.OwnerID = t.Config.Agent.OwnerID
+	}
 
 	// Validate state file integrity and cleanup stale state
 	ar.ValidateStateOnStartup(t.ctx)

@@ -69,6 +69,75 @@ type ReloaderController struct {
 	pendingProxy sync.Map // map[string]struct{} (key: container ID)
 }
 
+// ownerID returns this agent's dso.owner identity (see EnsureOwnerID in
+// pkg/config), or "" if no Config is attached (e.g. some unit tests
+// construct a bare ReloaderController). An empty ownerID is treated as
+// "ownership checking unavailable" by checkOwnership below -- it does NOT
+// fall back to matching everything, which would silently disable the fix
+// this field exists for.
+func (r *ReloaderController) ownerID() string {
+	if r.Config == nil {
+		return ""
+	}
+	return r.Config.Agent.OwnerID
+}
+
+// checkOwnership is the SEC-P0 discovery-isolation gate. It must be called
+// by every path that discovers a dso.reloader=true labeled container before
+// that container is registered into r.Targets (and therefore before it can
+// ever be rotated, restarted, or otherwise mutated by this agent).
+//
+// Default-deny: a dso.reloader=true container with NO dso.owner label (a
+// pre-fix "legacy" container) is rejected, not silently adopted. A
+// container whose dso.owner does not match this agent's own ID is rejected.
+// Only an exact match registers. If this agent has no ownerID configured at
+// all (r.Config == nil, e.g. a unit test harness with no Config wired up),
+// ownership enforcement is skipped entirely -- this mirrors pre-fix
+// behavior for callers that never had a Config to enforce with, and is not
+// reachable from a real `dso agent` process, which always loads a Config
+// with EnsureOwnerID already applied.
+func (r *ReloaderController) checkOwnership(containerID, containerName string, labels map[string]string) bool {
+	self := r.ownerID()
+	if self == "" {
+		return true
+	}
+	owner, present := labels["dso.owner"]
+	if !present || owner == "" {
+		r.Logger.Warn("Found DSO-managed-looking container without dso.owner label; skipping until explicitly adopted",
+			zap.String("id", util.ShortID(containerID)),
+			zap.String("name", containerName))
+		return false
+	}
+	if owner != self {
+		r.Logger.Warn("Found dso.reloader container owned by a different DSO agent instance; skipping",
+			zap.String("id", util.ShortID(containerID)),
+			zap.String("name", containerName))
+		return false
+	}
+	return true
+}
+
+// ownedByOtherAgent (also guards the start-event proxy registration) reports whether labels carry a dso.owner that names a
+// DIFFERENT agent. The config-driven discovery fallbacks (a container matched
+// by name in secrets[].targets.containers, without the dso.reloader label) are
+// an explicit operator opt-in, so an unowned container named in the config is
+// still honoured, but a container another DSO agent has claimed is never
+// adopted. With no ownerID configured (bare test harness) nothing is denied,
+// matching checkOwnership.
+func (r *ReloaderController) ownedByOtherAgent(containerID, containerName string, labels map[string]string) bool {
+	self := r.ownerID()
+	if self == "" {
+		return false
+	}
+	if owner := labels["dso.owner"]; owner != "" && owner != self {
+		r.Logger.Warn("Container is owned by a different DSO agent instance; skipping",
+			zap.String("id", util.ShortID(containerID)),
+			zap.String("name", containerName))
+		return true
+	}
+	return false
+}
+
 // markProxyPending marks containerID as not-yet-eligible for proxy traffic.
 // Must be called before the container is started.
 func (r *ReloaderController) markProxyPending(containerID string) {
@@ -315,6 +384,13 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 			if _, exists := r.Targets.Load(c.ID); exists {
 				continue
 			}
+			cname := ""
+			if len(c.Names) > 0 {
+				cname = strings.TrimPrefix(c.Names[0], "/")
+			}
+			if !r.checkOwnership(c.ID, cname, c.Labels) {
+				continue
+			}
 			secretsStr := c.Labels["dso.secrets"]
 			if secretsStr == "" {
 				continue
@@ -399,6 +475,13 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 	switch msg.Action {
 	case "start":
 		_, hasLabel := msg.Actor.Attributes["dso.reloader"]
+		if hasLabel && !r.checkOwnership(msg.Actor.ID, strings.TrimPrefix(msg.Actor.Attributes["name"], "/"), msg.Actor.Attributes) {
+			// SEC-P0 default-deny: a dso.reloader=true container that is
+			// unowned or owned by a different agent must never be
+			// registered, rotated, or proxy-registered by this agent --
+			// stop processing this start event entirely.
+			return nil
+		}
 		if hasLabel {
 			// --- Label-driven registration ---
 			strategy := msg.Actor.Attributes["dso.update.strategy"]
@@ -465,7 +548,7 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 				}
 			}
 
-			if len(matchedSecrets) > 0 {
+			if len(matchedSecrets) > 0 && !r.ownedByOtherAgent(msg.Actor.ID, cname, msg.Actor.Attributes) {
 				strategy := r.Config.Agent.Rotation.Strategy
 				if strategy == "" {
 					strategy = r.Config.Defaults.Rotation.Strategy
@@ -492,7 +575,8 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 		// make the router select an application that is not listening yet and
 		// drop real client requests. The rotation path registers it itself,
 		// after readiness, via the proxy handoff (see markProxyPending).
-		if r.ProxyManager != nil && !r.isProxyPending(msg.Actor.ID) {
+		if r.ProxyManager != nil && !r.isProxyPending(msg.Actor.ID) &&
+			!r.ownedByOtherAgent(msg.Actor.ID, strings.TrimPrefix(msg.Actor.Attributes["name"], "/"), msg.Actor.Attributes) {
 			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
 				inspect, ierr := r.cli.ContainerInspect(ctx, msg.Actor.ID)
 				if ierr == nil {
@@ -543,6 +627,13 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 
 	registered := 0
 	for _, c := range labeledContainers {
+		cname := ""
+		if len(c.Names) > 0 {
+			cname = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if !r.checkOwnership(c.ID, cname, c.Labels) {
+			continue
+		}
 		strategy := c.Labels["dso.update.strategy"]
 		if strategy == "" {
 			strategy = "restart"
@@ -597,6 +688,9 @@ func (r *ReloaderController) populateInitialTargets(ctx context.Context) {
 				}
 
 				if len(matchedSecrets) == 0 {
+					continue
+				}
+				if r.ownedByOtherAgent(c.ID, cname, c.Labels) {
 					continue
 				}
 

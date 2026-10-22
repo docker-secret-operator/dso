@@ -56,6 +56,8 @@ type RotationChecks struct {
 type dsoContainerInfo struct {
 	Name      string
 	HostPorts string // raw dso.host_ports label value; "" if absent
+	Reloader  string // raw dso.reloader label value; "" if absent
+	Owner     string // raw dso.owner label value; "" if absent
 }
 
 func newRotationChecks(socketPath, configPath string) *RotationChecks {
@@ -84,7 +86,7 @@ func newRotationChecks(socketPath, configPath string) *RotationChecks {
 // here is harmless and keeps this a single, simple call.
 func defaultListDSOContainers(ctx context.Context) ([]dsoContainerInfo, error) {
 	out, err := exec.CommandContext(ctx, "docker", "ps", "-a",
-		"--format", `{{.Names}}\t{{.Label "dso.host_ports"}}`).Output()
+		"--format", `{{.Names}}\t{{.Label "dso.host_ports"}}\t{{.Label "dso.reloader"}}\t{{.Label "dso.owner"}}`).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -93,10 +95,16 @@ func defaultListDSOContainers(ctx context.Context) ([]dsoContainerInfo, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, "\t", 4)
 		info := dsoContainerInfo{Name: parts[0]}
 		if len(parts) > 1 {
 			info.HostPorts = parts[1]
+		}
+		if len(parts) > 2 {
+			info.Reloader = parts[2]
+		}
+		if len(parts) > 3 {
+			info.Owner = parts[3]
 		}
 		containers = append(containers, info)
 	}
@@ -111,6 +119,7 @@ func (rc *RotationChecks) run(ctx context.Context) []DoctorCheck {
 		rc.checkOrphanContainers(ctx),
 		rc.checkProxyHostPortConflicts(ctx),
 		rc.checkSecretDestinations(),
+		rc.checkUnownedManagedContainers(ctx),
 	}
 }
 
@@ -215,6 +224,81 @@ func (rc *RotationChecks) checkOrphanContainers(ctx context.Context) DoctorCheck
 		DoctorCatRotation,
 		"Restart the DSO agent -- automatic recovery cleans these up on startup",
 		"Or remove manually after confirming they are not in use: docker rm -f <container>",
+	)
+}
+
+// DSO-DOCTOR-023: no DSO-managed-looking container is unmanaged because it
+// lacks (or mismatches) the dso.owner ownership label.
+//
+// Read-only diagnostic only -- never assigns a label, never registers or
+// mutates a container. This exists because the ownership fix's default-deny
+// behavior (internal/watcher/controller.go's checkOwnership, internal/agent/
+// recovery.go's ownedByMe) is silent by design: a container that looks
+// DSO-managed (dso.reloader=true) but carries no dso.owner label, or one
+// belonging to a different agent instance, is simply skipped by every
+// discovery/recovery/reconciliation path with no operator-visible signal
+// beyond "rotations stopped happening." The most common real trigger is
+// upgrading an existing installation to an ownership-aware DSO version:
+// pre-upgrade containers have no dso.owner label and are never
+// auto-adopted (adoption is an explicit, separate, not-yet-built operator
+// action), so they silently stop being rotated. This check surfaces that
+// state instead of leaving it undiagnosable.
+func (rc *RotationChecks) checkUnownedManagedContainers(ctx context.Context) DoctorCheck {
+	const id = "DSO-DOCTOR-023"
+	const name = "Container ownership coverage"
+	const desc = "DSO-managed-looking containers (dso.reloader=true) should carry a dso.owner label matching this agent's identity, or this agent will never manage them"
+
+	cfg, err := rc.loadConfig(rc.configPath)
+	if err != nil {
+		return infoCheck(id, name, desc,
+			"could not load DSO config to determine this agent's owner identity: "+err.Error(),
+			DoctorCatRotation,
+		)
+	}
+	if cfg == nil {
+		return infoCheck(id, name, desc, "no configuration loaded; skipping", DoctorCatRotation)
+	}
+
+	containers, err := rc.listDSOContainers(ctx)
+	if err != nil {
+		return infoCheck(id, name, desc,
+			"could not list Docker containers to check ownership coverage: "+err.Error(),
+			DoctorCatRotation,
+		)
+	}
+
+	var unowned, foreign []string
+	for _, c := range containers {
+		if c.Reloader != "true" {
+			continue
+		}
+		switch {
+		case c.Owner == "":
+			unowned = append(unowned, c.Name)
+		case cfg.Agent.OwnerID != "" && c.Owner != cfg.Agent.OwnerID:
+			foreign = append(foreign, c.Name)
+		}
+	}
+
+	if len(unowned) == 0 && len(foreign) == 0 {
+		return passCheck(id, name, desc, "every DSO-managed-looking container is owned by this agent", DoctorCatRotation)
+	}
+
+	var detail strings.Builder
+	if len(unowned) > 0 {
+		fmt.Fprintf(&detail, "%d container(s) look DSO-managed but have no dso.owner label (never adopted by any agent): %s. ",
+			len(unowned), strings.Join(unowned, ", "))
+	}
+	if len(foreign) > 0 {
+		fmt.Fprintf(&detail, "%d container(s) are owned by a different DSO agent instance: %s. ",
+			len(foreign), strings.Join(foreign, ", "))
+	}
+
+	return warnCheck(id, name, desc, strings.TrimSpace(detail.String()),
+		"Most commonly caused by upgrading an existing DSO installation to an ownership-aware version -- pre-upgrade containers have no dso.owner label and are never automatically adopted",
+		DoctorCatRotation,
+		"These containers will NOT receive secret rotations, restarts, or recovery from this agent until recreated (e.g. re-running `dso apply`/`dso up`/`dso compose` so the new container gets this agent's dso.owner label)",
+		"If a container is intentionally managed by a different, separate DSO agent instance, no action is needed",
 	)
 }
 

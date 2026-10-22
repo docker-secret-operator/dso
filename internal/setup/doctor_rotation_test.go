@@ -285,18 +285,102 @@ func TestRotationCheck_022_ConfigLoadFailure_Info(t *testing.T) {
 	assertInfo(t, c)
 }
 
+// --- DSO-DOCTOR-023: container ownership coverage ---------------------------
+
+func TestRotationCheck_023_NoManagedContainers_Pass(t *testing.T) {
+	rc := newTestRotationChecks()
+	rc.loadConfig = func(_ string) (*config.Config, error) {
+		return &config.Config{Agent: config.AgentConfig{OwnerID: "dso-abc123"}}, nil
+	}
+	rc.listDSOContainers = func(_ context.Context) ([]dsoContainerInfo, error) { return nil, nil }
+
+	c := rc.checkUnownedManagedContainers(context.Background())
+
+	assertCheckID(t, c, "DSO-DOCTOR-023")
+	assertPass(t, c)
+}
+
+func TestRotationCheck_023_AllOwnedByThisAgent_Pass(t *testing.T) {
+	rc := newTestRotationChecks()
+	rc.loadConfig = func(_ string) (*config.Config, error) {
+		return &config.Config{Agent: config.AgentConfig{OwnerID: "dso-abc123"}}, nil
+	}
+	rc.listDSOContainers = func(_ context.Context) ([]dsoContainerInfo, error) {
+		return []dsoContainerInfo{
+			{Name: "web-1", Reloader: "true", Owner: "dso-abc123"},
+			{Name: "unrelated", Reloader: ""},
+		}, nil
+	}
+
+	c := rc.checkUnownedManagedContainers(context.Background())
+
+	assertCheckID(t, c, "DSO-DOCTOR-023")
+	assertPass(t, c)
+}
+
+func TestRotationCheck_023_UnownedLegacyContainer_Warn(t *testing.T) {
+	rc := newTestRotationChecks()
+	rc.loadConfig = func(_ string) (*config.Config, error) {
+		return &config.Config{Agent: config.AgentConfig{OwnerID: "dso-abc123"}}, nil
+	}
+	rc.listDSOContainers = func(_ context.Context) ([]dsoContainerInfo, error) {
+		return []dsoContainerInfo{
+			{Name: "pre-upgrade-web", Reloader: "true", Owner: ""},
+		}, nil
+	}
+
+	c := rc.checkUnownedManagedContainers(context.Background())
+
+	assertCheckID(t, c, "DSO-DOCTOR-023")
+	assertWarn(t, c)
+	assertHasRecovery(t, c)
+	if !strings.Contains(c.Detail, "pre-upgrade-web") {
+		t.Errorf("expected the affected container name in Detail, got %q", c.Detail)
+	}
+}
+
+func TestRotationCheck_023_ForeignOwnedContainer_Warn(t *testing.T) {
+	rc := newTestRotationChecks()
+	rc.loadConfig = func(_ string) (*config.Config, error) {
+		return &config.Config{Agent: config.AgentConfig{OwnerID: "dso-abc123"}}, nil
+	}
+	rc.listDSOContainers = func(_ context.Context) ([]dsoContainerInfo, error) {
+		return []dsoContainerInfo{
+			{Name: "other-agents-web", Reloader: "true", Owner: "dso-xyz789"},
+		}, nil
+	}
+
+	c := rc.checkUnownedManagedContainers(context.Background())
+
+	assertCheckID(t, c, "DSO-DOCTOR-023")
+	assertWarn(t, c)
+	if !strings.Contains(c.Detail, "other-agents-web") {
+		t.Errorf("expected the affected container name in Detail, got %q", c.Detail)
+	}
+}
+
+func TestRotationCheck_023_ConfigLoadFailure_Info(t *testing.T) {
+	rc := newTestRotationChecks()
+	rc.loadConfig = func(_ string) (*config.Config, error) { return nil, errors.New("file not found") }
+
+	c := rc.checkUnownedManagedContainers(context.Background())
+
+	assertCheckID(t, c, "DSO-DOCTOR-023")
+	assertInfo(t, c)
+}
+
 // --- RotationChecks.run() ----------------------------------------------------
 
-func TestRotationChecks_run_Returns5Checks(t *testing.T) {
+func TestRotationChecks_run_Returns6Checks(t *testing.T) {
 	rc := newTestRotationChecks()
 	checks := rc.run(context.Background())
 
-	if len(checks) != 5 {
-		t.Fatalf("expected 5 checks, got %d", len(checks))
+	if len(checks) != 6 {
+		t.Fatalf("expected 6 checks, got %d", len(checks))
 	}
 	wantIDs := map[string]bool{
 		"DSO-DOCTOR-018": true, "DSO-DOCTOR-019": true, "DSO-DOCTOR-020": true,
-		"DSO-DOCTOR-021": true, "DSO-DOCTOR-022": true,
+		"DSO-DOCTOR-021": true, "DSO-DOCTOR-022": true, "DSO-DOCTOR-023": true,
 	}
 	for _, c := range checks {
 		if !wantIDs[c.ID] {

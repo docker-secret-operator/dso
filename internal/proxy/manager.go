@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 
@@ -67,6 +68,34 @@ type Manager struct {
 	// deployments are unaffected until an operator opts in via
 	// SetAllowedHostPorts.
 	allowedHostPorts *portAllowList
+
+	// ownerID is this agent's dso.owner identity. When set, discovery paths
+	// that read container labels (ScanAndRegister) skip a container whose
+	// dso.owner names a DIFFERENT agent. "" disables the check.
+	ownerID string
+}
+
+// SetOwnerID sets this agent's dso.owner identity for ScanAndRegister's
+// ownership gate. Call before ScanAndRegister.
+func (m *Manager) SetOwnerID(id string) {
+	m.mu.Lock()
+	m.ownerID = id
+	m.mu.Unlock()
+}
+
+// OwnerAllowed reports whether labels may be registered by this agent: true
+// when no owner identity is configured, when the container carries no
+// dso.owner (unowned, kept for backward compatibility), or when it carries
+// this agent's own. A container owned by a different agent is never allowed.
+func (m *Manager) OwnerAllowed(labels map[string]string) bool {
+	m.mu.Lock()
+	self := m.ownerID
+	m.mu.Unlock()
+	if self == "" {
+		return true
+	}
+	owner := labels["dso.owner"]
+	return owner == "" || owner == self
 }
 
 // NewManager creates a Manager and starts the underlying TCP proxy server.
@@ -317,9 +346,21 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 		return
 	}
 
+	m.registerScanned(containers)
+}
+
+// registerScanned registers the listed containers' dso.host_ports. It never
+// writes labels, so repeated scans cannot claim or change another agent's
+// ownership.
+func (m *Manager) registerScanned(containers []container.Summary) {
 	for _, c := range containers {
 		portsLabel := c.Labels["dso.host_ports"]
 		if portsLabel == "" {
+			continue
+		}
+		if !m.OwnerAllowed(c.Labels) {
+			m.log.Warn("proxy: container is owned by a different DSO agent instance; not registering",
+				zap.String("id", util.ShortID(c.ID)))
 			continue
 		}
 		portMaps := ParseHostPorts(portsLabel)

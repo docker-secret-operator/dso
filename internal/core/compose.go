@@ -219,6 +219,16 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				}
 				labels["dso.reloader"] = "true"
 				labels["dso.compose.path"] = absPath
+				// SEC-P0: stamp this agent's ownership identity so discovery
+				// (internal/watcher.ReloaderController.checkOwnership) can
+				// tell this container apart from one created by a different,
+				// independently-configured DSO agent on the same host. A
+				// container created without this (e.g. by a pre-fix DSO
+				// version) is a "legacy" container: existing discovery code
+				// defaults-deny it rather than silently matching it.
+				if cfg.Agent.OwnerID != "" {
+					labels["dso.owner"] = cfg.Agent.OwnerID
+				}
 				// Propagate the rotation strategy from dso.yaml to the container label so
 				// the rotation agent uses the configured strategy (rolling/restart/signal)
 				// instead of always defaulting to restart.

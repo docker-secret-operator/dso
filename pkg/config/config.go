@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -202,6 +204,17 @@ type AgentConfig struct {
 	RestartStrategy RestartStrategy  `yaml:"restart_strategy"`
 	Watch           WatchConfig      `yaml:"watch"`
 	Rotation        RotationConfigV2 `yaml:"rotation"`
+	// OwnerID is this DSO agent instance's stable ownership identity
+	// (SEC-P0 container-discovery isolation fix). It is written as the
+	// dso.owner=<OwnerID> label on every container this agent creates or
+	// manages, and required (in addition to dso.reloader=true / dso.secrets
+	// matching) for this agent to register, rotate, or otherwise mutate a
+	// container. It is generated once (see EnsureOwnerID) and persisted back
+	// into this same config file so it survives agent restarts -- it is NOT
+	// a secret and is safe to log, but treat it as an opaque identifier
+	// rather than exposing it gratuitously (e.g. over the WebUI) since it
+	// has no operator-facing meaning.
+	OwnerID string `yaml:"owner_id,omitempty"`
 }
 
 // ProxyConfig configures the DSO proxy's host-port binding behavior.
@@ -464,6 +477,175 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// generateOwnerID returns a new cryptographically random ownership identity
+// for the dso.owner container label (SEC-P0 discovery-isolation fix). 32
+// bytes of crypto/rand hex-encoded (256 bits) -- unguessable, and not
+// derived from PID, socket path, container ID, or Docker network, all of
+// which are either reused across independent agents or predictable/spoofable
+// by anything else on the same host.
+func generateOwnerID() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate owner id: %w", err)
+	}
+	return "dso-" + hex.EncodeToString(buf), nil
+}
+
+// EnsureOwnerID guarantees cfg.Agent.OwnerID is set, generating and
+// persisting one into cfgFile if it is missing.
+//
+// Identity scope (see the "copied config" analysis in the P0 report):
+// ownership here is CONFIG identity, not host identity or install identity.
+// The owner ID lives inside dso.yaml itself and travels with that file. This
+// is a deliberate choice: DSO's unit of "an agent's mandate" is already the
+// config file (which secrets, which providers, which targets it manages) --
+// tying ownership to the same artifact keeps a single mental model instead
+// of inventing a second identity store (e.g. a dotfile beside the config,
+// which would silently detach from the config on copy/rename and could
+// itself be forgotten during backup/restore).
+//
+// Consequence an operator must know: copying dso.yaml from environment A to
+// environment B copies the owner ID too. If both copies then run
+// simultaneously against overlapping containers on the same host (or
+// visible over the same Docker socket), they are, by this design,
+// INDISTINGUISHABLE -- they will co-manage the same containers, which is the
+// correct behavior for an intentional HA/failover pair sharing one config,
+// but is a footgun for "I copied the config as a starting point for an
+// unrelated environment." Mitigation shipped now: EnsureOwnerID never
+// regenerates an ID that is already present, so an operator who wants
+// distinct identity after copying a config must explicitly clear the
+// owner_id field (or a future `dso rotate-owner` command, documented as a
+// follow-up) to get a fresh one. This is called out explicitly in the
+// report's Remaining Limitations section rather than silently assumed away.
+//
+// Persistence failure modes are handled fail-closed: if cfgFile cannot be
+// safely rewritten (read-only, unwritable directory, path outside what
+// IsSafePath allows), this returns an error instead of proceeding with an
+// in-memory-only, unpersisted ID -- an unpersisted ID would silently change
+// on every restart, which would make the agent lose track of (default-deny)
+// every container it created in the prior run, a worse outcome than
+// refusing to start.
+func EnsureOwnerID(cfg *Config, cfgFile string) error {
+	if cfg.Agent.OwnerID != "" {
+		return nil
+	}
+
+	id, err := generateOwnerID()
+	if err != nil {
+		return err
+	}
+
+	if cfgFile == "" {
+		cfgFile = "dso.yaml"
+	}
+	safePath, err := IsSafePath("", cfgFile)
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: invalid config path: %w", err)
+	}
+
+	info, statErr := os.Stat(safePath)
+	if statErr != nil {
+		return fmt.Errorf("cannot persist generated owner id: config file %s not accessible: %w", cfgFile, statErr)
+	}
+	if info.Mode().Perm()&0200 == 0 {
+		return fmt.Errorf("cannot persist generated owner id: config file %s is not writable by this process; "+
+			"set agent.owner_id manually in the config to a unique value and retry, or make the file writable", cfgFile)
+	}
+
+	raw, err := os.ReadFile(safePath) // #nosec G304 -- safePath constrained by IsSafePath, file already loaded once by the caller.
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to re-read config file %s: %w", cfgFile, err)
+	}
+
+	var node yaml.Node
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to parse config file %s for update: %w", cfgFile, err)
+	}
+	if err := setOwnerIDNode(&node, id); err != nil {
+		return fmt.Errorf("cannot persist generated owner id: %w", err)
+	}
+
+	out, err := yaml.Marshal(&node)
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to re-marshal config: %w", err)
+	}
+
+	// Write via a temp file + rename in the same directory so a crash or a
+	// concurrent reader never observes a partially-written config file --
+	// several processes may share this same dso.yaml path (e.g. CLI
+	// commands run alongside a long-running agent).
+	dir := filepath.Dir(safePath)
+	tmp, err := os.CreateTemp(dir, ".dso-owner-id-*.tmp")
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return fmt.Errorf("cannot persist generated owner id: failed to write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to close temp file: %w", err)
+	}
+	// Tighten-only (M1 config-permission policy, same bound as
+	// PermissionAdvisory / DSO-DOCTOR-009): the rewritten file keeps the
+	// owner/group read bits it already had but never carries group-write,
+	// world access or execute bits. A 0600 file stays 0600; 0664 becomes 0640.
+	if err := os.Chmod(tmpPath, info.Mode().Perm()&0o640); err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to set permissions on temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, safePath); err != nil {
+		return fmt.Errorf("cannot persist generated owner id: failed to replace config file %s: %w", cfgFile, err)
+	}
+
+	cfg.Agent.OwnerID = id
+	return nil
+}
+
+// setOwnerIDNode inserts/updates agent.owner_id in a parsed yaml.Node tree,
+// preserving every other field, comment, and ordering in the file -- a
+// naive re-marshal of the decoded Config struct would silently drop
+// comments and reorder keys throughout the operator's dso.yaml.
+func setOwnerIDNode(doc *yaml.Node, id string) error {
+	if len(doc.Content) == 0 {
+		return fmt.Errorf("empty or invalid config document")
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config document root is not a mapping")
+	}
+
+	var agentNode *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "agent" {
+			agentNode = root.Content[i+1]
+			break
+		}
+	}
+	if agentNode == nil {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "agent"}
+		agentNode = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, keyNode, agentNode)
+	}
+	if agentNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("config 'agent' section is not a mapping")
+	}
+
+	for i := 0; i+1 < len(agentNode.Content); i += 2 {
+		if agentNode.Content[i].Value == "owner_id" {
+			agentNode.Content[i+1].Value = id
+			agentNode.Content[i+1].Tag = "!!str"
+			return nil
+		}
+	}
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "owner_id"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: id},
+	)
+	return nil
+}
+
 // IsSafePath validates that a user-provided path does not escape the base directory.
 func IsSafePath(baseDir, userPath string) (string, error) {
 	clean := filepath.Clean(userPath)
@@ -605,6 +787,15 @@ func LoadConfig(cfgFile string) (*Config, error) {
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	// SEC-P0: every agent needs a stable dso.owner identity for container
+	// discovery isolation (see EnsureOwnerID doc comment). Migrate an
+	// existing config that predates this fix by generating and persisting
+	// one now; fail closed rather than run with an unpersisted (and
+	// therefore restart-unstable) identity.
+	if err := EnsureOwnerID(&cfg, cfgFile); err != nil {
+		return nil, fmt.Errorf("failed to ensure agent owner id: %w", err)
 	}
 
 	return &cfg, nil
