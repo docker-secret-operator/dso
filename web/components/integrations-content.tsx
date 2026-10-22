@@ -3,12 +3,15 @@
 import { useEffect, useState } from 'react'
 import { Plug, Webhook, Database } from 'lucide-react'
 
-import { fetchIntegrations, type IntegrationInfo } from '@/lib/api/integrations'
+import { fetchIntegrations, testNotifications, type IntegrationInfo } from '@/lib/api/integrations'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+
+type TestPhase = 'idle' | 'testing' | 'success' | 'failure'
 
 const ICONS: Record<string, typeof Webhook> = {
   webhook: Webhook,
@@ -27,6 +30,33 @@ export function IntegrationsContent() {
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [testPhase, setTestPhase] = useState<TestPhase>('idle')
+  const [testMessage, setTestMessage] = useState<string | null>(null)
+
+  // Non-destructive synthetic test event -- no confirmation dialog needed
+  // (see internal/cli/notifications.go / internal/notify.RunTest, reused
+  // as-is by POST /api/integrations/notifications/test).
+  async function handleTestNotification() {
+    setTestPhase('testing')
+    setTestMessage(null)
+    try {
+      const result = await testNotifications()
+      if (result.total_count === 0) {
+        setTestPhase('failure')
+        setTestMessage('No notification destinations are configured.')
+        return
+      }
+      if (result.failed > 0) {
+        setTestPhase('failure')
+        setTestMessage(`${result.failed} of ${result.total_count} destination(s) failed.`)
+        return
+      }
+      setTestPhase('success')
+    } catch (err) {
+      setTestPhase('failure')
+      setTestMessage(err instanceof Error ? err.message : 'Test notification failed')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -48,11 +78,34 @@ export function IntegrationsContent() {
   return (
     <div className="px-8 py-8">
       <div className="mx-auto max-w-4xl">
-        <header className="mb-6">
-          <h1 className="text-xl font-semibold text-foreground">Integrations</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Read-only summary of the integration points DSO has configured
-          </p>
+        <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Integrations</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Read-only summary of the integration points DSO has configured
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="test-notification-button"
+              disabled={testPhase === 'testing'}
+              onClick={handleTestNotification}
+            >
+              {testPhase === 'testing' ? 'Testing...' : 'Test Notification'}
+            </Button>
+            {testPhase === 'success' && (
+              <span data-testid="test-notification-success" className="text-xs text-emerald-400">
+                ✓ Test notification sent
+              </span>
+            )}
+            {testPhase === 'failure' && (
+              <span data-testid="test-notification-failure" className="text-xs text-red-400">
+                ✕ Test notification failed{testMessage ? `: ${testMessage}` : ''}
+              </span>
+            )}
+          </div>
         </header>
 
         {loading && (

@@ -47,6 +47,34 @@ export async function fetchSecrets(): Promise<SecretsResponse> {
   return res.json()
 }
 
+/** Matches internal/server/rest.go handleSecretRotate's success response
+ * body. Never carries a secret value -- only an accept/reject signal for
+ * the POST itself. The actual rotation outcome arrives later via the
+ * existing rotation_succeeded/rotation_failed WebSocket events. */
+export interface RotateSecretResponse {
+  status: string
+  secret: string
+}
+
+/**
+ * POST /api/secrets/{name}/rotate -- triggers the exact same production
+ * rotation machinery as `dso sync --secret NAME`
+ * (watcher.ReloaderController.TriggerReload). This call only reports
+ * whether the request was accepted; it never blocks on the rotation
+ * actually finishing. Callers must watch the WebSocket event stream (see
+ * hooks/useWebSocket) for the real success/failure outcome.
+ */
+export async function rotateSecret(name: string): Promise<RotateSecretResponse> {
+  const res = await apiFetch(`/api/secrets/${encodeURIComponent(name)}/rotate`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const message = await res.text().catch(() => '')
+    throw new Error(message || `Failed to trigger rotation (${res.status})`)
+  }
+  return res.json()
+}
+
 export async function fetchDiscovery(): Promise<DiscoveryResponse> {
   const res = await apiFetch('/api/discovery')
   if (!res.ok) throw new Error(`Failed to load discovery info (${res.status})`)

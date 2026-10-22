@@ -256,6 +256,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionsRevokeOthers(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/sessions"):
 		s.handleSessionsList(w, r)
+	case r.URL.Path == "/api/integrations/notifications/test" && r.Method == http.MethodPost:
+		s.handleNotificationsTest(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/integrations"):
 		s.handleIntegrations(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/drift"):
@@ -1093,6 +1095,54 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 		"secret": name,
 	}); encErr != nil {
 		s.Logger.Error("Failed to encode rotate response", zap.Error(encErr))
+	}
+}
+
+// handleNotificationsTest implements POST /api/integrations/notifications/test.
+// It reuses cli.RunNotificationsTest -- the exact same synthetic-event
+// delivery logic behind `dso notifications test` -- rather than
+// duplicating any webhook-delivery code in the REST layer. No payload is
+// accepted from the browser (the request body, if any, is ignored) and no
+// real secret material is ever sent; the synthetic event carries only the
+// literal strings "test-provider"/"test-secret" (see notify.NewEvent usage
+// in cli.RunNotificationsTest).
+func (s *RESTServer) handleNotificationsTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	actor := "webui"
+	if s.WebUIAuth != nil {
+		if sess, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
+			actor = sess.Username
+		}
+	}
+
+	results, err := notify.RunTest(r.Context(), s.Config)
+
+	failed := 0
+	for _, res := range results {
+		if !res.Success {
+			failed++
+		}
+	}
+	status := "success"
+	if err != nil || failed > 0 {
+		status = "failure"
+	}
+	audit.Log(r.Context(), "test_notification_sent", actor, "", "", "", status)
+
+	if err != nil {
+		s.Logger.Warn("Notification test failed", zap.Error(err))
+		http.Error(w, "Notification test could not be run", http.StatusInternalServerError)
+		return
+	}
+
+	if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      status,
+		"results":     results,
+		"total_count": len(results),
+		"failed":      failed,
+	}); encErr != nil {
+		s.Logger.Error("Failed to encode notifications/test response", zap.Error(encErr))
 	}
 }
 

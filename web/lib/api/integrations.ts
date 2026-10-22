@@ -28,3 +28,33 @@ export async function fetchIntegrations(): Promise<IntegrationsResponse> {
   }
   return res.json()
 }
+
+/** One destination's outcome from POST /api/integrations/notifications/test
+ * (see internal/notify.TestResult). `error`, when present, is a delivery
+ * error string (e.g. connection refused) -- never a credential or secret. */
+export interface NotificationTestResult {
+  destination: string
+  success: boolean
+  error?: string
+}
+
+export interface NotificationTestResponse {
+  status: string
+  results: NotificationTestResult[] | null
+  total_count: number
+  failed: number
+}
+
+/**
+ * POST /api/integrations/notifications/test -- delivers ONE synthetic test
+ * event to every configured notification destination, reusing the exact
+ * same logic as `dso notifications test` (internal/notify.RunTest). Sends
+ * no payload; the browser cannot influence what gets delivered.
+ */
+export async function testNotifications(): Promise<NotificationTestResponse> {
+  const res = await apiFetch('/api/integrations/notifications/test', { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(`Notification test failed (${res.status})`)
+  }
+  return res.json()
+}

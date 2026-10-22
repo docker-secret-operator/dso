@@ -17,7 +17,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { fetchSecrets, type SecretSummary, type SecretsResponse } from '@/lib/api/dashboard'
+import { fetchSecrets, rotateSecret, type SecretSummary, type SecretsResponse } from '@/lib/api/dashboard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -26,6 +26,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ProviderIcon } from '@/components/provider-icon'
+import { useWebSocket } from '@/hooks/useWebSocket'
 import { cn } from '@/lib/utils'
 
 interface SecretsState {
@@ -143,6 +144,13 @@ const selectClass =
  * "Last Updated" will legitimately show "Not available" today, which is the
  * honest behavior per the zero-vs-unavailable rule, not a bug in this file.
  */
+/** Client-side status of a manual-rotation request, keyed by secret name.
+ * "requesting" covers the moment between clicking "Rotate Secret" and the
+ * POST resolving; "in_progress"/"succeeded"/"failed" reflect the REAL
+ * backend rotation_succeeded/rotation_failed events from the existing
+ * WebSocket stream, not a fabricated timer -- see RotationStatus doc below. */
+type RotationPhase = 'idle' | 'requesting' | 'in_progress' | 'succeeded' | 'failed'
+
 export function SecretsContent() {
   const [state, setState] = useState<SecretsState>(initialState)
   const [search, setSearch] = useState('')
@@ -151,6 +159,41 @@ export function SecretsContent() {
   const [rotationFilter, setRotationFilter] = useState<'all' | 'on' | 'off'>('all')
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'name', direction: 'asc' })
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [confirmTarget, setConfirmTarget] = useState<string | null>(null)
+  const [rotationPhase, setRotationPhase] = useState<Record<string, RotationPhase>>({})
+
+  // Real rotation lifecycle events -- the same EventStore/WebSocket stream
+  // the Events/Audit pages already consume (internal/agent/trigger.go's
+  // emitEvent). No parallel frontend status system is invented here: a
+  // secret's badge only ever reflects an actual rotation_succeeded /
+  // rotation_failed event for that secret, or the transient "requesting"
+  // state between the click and the POST resolving.
+  const { events: liveEvents } = useWebSocket('/api/events/ws')
+
+  useEffect(() => {
+    if (liveEvents.length === 0) return
+    const latest = liveEvents[liveEvents.length - 1]
+    if (!latest.secret || !latest.event_type) return
+    if (latest.event_type === 'rotation_succeeded') {
+      setRotationPhase((prev) => ({ ...prev, [latest.secret as string]: 'succeeded' }))
+    } else if (latest.event_type === 'rotation_failed') {
+      setRotationPhase((prev) => ({ ...prev, [latest.secret as string]: 'failed' }))
+    }
+  }, [liveEvents])
+
+  const requestRotate = useCallback(async (name: string) => {
+    setConfirmTarget(null)
+    setRotationPhase((prev) => ({ ...prev, [name]: 'requesting' }))
+    try {
+      await rotateSecret(name)
+      // The POST returning 202 only means the request was accepted -- it is
+      // NOT rotation success. The real outcome arrives via
+      // rotation_succeeded/rotation_failed above.
+      setRotationPhase((prev) => ({ ...prev, [name]: 'in_progress' }))
+    } catch {
+      setRotationPhase((prev) => ({ ...prev, [name]: 'failed' }))
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }))
@@ -453,6 +496,7 @@ export function SecretsContent() {
                             onClick={() => toggleSort('last_updated_at')}
                           />
                         </TableHead>
+                        <TableHead className="text-right pr-3">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -465,6 +509,8 @@ export function SecretsContent() {
                             secret={sec}
                             isOpen={isOpen}
                             onToggle={() => toggleExpanded(rowId)}
+                            phase={rotationPhase[sec.name] ?? 'idle'}
+                            onRotateClick={() => setConfirmTarget(sec.name)}
                           />
                         )
                       })}
@@ -475,20 +521,73 @@ export function SecretsContent() {
             </Card>
           </>
         )}
+
+        {confirmTarget && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rotate-confirm-title"
+            data-testid="rotate-confirm-dialog"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          >
+            <Card className="w-full max-w-sm">
+              <CardContent className="p-5">
+                <h2 id="rotate-confirm-title" className="text-sm font-semibold text-foreground">
+                  Rotate {confirmTarget} now?
+                </h2>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Rotation will affect every container currently using this secret.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="rotate-cancel"
+                    onClick={() => setConfirmTarget(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    data-testid="rotate-confirm"
+                    onClick={() => requestRotate(confirmTarget)}
+                  >
+                    Rotate Secret
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+const ROTATION_BADGE: Record<RotationPhase, { label: string; className: string } | null> = {
+  idle: null,
+  requesting: { label: 'Requesting…', className: 'text-muted-foreground' },
+  in_progress: { label: 'Rotating…', className: 'text-amber-400' },
+  succeeded: { label: '✓ Rotated', className: 'text-emerald-400' },
+  failed: { label: '✕ Rotation failed', className: 'text-red-400' },
 }
 
 function SecretRow({
   secret,
   isOpen,
   onToggle,
+  phase,
+  onRotateClick,
 }: {
   secret: SecretSummary
   isOpen: boolean
   onToggle: () => void
+  phase: RotationPhase
+  onRotateClick: () => void
 }) {
+  const badge = ROTATION_BADGE[phase]
+  const busy = phase === 'requesting' || phase === 'in_progress'
   return (
     <>
       <TableRow className="cursor-pointer hover:bg-accent/40" onClick={onToggle}>
@@ -544,10 +643,28 @@ function SecretRow({
             <span className="text-muted-foreground/60">Not available</span>
           )}
         </TableCell>
+        <TableCell className="text-right pr-3" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-end gap-2">
+            {badge && (
+              <span data-testid={`rotate-status-${secret.name}`} className={cn('text-xs whitespace-nowrap', badge.className)}>
+                {badge.label}
+              </span>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid={`rotate-button-${secret.name}`}
+              disabled={busy}
+              onClick={onRotateClick}
+            >
+              {busy ? 'Rotating…' : 'Rotate'}
+            </Button>
+          </div>
+        </TableCell>
       </TableRow>
       {isOpen && (
         <TableRow className="hover:bg-transparent" data-testid={`secret-detail-${secret.name}`}>
-          <TableCell colSpan={8} className="bg-muted/20 py-3">
+          <TableCell colSpan={9} className="bg-muted/20 py-3">
             <dl className="grid grid-cols-2 gap-x-6 gap-y-2 px-2 text-xs sm:grid-cols-4">
               <DetailField label="Provider" value={secret.provider} />
               <DetailField label="Injection type" value={secret.injection_type} />
