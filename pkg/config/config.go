@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -529,12 +532,6 @@ func EnsureOwnerID(cfg *Config, cfgFile string) error {
 	if cfg.Agent.OwnerID != "" {
 		return nil
 	}
-
-	id, err := generateOwnerID()
-	if err != nil {
-		return err
-	}
-
 	if cfgFile == "" {
 		cfgFile = "dso.yaml"
 	}
@@ -542,65 +539,174 @@ func EnsureOwnerID(cfg *Config, cfgFile string) error {
 	if err != nil {
 		return fmt.Errorf("cannot persist generated owner id: invalid config path: %w", err)
 	}
-
-	info, statErr := os.Stat(safePath)
-	if statErr != nil {
-		return fmt.Errorf("cannot persist generated owner id: config file %s not accessible: %w", cfgFile, statErr)
-	}
-	if info.Mode().Perm()&0200 == 0 {
-		return fmt.Errorf("cannot persist generated owner id: config file %s is not writable by this process; "+
-			"set agent.owner_id manually in the config to a unique value and retry, or make the file writable", cfgFile)
-	}
-
-	raw, err := os.ReadFile(safePath) // #nosec G304 -- safePath constrained by IsSafePath, file already loaded once by the caller.
+	// A symlinked config is updated in place: the rename must replace the file
+	// the link points at, never the link itself.
+	realPath, err := filepath.EvalSymlinks(safePath)
 	if err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to re-read config file %s: %w", cfgFile, err)
+		return fmt.Errorf("cannot persist generated owner id: config file %s not accessible: %w", cfgFile, err)
 	}
 
-	var node yaml.Node
-	if err := yaml.Unmarshal(raw, &node); err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to parse config file %s for update: %w", cfgFile, err)
-	}
-	if err := setOwnerIDNode(&node, id); err != nil {
-		return fmt.Errorf("cannot persist generated owner id: %w", err)
-	}
-
-	out, err := yaml.Marshal(&node)
+	id, err := ensureOwnerIDInFile(realPath)
 	if err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to re-marshal config: %w", err)
+		return fmt.Errorf("cannot persist generated owner id for %s: %w; "+
+			"set agent.owner_id manually in the config to a unique value and retry, or make the file and its directory writable "+
+			"by the user that starts the agent", cfgFile, err)
 	}
-
-	// Write via a temp file + rename in the same directory so a crash or a
-	// concurrent reader never observes a partially-written config file --
-	// several processes may share this same dso.yaml path (e.g. CLI
-	// commands run alongside a long-running agent).
-	dir := filepath.Dir(safePath)
-	tmp, err := os.CreateTemp(dir, ".dso-owner-id-*.tmp")
-	if err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once the rename below succeeds
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cannot persist generated owner id: failed to write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to close temp file: %w", err)
-	}
-	// Tighten-only (M1 config-permission policy, same bound as
-	// PermissionAdvisory / DSO-DOCTOR-009): the rewritten file keeps the
-	// owner/group read bits it already had but never carries group-write,
-	// world access or execute bits. A 0600 file stays 0600; 0664 becomes 0640.
-	if err := os.Chmod(tmpPath, info.Mode().Perm()&0o640); err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to set permissions on temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, safePath); err != nil {
-		return fmt.Errorf("cannot persist generated owner id: failed to replace config file %s: %w", cfgFile, err)
-	}
-
 	cfg.Agent.OwnerID = id
 	return nil
+}
+
+// ownerIDLockTimeout bounds how long a first-run caller waits for another
+// process that is initialising the same config.
+const ownerIDLockTimeout = 10 * time.Second
+
+// ownerIDLockFile is the advisory lock beside the config. It is created 0600
+// and deliberately never removed: unlinking a lock file races with waiters
+// that already opened it and would let two holders coexist.
+const ownerIDLockFile = ".dso-owner-id.lock"
+
+// ownerInitMu serialises initialisation inside one process on platforms where
+// the cross-process lock is a no-op (see lockOwnerID).
+var ownerInitMu sync.Mutex
+
+// osRename is os.Rename, replaceable in tests to inject a write failure.
+var osRename = os.Rename
+
+// ownerIDProbe reads only agent.owner_id; unknown keys are ignored.
+type ownerIDProbe struct {
+	Agent struct {
+		OwnerID string `yaml:"owner_id"`
+	} `yaml:"agent"`
+}
+
+// ensureOwnerIDInFile returns the canonical owner id of the config at path,
+// creating and durably persisting one if the file has none.
+//
+// Guarantees (Linux/Unix; see lockOwnerID for other platforms):
+//   - Concurrent callers, in one process or many, converge on ONE id: the check
+//     for an existing id, the generation and the atomic replace all happen
+//     under an exclusive flock, and the file is re-read after the lock is
+//     taken, so a caller that lost the race adopts the winner's id.
+//   - The returned id is the one read back from the file after the replace; an
+//     id whose persistence failed is never returned.
+//   - An id already present is never overwritten; a config that cannot be
+//     parsed, or whose agent.owner_id is not a string, is left untouched and
+//     reported as an error.
+//   - The replacement is atomic (same-directory temp file, fsync, rename) and
+//     keeps the file's owner and group (an error, not a silent change, if they
+//     cannot be preserved) with a tighten-only mode (perm & 0640). The temp file
+//     is created 0600 and removed on every failure path. The path is checked to
+//     still be the same file immediately before the rename.
+func ensureOwnerIDInFile(path string) (string, error) {
+	ownerInitMu.Lock()
+	defer ownerInitMu.Unlock()
+
+	dir := filepath.Dir(path)
+	release, err := lockOwnerID(filepath.Join(dir, ownerIDLockFile), ownerIDLockTimeout)
+	if err != nil {
+		return "", fmt.Errorf("cannot lock the config directory: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	f, err := os.Open(path) // #nosec G304 -- path is IsSafePath-validated and symlink-resolved by EnsureOwnerID.
+	if err != nil {
+		return "", err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	raw, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		return "", err
+	}
+
+	var probe ownerIDProbe
+	if err := yaml.Unmarshal(raw, &probe); err != nil {
+		return "", fmt.Errorf("config is not valid YAML (left untouched): %w", err)
+	}
+	if probe.Agent.OwnerID != "" {
+		return probe.Agent.OwnerID, nil // another process won; never overwrite
+	}
+
+	id, err := generateOwnerID()
+	if err != nil {
+		return "", err
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		return "", fmt.Errorf("failed to parse config for update: %w", err)
+	}
+	if err := setOwnerIDNode(&node, id); err != nil {
+		return "", err
+	}
+	out, err := yaml.Marshal(&node)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-marshal config: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".dso-owner-id-*.tmp") // 0600
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	replaced := false
+	defer func() {
+		if !replaced {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := preserveFileOwner(tmp, info); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("cannot preserve the config file's owner/group: %w", err)
+	}
+	// Tighten-only (M1 config-permission policy, same bound as
+	// PermissionAdvisory / DSO-DOCTOR-009): owner/group read bits are kept,
+	// group-write, world access and execute bits are never carried over. A 0600
+	// file stays 0600; 0664 becomes 0640.
+	if err := tmp.Chmod(info.Mode().Perm() & 0o640); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Refuse to replace a file that was swapped since it was read.
+	cur, err := os.Lstat(path)
+	if err != nil || !os.SameFile(info, cur) {
+		return "", fmt.Errorf("config file changed while it was being updated; nothing was written")
+	}
+	if err := osRename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("failed to replace config file: %w", err)
+	}
+	replaced = true
+	_ = syncDir(dir) // best effort: the replace itself is already atomic
+
+	// The id handed to callers is what is now on disk.
+	got, err := os.ReadFile(path) // #nosec G304 -- see above.
+	if err != nil {
+		return "", fmt.Errorf("could not verify the persisted owner id: %w", err)
+	}
+	var verify ownerIDProbe
+	if err := yaml.Unmarshal(got, &verify); err != nil || verify.Agent.OwnerID != id {
+		return "", fmt.Errorf("persisted owner id did not verify")
+	}
+	return id, nil
 }
 
 // setOwnerIDNode inserts/updates agent.owner_id in a parsed yaml.Node tree,
@@ -789,16 +895,29 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// SEC-P0: every agent needs a stable dso.owner identity for container
-	// discovery isolation (see EnsureOwnerID doc comment). Migrate an
-	// existing config that predates this fix by generating and persisting
-	// one now; fail closed rather than run with an unpersisted (and
-	// therefore restart-unstable) identity.
-	if err := EnsureOwnerID(&cfg, cfgFile); err != nil {
+	return &cfg, nil
+}
+
+// LoadConfigWithOwnerID is LoadConfig plus EnsureOwnerID: for the callers that
+// create or manage containers (the agent, compose up) and so need a durable
+// dso.owner identity (SEC-P0 discovery isolation). It may write cfgFile -- once,
+// when agent.owner_id is missing -- and fails closed rather than return a
+// configuration whose identity could not be persisted (an unpersisted identity
+// would change on restart and orphan every container the agent created).
+//
+// Read-only callers (doctor, export, fetch, apply, notifications test, ...)
+// must use LoadConfig, which never writes the file and works on a config the
+// invoking user can read but not write; their Agent.OwnerID is simply empty
+// when the file has none yet.
+func LoadConfigWithOwnerID(cfgFile string) (*Config, error) {
+	cfg, err := LoadConfig(cfgFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := EnsureOwnerID(cfg, cfgFile); err != nil {
 		return nil, fmt.Errorf("failed to ensure agent owner id: %w", err)
 	}
-
-	return &cfg, nil
+	return cfg, nil
 }
 
 // LoadConfigWithDecryption loads config and decrypts credentials using provided master key

@@ -113,7 +113,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	}
 
 	// Always load config (needed for label injection below, regardless of how secrets are fetched)
-	cfg, err := config.LoadConfig(targetConfig)
+	cfg, err := config.LoadConfigWithOwnerID(targetConfig)
 	if err != nil {
 		return fmt.Errorf("failed to load DSO config %s: %w", targetConfig, err)
 	}

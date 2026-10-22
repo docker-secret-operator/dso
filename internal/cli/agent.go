@@ -78,7 +78,7 @@ func NewAgentCmd() *cobra.Command {
 			}()
 
 			cfgPath := ResolveConfig()
-			cfg, err := config.LoadConfig(cfgPath)
+			cfg, err := config.LoadConfigWithOwnerID(cfgPath)
 			if err != nil {
 				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed",
 					zap.Error(err),

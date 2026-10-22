@@ -294,6 +294,12 @@ func (rc *RotationChecks) checkUnownedManagedContainers(ctx context.Context) Doc
 			len(foreign), strings.Join(foreign, ", "))
 	}
 
+	if cfg.Agent.OwnerID == "" {
+		// Read-only commands never write the config, so a configuration the
+		// agent has not initialised yet legitimately has no identity.
+		detail.WriteString("This configuration has no agent.owner_id yet (it is created the first time the agent or `dso compose up` runs), so no container can belong to it yet. ")
+	}
+
 	return warnCheck(id, name, desc, strings.TrimSpace(detail.String()),
 		"Most commonly caused by upgrading an existing DSO installation to an ownership-aware version -- pre-upgrade containers have no dso.owner label and are never automatically adopted",
 		DoctorCatRotation,
