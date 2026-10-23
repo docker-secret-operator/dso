@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -70,7 +71,7 @@ Examples:
   docker dso doctor --level full # Include recovery steps for failures
   docker dso doctor --json       # Machine-readable output`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.Context(), levelFlag, jsonFlag)
+			return runDoctorTo(cmd.Context(), cmd.OutOrStdout(), levelFlag, jsonFlag)
 		},
 	}
 
@@ -81,6 +82,12 @@ Examples:
 }
 
 func runDoctor(ctx context.Context, level string, jsonOut bool) error {
+	return runDoctorTo(ctx, os.Stdout, level, jsonOut)
+}
+
+// runDoctorTo writes the report to w and returns write failures, so a closed
+// pipe is not reported as a successful run.
+func runDoctorTo(ctx context.Context, w io.Writer, level string, jsonOut bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -104,9 +111,11 @@ func runDoctor(ctx context.Context, level string, jsonOut bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(out)
-	} else {
-		fmt.Println(renderSectionedResult("DSO Doctor", result, doctorSections, level == "full"))
+		if _, err := fmt.Fprintln(w, out); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintln(w, renderSectionedResult("DSO Doctor", result, doctorSections, level == "full")); err != nil {
+		return err
 	}
 
 	if result.OverallStatus == setup.DoctorFail {

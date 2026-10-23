@@ -29,14 +29,14 @@ the actual values — only do this in a private terminal session.`,
 			}
 
 			if len(args) == 0 {
-				fmt.Println("Available secrets in configuration:")
+				fmt.Fprintln(cmd.OutOrStdout(), "Available secrets in configuration:")
 				if len(cfg.Secrets) == 0 {
-					fmt.Println("  (No secrets defined in dso.yaml)")
+					fmt.Fprintln(cmd.OutOrStdout(), "  (No secrets defined in dso.yaml)")
 				}
 				for _, s := range cfg.Secrets {
-					fmt.Printf("  - %s\n", s.Name)
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", s.Name)
 				}
-				fmt.Println("\nUsage: docker dso fetch [secret-name]")
+				fmt.Fprintln(cmd.OutOrStdout(), "\nUsage: docker dso fetch [secret-name]")
 				return nil
 			}
 
@@ -76,16 +76,16 @@ the actual values — only do this in a private terminal session.`,
 				return fmt.Errorf("fetching secret: %w", err)
 			}
 
-			fmt.Printf("Secret: %s\n", secretName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Secret: %s\n", secretName)
 			for k, v := range data {
 				display := "***"
 				if reveal {
 					display = v
 				}
-				fmt.Printf("  %s: %s\n", k, display)
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", k, display)
 			}
 			if !reveal {
-				fmt.Println("\n  (values masked — use --reveal to display plaintext)")
+				fmt.Fprintln(cmd.OutOrStdout(), "\n  (values masked — use --reveal to display plaintext)")
 			}
 			return nil
 		},

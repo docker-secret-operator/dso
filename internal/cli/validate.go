@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/docker-secret-operator/dso/internal/setup"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -128,6 +130,10 @@ func runValidate(ctx context.Context, jsonOut bool, composeFlag string) error {
 }
 
 func renderValidateResult(checks []setup.DoctorCheck, jsonOut bool) error {
+	return renderValidateResultTo(os.Stdout, checks, jsonOut)
+}
+
+func renderValidateResultTo(w io.Writer, checks []setup.DoctorCheck, jsonOut bool) error {
 	result := buildDoctorResult(checks)
 
 	if jsonOut {
@@ -135,9 +141,11 @@ func renderValidateResult(checks []setup.DoctorCheck, jsonOut bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(out)
-	} else {
-		fmt.Println(renderSectionedResult("DSO Validate", result, validateSections, true))
+		if _, err := fmt.Fprintln(w, out); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintln(w, renderSectionedResult("DSO Validate", result, validateSections, true)); err != nil {
+		return err
 	}
 
 	if result.OverallStatus == setup.DoctorFail {

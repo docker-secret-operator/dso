@@ -10,7 +10,20 @@ import (
 func NewDiffCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "diff [stack-name]",
-		Short: "Show what changed between local configuration and deployed stack",
+		Short: "Not implemented: compare local configuration with a deployed stack",
+		Long: `Not implemented. This command always exits 1.
+
+It is reserved for comparing the provider mappings in dso.yaml with a deployed
+stack. A real comparison needs a defined source of truth for the deployed side
+(container labels written by 'dso up', or the agent's tracked targets) and a
+stable identity for "the stack" (project/environment selection), neither of
+which the CLI exposes yet. Until then it reports that no comparison was made
+rather than claiming "no differences".
+
+Alternatives today:
+  docker dso validate       # check the project and configuration
+  docker dso inspect <id>   # show injected environment/mounts of one container
+  docker dso config show    # view the (redacted) configuration`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// This command serves as a lightweight diff checking local config (dso.yaml vs running container)
 			stackName := "default"

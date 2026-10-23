@@ -228,3 +228,24 @@ func TestLoadConfig_UserConfigIsLoadableButOtherAbsolutePathsStillRejected(t *te
 		t.Logf("non-canonical spelling rejected: %v", err)
 	}
 }
+
+func TestConfigShow_UnreadableFileFailsWithoutContents(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	e := setupResolution(t, false, true, false)
+	if err := os.WriteFile(e.local, []byte("hmac_secret: SYNTHETIC-UNREADABLE-CANARY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(e.local, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(e.local, 0o600) })
+	code, out, errOut := runCLI("config", "show")
+	if code == 0 || !strings.Contains(errOut, "failed to read config file") {
+		t.Errorf("code %d stderr %q", code, errOut)
+	}
+	if strings.Contains(out+errOut, "SYNTHETIC-UNREADABLE-CANARY") {
+		t.Error("contents leaked")
+	}
+}

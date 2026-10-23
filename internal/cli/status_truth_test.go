@@ -23,6 +23,13 @@ func (f *fakeAgent) GetStatus(_ *api.StatusRequest, out *api.StatusResponse) err
 	return nil
 }
 
+// GetSecret serves a synthetic canary so fetch/export paths can be tested
+// without any real agent, provider or vault.
+func (f *fakeAgent) GetSecret(_ *api.AgentRequest, out *api.AgentResponse) error {
+	out.Data = map[string]string{"PASSWORD": "SYNTHETIC-FETCH-CANARY"}
+	return nil
+}
+
 func startFakeAgent(t *testing.T, resp api.StatusResponse) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "a.sock")

@@ -460,7 +460,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			}
 			defer v.Zero()
 			_, err = cmd.OutOrStdout().Write(v.Plaintext)
-			if err == nil && term.IsTerminal(int(os.Stdout.Fd())) { // #nosec G115
+			if err == nil && term.IsTerminal(int(os.Stdout.Fd())) { // #nosec G115 -- a terminal file descriptor is a small non-negative OS value
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
 			return err

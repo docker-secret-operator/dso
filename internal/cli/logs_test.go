@@ -1,10 +1,9 @@
 package cli
 
 import (
-	"io"
+	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -50,24 +49,15 @@ func TestFetchEvents_MalformedResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("failed to create pipe: %v", err)
-	}
-	os.Stderr = w
-
-	events := fetchEvents(srv.URL)
-
-	_ = w.Close()
-	os.Stderr = origStderr
-	out, _ := io.ReadAll(r)
-
+	events, err := fetchEventsErr(context.Background(), srv.URL)
 	if events != nil {
 		t.Errorf("expected nil events for malformed response, got: %v", events)
 	}
-	if !strings.Contains(string(out), "Malformed response from agent API") {
-		t.Errorf("expected a diagnostic on stderr about the malformed response, got: %s", out)
+	if err == nil || !strings.Contains(err.Error(), "malformed response from agent API") {
+		t.Errorf("expected the malformed response to be returned as an error, got %v", err)
+	}
+	if fetchEvents(srv.URL) != nil {
+		t.Error("best-effort wrapper must still return nil")
 	}
 }
 

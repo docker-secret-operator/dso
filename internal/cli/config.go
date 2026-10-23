@@ -171,7 +171,7 @@ func editConfig(configPath string) error {
 	// Open editor — binary is resolved via LookPath, args are kept separate,
 	// so the OS never passes this through a shell interpreter.
 	cmdArgs := append(editorArgs, configPath)
-	cmd := exec.Command(editorBin, cmdArgs...) // #nosec G204 — binary verified via LookPath
+	cmd := exec.Command(editorBin, cmdArgs...) // #nosec G204 -- editor binary resolved via LookPath from the operator's own $EDITOR; no shell involved
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

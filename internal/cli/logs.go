@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,13 +59,20 @@ Examples:
   docker dso logs --since "10 minutes ago" # Logs from last 10 minutes
   docker dso logs --level error            # Filter to errors only
   docker dso logs --api                    # Stream from REST API`,
-		Run: func(cmd *cobra.Command, args []string) {
-			if useJournald || isSystemdAvailable() {
-				runJournaldLogs(follow, since, tail, level)
-			} else {
-				// Fallback to REST API events
-				runAPILogs(apiAddr, follow)
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
 			}
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			if useJournald || isSystemdAvailable() {
+				return runJournaldLogs(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), follow, since, tail, level)
+			}
+			// Fallback to REST API events
+			return runAPILogs(ctx, cmd.OutOrStdout(), apiAddr, follow)
 		},
 	}
 
@@ -82,8 +92,9 @@ func isSystemdAvailable() bool {
 	return err == nil
 }
 
-// runJournaldLogs reads DSO agent logs from the systemd journal
-func runJournaldLogs(follow bool, since string, tail int, level string) {
+// runJournaldLogs reads DSO agent logs from the systemd journal. Ctrl+C (ctx
+// cancellation) while following is a normal way to stop and returns nil.
+func runJournaldLogs(ctx context.Context, out, errOut io.Writer, follow bool, since string, tail int, level string) error {
 	args := []string{
 		"-u", "dso-agent",
 		"-l", // full output, no ellipsis
@@ -112,68 +123,85 @@ func runJournaldLogs(follow bool, since string, tail int, level string) {
 		flatArgs = append(flatArgs, strings.Fields(a)...)
 	}
 
-	printHeader()
+	printHeaderTo(out)
 
-	journalCmd := exec.Command("journalctl", flatArgs...) // #nosec G204 — args are controlled internally
-	journalCmd.Stdout = &logColorWriter{writer: os.Stdout, levelFilter: strings.ToUpper(level)}
-	journalCmd.Stderr = os.Stderr
+	journalCmd := exec.CommandContext(ctx, "journalctl", flatArgs...) // #nosec G204 -- fixed binary name; arguments are built from validated flags, not a shell
+	journalCmd.Stdout = &logColorWriter{writer: out, levelFilter: strings.ToUpper(level)}
+	journalCmd.Stderr = errOut
 
 	if err := journalCmd.Run(); err != nil {
-		// If journalctl fails (permissions), suggest sudo
-		fmt.Fprintf(os.Stderr, "\n\033[33m[DSO] Tip: Try running with 'sudo docker dso logs' for full journal access.\033[0m\n")
-		fmt.Fprintf(os.Stderr, "\033[33m      Or use 'docker dso logs --api' to read from the REST API instead.\033[0m\n")
+		if ctx.Err() != nil {
+			return nil // interrupted by the operator
+		}
+		return fmt.Errorf("reading the journal failed: %w\nTip: try 'sudo docker dso logs' for full journal access, or 'docker dso logs --api' to read from the REST API", err)
 	}
+	return nil
 }
 
-// runAPILogs reads events from the DSO Agent REST API
-func runAPILogs(apiAddr string, follow bool) {
+// runAPILogs reads events from the DSO Agent REST API.
+func runAPILogs(ctx context.Context, out io.Writer, apiAddr string, follow bool) error {
 	if err := validateLoopbackURL(apiAddr); err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31m[DSO] %v\033[0m\n", err)
-		return
+		return err
 	}
 
-	printHeader()
+	printHeaderTo(out)
 
 	url := apiAddr + "/api/events"
-	fetchAndPrintEvents(url)
+	events, err := fetchEventsErr(ctx, url)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		fmt.Fprintln(out, stripIfNoColor("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m"))
+	}
+	for _, ev := range events {
+		printEventTo(out, ev)
+	}
 
-	if follow {
-		cprintln("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m")
-		fmt.Println("--------------------------------------------------------------------------------")
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
+	if !follow {
+		return nil
+	}
 
-		seen := make(map[string]bool)
-		for range ticker.C {
-			events := fetchEvents(url)
-			for _, ev := range events {
+	fmt.Fprintln(out, stripIfNoColor("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m"))
+	fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	seen := make(map[string]bool)
+	for _, ev := range events {
+		seen[fmt.Sprintf("%v", ev)] = true
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			evs, err := fetchEventsErr(ctx, url)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+			for _, ev := range evs {
 				key := fmt.Sprintf("%v", ev)
 				if !seen[key] {
 					seen[key] = true
-					printEvent(ev)
+					printEventTo(out, ev)
 				}
 			}
 		}
 	}
 }
 
-func printHeader() {
-	cprintln("\033[1;36m")
-	fmt.Println("  ╔══════════════════════════════════════════════════╗")
-	fmt.Println("  ║         Docker Secret Operator — Logs            ║")
-	fmt.Println("  ╚══════════════════════════════════════════════════╝")
-	cprintln("\033[0m")
-}
+func printHeader() { printHeaderTo(os.Stdout) }
 
-func fetchAndPrintEvents(url string) {
-	events := fetchEvents(url)
-	if len(events) == 0 {
-		cprintln("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m")
-		return
-	}
-	for _, ev := range events {
-		printEvent(ev)
-	}
+func printHeaderTo(w io.Writer) {
+	fmt.Fprintln(w, stripIfNoColor("\033[1;36m"))
+	fmt.Fprintln(w, "  ╔══════════════════════════════════════════════════╗")
+	fmt.Fprintln(w, "  ║         Docker Secret Operator — Logs            ║")
+	fmt.Fprintln(w, "  ╚══════════════════════════════════════════════════╝")
+	fmt.Fprintln(w, stripIfNoColor("\033[0m"))
 }
 
 // validateLoopbackURL rejects any --api-addr value whose host resolves to a
@@ -201,14 +229,22 @@ func validateLoopbackURL(raw string) error {
 	return nil
 }
 
+// fetchEvents is the best-effort form used where an error is not actionable:
+// it returns nil on any failure. Commands use fetchEventsErr.
 func fetchEvents(url string) []map[string]interface{} {
-	// #nosec G107 -- every caller of fetchEvents passes a URL built from
+	ev, _ := fetchEventsErr(context.Background(), url)
+	return ev
+}
+
+// fetchEventsErr fetches agent events and reports every failure to the caller
+// instead of printing it.
+func fetchEventsErr(ctx context.Context, url string) ([]map[string]interface{}, error) {
+	// #nosec G107 -- every caller of fetchEventsErr passes a URL built from
 	// apiAddr after runAPILogs has already called validateLoopbackURL,
 	// which resolves the host and rejects anything but a loopback address.
-	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx — short CLI helper, no streaming
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Invalid API request: %v\033[0m\n", err)
-		return nil
+		return nil, fmt.Errorf("invalid API request: %w", err)
 	}
 	// The agent REST API requires credentials whenever DSO_AUTH_TOKEN is set
 	// (and, since the WebUI auth fix, whenever the WebUI is enabled). Send the
@@ -218,36 +254,32 @@ func fetchEvents(url string) []map[string]interface{} {
 	}
 	resp, err := http.DefaultClient.Do(req) // #nosec G107 -- URL validated as loopback above.
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Cannot reach agent API at %s: %v\033[0m\n", url, err)
-		fmt.Fprintf(os.Stderr, "\033[33m      Is the agent running? Try: sudo systemctl start dso-agent\033[0m\n")
-		return nil
+		return nil, fmt.Errorf("cannot reach agent API at %s: %w\nIs the agent running? Try: sudo systemctl start dso-agent", url, err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		fmt.Fprintf(os.Stderr, "\033[31m[DSO] The agent API rejected the request (401 Unauthorized).\033[0m\n")
-		fmt.Fprintf(os.Stderr, "\033[33m      Set DSO_AUTH_TOKEN to the agent's token and retry, or read events with: sudo docker dso logs\033[0m\n")
-		return nil
+		return nil, fmt.Errorf("the agent API rejected the request (401 Unauthorized)\nSet DSO_AUTH_TOKEN to the agent's token and retry, or read events with: sudo docker dso logs")
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("reading agent API response: %w", err)
 	}
 
 	var events []map[string]interface{}
 	if err := json.Unmarshal(body, &events); err != nil {
-		// QUAL-1: previously ignored, so a malformed API response looked
-		// identical to "no events" from the operator's perspective.
-		fmt.Fprintf(os.Stderr, "\033[31m[DSO] Malformed response from agent API at %s: %v\033[0m\n", url, err)
-		return nil
+		// QUAL-1: a malformed API response must not look like "no events".
+		return nil, fmt.Errorf("malformed response from agent API at %s: %w", url, err)
 	}
-	return events
+	return events, nil
 }
 
-func printEvent(ev map[string]interface{}) {
+func printEvent(ev map[string]interface{}) { printEventTo(os.Stdout, ev) }
+
+func printEventTo(w io.Writer, ev map[string]interface{}) {
 	ts, _ := ev["timestamp"].(string)
 	level, _ := ev["level"].(string)
 	msg, _ := ev["message"].(string)
@@ -262,7 +294,7 @@ func printEvent(ev map[string]interface{}) {
 		line += fmt.Sprintf("  \033[36m[%s]\033[0m", secret)
 	}
 	line += "  " + msg
-	fmt.Println(line)
+	fmt.Fprintln(w, stripIfNoColor(line))
 }
 
 // journaldPriority maps DSO log levels to journald priority numbers
@@ -295,7 +327,7 @@ func (w *logColorWriter) Write(p []byte) (n int, err error) {
 		if line == "" {
 			continue
 		}
-		coloured := colorizeLine(line)
+		coloured := stripIfNoColor(colorizeLine(line))
 		// Apply level filter if set
 		if w.levelFilter != "" && !strings.Contains(strings.ToUpper(line), w.levelFilter) {
 			continue

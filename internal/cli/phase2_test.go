@@ -42,6 +42,37 @@ func TestNoOsExitOutsideEntrypoint(t *testing.T) {
 	}
 }
 
+// Fatal logging calls os.Exit internally; reusable command code must return
+// errors too. `Run:` (no error return) is allowed only for commands that
+// cannot fail: version and the hidden Docker plugin metadata printer.
+func TestNoFatalLoggingOrFallibleRunCallbacks(t *testing.T) {
+	allowedRun := map[string]bool{"stubs.go": true, "metadata.go": true}
+	files, _ := filepath.Glob("*.go")
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.CallExpr:
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && strings.HasPrefix(sel.Sel.Name, "Fatal") {
+					t.Errorf("%s: %s call terminates the process; return an error", fset.Position(x.Pos()), sel.Sel.Name)
+				}
+			case *ast.KeyValueExpr:
+				if id, ok := x.Key.(*ast.Ident); ok && id.Name == "Run" && !allowedRun[f] {
+					t.Errorf("%s: use RunE so errors propagate", fset.Position(x.Pos()))
+				}
+			}
+			return true
+		})
+	}
+}
+
 func TestConvertedCommands_FailOnceOnStderrWithEmptyStdout(t *testing.T) {
 	setupResolution(t, false, false, false) // no config anywhere (system path redirected to a temp dir)
 	t.Setenv("DSO_SOCKET_PATH", filepath.Join(t.TempDir(), "none.sock"))

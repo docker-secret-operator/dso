@@ -555,7 +555,7 @@ func EnsureOwnerID(cfg *Config, cfgFile string) error {
 		}
 		return nil
 	}
-	safePath, err := IsSafePath("", cfgFile)
+	safePath, err := IsSafeConfigPath(cfgFile)
 	if err != nil {
 		return fmt.Errorf("cannot persist generated owner id: invalid config path: %w", err)
 	}
