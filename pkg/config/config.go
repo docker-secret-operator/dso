@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -294,6 +295,13 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// legacyMappingFallbacks counts secret mappings that needed the legacy (v1)
+// decode path during the current LoadConfig call.
+var legacyMappingFallbacks atomic.Int64
+
+// legacyNoticed records config paths whose legacy-format notice was printed.
+var legacyNoticed sync.Map
+
 // SecretMapping custom unmarshaler to handle legacy formats
 func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 	// 1. Try to decode as the standard V2 structure first
@@ -303,7 +311,10 @@ func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 		// First-pass failure is expected for legacy (v1) format entries; fall through
 		// to the raw-map path below which handles them. Log so operators can diagnose
 		// accidental misconfiguration vs. intentional legacy format.
-		fmt.Fprintf(os.Stderr, "[DSO] config: v2 decode of secret mapping failed (will attempt legacy fallback): %v\n", err)
+		// Counted, not printed: LoadConfig emits ONE consolidated notice per
+		// load instead of one line per mapping. The decode error is dropped on
+		// purpose; it can quote config content.
+		legacyMappingFallbacks.Add(1)
 	}
 	*s = SecretMapping(v2)
 
@@ -1029,13 +1040,34 @@ func pathWithinDir(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// UserConfigPath is the per-user configuration file, ~/.dso/dso.yaml, or ""
+// when the home directory is unknown.
+func UserConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".dso", "dso.yaml")
+}
+
+// IsSafeConfigPath is IsSafePath plus one exact-match exception: the
+// per-user config file at UserConfigPath(). It is the only absolute path
+// outside DSO's system directories that is accepted, so the generic
+// path-safety rules (used for output files, compose files, etc.) are unchanged.
+func IsSafeConfigPath(userPath string) (string, error) {
+	if u := UserConfigPath(); u != "" && filepath.Clean(userPath) == u {
+		return u, nil
+	}
+	return IsSafePath("", userPath)
+}
+
 func LoadConfig(cfgFile string) (*Config, error) {
 	if cfgFile == "" {
 		cfgFile = "dso.yaml"
 	}
 
 	// Standard validation for config file path
-	safePath, err := IsSafePath("", cfgFile)
+	safePath, err := IsSafeConfigPath(cfgFile)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config path: %w", err)
 	}
@@ -1046,8 +1078,16 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	var cfg Config
+	legacyMappingFallbacks.Store(0)
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse yaml config: %w", err)
+	}
+	// One notice per file per process: `validate`/`doctor` load the same file
+	// several times and would otherwise repeat it.
+	if n := legacyMappingFallbacks.Swap(0); n > 0 {
+		if _, seen := legacyNoticed.LoadOrStore(cfgFile, struct{}{}); !seen {
+			fmt.Fprintf(os.Stderr, "[DSO] config: %d secret mapping(s) in %s use the legacy format and were read via the compatibility path\n", n, cfgFile)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -254,7 +255,8 @@ func TestRunValidate_JSON_ValidEvenWithDualConfiguration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dso.yaml"), []byte("providers: {}\nsecrets: []\n"), 0600); err != nil {
 		t.Fatalf("write dso.yaml fixture: %v", err)
 	}
-	newTestVault(t) // initializes ~/.dso/vault.enc under the already-isolated HOME
+	newTestVault(t)               // initializes ~/.dso/vault.enc under the already-isolated HOME
+	mixedModeWarned = sync.Once{} // the notice is once-per-process; re-arm it for this test
 
 	stdout, stderr := captureStdoutAndStderr(t, func() {
 		_ = runValidate(context.Background(), true, "")

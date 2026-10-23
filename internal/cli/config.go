@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newConfigShowCmd())
+	cmd.AddCommand(newConfigPathCmd())
 	cmd.AddCommand(newConfigEditCmd())
 	cmd.AddCommand(newConfigValidateCmd())
 
@@ -49,9 +51,11 @@ func newConfigShowCmd() *cobra.Command {
 
 The configuration file location is determined by:
 1. CLI flag (-c/--config)
-2. /etc/dso/dso.yaml (system-wide, readable by dso group)
-3. ~/.dso/config.yaml (if in local mode)
-4. ./dso.yaml (current directory)
+2. /etc/dso/dso.yaml (system-wide)
+3. ./dso.yaml (current directory)
+4. ~/.dso/dso.yaml (per-user; used only if none of the above exist)
+
+Run 'docker dso config path' to see which file is selected and why.
 
 Examples:
   docker dso config show              # Show default config
@@ -369,4 +373,45 @@ func getConfigPath() string {
 
 	// Default
 	return filepath.Join(homeDir, ".dso/config.yaml")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// CONFIG PATH SUBCOMMAND
+// ════════════════════════════════════════════════════════════════════════════
+
+type configPathReport struct {
+	Path     string   `json:"path"`
+	Source   string   `json:"source"`
+	Exists   bool     `json:"exists"`
+	Shadowed []string `json:"shadowed,omitempty"`
+}
+
+func newConfigPathCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "path",
+		Short: "Show which configuration file is in effect (never prints its contents)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			src := ResolveConfigSource()
+			rep := configPathReport{Path: src.Path, Source: src.Kind, Exists: fileExists(src.Path), Shadowed: src.Shadowed}
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(rep)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), rep.Path)
+			fmt.Fprintf(cmd.ErrOrStderr(), "source: %s", rep.Source)
+			if !rep.Exists {
+				fmt.Fprint(cmd.ErrOrStderr(), " (file does not exist)")
+			}
+			fmt.Fprintln(cmd.ErrOrStderr())
+			for _, p := range rep.Shadowed {
+				fmt.Fprintf(cmd.ErrOrStderr(), "ignored (lower priority): %s  -- pass -c %s to use it\n", p, p)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+	return cmd
 }
