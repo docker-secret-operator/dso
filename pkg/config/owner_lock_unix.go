@@ -16,6 +16,10 @@ import (
 // serialises separate processes AND separate goroutines; the kernel drops it if
 // the holder dies. It is advisory (it coordinates DSO processes, not a hostile
 // local user) and unreliable on some network filesystems -- keep /etc/dso local.
+// ownerLockOpened is called with every lock file lockOwnerID opens, so tests can
+// assert deterministically that each one is closed again on every path.
+var ownerLockOpened = func(*os.File) {}
+
 func lockOwnerID(path string, timeout time.Duration) (func() error, error) {
 	// O_NOFOLLOW: a symlink at the lock path must not make us open (or create)
 	// its target. The descriptor is then checked to be an ordinary file, so a
@@ -24,6 +28,7 @@ func lockOwnerID(path string, timeout time.Duration) (func() error, error) {
 	if err != nil {
 		return nil, err
 	}
+	ownerLockOpened(f)
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
 		_ = f.Close()
 		if err == nil {

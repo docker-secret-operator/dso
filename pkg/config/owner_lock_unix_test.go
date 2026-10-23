@@ -14,13 +14,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func openFDs(t *testing.T) int {
+// trackLockFiles records every lock file lockOwnerID opens, so a test can assert
+// deterministically (no /proc, no process-wide descriptor counts, nothing a
+// background goroutine could disturb) that each one is closed again.
+func trackLockFiles(t *testing.T) *[]*os.File {
 	t.Helper()
-	entries, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Skip("/proc/self/fd unavailable: cannot count descriptors on this platform")
-	}
-	return len(entries)
+	var opened []*os.File
+	old := ownerLockOpened
+	ownerLockOpened = func(f *os.File) { opened = append(opened, f) }
+	t.Cleanup(func() { ownerLockOpened = old })
+	return &opened
+}
+
+func isClosed(f *os.File) bool {
+	_, err := f.Stat()
+	return errors.Is(err, os.ErrClosed)
 }
 
 // F4: a symlink at the lock path is never followed.
@@ -104,47 +112,74 @@ func TestLockOwnerID_RegularFileWorksAndIsKept(t *testing.T) {
 	_ = rel2()
 }
 
-// Timeout behaviour and descriptor hygiene on every path.
-func TestLockOwnerID_TimeoutAndNoDescriptorLeaks(t *testing.T) {
+// Timeout behaviour, and: every lock file lockOwnerID opens is closed again on
+// every path -- release, timeout, and rejection of a non-regular file.
+func TestLockOwnerID_TimeoutAndDescriptorCleanup(t *testing.T) {
 	dir := t.TempDir()
 	lock := filepath.Join(dir, ownerIDLockFile)
-	base := openFDs(t)
+	opened := trackLockFiles(t)
 
 	holder, err := lockOwnerID(lock, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 20; i++ { // contended: times out each time
+	if len(*opened) != 1 || isClosed((*opened)[0]) {
+		t.Fatal("a held lock must keep its descriptor open")
+	}
+	held := (*opened)[0]
+
+	for i := 0; i < 5; i++ { // contended: times out each time
 		start := time.Now()
-		if rel, err := lockOwnerID(lock, 30*time.Millisecond); err == nil {
+		rel, err := lockOwnerID(lock, 30*time.Millisecond)
+		if err == nil {
 			_ = rel()
 			t.Fatal("acquired a held lock")
-		} else if !strings.Contains(err.Error(), "timed out") {
+		}
+		if !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("unexpected error: %v", err)
-		} else if time.Since(start) > 2*time.Second {
+		}
+		if time.Since(start) > 2*time.Second {
 			t.Fatal("timeout not honoured")
 		}
+		if f := (*opened)[len(*opened)-1]; !isClosed(f) {
+			t.Fatal("a timed-out attempt leaked its lock-file descriptor")
+		}
 	}
+	if isClosed(held) {
+		t.Fatal("contention must not close the holder's descriptor")
+	}
+
 	if err := holder(); err != nil {
 		t.Fatal(err)
 	}
-	// Failing paths (symlink, directory) and success all release their descriptors.
-	_ = os.Symlink(filepath.Join(dir, "nowhere"), filepath.Join(dir, "sym"))
-	_ = os.Mkdir(filepath.Join(dir, "d"), 0o700)
-	for i := 0; i < 20; i++ {
-		for _, p := range []string{filepath.Join(dir, "sym"), filepath.Join(dir, "d")} {
-			if rel, err := lockOwnerID(p, 10*time.Millisecond); err == nil {
-				_ = rel()
-			}
-		}
-		rel, err := lockOwnerID(lock, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = rel()
+	if !isClosed(held) {
+		t.Fatal("release did not close the lock-file descriptor")
 	}
-	if got := openFDs(t); got != base {
-		t.Errorf("descriptor leak: %d open before, %d after", base, got)
+
+	// A non-regular file is opened, rejected, and must be closed again (a FIFO
+	// opens read-write without blocking; a symlink/directory fail before an
+	// descriptor exists, so there is nothing to leak).
+	fifo := filepath.Join(dir, "afifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Skip(err)
+	}
+	before := len(*opened)
+	if rel, err := lockOwnerID(fifo, 50*time.Millisecond); err == nil {
+		_ = rel()
+		t.Fatal("a FIFO was accepted as a lock file")
+	}
+	if len(*opened) != before+1 || !isClosed((*opened)[before]) {
+		t.Fatal("a rejected non-regular lock file leaked its descriptor")
+	}
+
+	// Success again after all of that, then released and closed.
+	rel, err := lockOwnerID(lock, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := (*opened)[len(*opened)-1]
+	if err := rel(); err != nil || !isClosed(last) {
+		t.Fatalf("release: err=%v closed=%v", err, isClosed(last))
 	}
 }
 

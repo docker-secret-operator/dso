@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -532,13 +533,16 @@ func generateOwnerID() (string, error) {
 // every container it created in the prior run, a worse outcome than
 // refusing to start.
 func EnsureOwnerID(cfg *Config, cfgFile string) error {
+	if cfgFile == "" {
+		cfgFile = "dso.yaml"
+	}
 	if strings.TrimSpace(cfg.Agent.OwnerID) != "" {
 		// An established identity is never replaced -- but an unusable one is
 		// an error here, before any container is stamped with it.
-		return validateOwnerID(cfg.Agent.OwnerID)
-	}
-	if cfgFile == "" {
-		cfgFile = "dso.yaml"
+		if err := validateOwnerID(cfg.Agent.OwnerID); err != nil {
+			return fmt.Errorf("%s: %w", cfgFile, err)
+		}
+		return nil
 	}
 	safePath, err := IsSafePath("", cfgFile)
 	if err != nil {
@@ -552,6 +556,12 @@ func EnsureOwnerID(cfg *Config, cfgFile string) error {
 	}
 
 	id, err := ensureOwnerIDInFile(realPath)
+	var contentErr *configContentError
+	if errors.As(err, &contentErr) {
+		// A problem with the config's content, not with persisting: keep the
+		// error as is (it says how to fix it) and do not suggest permissions.
+		return fmt.Errorf("%s: %w", cfgFile, err)
+	}
 	if err != nil {
 		return fmt.Errorf("cannot persist generated owner id for %s: %w; "+
 			"set agent.owner_id manually in the config to a unique value and retry, or make the file and its directory writable "+
@@ -576,6 +586,24 @@ var ownerInitMu sync.Mutex
 
 // osRename is os.Rename, replaceable in tests to inject a write failure.
 var osRename = os.Rename
+
+// configContentError marks a problem with what is IN the config (an invalid
+// agent.owner_id, an empty or unparsable file, several YAML documents), as
+// opposed to a failure to persist. Such errors carry their own recovery advice;
+// EnsureOwnerID must not add the "make the file writable" hint to them, because
+// file permissions are not the problem.
+type configContentError struct{ err error }
+
+func (e *configContentError) Error() string { return e.err.Error() }
+func (e *configContentError) Unwrap() error { return e.err }
+
+func contentErrorf(format string, args ...any) error {
+	return &configContentError{err: fmt.Errorf(format, args...)}
+}
+
+// errNoYAMLDocument is returned by hasMultipleYAMLDocuments for a file with no
+// YAML document at all (empty, whitespace or comments only).
+var errNoYAMLDocument = errors.New("config file contains no YAML document (it is empty or only comments); it needs a valid DSO configuration")
 
 // syncDirFn is syncDir, replaceable in tests to inject a directory-sync failure.
 var syncDirFn = syncDir
@@ -615,6 +643,9 @@ func hasMultipleYAMLDocuments(raw []byte) (bool, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var first yaml.Node
 	if err := dec.Decode(&first); err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, errNoYAMLDocument
+		}
 		return false, err
 	}
 	var next yaml.Node
@@ -697,22 +728,24 @@ func ensureOwnerIDInFile(path string) (string, error) {
 
 	var probe ownerIDProbe
 	if err := yaml.Unmarshal(raw, &probe); err != nil {
-		return "", fmt.Errorf("config is not valid YAML (left untouched): %w", err)
+		return "", contentErrorf("config is not valid YAML (left untouched): %w", err)
 	}
 	if strings.TrimSpace(probe.Agent.OwnerID) != "" {
 		// Another process won (or the operator set it): never overwrite, but do
 		// not hand out an id that cannot be a label value either.
 		if err := validateOwnerID(probe.Agent.OwnerID); err != nil {
-			return "", err
+			return "", &configContentError{err: err}
 		}
 		return probe.Agent.OwnerID, nil
 	}
 	// A rewrite re-encodes the FIRST document only: refuse rather than silently
 	// discard the rest.
-	if multi, err := hasMultipleYAMLDocuments(raw); err != nil {
-		return "", fmt.Errorf("config is not valid YAML (left untouched): %w", err)
+	if multi, err := hasMultipleYAMLDocuments(raw); errors.Is(err, errNoYAMLDocument) {
+		return "", &configContentError{err: err}
+	} else if err != nil {
+		return "", contentErrorf("config is not valid YAML (left untouched): %w", err)
 	} else if multi {
-		return "", fmt.Errorf("config contains more than one YAML document (\"---\"); DSO reads only the first and will not rewrite the file " +
+		return "", contentErrorf("config contains more than one YAML document (\"---\"); DSO reads only the first and will not rewrite the file " +
 			"because that would discard the rest -- convert it to a single document, or set agent.owner_id yourself")
 	}
 
