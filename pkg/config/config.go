@@ -557,9 +557,11 @@ func EnsureOwnerID(cfg *Config, cfgFile string) error {
 
 	id, err := ensureOwnerIDInFile(realPath)
 	var contentErr *configContentError
-	if errors.As(err, &contentErr) {
-		// A problem with the config's content, not with persisting: keep the
-		// error as is (it says how to fix it) and do not suggest permissions.
+	var recoverErr *recoverableOwnerIDError
+	if errors.As(err, &contentErr) || errors.As(err, &recoverErr) {
+		// A problem with the config's content, or a conflict / post-replace sync
+		// failure whose message already says what to do: keep the error as is
+		// and do not suggest permissions.
 		return fmt.Errorf("%s: %w", cfgFile, err)
 	}
 	if err != nil {
@@ -599,6 +601,20 @@ func (e *configContentError) Unwrap() error { return e.err }
 
 func contentErrorf(format string, args ...any) error {
 	return &configContentError{err: fmt.Errorf(format, args...)}
+}
+
+// recoverableOwnerIDError marks a failure that is neither a content problem nor
+// a permissions problem and whose message already says what to do: a conflict
+// detected before the replace (retry; the operator's edit is intact) and a
+// directory-sync failure after the replace (re-run to adopt the id already in
+// the file). EnsureOwnerID must not append the "make the file writable" hint.
+type recoverableOwnerIDError struct{ err error }
+
+func (e *recoverableOwnerIDError) Error() string { return e.err.Error() }
+func (e *recoverableOwnerIDError) Unwrap() error { return e.err }
+
+func recoverablef(format string, args ...any) error {
+	return &recoverableOwnerIDError{err: fmt.Errorf(format, args...)}
 }
 
 // errNoYAMLDocument is returned by hasMultipleYAMLDocuments for a file with no
@@ -808,14 +824,14 @@ func ensureOwnerIDInFile(path string) (string, error) {
 	beforeReplaceCheck()
 	cur, err := os.Lstat(path)
 	if err != nil || !os.SameFile(info, cur) {
-		return "", fmt.Errorf("config file was replaced while the owner id was being written; nothing was written, retry")
+		return "", recoverablef("config file was replaced while the owner id was being written; nothing was written -- retry")
 	}
 	now, err := os.ReadFile(path) // #nosec G304 -- see above.
 	if err != nil {
 		return "", fmt.Errorf("could not re-read the config before replacing it: %w", err)
 	}
 	if !bytes.Equal(now, raw) {
-		return "", fmt.Errorf("config file was modified while the owner id was being written; nothing was written and your edit is intact, retry")
+		return "", recoverablef("config file was modified while the owner id was being written; nothing was written and your edit is intact -- retry")
 	}
 	if err := osRename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("failed to replace config file: %w", err)
@@ -826,8 +842,8 @@ func ensureOwnerIDInFile(path string) (string, error) {
 	// durable, report it instead of claiming a durable id: no id is returned, the
 	// file already holds one, and the next caller adopts that same id.
 	if err := syncDirFn(dir); err != nil {
-		return "", fmt.Errorf("the config was updated with a new agent.owner_id but the directory could not be synced, so its durability is uncertain "+
-			"(the file is not rolled back; re-run to adopt it): %w", err)
+		return "", recoverablef("the config file now contains a new agent.owner_id, but the directory could not be synced, so its durability is uncertain; "+
+			"the replacement was not rolled back -- re-run to adopt the id already in the file: %w", err)
 	}
 
 	// The id handed to callers is what is now on disk.
@@ -848,11 +864,11 @@ func ensureOwnerIDInFile(path string) (string, error) {
 // comments and reorder keys throughout the operator's dso.yaml.
 func setOwnerIDNode(doc *yaml.Node, id string) error {
 	if len(doc.Content) == 0 {
-		return fmt.Errorf("empty or invalid config document")
+		return contentErrorf("config file has no YAML document; it needs a valid DSO configuration")
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("config document root is not a mapping")
+		return contentErrorf("config document is not a YAML mapping (a bare \"---\", a scalar or a list); it needs a valid DSO configuration")
 	}
 
 	var agentNode *yaml.Node
@@ -867,8 +883,18 @@ func setOwnerIDNode(doc *yaml.Node, id string) error {
 		agentNode = &yaml.Node{Kind: yaml.MappingNode}
 		root.Content = append(root.Content, keyNode, agentNode)
 	}
+	// "agent:" with no value (or with every child commented out) is a null
+	// scalar: LoadConfig accepts it, so it becomes an empty mapping here. Any
+	// other non-mapping value (a string, a list) is a genuinely invalid config
+	// and is reported, not reinterpreted.
+	if agentNode.Kind == yaml.ScalarNode && agentNode.ShortTag() == "!!null" {
+		agentNode.Kind = yaml.MappingNode
+		agentNode.Tag = "!!map"
+		agentNode.Value = ""
+		agentNode.Style = 0
+	}
 	if agentNode.Kind != yaml.MappingNode {
-		return fmt.Errorf("config 'agent' section is not a mapping")
+		return contentErrorf("config 'agent' section is not a YAML mapping; fix it or set agent.owner_id yourself")
 	}
 
 	for i := 0; i+1 < len(agentNode.Content); i += 2 {

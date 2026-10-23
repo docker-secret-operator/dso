@@ -8,8 +8,11 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func failOnRename(t *testing.T) {
@@ -390,4 +393,294 @@ func TestEnsureOwnerID_SeparatorAndMalformedDocumentBehaviourUnchanged(t *testin
 			assertNoTempFiles(t, dir)
 		})
 	}
+}
+
+// ---- F1: a null / empty `agent:` section -------------------------------------
+
+const validBase = `# my dso config
+providers:
+  default:
+    type: vault
+secrets:
+  - name: test
+    provider: default
+    inject:
+      type: env
+    mappings:
+      key: VAL
+`
+
+func countLines(b []byte, prefix string) int {
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestEnsureOwnerID_NullOrEmptyAgentSectionGetsAnID(t *testing.T) {
+	for name, tail := range map[string]string{
+		"agent: with no value":         "agent:\n",
+		"agent: with only comments":    "agent:\n  # mode: local\n  # cache: true\n",
+		"agent: ~":                     "agent: ~\n",
+		"agent: null":                  "agent: null\n",
+		"agent: {} (empty flow map)":   "agent: {}\n",
+		"agent: in the middle of file": "agent:\n# trailing note\nlogging:\n  level: info\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := validBase + tail
+			dir := writeCfg(t, content, 0o640)
+			t.Chdir(dir)
+
+			c := &Config{}
+			if err := EnsureOwnerID(c, "dso.yaml"); err != nil {
+				t.Fatalf("EnsureOwnerID: %v", err)
+			}
+			if validateOwnerID(c.Agent.OwnerID) != nil {
+				t.Fatalf("invalid id %q", c.Agent.OwnerID)
+			}
+			b, _ := os.ReadFile("dso.yaml")
+			if countLines(b, "agent:") != 1 || bytes.Count(b, []byte("owner_id")) != 1 {
+				t.Errorf("agent / owner_id key duplicated:\n%s", b)
+			}
+			for _, keep := range []string{"# my dso config", "providers:", "name: test"} {
+				if !bytes.Contains(b, []byte(keep)) {
+					t.Errorf("unrelated content %q lost:\n%s", keep, b)
+				}
+			}
+			// a read-back gives exactly the persisted id, through the real loader
+			cfg, err := LoadConfig("dso.yaml")
+			if err != nil || cfg.Agent.OwnerID != c.Agent.OwnerID {
+				t.Fatalf("LoadConfig sees %q (err %v), want %q", cfg.Agent.OwnerID, err, c.Agent.OwnerID)
+			}
+			if st, _ := os.Stat("dso.yaml"); st.Mode().Perm() != 0o640 {
+				t.Errorf("mode = %o", st.Mode().Perm())
+			}
+			assertNoTempFiles(t, dir)
+			// idempotent
+			if c2, err := LoadConfigWithOwnerID("dso.yaml"); err != nil || c2.Agent.OwnerID != c.Agent.OwnerID {
+				t.Errorf("second load: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnsureOwnerID_NullAgentSectionConcurrentInitialisationConverges(t *testing.T) {
+	dir := writeCfg(t, validBase+"agent:\n  # nothing configured yet\n", 0o640)
+	t.Chdir(dir)
+	const n = 16
+	ids := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			c := &Config{}
+			errs[i] = EnsureOwnerID(c, "dso.yaml")
+			ids[i] = c.Agent.OwnerID
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	want := persistedID(t)
+	for i := range ids {
+		if errs[i] != nil || ids[i] != want || want == "" {
+			t.Fatalf("caller %d: id=%q err=%v, persisted %q", i, ids[i], errs[i], want)
+		}
+	}
+	b, _ := os.ReadFile("dso.yaml")
+	if countLines(b, "agent:") != 1 || bytes.Count(b, []byte("owner_id")) != 1 {
+		t.Errorf("duplicated keys:\n%s", b)
+	}
+}
+
+func TestEnsureOwnerID_ValidAgentMappingKeepsItsSettings(t *testing.T) {
+	content := validBase + "agent:\n  # cache secrets\n  cache: true\n  mode: local\n"
+	dir := writeCfg(t, content, 0o640)
+	t.Chdir(dir)
+	c := &Config{}
+	if err := EnsureOwnerID(c, "dso.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile("dso.yaml")
+	for _, keep := range []string{"# cache secrets", "cache: true", "mode: local", "# my dso config"} {
+		if !bytes.Contains(b, []byte(keep)) {
+			t.Errorf("%q lost:\n%s", keep, b)
+		}
+	}
+	if cfg, err := LoadConfig("dso.yaml"); err != nil || cfg.Agent.OwnerID != c.Agent.OwnerID || !cfg.Agent.Cache {
+		t.Fatalf("read-back: %+v err=%v", cfg, err)
+	}
+}
+
+// A genuinely invalid agent value is reported, never reinterpreted as a mapping.
+func TestEnsureOwnerID_InvalidAgentValueIsRejectedUntouched(t *testing.T) {
+	for name, tail := range map[string]string{
+		"scalar": "agent: nope\n", "sequence": "agent:\n  - a\n  - b\n", "number": "agent: 42\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := validBase + tail
+			dir := writeCfg(t, content, 0o640)
+			t.Chdir(dir)
+			failOnRename(t)
+			c := &Config{}
+			err := EnsureOwnerID(c, "dso.yaml")
+			var ce *configContentError
+			if err == nil || !errors.As(err, &ce) {
+				t.Fatalf("want a content error, got %v", err)
+			}
+			assertNoPersistenceAdvice(t, err)
+			if c.Agent.OwnerID != "" {
+				t.Errorf("id %q returned", c.Agent.OwnerID)
+			}
+			if b, _ := os.ReadFile("dso.yaml"); string(b) != content {
+				t.Error("file modified")
+			}
+			assertNoTempFiles(t, dir)
+		})
+	}
+}
+
+// ---- F2: setOwnerIDNode errors are content errors ---------------------------
+
+func TestEnsureOwnerID_BareSeparatorDocumentsAreContentErrors(t *testing.T) {
+	for name, content := range map[string]string{
+		"bare ---":         "---\n",
+		"comment then ---": "# only a comment\n---\n",
+		"--- then comment": "---\n# only a comment\n",
+		"top-level list":   "---\n- a\n- b\n",
+		"top-level scalar": "just text\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeCfg(t, content, 0o640)
+			t.Chdir(dir)
+			failOnRename(t)
+			c := &Config{}
+			err := EnsureOwnerID(c, "dso.yaml")
+			var ce *configContentError
+			if err == nil || !errors.As(err, &ce) {
+				t.Fatalf("want a content error, got %v", err)
+			}
+			assertNoPersistenceAdvice(t, err)
+			if !strings.Contains(err.Error(), "dso.yaml") {
+				t.Errorf("the file name is missing: %v", err)
+			}
+			if c.Agent.OwnerID != "" {
+				t.Errorf("id %q returned", c.Agent.OwnerID)
+			}
+			if b, _ := os.ReadFile("dso.yaml"); string(b) != content {
+				t.Error("file modified")
+			}
+			assertNoTempFiles(t, dir)
+		})
+	}
+}
+
+// Every error setOwnerIDNode can return is a content error.
+func TestSetOwnerIDNode_ErrorsAreContentErrors(t *testing.T) {
+	parse := func(s string) *yaml.Node {
+		var n yaml.Node
+		if err := yaml.Unmarshal([]byte(s), &n); err != nil {
+			t.Fatal(err)
+		}
+		return &n
+	}
+	for name, doc := range map[string]*yaml.Node{
+		"no document":  {},
+		"null root":    parse("---\n"),
+		"list root":    parse("- a\n"),
+		"scalar agent": parse("agent: x\n"),
+		"list agent":   parse("agent: [a]\n"),
+	} {
+		err := setOwnerIDNode(doc, "dso-x")
+		var ce *configContentError
+		if err == nil || !errors.As(err, &ce) {
+			t.Errorf("%s: want a content error, got %v", name, err)
+		}
+	}
+}
+
+// ---- F3: conflict and post-rename sync errors carry no permissions hint ------
+
+func TestEnsureOwnerID_ConflictErrorIsNotAPermissionsProblem(t *testing.T) {
+	dir := writeCfg(t, minimalCfg, 0o640)
+	t.Chdir(dir)
+	failOnRename(t)
+	setHook(t, &beforeReplaceCheck, func() { _ = os.WriteFile("dso.yaml", []byte(minimalCfg+"# edit\n"), 0o640) })
+	err := EnsureOwnerID(&Config{}, "dso.yaml")
+	var re *recoverableOwnerIDError
+	if err == nil || !errors.As(err, &re) {
+		t.Fatalf("want a recoverable (conflict) error, got %v", err)
+	}
+	for _, want := range []string{"dso.yaml", "modified", "your edit is intact", "retry"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message lacks %q: %v", want, err)
+		}
+	}
+	assertNoPersistenceAdvice(t, err)
+	var ce *configContentError
+	if errors.As(err, &ce) {
+		t.Error("a conflict is not a content error")
+	}
+}
+
+func TestEnsureOwnerID_SyncFailureErrorIsHonestAndHintFree(t *testing.T) {
+	dir := writeCfg(t, minimalCfg, 0o640)
+	t.Chdir(dir)
+	oldSync := syncDirFn
+	injected := errors.New("injected EIO")
+	syncDirFn = func(string) error { return injected }
+	t.Cleanup(func() { syncDirFn = oldSync })
+
+	err := EnsureOwnerID(&Config{}, "dso.yaml")
+	var re *recoverableOwnerIDError
+	if err == nil || !errors.As(err, &re) {
+		t.Fatalf("want a recoverable (sync) error, got %v", err)
+	}
+	if !errors.Is(err, injected) {
+		t.Error("the underlying I/O error was lost")
+	}
+	for _, want := range []string{"dso.yaml", "now contains a new agent.owner_id", "durability is uncertain", "not rolled back", "re-run"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message lacks %q: %v", want, err)
+		}
+	}
+	for _, bad := range []string{"writable", "set agent.owner_id manually", "persist generated"} {
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("message wrongly contains %q: %v", bad, err)
+		}
+	}
+	// "not rolled back" is true: the file holds the id, and re-running adopts it.
+	written := persistedID(t)
+	syncDirFn = oldSync
+	failOnRename(t)
+	c := &Config{}
+	if err := EnsureOwnerID(c, "dso.yaml"); err != nil || c.Agent.OwnerID != written || written == "" {
+		t.Fatalf("re-run: id=%q err=%v, want %q", c.Agent.OwnerID, err, written)
+	}
+}
+
+// Genuine persistence failures keep the permissions guidance.
+func TestEnsureOwnerID_RenameFailureKeepsPermissionAdvice(t *testing.T) {
+	dir := writeCfg(t, minimalCfg, 0o640)
+	t.Chdir(dir)
+	old := osRename
+	osRename = func(string, string) error { return errors.New("injected rename failure") }
+	t.Cleanup(func() { osRename = old })
+
+	err := EnsureOwnerID(&Config{}, "dso.yaml")
+	if err == nil || !strings.Contains(err.Error(), persistenceHint) {
+		t.Fatalf("a rename failure must keep the writable-directory advice, got %v", err)
+	}
+	var ce *configContentError
+	var re *recoverableOwnerIDError
+	if errors.As(err, &ce) || errors.As(err, &re) {
+		t.Error("a genuine persistence failure was classified as content / recoverable")
+	}
+	assertNoTempFiles(t, dir)
 }
