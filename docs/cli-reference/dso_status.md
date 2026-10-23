@@ -14,6 +14,9 @@ Examples:
   docker dso status --watch      # Auto-refresh every 2 seconds
   docker dso status --json       # Machine-readable output
 
+Use -q/--quiet to print nothing and rely on the exit status alone (errors
+still go to stderr).
+
 Exit status: 0 when the agent is reachable and healthy; 1 when the agent is
 unreachable or reports degraded providers/services. Uptime is shown only when
 it can be verified against a reachable agent; otherwise it is "unavailable".

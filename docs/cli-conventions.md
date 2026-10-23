@@ -16,9 +16,19 @@ Errors are printed once, by `cli.Run`; command code returns errors and never
 calls `os.Exit` (enforced by `TestNoOsExitOutsideEntrypoint`). Results go to
 stdout, diagnostics and warnings to stderr.
 
-Known exceptions: `dso agent` is a long-running daemon that terminates through
-its logger (`logger.Fatal`) on startup failure; `dso logs` helpers print
-errors themselves. Both are tracked as follow-ups.
+`dso agent` returns startup errors to the entrypoint after tearing down what it
+had already started (exit 1, one `Error:` line); it no longer calls
+`logger.Fatal`. The REST API is treated as mandatory: it is bound synchronously
+(address in use or invalid address aborts startup), and if its listener later
+dies unexpectedly the agent shuts down gracefully and exits 1. Intentional
+shutdown (SIGINT/SIGTERM) is not reported as a failure.
+
+`dso logs` returns errors (connection refused, 401, malformed response,
+journalctl failure) instead of printing a tip and exiting 0 — **a script that
+relied on `logs` always exiting 0 will now see exit 1** when the journal or the
+API is unavailable. Ctrl+C while following exits 0. Static tests forbid
+`os.Exit`, `Fatal*` calls and `Run:` (non-error) callbacks in `internal/cli`,
+except for `version` and the hidden Docker-plugin metadata command.
 
 ## Secret input
 
@@ -55,7 +65,7 @@ agent's owner-ID persistence path does not use it.
 
 ## Machine-readable output
 
-`--json` exists on `status`, `doctor`, `validate`, `config path`. Contract:
+`--json` exists on `status`, `doctor`, `validate`, `config path` (all four verified by tests). Write failures are returned as errors; a valid document describing an unhealthy state still exits non-zero. Contract:
 stdout is exactly one JSON document, diagnostics stay on stderr, secret values
 never appear, and a non-zero exit still carries the document. `status` keys:
 `runtime{mode,version,commit?,uptime?,start_time?}`, `agent_reached`,
@@ -63,6 +73,35 @@ never appear, and a non-zero exit still carries the document. `status` keys:
 `state` (`healthy|degraded|unavailable`), `health`. Unverifiable fields are
 omitted, not guessed. `status -q` prints nothing; use the exit code.
 `--no-color` / `NO_COLOR` strip ANSI colour from `watch` and `logs`.
+
+### Failure behaviour of configuration files
+
+| Situation | Behaviour |
+|---|---|
+| Selected file missing | commands that need it exit 1 (`config show`, `fetch`, `export`, `validate`); `doctor` reports a FAIL check |
+| Malformed YAML / failed validation | exit 1 with the parse or validation error (no file contents echoed beyond what the parser quotes) |
+| Unreadable (permissions) | exit 1, `failed to read config file` |
+| Path rules | `LoadConfig` accepts relative paths inside the working tree, DSO system directories, and exactly `~/.dso/dso.yaml`; other absolute paths and `..` traversal are rejected |
+
+Agent owner ID: `EnsureOwnerID` (agent start) now also accepts the exact
+`~/.dso/dso.yaml` path, so an agent whose config resolves there can persist its
+generated `agent.owner_id`. Before this, such an agent failed closed with
+"invalid config path" when the ID was absent. Symlinked configs are updated in
+place (rename onto the link target); all other absolute paths stay rejected.
+
+## Environment and secret exposure (what is and is not protected)
+
+* Values are never printed except by the commands whose purpose is to output
+  them: `secret get`, `fetch --reveal`, and the files written by `export`
+  (0600, refuses to overwrite without `--overwrite`).
+* `compose` and `export` inject secrets into a child process environment or a
+  plaintext file. Process environments are readable by the same user and by root
+  (`/proc/<pid>/environ`), may be inherited by child processes, and appear in
+  crash dumps; files persist on disk. DSO does not claim otherwise.
+* `inject --value`, and any secret placed on a command line, is exposed to shell
+  history and process listings. Use stdin or the prompt.
+* Secret *names* (for example `fetch` with no argument) are printed to the
+  terminal; they can reveal infrastructure details, so avoid sharing that output.
 
 ## Command hierarchy: current state and recommendation
 
@@ -82,6 +121,9 @@ docs (`docs/*.md`, `examples/`) before any change.
 
 ## Not implemented (do not rely on)
 
-`dso diff` has no comparison logic: it now exits 1 with "not implemented"
-instead of claiming "no differences". Remote login, service tokens, secret
+`dso diff` has no comparison logic: it exits 1 with "not implemented" instead
+of claiming "no differences" (its help text says so). A real implementation
+needs a defined deployed-state source (labels written by `dso up` or the
+agent's tracked targets) and project/environment selection, which the CLI does
+not have yet; no partial comparison will be shipped. Remote login, service tokens, secret
 history and `dso run` are future work requiring API/store/authorization design.

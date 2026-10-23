@@ -44,7 +44,7 @@ dso [flags]
 * [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso compose](dso_compose.md)	 - Wrapper around docker compose that injects secrets
 * [dso config](dso_config.md)	 - Manage DSO configuration
-* [dso diff](dso_diff.md)	 - Show what changed between local configuration and deployed stack
+* [dso diff](dso_diff.md)	 - Not implemented: compare local configuration with a deployed stack
 * [dso doctor](dso_doctor.md)	 - Diagnose the local DSO environment and current project
 * [dso down](dso_down.md)	 - Stop and remove the stack's containers and networks (volumes and images are kept by default)
 * [dso env](dso_env.md)	 - Manage .env file operations
