@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Secret struct {
@@ -32,6 +33,9 @@ type Vault struct {
 	vaultPath string
 	masterKey string
 }
+
+// ErrSecretNotFound is returned (wrapped) by Get when the secret does not exist.
+var ErrSecretNotFound = errors.New("secret not found")
 
 func getVaultDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -466,7 +470,7 @@ func (v *Vault) Get(project, path string) (Secret, error) {
 			return sec, nil
 		}
 	}
-	return Secret{}, fmt.Errorf("secret not found: %s/%s", project, path)
+	return Secret{}, fmt.Errorf("%w: %s/%s", ErrSecretNotFound, project, path)
 }
 
 // Set writes a secret to the vault and persists it.
@@ -481,6 +485,9 @@ func (v *Vault) Set(project, path, value string) error {
 	}
 	if len(value) > 1<<20 {
 		return errors.New("secret exceeds max size of 1MB")
+	}
+	if !utf8.ValidString(value) {
+		return errors.New("secret value is not valid UTF-8; the vault stores text only")
 	}
 
 	return v.mutate(func(st *VaultStore) error {

@@ -2,13 +2,35 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"regexp"
 
+	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/spf13/cobra"
 )
 
 var CfgFile string
+
+// noColor disables ANSI colour in human-readable output. Set by --no-color or
+// a non-empty NO_COLOR environment variable (https://no-color.org).
+var noColor bool
+
+var ansiSeq = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func colorOff() bool { return noColor || os.Getenv("NO_COLOR") != "" }
+
+func stripIfNoColor(s string) string {
+	if colorOff() {
+		return ansiSeq.ReplaceAllString(s, "")
+	}
+	return s
+}
+
+func cprintf(format string, a ...any) { fmt.Print(stripIfNoColor(fmt.Sprintf(format, a...))) }
+func cprintln(a ...any)               { fmt.Println(stripIfNoColor(fmt.Sprint(a...))) }
+func cprint(a ...any)                 { fmt.Print(stripIfNoColor(fmt.Sprint(a...))) }
 
 // cfgFileExplicit records whether -c/--config was actually passed on the
 // command line, set from cmd.Flags().Changed("config") in NewRootCmd's
@@ -25,27 +47,78 @@ var (
 	BuildDate = "unknown"
 )
 
-func ResolveConfig() string {
-	// Priority 1: CLI flag (-c). CfgFile != "dso.yaml" already proves intent
-	// for any other filename; cfgFileExplicit additionally covers the one
-	// ambiguous case where the operator explicitly passed "dso.yaml" itself
-	// -- without it, that case was silently indistinguishable from -c never
-	// being passed, and fell through to /etc/dso/dso.yaml instead.
+// systemConfigPath is the system-wide configuration file. A variable only so
+// tests can point it at a temp file; production code never reassigns it.
+var systemConfigPath = "/etc/dso/dso.yaml"
+
+// Config source kinds reported by ResolveConfigSource.
+const (
+	ConfigFromFlag   = "flag"    // -c/--config
+	ConfigFromSystem = "system"  // /etc/dso/dso.yaml
+	ConfigFromLocal  = "local"   // ./dso.yaml
+	ConfigFromUser   = "user"    // ~/.dso/dso.yaml
+	ConfigFromNone   = "default" // nothing found; "dso.yaml" is returned and will not exist
+)
+
+// ConfigSource describes which configuration file was selected and why.
+// It never carries file contents.
+type ConfigSource struct {
+	Path string
+	Kind string
+	// Shadowed lists other existing candidate files that were NOT selected
+	// because a higher-priority source won.
+	Shadowed []string
+}
+
+func userConfigPath() string { return config.UserConfigPath() }
+
+func fileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// ResolveConfigSource selects the configuration file. Precedence, highest first:
+//
+//  1. -c/--config, whenever it was actually passed (even if it is "dso.yaml")
+//  2. /etc/dso/dso.yaml        (system-wide; kept ahead of ./dso.yaml for
+//     compatibility with existing installations)
+//  3. ./dso.yaml               (current directory)
+//  4. ~/.dso/dso.yaml          (per-user; used only when none of the above exist)
+//
+// If nothing exists, "dso.yaml" is returned so callers report a missing file.
+func ResolveConfigSource() ConfigSource {
+	candidates := []struct{ kind, path string }{
+		{ConfigFromSystem, systemConfigPath},
+		{ConfigFromLocal, "dso.yaml"},
+		{ConfigFromUser, userConfigPath()},
+	}
+
+	var src ConfigSource
 	if CfgFile != "" && (CfgFile != "dso.yaml" || cfgFileExplicit) {
-		return CfgFile
+		src = ConfigSource{Path: CfgFile, Kind: ConfigFromFlag}
+	} else {
+		src = ConfigSource{Path: "dso.yaml", Kind: ConfigFromNone}
+		for _, c := range candidates {
+			if fileExists(c.path) {
+				src = ConfigSource{Path: c.path, Kind: c.kind}
+				break
+			}
+		}
 	}
-
-	// Priority 2: /etc/dso/dso.yaml
-	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
-		return "/etc/dso/dso.yaml"
+	for _, c := range candidates {
+		if c.path != "" && c.path != src.Path && fileExists(c.path) {
+			src.Shadowed = append(src.Shadowed, c.path)
+		}
 	}
+	return src
+}
 
-	// Priority 3: ./dso.yaml
-	if _, err := os.Stat("dso.yaml"); err == nil {
-		return "dso.yaml"
-	}
-
-	return "dso.yaml"
+// ResolveConfig returns the selected configuration path.
+func ResolveConfig() string {
+	return ResolveConfigSource().Path
 }
 
 func NewRootCmd() *cobra.Command {
@@ -77,7 +150,8 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 		},
 	}
 
-	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml)")
+	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable ANSI colour in output (also honours NO_COLOR)")
+	cmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "dso.yaml", "config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path')")
 
 	cmd.AddCommand(NewSetupCmd())
 	cmd.AddCommand(NewBootstrapCmd())
@@ -108,20 +182,58 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewEnvImportCmd())
 	cmd.AddCommand(NewCentralCmd())
 
+	// Errors are reported exactly once, by Run, on stderr. Cobra's own
+	// printing is silenced so runtime failures don't also dump usage text.
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	enforceGroupCommandArgs(cmd)
+
 	return cmd
 }
 
-func Execute() {
-	rootCmd := NewRootCmd()
+// enforceGroupCommandArgs makes every command that has subcommands reject
+// stray positional arguments (an unknown subcommand or typo) with an error
+// instead of silently printing help and exiting 0. A bare group command with
+// no arguments still prints its help, as before. Commands that declare their
+// own Args validator are left alone.
+func enforceGroupCommandArgs(c *cobra.Command) {
+	if c.HasSubCommands() {
+		if c.Args == nil {
+			c.Args = cobra.NoArgs
+		}
+		if !c.Runnable() {
+			c.RunE = func(cmd *cobra.Command, args []string) error { return cmd.Help() }
+		}
+	}
+	for _, sub := range c.Commands() {
+		enforceGroupCommandArgs(sub)
+	}
+}
 
+// Execute runs the CLI against os.Args and exits the process with the
+// resulting status. All logic lives in Run so it can be tested without
+// terminating the test binary.
+func Execute() {
 	// Docker CLI plugin fix: strip the plugin name if it's passed as the first argument
 	// (Required when called via 'docker dso ...')
-	if len(os.Args) > 1 && os.Args[1] == "dso" {
-		os.Args = append(os.Args[:1], os.Args[2:]...)
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "dso" {
+		args = args[1:]
 	}
+	os.Exit(Run(args, os.Stdout, os.Stderr))
+}
+
+// Run executes the root command with args and returns the process exit code:
+// 0 on success, 1 on any error. The error is printed once to stderr.
+func Run(args []string, stdout, stderr io.Writer) int {
+	rootCmd := NewRootCmd()
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
 	}
+	return 0
 }

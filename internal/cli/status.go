@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
@@ -16,6 +18,7 @@ func NewStatusCmd() *cobra.Command {
 	var (
 		watchFlag bool
 		jsonFlag  bool
+		quietFlag bool
 	)
 
 	cmd := &cobra.Command{
@@ -29,11 +32,17 @@ agent (via 'docker dso agent'/systemd) for its real, current state.
 Examples:
   docker dso status              # Single status check
   docker dso status --watch      # Auto-refresh every 2 seconds
-  docker dso status --json       # Machine-readable output`,
+  docker dso status --json       # Machine-readable output
+
+Exit status: 0 when the agent is reachable and healthy; 1 when the agent is
+unreachable or reports degraded providers/services. Uptime is shown only when
+it can be verified against a reachable agent; otherwise it is "unavailable".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status := &Status{
 				Watch: watchFlag,
 				JSON:  jsonFlag,
+				Out:   cmd.OutOrStdout(),
+				Quiet: quietFlag,
 			}
 			return status.Run()
 		},
@@ -41,6 +50,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&watchFlag, "watch", false, "Auto-refresh every 2 seconds")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON")
+	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Print nothing; report health only through the exit status")
 
 	return cmd
 }
@@ -52,13 +62,33 @@ Examples:
 type Status struct {
 	Watch bool
 	JSON  bool
+	Quiet bool      // suppress output; exit status carries the result
+	Out   io.Writer // defaults to os.Stdout
 }
 
+func (s *Status) out() io.Writer {
+	if s.Out != nil {
+		return s.Out
+	}
+	return os.Stdout
+}
+
+// Overall state values reported in SystemStatus.State.
+const (
+	StateHealthy     = "healthy"     // agent reachable, nothing unhealthy
+	StateDegraded    = "degraded"    // agent reachable, but a provider or service is unhealthy
+	StateUnavailable = "unavailable" // agent could not be queried
+)
+
+// RuntimeStatus describes the CLI build and local installation. Uptime and
+// StartTime are omitted unless they can be verified: they require a reachable
+// agent plus a well-formed start time on disk, never a guess.
 type RuntimeStatus struct {
-	Mode      string    `json:"mode"`
-	Version   string    `json:"version"`
-	Uptime    string    `json:"uptime"`
-	StartTime time.Time `json:"start_time"`
+	Mode      string     `json:"mode"`
+	Version   string     `json:"version"`
+	Commit    string     `json:"commit,omitempty"`
+	Uptime    string     `json:"uptime,omitempty"`
+	StartTime *time.Time `json:"start_time,omitempty"`
 }
 
 // ProviderStatus reflects what the agent's SecretStoreManager actually
@@ -91,6 +121,8 @@ type SystemStatus struct {
 	Providers    []ProviderStatus `json:"providers,omitempty"`
 	Cache        CacheStatus      `json:"cache"`
 	Rotations    RotationStatus   `json:"rotations"`
+	DegradedSvcs int              `json:"degraded_services"`
+	State        string           `json:"state"`
 	Health       string           `json:"health"`
 }
 
@@ -106,20 +138,41 @@ func (s *Status) Run() error {
 	return s.printStatus()
 }
 
+// printStatus renders one snapshot and returns a non-nil error when the system
+// is not healthy so the process exits non-zero for scripts and health probes.
 func (s *Status) printStatus() error {
 	systemStatus := s.gatherStatus()
 
-	if s.JSON {
-		return s.printJSON(systemStatus)
+	var err error
+	if s.Quiet {
+		return systemStatus.exitError()
 	}
+	if s.JSON {
+		err = s.printJSON(systemStatus)
+	} else {
+		err = s.printText(systemStatus)
+	}
+	if err != nil {
+		return err
+	}
+	return systemStatus.exitError()
+}
 
-	return s.printText(systemStatus)
+func (st SystemStatus) exitError() error {
+	switch st.State {
+	case StateHealthy:
+		return nil
+	case StateDegraded:
+		return fmt.Errorf("DSO is degraded: one or more providers or services are unhealthy")
+	default:
+		return fmt.Errorf("DSO agent is unavailable: %s", st.AgentError)
+	}
 }
 
 func (s *Status) watchStatus() error {
 	for {
 		// Clear screen (ANSI escape code)
-		fmt.Print("\033[2J\033[H")
+		fmt.Fprint(s.out(), "\033[2J\033[H")
 
 		systemStatus := s.gatherStatus()
 		if s.JSON {
@@ -128,8 +181,8 @@ func (s *Status) watchStatus() error {
 			_ = s.printText(systemStatus)
 		}
 
-		fmt.Println()
-		fmt.Println("Refreshing in 2 seconds (Ctrl+C to exit)...")
+		fmt.Fprintln(s.out())
+		fmt.Fprintln(s.out(), "Refreshing in 2 seconds (Ctrl+C to exit)...")
 		time.Sleep(2 * time.Second)
 	}
 }
@@ -139,36 +192,40 @@ func (s *Status) watchStatus() error {
 // ════════════════════════════════════════════════════════════════════════════
 
 func (s *Status) gatherStatus() SystemStatus {
-	status := SystemStatus{
-		Runtime: s.gatherRuntime(),
-	}
+	status := SystemStatus{}
 
 	socketPath := "/run/dso/dso.sock"
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
 	}
 
-	client, err := injector.NewAgentClientWithTimeout(socketPath, 3*time.Second)
-	if err != nil {
+	unavailable := func(err error) SystemStatus {
+		status.Runtime = s.gatherRuntime(false)
 		status.AgentReached = false
 		status.AgentError = err.Error()
+		status.State = StateUnavailable
 		status.Health = "✗ agent unreachable"
 		return status
+	}
+
+	client, err := injector.NewAgentClientWithTimeout(socketPath, 3*time.Second)
+	if err != nil {
+		return unavailable(err)
 	}
 	defer func() { _ = client.Close() }()
 
 	resp, err := client.GetStatus()
 	if err != nil {
-		status.AgentReached = false
-		status.AgentError = err.Error()
-		status.Health = "✗ agent unreachable"
-		return status
+		return unavailable(err)
 	}
 
+	status.Runtime = s.gatherRuntime(true)
 	status.AgentReached = true
 	status.Cache = CacheStatus{Entries: resp.CacheEntries}
 	status.Rotations = RotationStatus{Pending: resp.PendingRotations}
+	status.DegradedSvcs = len(resp.DegradedServices)
 
+	unhealthy := false
 	for _, p := range resp.Providers {
 		ps := ProviderStatus{Name: p.Name, Message: p.Message}
 		switch {
@@ -178,22 +235,30 @@ func (s *Status) gatherStatus() SystemStatus {
 			ps.Status = "healthy"
 		default:
 			ps.Status = "unhealthy"
+			unhealthy = true
 		}
 		status.Providers = append(status.Providers, ps)
 	}
 
-	status.Health = "✓ All systems nominal"
-	for _, p := range status.Providers {
-		if p.Status == "unhealthy" {
-			status.Health = "⚠ Some providers unhealthy"
-			break
-		}
+	switch {
+	case unhealthy || status.DegradedSvcs > 0:
+		status.State = StateDegraded
+		status.Health = "⚠ degraded: some providers or services unhealthy"
+	default:
+		status.State = StateHealthy
+		status.Health = "✓ All systems nominal"
 	}
 
 	return status
 }
 
-func (s *Status) gatherRuntime() RuntimeStatus {
+// gatherRuntime reports facts that can actually be verified. The agent
+// protocol does not expose its version or start time, so uptime is derived
+// only when the agent is reachable now AND ~/.dso/state/runtime.json holds a
+// well-formed start_time that is not in the future. A state file on its own
+// proves nothing about a running agent, so it is ignored when agentReached is
+// false.
+func (s *Status) gatherRuntime(agentReached bool) RuntimeStatus {
 	homeDir, _ := os.UserHomeDir()
 	dsoDir := filepath.Join(homeDir, ".dso")
 
@@ -204,82 +269,125 @@ func (s *Status) gatherRuntime() RuntimeStatus {
 		mode = "local"
 	}
 
-	// Try to read state file to get start time
-	stateFile := filepath.Join(dsoDir, "state", "runtime.json")
-	startTime := time.Now().Add(-2 * time.Hour) // Default assumption
+	version := Version
+	if version == "" {
+		version = "unknown"
+	}
+	commit := Commit
+	if commit == "none" {
+		commit = ""
+	}
 
-	// #nosec G304 -- filename is a fixed literal; dsoDir is a resolved config
-	// directory, not per-request input
-	if data, err := os.ReadFile(stateFile); err == nil {
-		var state map[string]interface{}
-		if err := json.Unmarshal(data, &state); err == nil {
-			if st, ok := state["start_time"].(string); ok {
-				if t, err := time.Parse(time.RFC3339, st); err == nil {
-					startTime = t
-				}
-			}
+	rt := RuntimeStatus{Mode: mode, Version: version, Commit: commit}
+	if agentReached {
+		if st, ok := readVerifiedStartTime(filepath.Join(dsoDir, "state", "runtime.json"), time.Now()); ok {
+			rt.StartTime = &st
+			rt.Uptime = formatDuration(time.Since(st))
 		}
 	}
+	return rt
+}
 
-	uptime := time.Since(startTime)
-	uptimeStr := formatDuration(uptime)
-
-	return RuntimeStatus{
-		Mode:      mode,
-		Version:   "v1.0.0",
-		Uptime:    uptimeStr,
-		StartTime: startTime,
+// readVerifiedStartTime returns the start_time recorded in path, or false if
+// the file is absent, malformed, or records a time in the future.
+func readVerifiedStartTime(path string, now time.Time) (time.Time, bool) {
+	// #nosec G304 -- path is built from the user's home dir and fixed literals
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, false
 	}
+	var state struct {
+		StartTime string `json:"start_time"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil || state.StartTime == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, state.StartTime)
+	if err != nil || t.After(now) {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // OUTPUT METHODS
 // ════════════════════════════════════════════════════════════════════════════
 
+const statusInnerWidth = 61 // characters between the box's vertical borders
+
+// boxRow renders one box line, padding/truncating by rune count so the right
+// border always aligns regardless of multi-byte symbols.
+func boxRow(text string) string {
+	const textWidth = statusInnerWidth - 2 // one space of padding each side
+	r := []rune(text)
+	if len(r) > textWidth {
+		r = append(r[:textWidth-1], '…')
+	}
+	return "│ " + string(r) + strings.Repeat(" ", textWidth-len(r)) + " │"
+}
+
 func (s *Status) printText(status SystemStatus) error {
-	fmt.Println()
-	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
-	fmt.Println("│              DSO Runtime Status                             │")
-	fmt.Println("├─────────────────────────────────────────────────────────────┤")
-	fmt.Printf("│ Mode:     %-50s │\n", status.Runtime.Mode)
-	fmt.Printf("│ Version:  %-50s │\n", status.Runtime.Version)
-	fmt.Printf("│ Uptime:   %-50s │\n", status.Runtime.Uptime)
-	fmt.Println("│                                                             │")
+	w := s.out()
+	line := func(text string) { fmt.Fprintln(w, boxRow(text)) }
+	rule := strings.Repeat("─", statusInnerWidth)
+
+	uptime := status.Runtime.Uptime
+	if uptime == "" {
+		uptime = "unavailable"
+	}
+	version := status.Runtime.Version
+	if status.Runtime.Commit != "" {
+		version += " (" + status.Runtime.Commit + ")"
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "┌"+rule+"┐")
+	line("             DSO Runtime Status")
+	fmt.Fprintln(w, "├"+rule+"┤")
+	line(fmt.Sprintf("Mode:     %s", status.Runtime.Mode))
+	line(fmt.Sprintf("Version:  %s", version))
+	line(fmt.Sprintf("Uptime:   %s", uptime))
+	line("")
 
 	if !status.AgentReached {
-		fmt.Printf("│ AGENT: NOT REACHABLE (%-38s │\n", truncate(status.AgentError, 38)+")")
-		fmt.Println("│                                                             │")
-		fmt.Printf("│ HEALTH: %-53s │\n", status.Health)
-		fmt.Println("└─────────────────────────────────────────────────────────────┘")
-		fmt.Println()
+		line("AGENT: NOT REACHABLE")
+		line("  " + status.AgentError)
+		line("")
+		line("HEALTH: " + status.Health)
+		fmt.Fprintln(w, "└"+rule+"┘")
+		fmt.Fprintln(w)
 		return nil
 	}
 
-	// Providers
-	fmt.Println("│ PROVIDERS                                                   │")
+	line("PROVIDERS")
+	if len(status.Providers) == 0 {
+		line("└─ (none configured)")
+	}
 	for i, p := range status.Providers {
 		prefix := "├─"
 		if i == len(status.Providers)-1 {
 			prefix = "└─"
 		}
-		provStatus := statusSymbolInline(p.Status)
-		fmt.Printf("│ %s %s:  %s %-35s │\n", prefix, p.Name, provStatus, p.Message)
+		line(fmt.Sprintf("%s %s:  %s %s", prefix, p.Name, statusSymbolInline(p.Status), p.Message))
 	}
-	fmt.Println("│                                                             │")
+	line("")
 
-	// Cache
-	fmt.Println("│ CACHE                                                       │")
-	fmt.Printf("│ └─ Entries:  %-46d │\n", status.Cache.Entries)
-	fmt.Println("│                                                             │")
+	line("CACHE")
+	line(fmt.Sprintf("└─ Entries:  %d", status.Cache.Entries))
+	line("")
 
-	// Rotations
-	fmt.Println("│ ROTATIONS                                                   │")
-	fmt.Printf("│ └─ Pending:    %-43d │\n", status.Rotations.Pending)
-	fmt.Println("│                                                             │")
+	line("ROTATIONS")
+	line(fmt.Sprintf("└─ Pending:  %d", status.Rotations.Pending))
+	line("")
 
-	fmt.Printf("│ HEALTH: %-53s │\n", status.Health)
-	fmt.Println("└─────────────────────────────────────────────────────────────┘")
-	fmt.Println()
+	if status.DegradedSvcs > 0 {
+		line(fmt.Sprintf("DEGRADED SERVICES: %d", status.DegradedSvcs))
+		line("")
+	}
+
+	line("HEALTH: " + status.Health)
+	fmt.Fprintln(w, "└"+rule+"┘")
+	fmt.Fprintln(w)
 
 	return nil
 }
@@ -290,8 +398,8 @@ func (s *Status) printJSON(status SystemStatus) error {
 		return err
 	}
 
-	fmt.Println(string(data))
-	return nil
+	_, err = fmt.Fprintln(s.out(), string(data))
+	return err
 }
 
 // ════════════════════════════════════════════════════════════════════════════
