@@ -66,11 +66,28 @@ func NewAgentCmd() *cobra.Command {
 		Use:   "agent",
 		Short: "Run the DSO background reconciliation engine",
 		Long:  `The agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
-		Run: func(cmd *cobra.Command, args []string) {
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
+			}
 			// Register signal handlers before any blocking work so SIGTERM during
 			// startup is never silently dropped.
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+
+			// onFail holds teardown steps for everything started so far. A
+			// startup failure runs them in reverse and returns the error to the
+			// CLI entrypoint (which exits non-zero) instead of terminating the
+			// process from here, so servers and goroutines are not leaked.
+			var onFail []func()
+			fail := func(what string, err error) error {
+				for i := len(onFail) - 1; i >= 0; i-- {
+					onFail[i]()
+				}
+				return fmt.Errorf("%s: %w", what, err)
+			}
 
 			logger, _ := observability.NewLogger("info", "console", false)
 			defer func() {
@@ -80,9 +97,7 @@ func NewAgentCmd() *cobra.Command {
 			cfgPath := ResolveConfig()
 			cfg, err := config.LoadConfigWithOwnerID(cfgPath)
 			if err != nil {
-				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed",
-					zap.Error(err),
-					zap.String("config_path", cfgPath))
+				return fail("agent failed to load configuration "+cfgPath+" (check that the path exists and is allowed)", err)
 			}
 
 			if advisory := config.PermissionAdvisory(cfgPath); advisory != "" {
@@ -98,15 +113,15 @@ func NewAgentCmd() *cobra.Command {
 			// Initialize Reloader (Watcher)
 			reloader, err := watcher.NewReloaderController(logger)
 			if err != nil {
-				logger.Fatal("Failed to initialize reloader controller", zap.Error(err))
+				return fail("failed to initialize reloader controller", err)
 			}
 
 			// Initialize Docker Client (for crash recovery and container management)
 			dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
-				logger.Fatal("Failed to initialize Docker client",
-					zap.Error(err))
+				return fail("failed to initialize Docker client", err)
 			}
+			onFail = append(onFail, func() { _ = dockerCli.Close() })
 
 			// Initialize DSO Proxy Manager — owns host port bindings for zero-downtime
 			// rotation on port-bound containers (MySQL, etc.). Scans existing containers
@@ -119,18 +134,19 @@ func NewAgentCmd() *cobra.Command {
 				// against an operator-supplied allow-list before ScanAndRegister
 				// (and any later EnsurePort call) binds anything.
 				if err := proxyManager.SetAllowedHostPorts(cfg.Proxy.AllowedHostPorts); err != nil {
-					logger.Fatal("Invalid proxy.allowed_host_ports configuration", zap.Error(err))
+					return fail("invalid proxy.allowed_host_ports configuration", err)
 				}
 			}
 			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
 			proxyManager.ScanAndRegister(scanCtx, dockerCli)
 			scanCancel()
 			reloader.ProxyManager = proxyManager
+			onFail = append(onFail, func() { _ = proxyManager.Stop(10 * time.Second) })
 
 			// Initialize Trigger Engine
 			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 			if err != nil {
-				logger.Fatal("Failed to initialize trigger engine", zap.Error(err))
+				return fail("failed to initialize trigger engine", err)
 			}
 
 			// Initialize rotation-event notifications (optional; disabled
@@ -146,7 +162,7 @@ func NewAgentCmd() *cobra.Command {
 					if w.Timeout != "" {
 						d, perr := time.ParseDuration(w.Timeout)
 						if perr != nil {
-							logger.Fatal("Invalid notifications webhook timeout", zap.String("timeout", w.Timeout), zap.Error(perr))
+							return fail("invalid notifications webhook timeout "+w.Timeout, perr)
 						}
 						timeout = d
 					}
@@ -162,21 +178,23 @@ func NewAgentCmd() *cobra.Command {
 						AllowInsecureHTTP: w.AllowInsecureHTTP,
 					}, logger)
 					if nerr != nil {
-						logger.Fatal("Invalid notifications webhook configuration", zap.Error(nerr))
+						return fail("invalid notifications webhook configuration", nerr)
 					}
 					notifiers = append(notifiers, n)
 					logger.Info("Notification destination configured", zap.String("destination", n.SafeName()))
 				}
 				notifyDispatcher = notify.NewDispatcher(notifiers, logger)
 				trigger.Dispatcher = notifyDispatcher
+				onFail = append(onFail, func() { notifyDispatcher.Stop(10 * time.Second) })
 			}
 
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, socketShutdown, err := agent.StartSocketServer(ctx, socketPath, cache, storeManager, logger, cfg)
 			if err != nil {
-				logger.Fatal("Failed to start agent socket server", zap.Error(err))
+				return fail("failed to start agent socket server", err)
 			}
 			trigger.Server = agentServer
+			onFail = append(onFail, socketShutdown)
 			agentServer.Trigger = trigger
 			reloader.Server = agentServer
 
@@ -184,21 +202,27 @@ func NewAgentCmd() *cobra.Command {
 			// background internally; we keep the shutdown handle to drain it.
 			driverShutdown, err := agent.StartDriverServer(ctx, driverSocket, cache, storeManager, logger, cfg)
 			if err != nil {
-				logger.Fatal("Failed to start Docker Driver server", zap.Error(err))
+				return fail("failed to start Docker Driver server", err)
 			}
+			onFail = append(onFail, driverShutdown)
 
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
 			// returns an error (and refuses to start) if bound to a non-loopback
 			// address without DSO_AUTH_TOKEN.
-			restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger, reloader)
+			// The API is mandatory (WebUI, `dso logs --api` and health probes
+			// depend on it): a bind failure aborts startup, and a later
+			// unexpected termination stops the agent (see restFailed below).
+			restShutdown, restFailed, err := server.StartRESTServerSupervised(ctx, apiAddr, cache, trigger, cfg, logger, reloader)
 			if err != nil {
-				logger.Fatal("Failed to start REST API server", zap.Error(err))
+				return fail("failed to start REST API server", err)
 			}
+			onFail = append(onFail, restShutdown)
 
 			// 3b. Start Prometheus metrics server (OPS-H1). Previously registered
 			// metrics were never exposed because StartMetricsServer had no caller.
 			// It now serves in the background and drains on ctx/SIGTERM.
 			metricsShutdown := observability.StartMetricsServer(ctx, metricsAddr, logger)
+			onFail = append(onFail, metricsShutdown)
 
 			// 4. Start Docker Event Loop for the Reloader — MUST run before StartAll so
 			// that populateInitialTargets completes before any polling goroutine fires
@@ -206,8 +230,9 @@ func NewAgentCmd() *cobra.Command {
 			reloader.StartEventLoop(ctx)
 
 			// 5. Start Reconciliation Loop (targets are now populated)
+			onFail = append(onFail, trigger.Stop)
 			if err := trigger.StartAll(); err != nil {
-				logger.Fatal("Failed to start trigger engine", zap.Error(err))
+				return fail("failed to start trigger engine", err)
 			}
 
 			// PREFLIGHT CHECKS: Verify system is healthy before marking ready (Fix #5)
@@ -222,7 +247,13 @@ func NewAgentCmd() *cobra.Command {
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
 
-			<-ctx.Done()
+			var runErr error
+			select {
+			case <-ctx.Done():
+			case rerr := <-restFailed:
+				runErr = fmt.Errorf("REST API server terminated unexpectedly: %w", rerr)
+				logger.Error("Stopping agent because the REST API is no longer serving", zap.Error(rerr))
+			}
 			logger.Info("Shutting down DSO Agent gracefully...")
 
 			// GRACEFUL SHUTDOWN SEQUENCE (Fix #4)
@@ -279,7 +310,11 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent shutdown completed")
-			fmt.Println("DSO Agent stopped.")
+			if runErr != nil {
+				return runErr
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "DSO Agent stopped.")
+			return nil
 		},
 	}
 

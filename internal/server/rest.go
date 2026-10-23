@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -1282,39 +1283,61 @@ const (
 )
 
 func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger, reloader *watcher.ReloaderController) (func(), error) {
+	shutdown, _, err := StartRESTServerSupervised(ctx, addr, cache, triggerEngine, cfg, logger, reloader)
+	return shutdown, err
+}
+
+// listenFunc creates the API listener. A variable so tests can inject bind
+// failures and listeners that die after startup.
+var listenFunc = net.Listen
+
+// StartRESTServerSupervised starts the REST API and reports its health to the
+// caller:
+//
+//   - Bind failures (address in use, invalid address, no permission) are
+//     returned synchronously: the listener is created before this function
+//     returns, so a nil error means the API is really accepting connections.
+//   - If the server later terminates for any reason other than shutdown, the
+//     cause is delivered once on the returned channel. The agent treats the API
+//     as mandatory (the WebUI, `dso logs --api` and health probes depend on
+//     it) and shuts down when it fires. The channel is never closed and never
+//     receives a value after an intentional shutdown.
+//   - The returned shutdown function is idempotent and also runs when ctx is
+//     cancelled.
+func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger, reloader *watcher.ReloaderController) (func(), <-chan error, error) {
 	// One Authenticator is the single source of truth for "is a bearer token
 	// configured": the startup guards below, the legacy-open-mode decision in
 	// buildAccessWiring and RESTServer.authenticate all consult it.
 	authn := auth.NewAuthenticator()
 
 	if bindsPublic(addr) && !authn.Enabled() {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"refusing to start REST API on non-loopback address %q without authentication: "+
 				"set DSO_AUTH_TOKEN, or bind the API to a loopback address (e.g. 127.0.0.1)", addr)
 	}
 
 	if token := authn.GetToken(); token != "" {
 		if len(token) < minAuthTokenBytes {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"DSO_AUTH_TOKEN is too short (%d bytes); minimum is %d bytes — use a random token of at least 16 characters",
 				len(token), minAuthTokenBytes)
 		}
 		if len(token) > maxAuthTokenBytes {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"DSO_AUTH_TOKEN exceeds maximum length (%d bytes); maximum is %d bytes",
 				len(token), maxAuthTokenBytes)
 		}
 	}
 
 	if err := validateWebhookConfig(cfg, logger); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Computed before anything is allocated so a bad webui.* setting fails
 	// startup cleanly.
 	access, err := buildAccessWiring(cfg, authn, addr, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	hub := NewHub(logger)
@@ -1401,34 +1424,55 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 		zap.Duration("read_timeout", server.ReadTimeout),
 		zap.Duration("write_timeout", server.WriteTimeout))
 
-	// Launch server in goroutine
+	// Bind synchronously so address-in-use / invalid-address errors surface to
+	// the caller instead of dying inside a goroutine.
+	ln, err := listenFunc("tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("REST API cannot listen on %q: %w", addr, err)
+	}
+
+	failed := make(chan error, 1)
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	shutdown := func() {
+		stopOnce.Do(func() {
+			close(done)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				logger.Error("REST API server shutdown error", zap.Error(err))
+			}
+		})
+	}
+
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("REST API server failed", zap.Error(err))
+		err := server.Serve(ln)
+		select {
+		case <-done:
+			return // intentional shutdown
+		default:
+		}
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			// Closed without our shutdown (should not happen); still unexpected.
+			err = errors.New("REST API server stopped unexpectedly")
+		}
+		logger.Error("REST API server failed", zap.Error(err))
+		failed <- err
+	}()
+
+	// Shut down when the agent context ends, or exit quietly if shutdown was
+	// already requested explicitly (no goroutine outlives the server).
+	// #nosec G118 -- shutdown deliberately uses a fresh Background() timeout:
+	// deriving it from the already-cancelled ctx would give Shutdown no grace period.
+	go func() {
+		select {
+		case <-ctx.Done():
+			shutdown()
+		case <-done:
 		}
 	}()
 
-	// Return shutdown function that closes server on context cancellation
-	// #nosec G118 -- this goroutine only runs after ctx.Done(), so deriving the
-	// shutdown timeout from ctx would give Shutdown() zero grace period. A
-	// fresh Background() context is required.
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("REST API server shutdown error", zap.Error(err))
-		}
-	}()
-
-	// Return explicit shutdown function for manual control
-	return func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("REST API server shutdown error", zap.Error(err))
-		}
-	}, nil
+	return shutdown, failed, nil
 }
 
 // resolveCookieSecure decides the Secure attribute for the WebUI session
