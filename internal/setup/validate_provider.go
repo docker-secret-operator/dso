@@ -170,7 +170,7 @@ func probeHTTPEndpoint(ctx context.Context, url string) error {
 		return fmt.Errorf("invalid endpoint URL %q: %w", url, err)
 	}
 
-	// #nosec G107 — URL comes from trusted env vars (VAULT_ADDR, AWS region config).
+	// #nosec G107 -- URL comes from trusted env vars (VAULT_ADDR, AWS region config).
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("cannot reach %s: %w", url, err)

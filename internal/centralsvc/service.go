@@ -102,7 +102,11 @@ func (s *Service) CreateProject(ctx context.Context, slug, name string) (store.P
 	}
 	defer crypto.Zero(dek)
 	const dekVersion = 1
-	wrapped, err := s.keys.Wrap(ctx, dek, crypto.DEKAAD(id, s.keys.ID(), dekVersion))
+	dekAAD, err := crypto.DEKAAD(id, s.keys.ID(), dekVersion)
+	if err != nil {
+		return store.Project{}, fmt.Errorf("building project key context: %w", err)
+	}
+	wrapped, err := s.keys.Wrap(ctx, dek, dekAAD)
 	if err != nil {
 		return store.Project{}, fmt.Errorf("wrapping project key: %w", err)
 	}
@@ -166,7 +170,11 @@ func (s *Service) unwrapDEK(ctx context.Context, p store.Project) ([]byte, error
 	if p.DEKKeyID != s.keys.ID() {
 		return nil, ErrWrongRootKey
 	}
-	dek, err := s.keys.Unwrap(ctx, p.WrappedDEK, crypto.DEKAAD(p.ID, p.DEKKeyID, p.DEKVersion))
+	dekAAD, err := crypto.DEKAAD(p.ID, p.DEKKeyID, p.DEKVersion)
+	if err != nil {
+		return nil, fmt.Errorf("building project key context: %w", err)
+	}
+	dek, err := s.keys.Unwrap(ctx, p.WrappedDEK, dekAAD)
 	if err != nil {
 		return nil, fmt.Errorf("unwrapping project key: %w", err)
 	}
@@ -208,7 +216,10 @@ func (s *Service) CreateSecret(ctx context.Context, projectSlug, envSlug, name s
 	if err != nil {
 		return err
 	}
-	aad := crypto.SecretAAD(sc.project.ID, sc.env.ID, id, name, 1, sc.project.DEKVersion)
+	aad, err := crypto.SecretAAD(sc.project.ID, sc.env.ID, id, name, 1, sc.project.DEKVersion)
+	if err != nil {
+		return fmt.Errorf("building secret context: %w", err)
+	}
 	nonce, ct, err := crypto.Seal(dek, value, aad)
 	if err != nil {
 		return err
@@ -242,7 +253,11 @@ func (s *Service) AddVersion(ctx context.Context, projectSlug, envSlug, name str
 	}
 	defer crypto.Zero(dek)
 	v, err := s.store.AddVersion(ctx, sec.ID, actor, comment, func(version int) ([]byte, []byte, int, error) {
-		nonce, ct, err := crypto.Seal(dek, value, crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, version, sc.project.DEKVersion))
+		aad, err := crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, version, sc.project.DEKVersion)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("building secret context: %w", err)
+		}
+		nonce, ct, err := crypto.Seal(dek, value, aad)
 		return ct, nonce, sc.project.DEKVersion, err
 	})
 	if err != nil {
@@ -301,8 +316,11 @@ func (s *Service) GetValue(ctx context.Context, projectSlug, envSlug, name strin
 		return Value{}, err
 	}
 	defer crypto.Zero(dek)
-	pt, err := crypto.Open(dek, rec.Nonce, rec.Ciphertext,
-		crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, rec.Version, rec.DEKVersion))
+	aad, err := crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, rec.Version, rec.DEKVersion)
+	if err != nil {
+		return Value{}, fmt.Errorf("building secret context: %w", err)
+	}
+	pt, err := crypto.Open(dek, rec.Nonce, rec.Ciphertext, aad)
 	if err != nil {
 		s.log.Warn("secret failed integrity verification", zap.String("project", projectSlug),
 			zap.String("environment", envSlug), zap.String("secret", name), zap.Int("version", rec.Version))

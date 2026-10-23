@@ -14,7 +14,7 @@ import (
 func TempDir(t testing.TB) string {
 	t.Helper()
 	d := t.TempDir()
-	if err := os.Chmod(d, 0o700); err != nil {
+	if err := os.Chmod(d, 0o700); err != nil { // #nosec G302 -- a directory needs the execute bit; 0700 is the strictest usable mode
 		t.Fatal(err)
 	}
 	return d

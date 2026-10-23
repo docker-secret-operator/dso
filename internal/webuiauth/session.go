@@ -288,6 +288,7 @@ func (m *Manager) SessionCookie(sess *Session) *http.Cookie {
 		// already-exhausted lifetime.
 		maxAge = -1
 	}
+	// #nosec G124 -- Secure follows Manager.Secure, which defaults to true; it is false only for plain-HTTP loopback development. HttpOnly and SameSite=Strict are always set.
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    sess.Token,
@@ -302,6 +303,7 @@ func (m *Manager) SessionCookie(sess *Session) *http.Cookie {
 // ExpiredCookie builds a Set-Cookie header value that clears the session
 // cookie in the browser (used on logout).
 func (m *Manager) ExpiredCookie() *http.Cookie {
+	// #nosec G124 -- clearing cookie; same Secure policy as the session cookie above.
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    "",

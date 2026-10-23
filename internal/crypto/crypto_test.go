@@ -153,20 +153,20 @@ func TestGeneratedKeysAreDistinctAndFullLength(t *testing.T) {
 }
 
 func TestAADEncodingIsUnambiguous(t *testing.T) {
-	if bytes.Equal(aad("d", "ab", "c"), aad("d", "a", "bc")) {
+	if bytes.Equal(mustAAD(aad("d", "ab", "c")), mustAAD(aad("d", "a", "bc"))) {
 		t.Fatal("field boundary collision")
 	}
-	base := SecretAAD("p", "e", "s", "n", 1, 1)
+	base := mustAAD(SecretAAD("p", "e", "s", "n", 1, 1))
 	for name, other := range map[string][]byte{
-		"project": SecretAAD("p2", "e", "s", "n", 1, 1), "env": SecretAAD("p", "e2", "s", "n", 1, 1),
-		"secret": SecretAAD("p", "e", "s2", "n", 1, 1), "name": SecretAAD("p", "e", "s", "n2", 1, 1),
-		"version": SecretAAD("p", "e", "s", "n", 2, 1), "dek": SecretAAD("p", "e", "s", "n", 1, 2),
+		"project": mustAAD(SecretAAD("p2", "e", "s", "n", 1, 1)), "env": mustAAD(SecretAAD("p", "e2", "s", "n", 1, 1)),
+		"secret": mustAAD(SecretAAD("p", "e", "s2", "n", 1, 1)), "name": mustAAD(SecretAAD("p", "e", "s", "n2", 1, 1)),
+		"version": mustAAD(SecretAAD("p", "e", "s", "n", 2, 1)), "dek": mustAAD(SecretAAD("p", "e", "s", "n", 1, 2)),
 	} {
 		if bytes.Equal(base, other) {
 			t.Fatalf("AAD does not bind %s", name)
 		}
 	}
-	if bytes.Equal(DEKAAD("p", "k", 1), SecretAAD("p", "k", "", "", 1, 1)) {
+	if bytes.Equal(mustAAD(DEKAAD("p", "k", 1)), mustAAD(SecretAAD("p", "k", "", "", 1, 1))) {
 		t.Fatal("DEK and secret AAD domains collide")
 	}
 }
@@ -412,4 +412,11 @@ func TestPassphraseParameterTamperingIsRejected(t *testing.T) {
 	if _, err := NewPassphraseKeyProvider(p, pass); err == nil {
 		t.Fatal("tampered salt accepted")
 	}
+}
+
+func mustAAD(b []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

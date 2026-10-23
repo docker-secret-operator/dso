@@ -130,7 +130,7 @@ func OpenPrivateFile(path string) (*os.File, error) {
 	if err := CheckDirChain(filepath.Dir(abs)); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- this is the hardened opener: directory chain checked above, O_NOFOLLOW, and ownership/mode verified on the descriptor below
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("securefs: %s is a symbolic link; refusing to follow it", abs)
@@ -138,7 +138,7 @@ func OpenPrivateFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	if err := CheckOpenFile(f, abs); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return f, nil
@@ -197,5 +197,5 @@ func EnsureDir(dir string) error {
 // CreateExclusive creates path with the given mode, failing if anything
 // (including a symbolic link) already exists there.
 func CreateExclusive(path string, mode os.FileMode) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, mode)
+	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, mode) // #nosec G304 -- exclusive create with O_NOFOLLOW; callers pass operator-configured paths
 }

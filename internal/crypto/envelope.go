@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 const (
@@ -100,28 +101,56 @@ func Zero(b []byte) {
 	}
 }
 
-// aad builds an unambiguous, length-prefixed associated-data encoding so that
-// ("ab","c") and ("a","bc") can never collide.
-func aad(domain string, fields ...string) []byte {
-	out := make([]byte, 0, 64)
-	out = appendField(out, domain)
-	for _, f := range fields {
-		out = appendField(out, f)
+// MaxAADFieldSize bounds one associated-data field. Real fields are short
+// identifiers and names; the cap keeps a hostile oversized input from forcing
+// a large allocation and guarantees the 4-byte length prefix cannot overflow.
+const MaxAADFieldSize = 1 << 20
+
+// ErrAADFieldTooLarge is returned when an associated-data field exceeds
+// MaxAADFieldSize.
+var ErrAADFieldTooLarge = errors.New("crypto: associated-data field exceeds maximum size")
+
+// fieldLen validates n and converts it to the wire length prefix. The explicit
+// range check (rather than a bare uint32(n)) makes truncation, which would let
+// two different field lists encode identically, impossible.
+func fieldLen(n int) (uint32, error) {
+	if n < 0 || n > MaxAADFieldSize || n > math.MaxUint32 {
+		return 0, ErrAADFieldTooLarge
 	}
-	return out
+	return uint32(n), nil
 }
 
-func appendField(b []byte, s string) []byte {
+// aad builds an unambiguous, length-prefixed associated-data encoding so that
+// ("ab","c") and ("a","bc") can never collide.
+func aad(domain string, fields ...string) ([]byte, error) {
+	out := make([]byte, 0, 64)
+	out, err := appendField(out, domain)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fields {
+		if out, err = appendField(out, f); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func appendField(b []byte, s string) ([]byte, error) {
+	n, err := fieldLen(len(s))
+	if err != nil {
+		return nil, err
+	}
 	var l [4]byte
-	binary.BigEndian.PutUint32(l[:], uint32(len(s)))
+	binary.BigEndian.PutUint32(l[:], n)
 	b = append(b, l[:]...)
-	return append(b, s...)
+	return append(b, s...), nil
 }
 
 // SecretAAD is the authenticated context of one secret version. Binding it to
 // the ciphertext makes a ciphertext valid only for exactly this project,
 // environment, secret and version, so database-level row swaps fail closed.
-func SecretAAD(projectID, environmentID, secretID, name string, version int, dekVersion int) []byte {
+func SecretAAD(projectID, environmentID, secretID, name string, version int, dekVersion int) ([]byte, error) {
 	return aad("dso/secret-version/v1", projectID, environmentID, secretID, name,
 		fmt.Sprintf("v%d", version), fmt.Sprintf("dek%d", dekVersion))
 }
@@ -130,10 +159,10 @@ func SecretAAD(projectID, environmentID, secretID, name string, version int, dek
 // BindingAAD is the authenticated context of the database-to-root-key canary.
 // It names the root key id, so a canary wrapped under one key cannot verify as
 // another's.
-func BindingAAD(keyID string) []byte {
+func BindingAAD(keyID string) ([]byte, error) {
 	return aad("dso/store-binding/v1", keyID)
 }
 
-func DEKAAD(projectID, keyID string, dekVersion int) []byte {
+func DEKAAD(projectID, keyID string, dekVersion int) ([]byte, error) {
 	return aad("dso/project-dek/v1", projectID, keyID, fmt.Sprintf("dek%d", dekVersion))
 }

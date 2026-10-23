@@ -212,7 +212,7 @@ func TestBinding_CanaryFromAnotherDatabaseUnderTheSameKeyIdIsStillAcceptedOnlyIf
 	db := e.rawDB(t)
 	dropMetaTriggers(t, db)
 	attacker := otherKey(t)
-	forged, err := attacker.Wrap(ctx, make([]byte, crypto.KeySize), crypto.BindingAAD(attacker.ID()))
+	forged, err := attacker.Wrap(ctx, make([]byte, crypto.KeySize), mustAAD(t)(crypto.BindingAAD(attacker.ID())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestBinding_UpgradedSchema1DatabaseIsAdoptedOnlyByItsOwnKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	dek, _ := crypto.GenerateKey()
-	wrapped, _ := kp.Wrap(ctx, dek, crypto.DEKAAD("p-old", kp.ID(), 1))
+	wrapped, _ := kp.Wrap(ctx, dek, mustAAD(t)(crypto.DEKAAD("p-old", kp.ID(), 1)))
 	if err := old.CreateProject(ctx, store.Project{ID: "p-old", Slug: "legacy", WrappedDEK: wrapped, DEKKeyID: kp.ID()}); err != nil {
 		t.Fatal(err)
 	}

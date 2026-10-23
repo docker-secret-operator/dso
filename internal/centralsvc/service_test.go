@@ -571,8 +571,8 @@ func TestProjectsHaveIndependentDEKs(t *testing.T) {
 		t.Fatal("projects share wrapped DEK")
 	}
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	d1, _ := kp.Unwrap(ctx, p1.WrappedDEK, crypto.DEKAAD(p1.ID, p1.DEKKeyID, p1.DEKVersion))
-	d2, _ := kp.Unwrap(ctx, p2.WrappedDEK, crypto.DEKAAD(p2.ID, p2.DEKKeyID, p2.DEKVersion))
+	d1, _ := kp.Unwrap(ctx, p1.WrappedDEK, mustAAD(t)(crypto.DEKAAD(p1.ID, p1.DEKKeyID, p1.DEKVersion)))
+	d2, _ := kp.Unwrap(ctx, p2.WrappedDEK, mustAAD(t)(crypto.DEKAAD(p2.ID, p2.DEKKeyID, p2.DEKVersion)))
 	if len(d1) != 32 || bytes.Equal(d1, d2) {
 		t.Fatal("DEKs not independent")
 	}

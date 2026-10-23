@@ -117,17 +117,17 @@ func installExclusive(path string, content []byte) error {
 		return fmt.Errorf("creating temporary key file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }() // best effort: the temp name is gone after a successful link
 	if err := tmp.Chmod(0o400); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("restricting temporary key file: %w", err)
 	}
 	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("writing key file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("syncing key file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -139,9 +139,9 @@ func installExclusive(path string, content []byte) error {
 		}
 		return fmt.Errorf("installing key file: %w", err)
 	}
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(dir); err == nil { // #nosec G304 -- dir was validated by securefs.EnsureDir above
 		_ = d.Sync()
-		d.Close()
+		_ = d.Close()
 	}
 	return nil
 }

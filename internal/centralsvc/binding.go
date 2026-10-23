@@ -122,7 +122,11 @@ func (s *Service) verifyBinding(st bindingState) error {
 		return fmt.Errorf("%w (unsupported binding format)", ErrBindingCorrupt)
 	}
 	id := s.keys.ID()
-	canary, err := s.keys.Unwrap(context.Background(), st.canary, crypto.BindingAAD(id))
+	bindAAD, aerr := crypto.BindingAAD(id)
+	if aerr != nil {
+		return fmt.Errorf("building key-binding context: %w", aerr)
+	}
+	canary, err := s.keys.Unwrap(context.Background(), st.canary, bindAAD)
 	if err == nil && len(canary) == crypto.KeySize {
 		crypto.Zero(canary)
 		return nil
@@ -149,7 +153,11 @@ func (s *Service) createBinding(ctx context.Context) error {
 			return fmt.Errorf("%w: project %q is protected by root key %q, not %q, and the database has no key binding",
 				ErrWrongRootKey, p.Slug, p.DEKKeyID, id)
 		}
-		dek, err := s.keys.Unwrap(ctx, p.WrappedDEK, crypto.DEKAAD(p.ID, p.DEKKeyID, p.DEKVersion))
+		dekAAD, aerr := crypto.DEKAAD(p.ID, p.DEKKeyID, p.DEKVersion)
+		if aerr != nil {
+			return fmt.Errorf("building project key context: %w", aerr)
+		}
+		dek, err := s.keys.Unwrap(ctx, p.WrappedDEK, dekAAD)
 		if err != nil {
 			return fmt.Errorf("%w: project %q's data key does not unwrap with the configured key", ErrWrongRootKey, p.Slug)
 		}
@@ -160,7 +168,11 @@ func (s *Service) createBinding(ctx context.Context) error {
 		return err
 	}
 	defer crypto.Zero(canary)
-	wrapped, err := s.keys.Wrap(ctx, canary, crypto.BindingAAD(id))
+	bindAAD, err := crypto.BindingAAD(id)
+	if err != nil {
+		return fmt.Errorf("building key-binding context: %w", err)
+	}
+	wrapped, err := s.keys.Wrap(ctx, canary, bindAAD)
 	if err != nil {
 		return fmt.Errorf("wrapping key-binding canary: %w", err)
 	}

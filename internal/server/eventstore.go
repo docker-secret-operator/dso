@@ -55,7 +55,7 @@ func newEventStoreAt(limit int, hub *Hub, dir, filename string) *EventStore {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return store
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304 -- path is the agent's own event-log location from its configuration, not request input
 	if err == nil {
 		store.logFile = f
 	}
@@ -77,7 +77,7 @@ func newEventStoreAt(limit int, hub *Hub, dir, filename string) *EventStore {
 // WebSocket as if they were new live events would flood every freshly
 // connected client with stale history on every restart.
 func (s *EventStore) replayHistory(path string) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- same configured event-log path as above; read-only
 	if err != nil {
 		return
 	}

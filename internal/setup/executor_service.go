@@ -94,26 +94,26 @@ func systemctlEnable(ctx context.Context, name string) error {
 }
 
 func systemctlStart(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "start", name).Run() // #nosec G204
+	return exec.CommandContext(ctx, "systemctl", "start", name).Run() // #nosec G204 -- fixed systemctl verb; name is a DSO-owned unit name, passed as one argv entry (no shell)
 }
 
 func systemctlStop(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "stop", name).Run() // #nosec G204
+	return exec.CommandContext(ctx, "systemctl", "stop", name).Run() // #nosec G204 -- fixed systemctl verb; name is a DSO-owned unit name, passed as one argv entry (no shell)
 }
 
 func systemctlDisable(ctx context.Context, name string) error {
-	return exec.CommandContext(ctx, "systemctl", "disable", name).Run() // #nosec G204
+	return exec.CommandContext(ctx, "systemctl", "disable", name).Run() // #nosec G204 -- fixed systemctl verb; name is a DSO-owned unit name, passed as one argv entry (no shell)
 }
 
 // systemctlIsEnabled returns true when systemctl reports the service as enabled.
 // A non-zero exit code (service not found, not enabled) is treated as false, not an error.
 func systemctlIsEnabled(name string) (bool, error) {
-	err := exec.Command("systemctl", "is-enabled", "--quiet", name).Run() // #nosec G204
+	err := exec.Command("systemctl", "is-enabled", "--quiet", name).Run() // #nosec G204 -- fixed systemctl verb; name is a DSO-owned unit name, passed as one argv entry (no shell)
 	return err == nil, nil
 }
 
 // systemctlIsActive returns true when systemctl reports the service as running.
 func systemctlIsActive(name string) (bool, error) {
-	err := exec.Command("systemctl", "is-active", "--quiet", name).Run() // #nosec G204
+	err := exec.Command("systemctl", "is-active", "--quiet", name).Run() // #nosec G204 -- fixed systemctl verb; name is a DSO-owned unit name, passed as one argv entry (no shell)
 	return err == nil, nil
 }
