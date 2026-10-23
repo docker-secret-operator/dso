@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,7 +56,7 @@ func sweepStaleTempComposeFiles() {
 }
 
 // checkCloudAgent verifies the systemd agent is running and responsive.
-func checkCloudAgent() {
+func checkCloudAgent() error {
 	socketPath := "/run/dso/dso.sock"
 	if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 		socketPath = custom
@@ -63,21 +65,19 @@ func checkCloudAgent() {
 	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second) // #nosec G704 -- this is a Unix domain socket path, not an HTTP target.
 	if err == nil {
 		_ = conn.Close()
-		return
+		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, "Error: Failed to connect to DSO background agent.")
+	var msg strings.Builder
+	msg.WriteString("failed to connect to DSO background agent.\n")
 	if os.IsPermission(err) || strings.Contains(err.Error(), "permission denied") {
-		fmt.Fprintf(os.Stderr, "Reason: Permission denied accessing %s\n", socketPath)
-		fmt.Fprintln(os.Stderr, "\nFix: Cloud mode requires elevated permissions to access the daemon.")
-		fmt.Fprintln(os.Stderr, "Run next: sudo docker dso up")
+		fmt.Fprintf(&msg, "Reason: Permission denied accessing %s\n", socketPath)
+		msg.WriteString("\nFix: Cloud mode requires elevated permissions to access the daemon.\nRun next: sudo docker dso up")
 	} else {
-		fmt.Fprintf(os.Stderr, "Reason: Connection refused or socket %s is missing.\n", socketPath)
-		fmt.Fprintln(os.Stderr, "\nFix: Cloud mode requires the systemd agent to be active.")
-		fmt.Fprintln(os.Stderr, "Run next: docker dso setup")
-		fmt.Fprintln(os.Stderr, "Diagnostics: docker dso doctor")
+		fmt.Fprintf(&msg, "Reason: Connection refused or socket %s is missing.\n", socketPath)
+		msg.WriteString("\nFix: Cloud mode requires the systemd agent to be active.\nRun next: docker dso setup\nDiagnostics: docker dso doctor")
 	}
-	os.Exit(1)
+	return errors.New(msg.String())
 }
 
 func detectMode(flagMode string, configPath string) (string, string) {
@@ -92,20 +92,20 @@ func detectMode(flagMode string, configPath string) (string, string) {
 		return strings.ToLower(envMode), "env"
 	}
 
-	hasCloudEtc := false
-	if _, err := os.Stat("/etc/dso/dso.yaml"); err == nil {
-		hasCloudEtc = true
-	}
-	hasCloudLocal := false
-	if _, err := os.Stat("dso.yaml"); err == nil {
-		hasCloudLocal = true
-	}
+	hasCloudEtc := fileExists(systemConfigPath)
+	hasCloudLocal := fileExists("dso.yaml")
+	hasCloudUser := fileExists(userConfigPath())
+
+	// "Explicit" means the operator named a file: -c/--config on the root
+	// command, or a --config value extracted from the raw args for commands
+	// that disable flag parsing. A path that merely came from ResolveConfig's
+	// automatic search is not explicit.
+	explicit := cfgFileExplicit ||
+		(configPath != "" && configPath != "dso.yaml" && configPath != systemConfigPath && configPath != userConfigPath())
 	hasExplicitConfig := false
-	if configPath != "" && configPath != "dso.yaml" {
-		safePath, safeErr := dsoConfig.IsSafePath("", configPath)
-		if safeErr == nil {
-			_, err := os.Stat(safePath) // #nosec G703 -- path is constrained by config.IsSafePath.
-			if err == nil {
+	if explicit {
+		if safePath, safeErr := dsoConfig.IsSafeConfigPath(configPath); safeErr == nil {
+			if _, err := os.Stat(safePath); err == nil { // #nosec G703 -- path is constrained by config.IsSafePath.
 				hasExplicitConfig = true
 			}
 		}
@@ -119,31 +119,23 @@ func detectMode(flagMode string, configPath string) (string, string) {
 		}
 	}
 
-	// Conflict Check
-	if (hasCloudEtc || hasCloudLocal || hasExplicitConfig) && hasLocalVault {
-		// stderr, not stdout: detectMode is called by `doctor`/`validate`,
-		// both of which support --json on stdout. This is a diagnostic
-		// aside, not part of either command's result -- printing it to
-		// stdout would corrupt the JSON stream whenever both a local
-		// vault and cloud config exist on the same host.
-		fmt.Fprintln(os.Stderr, "[DSO] ⚠️ Both local vault and cloud configuration detected. Defaulting to CLOUD mode.")
-		if hasExplicitConfig {
-			return "cloud", fmt.Sprintf("explicit config (%s)", configPath)
-		}
-		if hasCloudEtc {
-			return "cloud", "auto-detected (/etc/dso/dso.yaml)"
-		}
-		return "cloud", "auto-detected (./dso.yaml)"
+	var cloudReason, cloudFile string
+	switch {
+	case hasExplicitConfig:
+		cloudReason, cloudFile = fmt.Sprintf("explicit config (%s)", configPath), configPath
+	case hasCloudEtc:
+		cloudReason, cloudFile = "auto-detected (/etc/dso/dso.yaml)", systemConfigPath
+	case hasCloudLocal:
+		cloudReason, cloudFile = "auto-detected (./dso.yaml)", "./dso.yaml"
+	case hasCloudUser:
+		cloudReason, cloudFile = "auto-detected (~/.dso/dso.yaml)", "~/.dso/dso.yaml"
 	}
 
-	if hasExplicitConfig {
-		return "cloud", fmt.Sprintf("explicit config (%s)", configPath)
-	}
-	if hasCloudEtc {
-		return "cloud", "auto-detected (/etc/dso/dso.yaml)"
-	}
-	if hasCloudLocal {
-		return "cloud", "auto-detected (./dso.yaml)"
+	if cloudReason != "" {
+		if hasLocalVault {
+			warnMixedModeOnce(cloudFile)
+		}
+		return "cloud", cloudReason
 	}
 	if hasLocalVault {
 		return "local", "auto-detected (~/.dso/vault.enc)"
@@ -151,6 +143,17 @@ func detectMode(flagMode string, configPath string) (string, string) {
 
 	// Default to cloud
 	return "cloud", "default fallback"
+}
+
+var mixedModeWarned sync.Once
+
+// warnMixedModeOnce explains, once per process, why cloud mode won although a
+// local vault exists. stderr, not stdout: detectMode is called by `doctor`
+// and `validate`, which support --json on stdout.
+func warnMixedModeOnce(cloudFile string) {
+	mixedModeWarned.Do(func() {
+		fmt.Fprintf(os.Stderr, "[DSO] ⚠️ Both local vault and cloud configuration detected (%s). Defaulting to CLOUD mode; pass --mode=local (or set DSO_MODE=local) to use the vault instead.\n", cloudFile)
+	})
 }
 
 func getProjectName(args []string) string {
@@ -182,7 +185,7 @@ func NewUpCmd() *cobra.Command {
 		Short:              "Deploy a stack and automatically start the DSO agent",
 		Long:               "The 'up' command is the primary entrypoint for DSO. It performs a Docker Compose deployment with secure secret injection.\n\nDSO defaults to Cloud Mode (requires systemd/root configuration). Local Mode is available as an optional developer add-on by running 'docker dso init' or passing '--mode=local'.",
 		DisableFlagParsing: true,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			composeFile := ""
 			flagMode := ""
 			configPath := extractConfigFromArgs(os.Args)
@@ -198,7 +201,7 @@ func NewUpCmd() *cobra.Command {
 
 				if arg == "--help" || arg == "-h" {
 					_ = cmd.Help()
-					return
+					return nil
 				}
 				if strings.HasPrefix(arg, "--mode=") {
 					flagMode = strings.TrimPrefix(arg, "--mode=")
@@ -240,8 +243,7 @@ func NewUpCmd() *cobra.Command {
 				} else if _, err := os.Stat("docker-compose.yaml"); err == nil {
 					composeFile = "docker-compose.yaml"
 				} else {
-					fmt.Fprintln(os.Stderr, "Error: No docker-compose.yml found.")
-					os.Exit(1)
+					return fmt.Errorf("%s", "Error: No docker-compose.yml found.")
 				}
 			}
 
@@ -249,8 +251,7 @@ func NewUpCmd() *cobra.Command {
 
 			if mode == "cloud" {
 				if reason == "default fallback" {
-					fmt.Fprintln(os.Stderr, "No configuration found.\n\nRun next to configure:\n  docker dso setup")
-					os.Exit(1)
+					return fmt.Errorf("%s", "No configuration found.\n\nRun next to configure:\n  docker dso setup")
 				}
 
 				fmt.Printf("[DSO] Running in CLOUD mode (%s)\n", reason)
@@ -259,20 +260,19 @@ func NewUpCmd() *cobra.Command {
 
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error reading compose file: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("reading compose file: %w", err)
 				}
 
 				if strings.Contains(string(content), "dsofile://") {
-					fmt.Fprintln(os.Stderr, "Error: dsofile:// protocol is only supported in LOCAL mode. Please migrate to the Native Vault.")
-					os.Exit(1)
+					return fmt.Errorf("%s", "Error: dsofile:// protocol is only supported in LOCAL mode. Please migrate to the Native Vault.")
 				}
 
-				checkCloudAgent()
+				if err := checkCloudAgent(); err != nil {
+					return err
+				}
 				err = core.RunComposeUpWithEnv(composeFile, dockerArgs, configPath, dryRun)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error running up: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("running up: %w", err)
 				}
 			} else {
 				fmt.Printf("[DSO] Running in LOCAL mode (%s)\n", reason)
@@ -313,35 +313,30 @@ func NewUpCmd() *cobra.Command {
 				// os.Exit(1) directly, which bypasses this function's own
 				// defer entirely -- including the ordinary "docker compose
 				// up failed" path, not just crash/signal cases.
-				fail := func(format string, args ...interface{}) {
+				fail := func(format string, args ...interface{}) error {
 					cleanupTmpFile()
-					fmt.Fprintf(os.Stderr, format+"\n", args...)
-					os.Exit(1)
+					return fmt.Errorf(format, args...)
 				}
 
 				v, err := vault.LoadDefault()
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error loading native vault: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("loading native vault: %w", err)
 				}
 
 				fmt.Println("🚀 Starting DSO agent...")
 				cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error connecting to Docker API: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("connecting to Docker API: %w", err)
 				}
 
 				content, err := os.ReadFile(composeFile)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error reading compose file: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("reading compose file: %w", err)
 				}
 
 				var root yaml.Node
 				if err := yaml.Unmarshal(content, &root); err != nil {
-					fmt.Fprintf(os.Stderr, "Error parsing YAML AST: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("parsing YAML AST: %w", err)
 				}
 
 				projectName := getProjectName(dockerArgs)
@@ -349,8 +344,7 @@ func NewUpCmd() *cobra.Command {
 				mutatedRoot, seed, err := resolver.ResolveCompose(resolveCtx, cli, &root, v, projectName)
 				cancel()
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error resolving compose secrets: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("resolving compose secrets: %w", err)
 				}
 
 				agentDaemon := agent.NewAgent(cli)
@@ -375,8 +369,7 @@ func NewUpCmd() *cobra.Command {
 
 				tmpFile, err = os.CreateTemp("", "docker-compose-dso-*.yaml")
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("creating temp file: %w", err)
 				}
 				// cleanupTmpFile (deferred above and wired into the signal
 				// goroutine) now owns closing and removing this file; no
@@ -385,10 +378,10 @@ func NewUpCmd() *cobra.Command {
 				enc := yaml.NewEncoder(tmpFile)
 				enc.SetIndent(2)
 				if err := enc.Encode(mutatedRoot); err != nil {
-					fail("Error writing AST mutation: %v", err)
+					return fail("writing AST mutation: %w", err)
 				}
 				if err := enc.Close(); err != nil {
-					fail("Error finalizing AST mutation: %v", err)
+					return fail("finalizing AST mutation: %w", err)
 				}
 
 				fmt.Println("🐳 Running docker compose...")
@@ -403,9 +396,10 @@ func NewUpCmd() *cobra.Command {
 				execCmd.Stdin = os.Stdin
 
 				if err := execCmd.Run(); err != nil {
-					fail("Docker compose failed: %v", err)
+					return fail("docker compose failed: %w", err)
 				}
 			}
+			return nil
 		},
 	}
 }

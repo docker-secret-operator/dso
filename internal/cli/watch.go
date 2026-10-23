@@ -18,7 +18,14 @@ func NewWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Real-time monitor of secret rotations and container lifecycles",
-		Run: func(cmd *cobra.Command, args []string) {
+		Long: `Stream Docker container events and, if the DSO agent is reachable, secret
+rotation events, until interrupted (Ctrl+C).
+
+Read-only: it does not change containers or secrets. Requires access to the
+Docker daemon; agent events additionally need the agent socket
+(DSO_SOCKET_PATH, default /run/dso/dso.sock). If the agent is not running,
+a warning is shown and only Docker events appear.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			socketPath := "/run/dso/dso.sock"
 			if custom := os.Getenv("DSO_SOCKET_PATH"); custom != "" {
 				socketPath = custom
@@ -27,8 +34,7 @@ func NewWatchCmd() *cobra.Command {
 			// New Docker Watcher logic
 			dw, err := watcher.NewDockerWatcher(debug)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+				return err
 			}
 
 			ctx := context.Background()
@@ -40,15 +46,15 @@ func NewWatchCmd() *cobra.Command {
 				defer func() { _ = client.Close() }()
 			}
 
-			fmt.Println("\033[1;36mDSO Watcher Active\033[0m (Strategy: " + strategy + ") - Monitoring live container events...")
+			cprintln("\033[1;36mDSO Watcher Active\033[0m (Strategy: " + strategy + ") - Monitoring live container events...")
 			fmt.Println("-----------------------------------------------------------------------------------")
 			if agentErr != nil {
-				fmt.Printf("\033[1;33m[WARN]\033[0m Agent not connected (%v)\n", agentErr)
+				cprintf("\033[1;33m[WARN]\033[0m Agent not connected (%v)\n", agentErr)
 				fmt.Println("       Start the agent with: sudo docker dso agent  (or: sudo systemctl start dso-agent)")
 				fmt.Println("       DSO rotation events will not appear until the agent is running.")
 				fmt.Println("-----------------------------------------------------------------------------------")
 			} else {
-				fmt.Println("\033[1;32m[OK]\033[0m   Agent connected — rotation events will appear below.")
+				cprintln("\033[1;32m[OK]\033[0m   Agent connected — rotation events will appear below.")
 				fmt.Println("-----------------------------------------------------------------------------------")
 			}
 
@@ -57,7 +63,7 @@ func NewWatchCmd() *cobra.Command {
 			for {
 				select {
 				case <-ctx.Done():
-					return
+					return nil
 				case dwErr := <-errCh:
 					fmt.Fprintf(os.Stderr, "[ERROR] Docker event stream error: %v\n", dwErr)
 					time.Sleep(2 * time.Second)
@@ -72,7 +78,7 @@ func NewWatchCmd() *cobra.Command {
 						if err == nil {
 							for _, m := range resp.Data {
 								if !seenAgentMsgs[m] {
-									fmt.Printf("\033[1;32m[DSO ROTATION]\033[0m [%s] %s\n", time.Now().Format("15:04:05"), m)
+									cprintf("\033[1;32m[DSO ROTATION]\033[0m [%s] %s\n", time.Now().Format("15:04:05"), m)
 									seenAgentMsgs[m] = true
 								}
 							}

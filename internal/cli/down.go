@@ -10,22 +10,29 @@ import (
 
 func NewDownCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "down [args...]",
-		Short:              "Stop and remove containers, networks, images, and volumes",
+		Use:   "down [args...]",
+		Short: "Stop and remove the stack's containers and networks (volumes and images are kept by default)",
+		Long: `Runs 'docker compose down' with the given arguments.
+
+By default this removes the stack's containers and networks ONLY. Named volumes
+and images are kept. Destructive options are passed through to docker compose:
+  -v, --volumes   also remove named volumes declared in the compose file (DATA LOSS)
+  --rmi all|local also remove images
+  --remove-orphans remove containers for services not in the compose file
+
+Arguments are forwarded unchanged; DSO does not add or imply any of them.`,
 		DisableFlagParsing: true,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			dockerPath, err := exec.LookPath("docker")
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "docker executable not found in PATH")
-				os.Exit(1)
+				return fmt.Errorf("%s", "docker executable not found in PATH")
 			}
 
 			// Validate arguments to prevent shell injection (G204)
 			// Reject characters that could lead to command substitution or piping
 			for _, arg := range args {
 				if strings.ContainsAny(arg, ";&|$`\"") {
-					fmt.Fprintf(os.Stderr, "Error: Invalid character in arguments: %s\n", arg)
-					os.Exit(1)
+					return fmt.Errorf("Invalid character in arguments: %s", arg)
 				}
 			}
 
@@ -38,9 +45,9 @@ func NewDownCmd() *cobra.Command {
 			child.Stdin = os.Stdin
 
 			if err := child.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error running down: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("running down: %w", err)
 			}
+			return nil
 		},
 	}
 }

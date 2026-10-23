@@ -19,12 +19,11 @@ func NewExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export injected secrets for local CI or testing",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath := ResolveConfig()
 			cfg, err := config.LoadConfig(cfgPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Config load failed: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Config load failed: %w", err)
 			}
 
 			socketPath := "/run/dso/dso.sock"
@@ -34,27 +33,23 @@ func NewExportCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Agent connection failed. Is the DSO agent running? error: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Agent connection failed. Is the DSO agent running? error: %w", err)
 			}
 			defer func() { _ = client.Close() }()
 
 			if format != "env" {
-				fmt.Fprintf(os.Stderr, "Error: unsupported format %q (only \"env\" is supported)\n", format)
-				os.Exit(1)
+				return fmt.Errorf("unsupported format %q (only \"env\" is supported)", format)
 			}
 
 			injectedEnvs, err := client.FetchAllEnvs(cfg)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Injection failed: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Injection failed: %w", err)
 			}
 
 			// G304: Ensure the output path is safe and does not escape the current directory
 			safePath, err := config.IsSafePath("", output)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("%w", err)
 			}
 
 			fmt.Fprintf(os.Stderr, "⚠️  WARNING: writing PLAINTEXT secrets to %s (mode 0600). Never commit this file: add it to .gitignore, keep it out of images and backups, and delete it when no longer needed.\n", output)
@@ -73,10 +68,10 @@ func NewExportCmd() *cobra.Command {
 				return nil
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Export failed: %w", err)
 			}
 			fmt.Printf("Secrets successfully exported to %s format at: %s\n", format, output)
+			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&format, "format", "f", "env", "Output format (env)")
