@@ -24,11 +24,16 @@ Quick reference:
 
 DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault.
 
+```
+dso [flags]
+```
+
 ### Options
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
   -h, --help            help for dso
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO
@@ -36,11 +41,12 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 * [dso agent](dso_agent.md)	 - Run the DSO background reconciliation engine
 * [dso apply](dso_apply.md)	 - Apply declarative secret configuration
 * [dso bootstrap](dso_bootstrap.md)	 - Initialize DSO runtime environment
+* [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso compose](dso_compose.md)	 - Wrapper around docker compose that injects secrets
 * [dso config](dso_config.md)	 - Manage DSO configuration
 * [dso diff](dso_diff.md)	 - Show what changed between local configuration and deployed stack
 * [dso doctor](dso_doctor.md)	 - Diagnose the local DSO environment and current project
-* [dso down](dso_down.md)	 - Stop and remove containers, networks, images, and volumes
+* [dso down](dso_down.md)	 - Stop and remove the stack's containers and networks (volumes and images are kept by default)
 * [dso env](dso_env.md)	 - Manage .env file operations
 * [dso export](dso_export.md)	 - Export injected secrets for local CI or testing
 * [dso fetch](dso_fetch.md)	 - Manually fetch a secret and display it

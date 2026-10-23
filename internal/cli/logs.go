@@ -138,7 +138,7 @@ func runAPILogs(apiAddr string, follow bool) {
 	fetchAndPrintEvents(url)
 
 	if follow {
-		fmt.Println("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m")
+		cprintln("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m")
 		fmt.Println("--------------------------------------------------------------------------------")
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -158,17 +158,17 @@ func runAPILogs(apiAddr string, follow bool) {
 }
 
 func printHeader() {
-	fmt.Println("\033[1;36m")
+	cprintln("\033[1;36m")
 	fmt.Println("  ╔══════════════════════════════════════════════════╗")
 	fmt.Println("  ║         Docker Secret Operator — Logs            ║")
 	fmt.Println("  ╚══════════════════════════════════════════════════╝")
-	fmt.Println("\033[0m")
+	cprintln("\033[0m")
 }
 
 func fetchAndPrintEvents(url string) {
 	events := fetchEvents(url)
 	if len(events) == 0 {
-		fmt.Println("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m")
+		cprintln("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m")
 		return
 	}
 	for _, ev := range events {

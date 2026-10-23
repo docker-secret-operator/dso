@@ -2,6 +2,10 @@
 
 Manage .env file operations
 
+```
+dso env [flags]
+```
+
 ### Options
 
 ```
@@ -11,7 +15,8 @@ Manage .env file operations
 ### Options inherited from parent commands
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO
