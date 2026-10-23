@@ -25,7 +25,9 @@ export function handleApiError(error: unknown): never {
   // Handle Axios errors with response
   if (axios.isAxiosError(error)) {
     const status = error.response?.status
-    const data = error.response?.data as any
+    const data = error.response?.data as
+      | { message?: string; details?: Record<string, string> }
+      | undefined
 
     switch (status) {
       case 401:

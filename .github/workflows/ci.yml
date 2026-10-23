@@ -207,6 +207,19 @@ jobs:
         working-directory: web
         run: npx tsc --noEmit
 
+      - name: Lint
+        # Non-interactive (eslint.config.mjs) and zero-warning: --max-warnings=0
+        # is part of the npm script, so any warning fails the job.
+        working-directory: web
+        run: npm run lint
+
+      - name: Dependency audit (critical blocks)
+        # Ratchet: the tree currently has 0 critical advisories; remaining
+        # high-severity findings are build-time-only (see docs/reviews). Raise
+        # to --audit-level=high once Tailwind 4 removes the braces/fast-glob chain.
+        working-directory: web
+        run: npm audit --audit-level=critical
+
       - name: Test
         working-directory: web
         run: npm test

@@ -7,7 +7,7 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=0",
     "export": "next build && rm -rf ../ui-dist && cp -r out ../ui-dist",
     "benchmark": "node scripts/benchmark-report.js",
     "test": "vitest run",
@@ -18,26 +18,22 @@
     "test:a11y": "axe-core --verbose"
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.7.0",
-    "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
-    "@tanstack/react-query": "^5.36.0",
-    "@tanstack/react-table": "^8.15.3",
-    "@tanstack/react-virtual": "^3.14.3",
-    "axios": "^1.7.2",
+    "axios": "^1.20.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.4.0",
     "lucide-react": "^0.408.0",
-    "monaco-editor": "^0.52.2",
-    "next": "^14.2.3",
+    "next": "^15.5.28",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.3.0",
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.40.0",
     "@testing-library/jest-dom": "^6.1.5",
     "@testing-library/react": "^14.1.2",
@@ -45,20 +41,24 @@
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@typescript-eslint/eslint-plugin": "^7.10.0",
-    "@typescript-eslint/parser": "^7.10.0",
     "@vitejs/plugin-react": "^4.2.1",
-    "@vitest/coverage-v8": "^1.0.4",
-    "@vitest/ui": "^1.0.4",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/ui": "^4.1.12",
     "autoprefixer": "^10.4.19",
     "axe-core": "^4.8.2",
-    "eslint": "^8.57.0",
-    "eslint-config-next": "^14.2.3",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.28",
     "jsdom": "^29.1.1",
-    "postcss": "^8.4.38",
+    "postcss": "^8.5.31",
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5",
-    "vite": "^5.0.8",
-    "vitest": "^1.0.4"
+    "typescript-eslint": "^8.72.0",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "$postcss"
+    }
   }
 }

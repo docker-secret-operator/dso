@@ -5,7 +5,6 @@ import {
   Boxes,
   Search,
   AlertTriangle,
-  Activity,
   ChevronDown,
   ChevronRight,
   ArrowUp,
@@ -143,7 +142,7 @@ export function ContainersContent() {
     load()
   }, [load])
 
-  const allContainers = state.data ?? []
+  const allContainers = useMemo(() => state.data ?? [], [state.data])
 
   const statuses = useMemo(
     () => Array.from(new Set(allContainers.map((c) => c.status).filter((s): s is string => Boolean(s)))).sort(),

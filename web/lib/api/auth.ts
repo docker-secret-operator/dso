@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios'
 import { apiClient } from '../api-client'
 import {
   LoginRequest,
@@ -23,8 +24,8 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
   try {
     const response = await apiClient.client.post<LoginResponse>(`${API_BASE}/login`, credentials)
     return response.data
-  } catch (error: any) {
-    if (error.response?.status === 401) {
+  } catch (error: unknown) {
+    if (isAxiosError(error) && error.response?.status === 401) {
       throw new UnauthorizedError('Invalid username or password')
     }
     throw error

@@ -29,8 +29,8 @@ vi.mock('@/lib/api/config', () => ({
 import { ConfigurationContent } from '@/components/configuration-content'
 
 describe('ConfigurationContent', () => {
-  let consoleLogSpy: any
-  let consoleErrorSpy: any
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
     fetchConfigRawMock.mockReset()

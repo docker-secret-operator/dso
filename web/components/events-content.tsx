@@ -143,8 +143,10 @@ export function EventsContent() {
   // Live events (newest first from the hook) take priority; fall back to
   // REST history for anything not already seen live, since the WS
   // connection also replays recent history on connect.
-  const seen = new Set(liveEvents.map(eventKey))
-  const allEvents = [...liveEvents, ...history.filter((e) => !seen.has(eventKey(e)))]
+  const allEvents = useMemo(() => {
+    const seen = new Set(liveEvents.map(eventKey))
+    return [...liveEvents, ...history.filter((e) => !seen.has(eventKey(e)))]
+  }, [liveEvents, history])
 
   const loading = historyLoading && allEvents.length === 0
 

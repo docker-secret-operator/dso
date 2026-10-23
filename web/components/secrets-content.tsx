@@ -213,7 +213,7 @@ export function SecretsContent() {
     load()
   }, [load])
 
-  const allSecrets = state.data?.active_secrets ?? []
+  const allSecrets = useMemo(() => state.data?.active_secrets ?? [], [state.data])
 
   const providers = useMemo(() => Array.from(new Set(allSecrets.map((s) => s.provider))).sort(), [allSecrets])
   const injectionTypes = useMemo(

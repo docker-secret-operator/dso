@@ -74,11 +74,11 @@ export function AnalyticsContent() {
       } finally {
         if (!cancelled) setLoading(false)
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity is stable per ToastProvider; including it would re-run this effect on every render
     })()
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity is stable per ToastProvider; including it would re-run this effect on every render
   }, [])
 
   return (

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { Card } from '@/components/ui/card'
