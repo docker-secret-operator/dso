@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -61,7 +62,8 @@ a production secrets workflow yet.`,
 	cmd.PersistentFlags().StringVar(&f.keyFile, "key-file", "", "path to the root key file (required)")
 	cmd.PersistentFlags().StringVar(&f.passphraseFile, "passphrase-file", "", "read the passphrase from this file (mode 0600) instead of prompting")
 
-	cmd.AddCommand(centralInitCmd(f), centralProjectCmd(f), centralEnvCmd(f), centralSecretCmd(f))
+	cmd.AddCommand(centralInitCmd(f), centralProjectCmd(f), centralEnvCmd(f), centralSecretCmd(f),
+		centralBackupCmd(f), centralRestoreCmd(f))
 	return cmd
 }
 
@@ -165,7 +167,7 @@ var centralInitAfterKey func() error
 // centralAuditLoggerOverride, when non-nil, replaces the real zap.Logger
 // centralAuditLogger would otherwise construct. Tests use it to capture
 // init's audit-failure log output deterministically (see
-// internal/cli/central_audit_test.go), without constructing a real
+// internal/cli/central_audit_logger_test.go), without constructing a real
 // zap.NewProduction logger (which writes to the process's actual stderr)
 // on every test run.
 var centralAuditLoggerOverride *zap.Logger
@@ -629,4 +631,160 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 		valueCmd("add-version", "Add a new immutable version (value from a hidden prompt or stdin)", true),
 		get, list, versions, disable, del)
 	return parent
+}
+
+// centralBackupCmd adds `dso central backup` (Phase 2 Step 5.4, approved
+// design/decision-resolution). It requires only --db: backup never needs or
+// touches key material, since it copies ciphertext and wrapped keys as-is
+// without decrypting anything.
+func centralBackupCmd(f *centralFlags) *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Write a verified, on-demand snapshot of the central database",
+		Long: `Writes a complete, self-contained, independently verified snapshot of
+the central database to --out, using the same consistency mechanism (SQLite's
+own VACUUM INTO) and verification (PRAGMA integrity_check plus a schema
+version check) as the existing migration-time backup. It never overwrites an
+existing file at --out.
+
+The backup contains every table, including the full audit history. It never
+contains the root key or passphrase: preserve that separately, or this backup
+cannot be used to recover any secret value. Backups are never pruned
+automatically; managing accumulated backup files is the operator's
+responsibility.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if f.db == "" {
+				return errors.New("--db is required")
+			}
+			if out == "" {
+				return errors.New("--out is required")
+			}
+			st, err := sqlite.Open(cmd.Context(), f.db, sqlite.Options{})
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			path, err := st.Backup(cmd.Context(), out)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Backup written to %s\n", path)
+			fmt.Fprintln(cmd.OutOrStdout(), "Reminder: this backup does not include the root key or passphrase; preserve that material separately.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "destination path for the backup (required; must not already exist)")
+	return cmd
+}
+
+// printCandidateInfo shows a restore candidate's path and its validated,
+// non-sensitive metadata -- schema version and its own audit-chain tip,
+// where available -- so an operator has the information the approved design
+// calls for before confirming a destructive restore (audit finding F8: the
+// candidate's own path/filename is included, not just its contents, since
+// the operator may be comparing this output against a log or a script's own
+// record of which file it asked for).
+func printCandidateInfo(cmd *cobra.Command, candidatePath string, info sqlite.CandidateInfo) {
+	fmt.Fprintf(cmd.OutOrStdout(), "Candidate: %s\n", candidatePath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Candidate schema version: %d\n", info.SchemaVersion)
+	fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit events:   %d\n", info.EventCount)
+	if info.LastEvent != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit-chain tip: %s (%s, %s)\n",
+			info.LastEvent.ID, info.LastEvent.EventType, info.LastEvent.CreatedAt.UTC().Format(time.RFC3339))
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "Candidate audit chain: empty")
+	}
+}
+
+// centralRestoreCmd adds `dso central restore` (Phase 2 Step 5.4, approved
+// design/decision-resolution).
+//
+// Known, explicitly disclosed limitations (see
+// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md and
+// docs/reviews/2026-10-29-central-store-phase2-backup-restore-decision-resolution.md):
+//   - audit-chain verification proves the candidate's own internal
+//     consistency, not that it is the newest legitimate state; restoring an
+//     older valid backup over a database with more recent activity is NOT
+//     detected by this command.
+//   - successful validation proves SQLite structural integrity and that the
+//     configured root key matches the candidate's binding; it does NOT
+//     prove every secret version's ciphertext is decryptable.
+//   - this command has no caller-specific authorization: anyone able to run
+//     `dso central` as the owning OS user can run it, identically to every
+//     other `dso central` command today.
+func centralRestoreCmd(f *centralFlags) *cobra.Command {
+	var from string
+	var dryRun, force bool
+	cmd := &cobra.Command{
+		Use:   "restore",
+		Short: "Validate, and optionally perform, a restore of the central database from a backup",
+		Long: `Validates a backup candidate (SQLite integrity, schema compatibility, full
+audit-chain self-consistency, and root-key binding) and, unless --dry-run is
+given, replaces the active database with it after creating and verifying a
+mandatory safety snapshot of the active database and obtaining explicit
+confirmation.
+
+Known limitations:
+  - audit-chain verification cannot detect that an older, internally valid
+    backup is being restored over a database with more recent activity.
+  - successful validation does not prove every secret version's ciphertext
+    in the candidate is decryptable; it proves SQLite structural integrity
+    and that the configured root key matches the candidate's binding.
+  - this command has no caller-specific authorization today (see
+    docs/reviews/2026-10-24-central-store-phase2-authn-authz-design.md):
+    anyone able to run 'dso central' as the owning OS user can run it.
+
+--dry-run performs every validation check and reports the result without
+touching the active database, creating a safety snapshot, or recording a
+restore event.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := f.requireCommon(); err != nil {
+				return err
+			}
+			if from == "" {
+				return errors.New("--from is required")
+			}
+			kp, err := f.keyProvider(cmd)
+			if err != nil {
+				return err
+			}
+			result, err := centralsvc.Restore(cmd.Context(), centralsvc.RestoreOptions{
+				CandidatePath: from,
+				DBPath:        f.db,
+				KeyProvider:   kp,
+				DryRun:        dryRun,
+				Actor:         actorName(),
+				Confirm: func(info sqlite.CandidateInfo) bool {
+					printCandidateInfo(cmd, from, info)
+					if force {
+						return true
+					}
+					return promptForApproval(fmt.Sprintf(
+						"This will replace the active database at %s. A safety snapshot will be kept. Continue?", f.db))
+				},
+			})
+			if errors.Is(err, centralsvc.ErrRestoreNotConfirmed) {
+				fmt.Fprintln(cmd.OutOrStdout(), "Restore cancelled.")
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if dryRun {
+				printCandidateInfo(cmd, from, result.CandidateInfo)
+				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: candidate passed validation. The active database was not modified.")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Restore complete. Safety snapshot: %s\n", result.SafetySnapshot)
+			if result.RestoreEventID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Restore audit event: %s\n", result.RestoreEventID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&from, "from", "", "path to the backup to restore from (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate the candidate and report the result without modifying the active database")
+	cmd.Flags().BoolVar(&force, "force", false, "skip the interactive confirmation prompt (non-interactive restore)")
+	return cmd
 }

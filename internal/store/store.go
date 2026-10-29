@@ -210,6 +210,19 @@ const (
 	AuditSecretGetReveal      AuditEventType = "secret_get_reveal"
 	AuditSecretDisableVersion AuditEventType = "secret_disable_version"
 	AuditSecretDelete         AuditEventType = "secret_delete"
+	// AuditRestore records a successful `dso central restore` (Phase 2 Step
+	// 5.4, approved design/decision-resolution). It is appended, forward-only,
+	// to the RESTORED chain after the active database has been replaced and
+	// successfully reopened -- never before, and never into the database the
+	// restore replaced (that database no longer exists once replacement
+	// completes). This event's own PrevHash (computed automatically by
+	// AppendAuditEvent, like every other event) is what identifies the
+	// restored chain's own tip; no other field is needed for that. It is
+	// evidence that a restore occurred, visible going forward -- it is NOT
+	// proof of what the restore discarded, and does not by itself establish
+	// that the restored database is the newest legitimate state. See
+	// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md §8.
+	AuditRestore AuditEventType = "restore"
 )
 
 // AuditOutcome is the result of the operation an audit event records.

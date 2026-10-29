@@ -50,7 +50,14 @@ type Store struct {
 	db         *sql.DB
 	now        func() time.Time
 	lastBackup string
+	path       string
 }
+
+// Path returns the filesystem path this Store was opened from (as passed to
+// Open, resolved to absolute). Used by backup/restore (Phase 2 Step 5.4) to
+// locate the active database file without threading the path separately
+// through every caller that already has a *Store.
+func (s *Store) Path() string { return s.path }
 
 var _ store.Store = (*Store)(nil)
 
@@ -116,7 +123,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("opening database %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(8)
-	s := &Store{db: db, now: opts.Now}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("resolving database path %s: %w", path, err)
+	}
+	s := &Store{db: db, now: opts.Now, path: absPath}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("opening database %s: %w", path, err)
@@ -163,7 +175,17 @@ func prepareFile(path string) error {
 	return existing.Close()
 }
 
-// Close checkpoints the WAL (best effort) and closes the handle.
+// Close checkpoints the WAL (best effort) and closes the handle. The
+// checkpoint's own error is intentionally discarded: an ordinary Close
+// remains correct either way, since database/sql's own connection-close
+// path performs SQLite's standard "checkpoint on last connection close"
+// behavior regardless, and a subsequent Open reads through the WAL
+// normally if anything was still pending. This discard is NOT relied upon
+// by the restore path, which needs a verified (not merely attempted)
+// checkpoint before it is safe to remove the active database's -wal/-shm
+// companions -- that path uses CheckpointTruncate instead, which returns
+// the real success/failure (see CheckpointTruncate's and
+// centralsvc.Restore's doc comments).
 func (s *Store) Close() error {
 	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s.db.Close()
