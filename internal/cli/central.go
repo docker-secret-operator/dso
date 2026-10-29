@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +15,13 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	"golang.org/x/term"
 
 	"github.com/docker-secret-operator/dso/internal/centralsvc"
 	"github.com/docker-secret-operator/dso/internal/crypto"
 	"github.com/docker-secret-operator/dso/internal/securefs"
+	"github.com/docker-secret-operator/dso/internal/store"
 	"github.com/docker-secret-operator/dso/internal/store/sqlite"
 )
 
@@ -158,6 +162,34 @@ func actorName() string {
 // one point that leaves key material without a database.
 var centralInitAfterKey func() error
 
+// centralAuditLoggerOverride, when non-nil, replaces the real zap.Logger
+// centralAuditLogger would otherwise construct. Tests use it to capture
+// init's audit-failure log output deterministically (see
+// internal/cli/central_audit_test.go), without constructing a real
+// zap.NewProduction logger (which writes to the process's actual stderr)
+// on every test run.
+var centralAuditLoggerOverride *zap.Logger
+
+// centralAuditLogger returns the logger `dso central init` uses to report
+// audit-write failures (F1, approved): the same structured logging
+// convention internal/centralsvc's appendAuditBestEffort already uses for
+// every other operation, not a bespoke stderr format. A minimal
+// zap.NewProduction logger is this CLI's own default (no shared
+// `dso`-wide logger construction exists to reuse for a short-lived,
+// one-shot command like `init`); falling back to zap.NewNop() if even that
+// fails is a deliberate choice to never let logger construction itself
+// block or fail the init command.
+func centralAuditLogger() *zap.Logger {
+	if centralAuditLoggerOverride != nil {
+		return centralAuditLoggerOverride
+	}
+	l, err := zap.NewProduction()
+	if err != nil {
+		return zap.NewNop()
+	}
+	return l
+}
+
 func centralInitCmd(f *centralFlags) *cobra.Command {
 	var allowColocated, useExistingKey bool
 	cmd := &cobra.Command{
@@ -239,6 +271,42 @@ database files this run created are removed; fix the cause and re-run with
 			}
 
 			// ---- database + binding ----
+			// recordInitEvent is best-effort (Gate 6, approved: log/report-only,
+			// availability-first): a failure to persist this event never changes
+			// the result init has already decided. It is only ever called once
+			// a *sqlite.Store exists and opened successfully -- a failure before
+			// that (preflight, key install, sqlite.Open itself) has no database to
+			// write an event into and is therefore, by construction, never
+			// recorded; docs/central-store-audit-log.md states this limitation
+			// explicitly (F2). Any failure to persist the event itself -- or to
+			// even generate its id -- is reported synchronously at error level
+			// through the same structured (zap) logging convention the rest of
+			// the audit subsystem uses (internal/centralsvc's
+			// appendAuditBestEffort), not a bespoke stderr format: F1's
+			// remediation found that an earlier version of this fix used plain
+			// stderr text, which fixed the "silently discarded" defect but did
+			// not satisfy the approved "existing structured logging
+			// conventions" requirement. Never a secret value or key material
+			// in the logged fields.
+			initLogger := centralAuditLogger()
+			recordInitEvent := func(st *sqlite.Store, outcome store.AuditOutcome, reason string) {
+				if st == nil {
+					return
+				}
+				var idBuf [16]byte
+				if _, err := rand.Read(idBuf[:]); err != nil {
+					initLogger.Error("init audit event id generation failed",
+						zap.String("outcome", string(outcome)), zap.Error(err))
+					return
+				}
+				if _, err := st.AppendAuditEvent(cmd.Context(), store.AuditEvent{
+					ID: hex.EncodeToString(idBuf[:]), EventType: store.AuditInit, Outcome: outcome, ReasonCategory: reason,
+				}); err != nil {
+					initLogger.Error("init audit event persistence failed; command result is unaffected (availability-first policy); "+
+						"log-only reporting is not durable or tamper-proof evidence on its own",
+						zap.String("outcome", string(outcome)), zap.Error(err))
+				}
+			}
 			fail := func(err error) error {
 				if !dbExisted {
 					for _, p := range []string{f.db, f.db + "-wal", f.db + "-shm"} {
@@ -258,9 +326,11 @@ database files this run created are removed; fix the cause and re-run with
 			}
 			defer st.Close()
 			if err := centralsvc.New(st, kp, nil).Bind(cmd.Context()); err != nil {
+				recordInitEvent(st, store.AuditFailure, "db_error")
 				_ = st.Close()
 				return fail(err)
 			}
+			recordInitEvent(st, store.AuditSuccess, "")
 			fmt.Fprintf(cmd.OutOrStdout(), "Initialised %s, bound to root key id %s (%s provider).\n", f.db, kp.ID(), f.provider)
 			fmt.Fprintln(cmd.OutOrStdout(), "Back up the root key separately from the database. Without it the data is unrecoverable.")
 			return nil

@@ -1008,10 +1008,25 @@ func IsSafePath(baseDir, userPath string) (string, error) {
 //     already uses for plugin binaries. A nonexistent leaf (Lstat failing
 //     with "not exist") is not an error -- creating a new file is legitimate.
 func rejectEscapingSymlink(baseAbs, fullAbs string) error {
+	// Resolve baseAbs itself through any symlinks in ITS OWN ancestry before
+	// comparing against the resolved parent below. Without this, baseAbs and
+	// resolvedParent are in different "coordinate systems" whenever baseDir
+	// sits under a symlinked ancestor that has nothing to do with userPath
+	// (e.g. macOS's /var -> /private/var, or a symlinked /tmp on some Linux
+	// setups) -- filepath.Rel then sees two paths that don't share a prefix
+	// at all and reports a false escape. Resolving both sides the same way
+	// still catches a genuine escape (an intermediate symlink pointing at a
+	// different, unrelated subtree), since that case diverges after the
+	// shared resolved ancestor rather than before it.
+	resolvedBase := baseAbs
+	if rb, err := filepath.EvalSymlinks(baseAbs); err == nil {
+		resolvedBase = rb
+	}
+
 	parent := filepath.Dir(fullAbs)
 	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
 		resolvedFull := filepath.Join(resolvedParent, filepath.Base(fullAbs))
-		rel, err := filepath.Rel(baseAbs, resolvedFull)
+		rel, err := filepath.Rel(resolvedBase, resolvedFull)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("path traversal detected: resolved path escapes base directory via a symlinked parent directory")
 		}

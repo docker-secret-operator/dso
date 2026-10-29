@@ -177,6 +177,35 @@ func (s *Store) ListVersions(ctx context.Context, secretID string) ([]store.Vers
 	return s.ops().ListVersions(ctx, secretID)
 }
 
+// AppendAuditEvent, called standalone, wraps its own read-latest-hash-then-
+// insert sequence in one IMMEDIATE transaction (unlike the 15 genuinely
+// single-statement autocommit operations above). Without this, two
+// concurrent standalone appends (e.g. two best-effort failure events racing
+// each other) could both read the same "latest" event_hash before either
+// commits its INSERT, forking the chain rather than linking it. A Tx-scoped
+// call (inside Store.WithTx, used by the Phase 2 Step 5.3 atomic write paths)
+// is unaffected: it already runs on the surrounding transaction and this
+// wrapper is never on that path.
+func (s *Store) AppendAuditEvent(ctx context.Context, ev store.AuditEvent) (store.AuditEvent, error) {
+	if err := s.guard(ctx); err != nil {
+		return store.AuditEvent{}, err
+	}
+	var result store.AuditEvent
+	err := s.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		r, err := tx.AppendAuditEvent(ctx, ev)
+		result = r
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) ListAuditEvents(ctx context.Context) ([]store.AuditEvent, error) {
+	if err := s.guard(ctx); err != nil {
+		return nil, err
+	}
+	return s.ops().ListAuditEvents(ctx)
+}
+
 func (s *Store) GetMeta(ctx context.Context, key string) ([]byte, error) {
 	if err := s.guard(ctx); err != nil {
 		return nil, err

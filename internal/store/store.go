@@ -148,6 +148,24 @@ type Operations interface {
 	// (false, nil) without changing anything if any of the keys already exists.
 	// Concurrent callers racing to initialise the same keys see exactly one winner.
 	PutMetaIfAbsent(ctx context.Context, entries []MetaEntry) (inserted bool, err error)
+
+	// AppendAuditEvent appends one event to the append-only, hash-chained audit
+	// history (Phase 2 Step 5.3). The store fills in CreatedAt (if zero),
+	// PrevHash and EventHash from the current chain tail; callers must not set
+	// PrevHash/EventHash themselves. Called standalone it is a single-statement
+	// autocommit append (consistent, but not atomic with anything else); called
+	// as a Tx method inside Store.WithTx it commits or rolls back together with
+	// whatever business mutation shares that transaction -- this is how the
+	// approved design achieves atomicity for CreateProject, CreateEnvironment,
+	// CreateSecret, AddVersion, DisableVersion and DeleteSecret without any
+	// other interface change.
+	AppendAuditEvent(ctx context.Context, ev AuditEvent) (AuditEvent, error)
+	// ListAuditEvents returns every audit event in chain order (oldest first).
+	// Intended for the verification routine and future read access; it is not
+	// gated by any authorization today (see Step 5.2 §15 and the Step 5.3
+	// design §8: deferred to the Step 5.2 matrix extension when Option B
+	// exists).
+	ListAuditEvents(ctx context.Context) ([]AuditEvent, error)
 }
 
 // Tx is the transaction-scoped view of the operations: every call runs inside the
@@ -176,4 +194,52 @@ type Store interface {
 type MetaEntry struct {
 	Key   string
 	Value []byte
+}
+
+// AuditEventType identifies the kind of security-relevant operation an audit
+// event records. See docs/reviews/2026-10-25-central-store-phase2-audit-chain-design.md
+// §4 for the approved event-coverage matrix this list implements.
+type AuditEventType string
+
+const (
+	AuditInit                 AuditEventType = "init"
+	AuditProjectCreate        AuditEventType = "project_create"
+	AuditEnvironmentCreate    AuditEventType = "environment_create"
+	AuditSecretCreate         AuditEventType = "secret_create"
+	AuditSecretAddVersion     AuditEventType = "secret_add_version"
+	AuditSecretGetReveal      AuditEventType = "secret_get_reveal"
+	AuditSecretDisableVersion AuditEventType = "secret_disable_version"
+	AuditSecretDelete         AuditEventType = "secret_delete"
+)
+
+// AuditOutcome is the result of the operation an audit event records.
+type AuditOutcome string
+
+const (
+	AuditSuccess AuditOutcome = "success"
+	AuditFailure AuditOutcome = "failure"
+)
+
+// AuditEvent is one row of the append-only, hash-chained audit history
+// (approved design, Phase 2 Step 5.3). It must never carry a secret value,
+// key material, or a raw error string -- ReasonCategory is a closed set of
+// failure categories, not free text. ActorLabel is the existing
+// caller-supplied created_by/disabled_by-style string: attribution only,
+// never authenticated identity (see the approved Step 5.2 design and its
+// addendum). PrevHash/EventHash are computed by the store at append time;
+// callers must leave them zero.
+type AuditEvent struct {
+	ID              string
+	SchemaVersion   int
+	EventType       AuditEventType
+	Outcome         AuditOutcome
+	ReasonCategory  string // non-empty only on failure; closed category, never a raw error string
+	ActorLabel      string // caller-supplied attribution only; never treated as authenticated identity
+	ProjectSlug     string
+	EnvironmentSlug string
+	SecretName      string
+	Version         int // 0 when not applicable to this event type
+	CreatedAt       time.Time
+	PrevHash        []byte // previous event's EventHash; nil for the first event
+	EventHash       []byte // computed by the store; callers must not set this
 }

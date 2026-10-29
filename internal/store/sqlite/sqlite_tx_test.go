@@ -244,9 +244,18 @@ func standaloneCalls() map[string]func(s *Store, c context.Context) error {
 			_, e := s.PutMetaIfAbsent(c, []store.MetaEntry{{Key: "mx", Value: []byte("1")}})
 			return e
 		},
+		"AppendAuditEvent": func(s *Store, c context.Context) error {
+			_, e := s.AppendAuditEvent(c, store.AuditEvent{ID: "ev1", EventType: store.AuditInit, Outcome: store.AuditSuccess})
+			return e
+		},
+		"ListAuditEvents": func(s *Store, c context.Context) error { _, e := s.ListAuditEvents(c); return e },
 	}
 }
 
+// TestStandaloneCallTableCoversExactlyTheNineteenOperations: the name predates
+// the Phase 2 Step 5.3 audit-chain addition (AppendAuditEvent, ListAuditEvents),
+// which brought the total to 21; kept unrenamed to avoid unrelated churn in a
+// test whose assertions (not its name) are what actually enforce coverage.
 func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	var want []string
 	ot := reflect.TypeOf((*store.Operations)(nil)).Elem()
@@ -259,15 +268,15 @@ func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	}
 	sort.Strings(want)
 	sort.Strings(got)
-	if len(want) != 19 || !reflect.DeepEqual(want, got) {
+	if len(want) != 21 || !reflect.DeepEqual(want, got) {
 		t.Fatalf("operations %v (%d) vs table %v", want, len(want), got)
 	}
 	// Tx offers the same set, and Store offers it plus WithTx/SchemaVersion/Close only.
-	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 19 {
+	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 21 {
 		t.Fatalf("Tx has %d methods", tt.NumMethod())
 	}
-	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 22 {
-		t.Fatalf("Store has %d methods, want 19 + WithTx + SchemaVersion + Close", st.NumMethod())
+	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 24 {
+		t.Fatalf("Store has %d methods, want 21 + WithTx + SchemaVersion + Close", st.NumMethod())
 	}
 }
 
