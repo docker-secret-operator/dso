@@ -18,6 +18,7 @@ var errUnsupported = errors.New("securefs: this platform cannot verify file owne
 func CheckDirChain(string) error                    { return errUnsupported }
 func OpenPrivateFile(string) (*os.File, error)      { return nil, errUnsupported }
 func CheckOpenFile(*os.File, string) error          { return errUnsupported }
+func OpenRegularNoFollow(string) (*os.File, error)  { return nil, errUnsupported }
 func ReadPrivateFile(string, int64) ([]byte, error) { return nil, errUnsupported }
 func EnsureDir(string) error                        { return errUnsupported }
 

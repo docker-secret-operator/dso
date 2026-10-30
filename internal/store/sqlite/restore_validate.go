@@ -12,8 +12,10 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -73,45 +75,80 @@ func LatestSchemaVersion() (int, error) {
 // needs the identical protection for its own, separate read of the
 // candidate -- can reuse it instead of duplicating it.
 func CopyCandidateForValidation(path string) (workPath string, cleanup func(), err error) {
+	return copyCandidateForValidation(context.Background(), path)
+}
+
+// ctxReader makes a copy loop observe context cancellation.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+// copyCandidateForValidation is the shared staging copy. Residual races, not
+// eliminated by the checks below: the caller checks the main database file for
+// safety (securefs.OpenPrivateFile) and this function then reopens it BY PATH
+// to copy it, so a check-then-open race remains. The -wal/-shm companions are
+// opened without following symlinks and verified, on the open descriptor, to
+// be regular files, but they do not receive the owner/mode checks the main
+// file gets. None of this protects against a process with the same OS
+// identity that can write to the database directory.
+func copyCandidateForValidation(ctx context.Context, path string) (workPath string, cleanup func(), err error) {
 	tmpDir, err := os.MkdirTemp("", "dso-restore-validate-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("creating temporary validation directory: %w", err)
+		return "", nil, stageErr(ErrStageUnreadable, fmt.Errorf("creating temporary validation directory: %w", err))
 	}
-	cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	registerStagingDir(tmpDir)
+	cleanup = func() { removeStagingDir(tmpDir) }
 
 	workPath = filepath.Join(tmpDir, "candidate.db")
-	if err := copyFile(path, workPath); err != nil {
+	in, err := os.Open(path) // #nosec G304 -- the caller has already applied securefs.OpenPrivateFile to this path
+	if err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("copying %s: %w", path, err)
+		return "", nil, stageErr(ErrStageUnreadable, fmt.Errorf("copying %s: %w", path, err))
+	}
+	err = copyFromReader(ctx, in, workPath)
+	_ = in.Close()
+	if err != nil {
+		cleanup()
+		return "", nil, stageErr(ErrStageUnreadable, fmt.Errorf("copying %s: %w", path, err))
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		src := path + suffix
-		if _, statErr := os.Lstat(src); statErr != nil {
+		// Open without following symlinks or blocking on a FIFO, and verify on
+		// the open descriptor that it is a regular file, before reading.
+		sf, err := securefs.OpenRegularNoFollow(src)
+		if os.IsNotExist(err) {
 			continue // most candidates (anything from this package's own Backup) have no companions at all
 		}
-		if err := copyFile(src, workPath+suffix); err != nil {
+		if err != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("copying %s: %w", src, err)
+			return "", nil, stageErr(ErrStageSidecar, fmt.Errorf("companion file %s is not safe to read: %w", src, err))
+		}
+		err = copyFromReader(ctx, sf, workPath+suffix)
+		_ = sf.Close()
+		if err != nil {
+			cleanup()
+			return "", nil, stageErr(ErrStageUnreadable, fmt.Errorf("copying %s: %w", src, err))
 		}
 	}
 	return workPath, cleanup, nil
 }
 
-// copyFile copies src to dst with a plain, non-exclusive read/write (dst is
-// inside a temporary directory this process just created and owns
-// exclusively, so O_EXCL is unnecessary there), and fsyncs dst before
-// returning.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src) // #nosec G304 -- src is either the already securefs-checked restore candidate, or its -wal/-shm companion in the same already-checked directory
-	if err != nil {
-		return err
-	}
-	defer in.Close()
+// copyFromReader copies r to a new file dst (inside a temporary directory this
+// process just created and owns exclusively) and fsyncs it.
+func copyFromReader(ctx context.Context, r io.Reader, dst string) error {
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- dst is inside a temp directory this function just created
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, ctxReader{ctx: ctx, r: r}); err != nil {
 		_ = out.Close()
 		return err
 	}
@@ -153,29 +190,36 @@ func (c *StagedCandidate) Close() {
 func StageCandidate(ctx context.Context, path string) (*StagedCandidate, error) {
 	f, err := securefs.OpenPrivateFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("restore candidate is not safe to use: %w", err)
+		kind := ErrStageUnsafe
+		if errors.Is(err, fs.ErrNotExist) {
+			kind = ErrStageUnreadable
+		}
+		return nil, stageErr(kind, fmt.Errorf("restore candidate is not safe to use: %w", err))
 	}
 	fi, statErr := f.Stat()
 	_ = f.Close()
 	if statErr != nil {
-		return nil, fmt.Errorf("inspecting restore candidate %s: %w", path, statErr)
+		return nil, stageErr(ErrStageUnreadable, fmt.Errorf("inspecting restore candidate %s: %w", path, statErr))
 	}
 	if fi.Size() == 0 {
-		return nil, fmt.Errorf("restore candidate %s is empty", path)
+		return nil, stageErr(ErrStageEmpty, fmt.Errorf("restore candidate %s is empty", path))
 	}
 
-	workPath, cleanup, err := CopyCandidateForValidation(path)
+	workPath, cleanup, err := copyCandidateForValidation(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("staging a private copy of restore candidate %s: %w", path, err)
 	}
 	if err := foldWALIntoMain(ctx, workPath); err != nil {
 		cleanup()
-		return nil, fmt.Errorf("restore candidate %s is not a valid SQLite database: %w", path, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, stageErr(ErrStageNotDatabase, fmt.Errorf("restore candidate %s is not a valid SQLite database: %w", path, err))
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if err := os.Remove(workPath + suffix); err != nil && !os.IsNotExist(err) {
 			cleanup()
-			return nil, fmt.Errorf("removing staged %s: %w", suffix, err)
+			return nil, stageErr(ErrStageUnreadable, fmt.Errorf("removing staged %s: %w", suffix, err))
 		}
 	}
 	return &StagedCandidate{Path: workPath, cleanup: cleanup}, nil

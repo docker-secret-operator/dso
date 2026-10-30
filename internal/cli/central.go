@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,7 +65,7 @@ a production secrets workflow yet.`,
 	cmd.PersistentFlags().StringVar(&f.passphraseFile, "passphrase-file", "", "read the passphrase from this file (mode 0600) instead of prompting")
 
 	cmd.AddCommand(centralInitCmd(f), centralProjectCmd(f), centralEnvCmd(f), centralSecretCmd(f),
-		centralBackupCmd(f), centralRestoreCmd(f))
+		centralBackupCmd(f), centralRestoreCmd(f), centralAuditCmd(f))
 	return cmd
 }
 
@@ -756,6 +757,8 @@ restore event.`,
 			if err != nil {
 				return err
 			}
+			stopCleanup := sqlite.InstallStagingSignalCleanup()
+			defer stopCleanup()
 			result, err := centralsvc.Restore(cmd.Context(), centralsvc.RestoreOptions{
 				CandidatePath: from,
 				DBPath:        f.db,
@@ -811,4 +814,135 @@ func promptApprovalIO(in io.Reader, out io.Writer, prompt string) bool {
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
+}
+
+// auditVerifyJSON is the stable --json document of `audit verify`. Optional
+// fields are omitted when they do not apply; nothing is guessed.
+type auditVerifyJSON struct {
+	Status         string `json:"status"` // verified | integrity_failure | unavailable
+	EventCount     *int   `json:"event_count,omitempty"`
+	TipEventID     string `json:"tip_event_id,omitempty"`
+	FailureIndex   *int   `json:"failure_index,omitempty"`
+	FailureEventID string `json:"failure_event_id,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+func centralAuditCmd(f *centralFlags) *cobra.Command {
+	parent := &cobra.Command{Use: "audit", Short: "Inspect the audit log"}
+	var asJSON bool
+	verify := &cobra.Command{
+		Use:   "verify",
+		Short: "Verify the integrity of the audit hash chain (read-only)",
+		Args:  cobra.NoArgs,
+		Long: `Recomputes the audit log's SHA-256 hash chain and reports whether it is
+internally consistent. It is strictly read-only: it needs no key, appends no
+audit event, runs no migration and creates nothing. The database file is never
+opened by SQLite; a private temporary copy of it (and of any -wal/-shm files)
+is verified instead, so the original and its sidecars are not touched. The copy
+needs temporary disk space about the size of the database and is removed when
+the command finishes or is interrupted by SIGINT/SIGTERM. After SIGKILL or a
+machine failure it cannot be removed automatically: a directory named
+dso-restore-validate-* (mode 0700) can remain in the temporary directory and
+should be deleted manually. A -wal or -shm file that is a symbolic link or not
+a regular file makes verification unavailable.
+
+An empty audit log (zero events) is reported as verified.
+
+Exit status:
+  0   verified
+  1   usage error, or any other command failure
+  10  integrity failure: a hash or link in the chain does not match
+  11  verification unavailable: the database could not be verified (for
+      example unreadable, unsafe, no audit log, unsupported schema); this is
+      not evidence of tampering
+Codes 10 and 11 apply only to this command. Scripts should treat any non-zero
+exit status as failure.
+
+--json prints exactly one document on stdout, also on failure:
+  status            "verified", "integrity_failure" or "unavailable"
+  event_count       number of events read (omitted when unavailable)
+  tip_event_id      id of the last event (verified, non-empty chain only)
+  failure_index     0-based position of the first failing event
+  failure_event_id  id of the first failing event
+  failure_reason    why it failed
+  error             sanitized reason verification was unavailable (no paths;
+                    details are written to stderr only)
+
+Same-user access. The database is safety-checked and then copied by path, and
+its -wal/-shm files are checked only for being regular files (not symbolic
+links), not for owner or mode. A process running as the same operating-system
+user with write access to the database directory can still race these checks;
+they do not defend against that.
+
+Concurrent changes. The verified copy is made with plain file reads, not a
+transactionally consistent snapshot. If the database or its -wal file changes
+while it is being copied, the copy is retried; if no stable copy can be
+obtained the result is exit 11 (verification unavailable), which means the
+check could not be done and is not evidence of tampering. Verify while no
+process is writing to the database for the most reliable result.
+
+Limitations. The chain is unkeyed: anyone who can modify the database can
+recompute it, so a "verified" result does NOT prove authenticity. It also
+cannot detect deletion of the newest events or replacement of the database by
+an older, internally valid copy. This command is not authentication or
+authorization, and not a tamper-proof guarantee.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if f.db == "" {
+				return errors.New("--db is required")
+			}
+			stopCleanup := sqlite.InstallStagingSignalCleanup()
+			defer stopCleanup()
+			res := sqlite.VerifyAuditLog(cmd.Context(), f.db)
+			doc := auditVerifyJSON{Status: string(res.Status)}
+			var failure error
+			switch res.Status {
+			case sqlite.AuditVerified:
+				n := res.EventCount
+				doc.EventCount, doc.TipEventID = &n, res.TipEventID
+			case sqlite.AuditIntegrityFailure:
+				n, i := res.EventCount, res.FailureIndex
+				doc.EventCount, doc.FailureIndex = &n, &i
+				doc.FailureEventID, doc.FailureReason = res.FailureEventID, res.FailureReason
+				failure = &exitCodeError{exitAuditIntegrityFailure, fmt.Errorf(
+					"audit chain integrity failure at index %d (event %s): %s", res.FailureIndex, quoteUntrusted(res.FailureEventID), printableUntrusted(res.FailureReason))}
+			default:
+				// Structured output carries only the sanitized reason; the
+				// underlying detail (which can contain paths) goes to stderr only.
+				doc.Error = res.Reason
+				failure = &exitCodeError{exitAuditUnavailable, fmt.Errorf("audit chain verification unavailable: %s (detail: %s)", printableUntrusted(res.Reason), printableUntrusted(res.Err.Error()))}
+			}
+			out := cmd.OutOrStdout()
+			if asJSON {
+				var buf bytes.Buffer
+				enc := json.NewEncoder(&buf)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(doc); err != nil {
+					return err
+				}
+				if _, err := out.Write(escapeJSONNonPrintable(buf.Bytes())); err != nil {
+					return err
+				}
+				return failure
+			}
+			switch res.Status {
+			case sqlite.AuditVerified:
+				fmt.Fprintf(out, "Audit chain: VERIFIED (%d events)\n", res.EventCount)
+				if res.TipEventID != "" {
+					fmt.Fprintf(out, "Tip event: %s\n", quoteUntrusted(res.TipEventID))
+				}
+				fmt.Fprintln(out, "Note: the chain is unkeyed. This does not prove authenticity, and cannot detect deleted newest events or rollback to an older valid copy.")
+			case sqlite.AuditIntegrityFailure:
+				fmt.Fprintf(out, "Audit chain: INTEGRITY FAILURE at index %d (event %s)\n", res.FailureIndex, quoteUntrusted(res.FailureEventID))
+				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.FailureReason))
+			default:
+				fmt.Fprintln(out, "Audit chain: VERIFICATION UNAVAILABLE - the database could not be safely read or verified (this is not evidence of tampering)")
+				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.Reason))
+			}
+			return failure
+		},
+	}
+	verify.Flags().BoolVar(&asJSON, "json", false, "print the result as one JSON document")
+	parent.AddCommand(verify)
+	return parent
 }

@@ -224,7 +224,7 @@ func Execute() {
 }
 
 // Run executes the root command with args and returns the process exit code:
-// 0 on success, 1 on any error. The error is printed once to stderr.
+// 0 on success, 1 on any error (or the specific status of an exitCodeError). The error is printed once to stderr.
 func Run(args []string, stdout, stderr io.Writer) int {
 	rootCmd := NewRootCmd()
 	rootCmd.SetArgs(args)
@@ -233,7 +233,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
-		return 1
+		return exitCodeFor(err)
 	}
 	return 0
 }

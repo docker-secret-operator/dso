@@ -144,6 +144,35 @@ func OpenPrivateFile(path string) (*os.File, error) {
 	return f, nil
 }
 
+// OpenRegularNoFollow opens path read-only for a bounded, non-blocking read of
+// a database companion file (-wal/-shm). It never follows a final symlink
+// (O_NOFOLLOW) and never blocks on a FIFO or device (O_NONBLOCK, which makes
+// opening a FIFO for reading return immediately), and it verifies on the open
+// descriptor that the file is a regular file, so the type check and the open
+// refer to the same object (no check-then-open gap). It does NOT apply the
+// owner/mode rules of OpenPrivateFile: SQLite creates companions with the
+// database's own mode. A missing file returns an error satisfying
+// os.IsNotExist. The caller must close the file.
+func OpenRegularNoFollow(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- no-follow, non-blocking; the descriptor is verified to be a regular file below
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("securefs: %s is a symbolic link; refusing to follow it", path)
+		}
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("securefs: %s is not a regular file", path)
+	}
+	return f, nil
+}
+
 // CheckOpenFile applies the file rules to an already-open descriptor.
 func CheckOpenFile(f *os.File, path string) error {
 	fi, err := f.Stat()

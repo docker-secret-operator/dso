@@ -11,6 +11,13 @@ Authoritative behaviour of the CLI as of this change. Per-command flags live in
 | Unknown subcommand, bad/missing arguments, bad flag | 1 | one `Error: …` line on stderr |
 | Runtime failure | 1 | one `Error: …` line on stderr, no usage dump |
 | `status`: agent unreachable or degraded | 1 | status report on stdout (or JSON), reason on stderr |
+| `central audit verify`: audit chain failed verification | 10 | report (or JSON) on stdout, one `Error:` line on stderr |
+| `central audit verify`: verification could not be completed (unreadable or unsafe database, unsafe `-wal`/`-shm` file, no audit log, unsupported schema) — not evidence of tampering | 11 | report (or JSON) on stdout, one `Error:` line on stderr |
+
+Exit codes 10 and 11 are used only by `dso central audit verify`; every other
+command, and usage errors of `audit verify` itself, still exit 1. Scripts should
+treat any non-zero exit status as failure. In `--json` mode the `error` field
+holds a sanitized reason (no paths); details go to stderr only.
 
 Errors are printed once, by `cli.Run`; command code returns errors and never
 calls `os.Exit` (enforced by `TestNoOsExitOutsideEntrypoint`). Results go to
