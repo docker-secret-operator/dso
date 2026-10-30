@@ -197,8 +197,8 @@ type MetaEntry struct {
 }
 
 // AuditEventType identifies the kind of security-relevant operation an audit
-// event records. See docs/reviews/2026-10-25-central-store-phase2-audit-chain-design.md
-// §4 for the approved event-coverage matrix this list implements.
+// event records. Historical reference (document not present in this checkout):
+// docs/reviews/2026-10-25-central-store-phase2-audit-chain-design.md §4, for the approved event-coverage matrix this list implements.
 type AuditEventType string
 
 const (
@@ -221,7 +221,8 @@ const (
 	// evidence that a restore occurred, visible going forward -- it is NOT
 	// proof of what the restore discarded, and does not by itself establish
 	// that the restored database is the newest legitimate state. See
-	// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md §8.
+	// Step 5.4 backup/restore design §8 (document not present in this checkout:
+	// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md).
 	AuditRestore AuditEventType = "restore"
 )
 

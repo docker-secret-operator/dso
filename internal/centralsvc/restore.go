@@ -16,7 +16,9 @@ package centralsvc
 // rollback-detection anchor, Step 5.2 socket authentication, automatic
 // backup/audit retention, and bulk secret decryption during restore. See
 // docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md and
-// docs/reviews/2026-10-29-central-store-phase2-backup-restore-decision-resolution.md.
+// docs/reviews/2026-10-29-central-store-phase2-backup-restore-decision-resolution.md
+// (historical references: neither document is present in this checkout or its
+// git history, so the decisions they record could not be re-verified here).
 
 import (
 	"context"
@@ -68,12 +70,18 @@ var ErrRestoreNotConfirmed = errors.New("centralsvc: restore was not confirmed")
 // (confirmed by direct experiment; see sqlite.ValidateCandidate's own doc
 // comment for the full explanation).
 func ValidateCandidateKey(ctx context.Context, path string, kp crypto.KeyProvider) error {
-	workPath, cleanup, err := sqlite.CopyCandidateForValidation(path)
+	staged, err := sqlite.StageCandidate(ctx, path)
 	if err != nil {
 		return fmt.Errorf("staging a private copy of restore candidate %s for key validation: %w", path, err)
 	}
-	defer cleanup()
+	defer staged.Close()
+	return validateStagedCandidateKey(ctx, staged, path, kp)
+}
 
+// validateStagedCandidateKey is ValidateCandidateKey against an already-
+// staged snapshot, so Restore validates the exact artifact it later activates.
+func validateStagedCandidateKey(ctx context.Context, staged *sqlite.StagedCandidate, path string, kp crypto.KeyProvider) error {
+	workPath := staged.Path
 	db, err := sqlite.OpenReadOnly(workPath)
 	if err != nil {
 		return fmt.Errorf("opening restore candidate for key validation: %w", err)
@@ -216,6 +224,15 @@ type RestoreResult struct {
 // performed in step 1, and the approved design is explicit that it cannot
 // detect whole-database rollback (see the design document §7).
 //
+// Concurrency limitation (not mitigated by code): there is no cross-process
+// lock. The verified checkpoint in step 5 only proves no conflicting
+// connection blocked it at that instant; another process that has the
+// database open could still commit between that checkpoint and the removal of
+// the -wal/-shm companions in step 6, and that commit would be lost (and
+// removing a live -shm out from under a process is unsafe). Run restore only
+// while no other process (e.g. a running `dso` server) has the database open.
+// Same-UID file permissions do not provide locking.
+//
 // Restore does not implement an external rollback anchor, does not decrypt
 // any secret value, and has no caller-specific authorization: anyone able to
 // run `dso central` as the owning OS user can call this, identically to
@@ -238,12 +255,23 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("determining supported schema version: %w", err)
 	}
-	info, err := sqlite.ValidateCandidate(ctx, absCandidate, maxSchema)
+	// Stage ONE private, self-contained snapshot of the candidate (any -wal
+	// frames folded into its main file) and use that single artifact for every
+	// validation check AND as the source of the activated database. The state
+	// validated is therefore, by construction, the state activated, and the
+	// original candidate files are never opened by SQLite or modified. The
+	// staged copy lives until Restore returns.
+	staged, err := sqlite.StageCandidate(ctx, absCandidate)
 	if err != nil {
-		return RestoreResult{}, fmt.Errorf("restore candidate failed validation: %w", err)
+		return RestoreResult{}, fmt.Errorf("restore candidate failed validation (rejected before any change; active database untouched): %w", err)
 	}
-	if err := ValidateCandidateKey(ctx, absCandidate, opts.KeyProvider); err != nil {
-		return RestoreResult{}, fmt.Errorf("restore candidate failed key validation: %w", err)
+	defer staged.Close()
+	info, err := sqlite.ValidateStagedCandidate(ctx, staged, absCandidate, maxSchema)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore candidate failed validation (rejected before any change; active database untouched): %w", err)
+	}
+	if err := validateStagedCandidateKey(ctx, staged, absCandidate, opts.KeyProvider); err != nil {
+		return RestoreResult{}, fmt.Errorf("restore candidate failed key validation (rejected before any change; active database untouched): %w", err)
 	}
 
 	result := RestoreResult{CandidateInfo: info, DryRun: opts.DryRun}
@@ -290,12 +318,21 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	if opts.testReplaceDatabaseFile != nil {
 		replaceFn = opts.testReplaceDatabaseFile
 	}
-	if err := replaceFn(absDB, absCandidate); err != nil {
-		if result.SafetySnapshot != "" {
-			return result, fmt.Errorf("replacing active database: %w (RECOVERY: restore the safety snapshot at %s to %s)",
-				err, result.SafetySnapshot, absDB)
+	var durabilityErr error
+	if err := replaceFn(absDB, staged.Path); err != nil {
+		var ue *unconfirmedDurabilityError
+		if errors.As(err, &ue) {
+			// The rename already happened: the candidate IS the active
+			// database. Carry on (reopen, audit) and report this at the end.
+			durabilityErr = ue
+		} else {
+			if result.SafetySnapshot != "" {
+				return result, fmt.Errorf("replacing active database failed before activation: %w "+
+					"(the active database at %s was not replaced and is unchanged; the safety snapshot at %s is not needed)",
+					err, absDB, result.SafetySnapshot)
+			}
+			return result, fmt.Errorf("replacing active database failed before activation: %w (no database was created at %s)", err, absDB)
 		}
-		return result, fmt.Errorf("replacing active database: %w", err)
 	}
 
 	reopenFn := func(ctx context.Context, path string) (*sqlite.Store, error) {
@@ -308,7 +345,7 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	if err != nil {
 		if result.SafetySnapshot != "" {
 			return result, fmt.Errorf("reopening restored database: %w (RECOVERY: restore the safety snapshot at %s to %s; "+
-				"the database at %s is now the candidate's content, which failed to reopen -- it is not automatically recovered)",
+				"the replacement WAS ACTIVATED: the database at %s is now the candidate's content, which failed to reopen -- it is NOT automatically recovered; recover manually from the snapshot)",
 				err, result.SafetySnapshot, absDB, absDB)
 		}
 		return result, fmt.Errorf("reopening restored database: %w", err)
@@ -337,6 +374,10 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 			"(safety snapshot at %s)", err, result.SafetySnapshot)
 	}
 	result.RestoreEventID = evID
+	if durabilityErr != nil {
+		return result, fmt.Errorf("restore completed and the restore event was recorded, but durability of the replacement could not be confirmed: %w "+
+			"(safety snapshot at %s)", durabilityErr, result.SafetySnapshot)
+	}
 	return result, nil
 }
 
@@ -349,7 +390,8 @@ func fileExists(path string) bool {
 // file beside dbPath, fsyncs it, and atomically renames it onto dbPath
 // (os.Rename replaces an existing destination atomically on the same
 // filesystem -- there is never a window with no file at dbPath at all).
-// candidatePath is only ever opened read-only: it is never modified or
+// candidatePath (Restore passes the validated staged snapshot, never the
+// original candidate) is only ever opened read-only: it is never modified or
 // deleted.
 //
 // dbPath's directory is checked with the same internal/securefs directory-
@@ -418,9 +460,21 @@ func replaceDatabaseFile(dbPath, candidatePath string) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("activating restored database: %w", err)
 	}
-	if d, err := os.Open(dir); err == nil { // #nosec G304 -- directory of the database file being replaced, already checked safe above
-		_ = d.Sync()
-		_ = d.Close()
+	d, err := os.Open(dir) // #nosec G304 -- directory of the database file being replaced, already checked safe above
+	if err != nil {
+		return &unconfirmedDurabilityError{fmt.Errorf("opening %s to sync the rename: %w", dir, err)}
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return &unconfirmedDurabilityError{fmt.Errorf("syncing directory %s after rename: %w", dir, err)}
 	}
 	return nil
 }
+
+// unconfirmedDurabilityError is returned by replaceDatabaseFile only AFTER the
+// rename has activated the new database: the replacement is in place and
+// usable, but the directory fsync that makes the rename crash-durable failed.
+type unconfirmedDurabilityError struct{ err error }
+
+func (e *unconfirmedDurabilityError) Error() string { return e.err.Error() }
+func (e *unconfirmedDurabilityError) Unwrap() error { return e.err }

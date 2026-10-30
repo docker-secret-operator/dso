@@ -254,3 +254,133 @@ func TestCentralRestoreCmd_WrongKey_NoReplacement(t *testing.T) {
 		t.Fatal("a wrong-key restore attempt must not modify the active database")
 	}
 }
+
+// restoreFixture initialises a database, takes a backup, then adds a project
+// after it so a performed restore is observable ("later" disappears).
+func restoreFixture(t *testing.T) (e *centralEnv, cand string) {
+	t.Helper()
+	e = newCentralEnv(t)
+	for _, args := range [][]string{{"init"}, {"project", "create", "app"}} {
+		if _, _, err := e.run(t, "", append(args, e.file()...)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cand = filepath.Join(e.dir, "cand.db")
+	if _, _, err := e.run(t, "", append([]string{"backup", "--out", cand}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.run(t, "", append([]string{"project", "create", "later"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	return e, cand
+}
+
+func snapshotFiles(t *testing.T, e *centralEnv) []string {
+	t.Helper()
+	m, _ := filepath.Glob(e.db + ".pre-restore-*")
+	return m
+}
+
+func TestCentralRestoreCmd_ExplicitYes_ProceedsAfterValidationAndSnapshot(t *testing.T) {
+	e, cand := restoreFixture(t)
+	stdout, _, err := e.run(t, "y\n", append([]string{"restore", "--from", cand}, e.file()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, prompt := strings.Index(stdout, "Candidate schema version"), strings.Index(stdout, "Continue?")
+	if info < 0 || prompt < 0 || info > prompt {
+		t.Fatalf("candidate validation info must be shown before the prompt, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "Restore complete") {
+		t.Fatalf("expected completion after an explicit y, got %q", stdout)
+	}
+	if len(snapshotFiles(t, e)) != 1 {
+		t.Fatalf("expected exactly one safety snapshot, got %v", snapshotFiles(t, e))
+	}
+	list, _, err := e.run(t, "", append([]string{"project", "list"}, e.file()...)...)
+	if err != nil || strings.Contains(list, "later") || !strings.Contains(list, "app") {
+		t.Fatalf("restore did not take effect as expected: %v %q", err, list)
+	}
+}
+
+func TestCentralRestoreCmd_ExplicitNo_LeavesActiveDatabaseUnchanged(t *testing.T) {
+	e, cand := restoreFixture(t)
+	before, err := os.ReadFile(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := e.run(t, "n\n", append([]string{"restore", "--from", cand}, e.file()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "Continue?") || !strings.Contains(stdout, "cancelled") {
+		t.Fatalf("expected the prompt to be captured and the cancellation reported, got %q", stdout)
+	}
+	after, _ := os.ReadFile(e.db)
+	if string(before) != string(after) {
+		t.Fatal("an explicit n must leave the active database bytes unchanged")
+	}
+	if len(snapshotFiles(t, e)) != 0 {
+		t.Fatal("no safety snapshot should be created before confirmation")
+	}
+	list, _, _ := e.run(t, "", append([]string{"project", "list"}, e.file()...)...)
+	if !strings.Contains(list, "later") {
+		t.Fatal("post-backup data must still be present after declining")
+	}
+}
+
+func TestCentralRestoreCmd_InvalidCandidate_NeverPromptsEvenWithYes(t *testing.T) {
+	e, _ := restoreFixture(t)
+	bad := filepath.Join(e.dir, "bad.db")
+	if err := os.WriteFile(bad, []byte("not a sqlite database at all, just some bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := e.run(t, "y\n", append([]string{"restore", "--from", bad}, e.file()...)...)
+	if err == nil {
+		t.Fatal("expected an invalid candidate to be rejected")
+	}
+	if strings.Contains(stdout, "Continue?") {
+		t.Fatal("validation must fail before any confirmation prompt")
+	}
+	if len(snapshotFiles(t, e)) != 0 {
+		t.Fatal("no snapshot may be created for a rejected candidate")
+	}
+}
+
+func TestCentralRestoreCmd_Force_StillRequiresValidationAndTakesSnapshot(t *testing.T) {
+	e, _ := restoreFixture(t)
+	bad := filepath.Join(e.dir, "bad.db")
+	if err := os.WriteFile(bad, []byte("not a sqlite database at all, just some bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(e.db)
+	if _, _, err := e.run(t, "", append([]string{"restore", "--from", bad, "--force"}, e.file()...)...); err == nil {
+		t.Fatal("--force must not bypass candidate validation")
+	}
+	after, _ := os.ReadFile(e.db)
+	if string(before) != string(after) || len(snapshotFiles(t, e)) != 0 {
+		t.Fatal("a rejected --force restore must change nothing")
+	}
+}
+
+func TestCentralRestoreCmd_OfflineWarning_InHelpAndPrompt(t *testing.T) {
+	e, cand := restoreFixture(t)
+	help, _, err := e.run(t, "", "restore", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"OFFLINE", "Stop every other process", "no cross-process lock"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help is missing %q:\n%s", want, help)
+		}
+	}
+	stdout, _, err := e.run(t, "n\n", append([]string{"restore", "--from", cand}, e.file()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"offline", "stop every other process", "concurrent writes can be lost"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("prompt is missing %q:\n%s", want, stdout)
+		}
+	}
+}

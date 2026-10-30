@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
@@ -700,7 +701,8 @@ func printCandidateInfo(cmd *cobra.Command, candidatePath string, info sqlite.Ca
 // centralRestoreCmd adds `dso central restore` (Phase 2 Step 5.4, approved
 // design/decision-resolution).
 //
-// Known, explicitly disclosed limitations (see
+// Known, explicitly disclosed limitations (historical design references,
+// NOT present in this checkout or its git history, so unverifiable here:
 // docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md and
 // docs/reviews/2026-10-29-central-store-phase2-backup-restore-decision-resolution.md):
 //   - audit-chain verification proves the candidate's own internal
@@ -731,9 +733,14 @@ Known limitations:
   - successful validation does not prove every secret version's ciphertext
     in the candidate is decryptable; it proves SQLite structural integrity
     and that the configured root key matches the candidate's binding.
-  - this command has no caller-specific authorization today (see
-    docs/reviews/2026-10-24-central-store-phase2-authn-authz-design.md):
-    anyone able to run 'dso central' as the owning OS user can run it.
+  - this command has no caller-specific authorization today (the authn/authz
+    design document it was planned against is not available in this
+    checkout): anyone able to run 'dso central' as the owning OS user can
+    run it.
+
+Restore is an OFFLINE operator action. Stop every other process that uses the
+active database before restoring. Restore takes no cross-process lock, so a
+write made by another process while it runs can be silently lost.
 
 --dry-run performs every validation check and reports the result without
 touching the active database, creating a safety snapshot, or recording a
@@ -760,8 +767,10 @@ restore event.`,
 					if force {
 						return true
 					}
-					return promptForApproval(fmt.Sprintf(
-						"This will replace the active database at %s. A safety snapshot will be kept. Continue?", f.db))
+					return promptApprovalIO(cmd.InOrStdin(), cmd.OutOrStdout(), fmt.Sprintf(
+						"This will replace the active database at %s. A safety snapshot will be kept. "+
+							"Restore is offline: stop every other process using this database first "+
+							"(no cross-process lock is taken; concurrent writes can be lost). Continue?", f.db))
 				},
 			})
 			if errors.Is(err, centralsvc.ErrRestoreNotConfirmed) {
@@ -787,4 +796,19 @@ restore event.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate the candidate and report the result without modifying the active database")
 	cmd.Flags().BoolVar(&force, "force", false, "skip the interactive confirmation prompt (non-interactive restore)")
 	return cmd
+}
+
+// promptApprovalIO asks prompt on out and reads one line from in; only an
+// explicit "y"/"yes" (case-insensitive) approves. EOF or any other answer
+// declines. It uses the command's own streams, unlike promptForApproval
+// (which is bound to the process's os.Stdin/os.Stdout), so the restore
+// confirmation can be driven and captured through the Cobra command.
+func promptApprovalIO(in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
 }

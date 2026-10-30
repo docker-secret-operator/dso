@@ -122,6 +122,85 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+// StagedCandidate is a private, self-contained snapshot of a restore
+// candidate: one main SQLite file holding the candidate's COMPLETE committed
+// logical state (any -wal frames already folded into it) in a temporary
+// directory this process owns. It is the single artifact that restore both
+// validates and activates, so the state that was validated cannot differ from
+// the state that is activated, and later changes to the original files cannot
+// affect either. Close removes it.
+type StagedCandidate struct {
+	// Path is the staged main database file. It has no -wal/-shm companions.
+	Path    string
+	cleanup func()
+}
+
+// Close removes the staged snapshot. It is safe to call more than once.
+func (c *StagedCandidate) Close() {
+	if c != nil && c.cleanup != nil {
+		c.cleanup()
+		c.cleanup = nil
+	}
+}
+
+// StageCandidate checks path's safety (securefs, applied to the ORIGINAL
+// path), copies the main file and any -wal/-shm companions with plain file
+// I/O into a private temporary directory, then checkpoints the COPY
+// (PRAGMA wal_checkpoint(TRUNCATE), required to complete: busy != 0 is an
+// error) so the staged main file alone holds the full committed state, and
+// removes the copy's companions. The original candidate is never opened by
+// SQLite and never modified.
+func StageCandidate(ctx context.Context, path string) (*StagedCandidate, error) {
+	f, err := securefs.OpenPrivateFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("restore candidate is not safe to use: %w", err)
+	}
+	fi, statErr := f.Stat()
+	_ = f.Close()
+	if statErr != nil {
+		return nil, fmt.Errorf("inspecting restore candidate %s: %w", path, statErr)
+	}
+	if fi.Size() == 0 {
+		return nil, fmt.Errorf("restore candidate %s is empty", path)
+	}
+
+	workPath, cleanup, err := CopyCandidateForValidation(path)
+	if err != nil {
+		return nil, fmt.Errorf("staging a private copy of restore candidate %s: %w", path, err)
+	}
+	if err := foldWALIntoMain(ctx, workPath); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("restore candidate %s is not a valid SQLite database: %w", path, err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Remove(workPath + suffix); err != nil && !os.IsNotExist(err) {
+			cleanup()
+			return nil, fmt.Errorf("removing staged %s: %w", suffix, err)
+		}
+	}
+	return &StagedCandidate{Path: workPath, cleanup: cleanup}, nil
+}
+
+// foldWALIntoMain opens the private copy read-write, checkpoints its WAL into
+// the main file, and closes it. It operates only on the disposable copy.
+func foldWALIntoMain(ctx context.Context, workPath string) error {
+	dsn := (&url.URL{Scheme: "file", Opaque: escapePath(workPath)}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var busy, logFrames, checkpointed int
+	if err := db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return fmt.Errorf("checkpointing the staged copy did not complete (busy=%d)", busy)
+	}
+	return nil
+}
+
 // CandidateInfo summarizes a restore candidate's validated state. It carries
 // no secret value or key material -- only metadata already safe to show an
 // operator before they confirm a restore.
@@ -180,30 +259,25 @@ type CandidateInfo struct {
 // approved design, it does NOT prove the candidate is the newest legitimate
 // state (whole-database rollback via an older, internally valid backup is
 // not detected by chain verification alone -- see
-// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md §7)
+// the Step 5.4 backup/restore design §7; that document is not present in
+// this checkout -- docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md)
 // and does NOT prove every secret version's ciphertext is decryptable (that
 // is a key-binding and, separately, an AEAD-authentication question -- see
 // centralsvc.ValidateCandidateKey and the Step 5.4 decision-resolution §4).
 func ValidateCandidate(ctx context.Context, path string, maxSupportedSchema int) (CandidateInfo, error) {
-	f, err := securefs.OpenPrivateFile(path)
+	staged, err := StageCandidate(ctx, path)
 	if err != nil {
-		return CandidateInfo{}, fmt.Errorf("restore candidate is not safe to use: %w", err)
+		return CandidateInfo{}, err
 	}
-	fi, statErr := f.Stat()
-	_ = f.Close()
-	if statErr != nil {
-		return CandidateInfo{}, fmt.Errorf("inspecting restore candidate %s: %w", path, statErr)
-	}
-	if fi.Size() == 0 {
-		return CandidateInfo{}, fmt.Errorf("restore candidate %s is empty", path)
-	}
+	defer staged.Close()
+	return ValidateStagedCandidate(ctx, staged, path, maxSupportedSchema)
+}
 
-	workPath, cleanup, err := CopyCandidateForValidation(path)
-	if err != nil {
-		return CandidateInfo{}, fmt.Errorf("staging a private copy of restore candidate %s for validation: %w", path, err)
-	}
-	defer cleanup()
-
+// ValidateStagedCandidate runs the ValidateCandidate checks against an
+// already-staged snapshot. origPath is used only in error messages.
+func ValidateStagedCandidate(ctx context.Context, staged *StagedCandidate, origPath string, maxSupportedSchema int) (CandidateInfo, error) {
+	path := origPath
+	workPath := staged.Path
 	db, err := OpenReadOnly(workPath)
 	if err != nil {
 		return CandidateInfo{}, fmt.Errorf("restore candidate %s is not a valid SQLite database: %w", path, err)

@@ -2,6 +2,7 @@ package centralsvc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -282,6 +283,54 @@ func TestRestore_SourceBackupRemainsUnchanged(t *testing.T) {
 	}
 }
 
+// TestReplaceDatabaseFile_RemovesSidecarsBeforeActivation checks the ordering
+// directly (not via the post-Close state of a full restore): when the copy
+// fails after the sidecars were handled, the previous main file is still the
+// one at dbPath, and no -wal/-shm from it remains to pair with any new file.
+func TestReplaceDatabaseFile_OrderingAndFailureLeavesOldMainInPlace(t *testing.T) {
+	dir := securefstest.TempDir(t)
+	db := filepath.Join(dir, "central.db")
+	for suffix, content := range map[string]string{"": "OLD-MAIN", "-wal": "w", "-shm": "s"} {
+		if err := os.WriteFile(db+suffix, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := replaceDatabaseFile(db, filepath.Join(dir, "missing-candidate"))
+	if err == nil {
+		t.Fatal("expected failure for a missing candidate")
+	}
+	if b, _ := os.ReadFile(db); string(b) != "OLD-MAIN" {
+		t.Fatalf("a failed replacement must leave the old main file in place, got %q", b)
+	}
+	// Successful activation: sidecars gone, main is the candidate, no temp files.
+	cand := filepath.Join(dir, "cand")
+	if err := os.WriteFile(cand, []byte("NEW-MAIN"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.WriteFile(db+suffix, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := replaceDatabaseFile(db, cand); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(db); string(b) != "NEW-MAIN" {
+		t.Fatalf("expected the candidate content, got %q", b)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(db + suffix); !os.IsNotExist(err) {
+			t.Fatalf("stale %s must not survive activation", suffix)
+		}
+	}
+	if m, _ := filepath.Glob(db + ".restoring-*"); len(m) != 0 {
+		t.Fatalf("temporary files left behind: %v", m)
+	}
+	if b, _ := os.ReadFile(cand); string(b) != "NEW-MAIN" {
+		t.Fatal("candidate must be untouched")
+	}
+}
+
 func TestRestore_StaleWALAndSHMDoNotCorruptRestoredDatabase(t *testing.T) {
 	e := setup(t)
 	e.project(t, "proj", "prod")
@@ -503,6 +552,9 @@ func TestRestore_ReplacementFailureBeforeActivation_LeavesActiveDatabaseUsable(t
 	if result.SafetySnapshot == "" {
 		t.Fatal("expected the safety snapshot path to be reported")
 	}
+	if !strings.Contains(err.Error(), "before activation") || strings.Contains(err.Error(), "RECOVERY") {
+		t.Fatalf("a pre-activation failure must say the active database is unchanged, not demand snapshot recovery: %q", err.Error())
+	}
 	if !strings.Contains(err.Error(), result.SafetySnapshot) {
 		t.Fatalf("expected the error to name the exact recovery snapshot path %q, got: %q", result.SafetySnapshot, err.Error())
 	}
@@ -641,5 +693,228 @@ func TestRestore_FailedKeyValidationLeavesActiveDatabaseUntouched(t *testing.T) 
 	}
 	if string(before) != string(after) {
 		t.Fatal("a failed key validation must leave the active database untouched")
+	}
+}
+
+// makeWALCandidate builds a restore candidate that is genuinely in WAL mode
+// with a committed change that exists ONLY in its -wal file (the main file
+// alone does not contain it). It returns the candidate's main-file path. The
+// marker table is invisible to the audit chain, schema check and key binding,
+// so the candidate is otherwise a normal, valid backup.
+func makeWALCandidate(t *testing.T, e *env) string {
+	t.Helper()
+	base := backupActive(t, e, "wal-base.db")
+	dsn := "file:" + base + "?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)"
+	raw, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetMaxOpenConns(1)
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TABLE wal_marker (v TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO wal_marker (v) VALUES ('only-in-wal')`); err != nil {
+		t.Fatal(err)
+	}
+	cand := filepath.Join(filepath.Dir(e.dbPath), "wal-cand.db")
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		b, err := os.ReadFile(base + suffix) // hot copy while the writer connection is still open
+		if err != nil {
+			t.Fatalf("expected a real %q companion: %v", suffix, err)
+		}
+		if err := os.WriteFile(cand+suffix, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fi, err := os.Stat(cand + "-wal"); err != nil || fi.Size() == 0 {
+		t.Fatalf("test setup failed: candidate has no pending WAL frames (%v)", err)
+	}
+	return cand
+}
+
+func markerCount(t *testing.T, path string) (int, error) {
+	t.Helper()
+	db, err := sqlite.OpenReadOnly(path)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM wal_marker`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// TestRestore_WALCandidate_ActivatedStateEqualsValidatedState is the
+// regression test for the validated-vs-activated divergence: a WAL-mode
+// candidate whose committed data lives only in its -wal file must, once
+// restored, expose exactly that data.
+func TestRestore_WALCandidate_ActivatedStateEqualsValidatedState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	e := setup(t)
+	e.project(t, "proj", "prod")
+	cand := makeWALCandidate(t, e)
+
+	snap := func() map[string][]byte {
+		m := map[string][]byte{}
+		for _, s := range []string{"", "-wal", "-shm"} {
+			b, err := os.ReadFile(cand + s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m[s] = b
+		}
+		return m
+	}
+	before := snap()
+
+	// (1) the main file ALONE does not represent the candidate's state.
+	mainOnly := filepath.Join(t.TempDir(), "main-only.db")
+	if err := os.WriteFile(mainOnly, before[""], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := markerCount(t, mainOnly); err == nil {
+		t.Fatal("test setup invalid: main file alone already contains the WAL-only data")
+	}
+	// (2) the validator's private copy observes the correct logical state.
+	work, cleanup, err := sqlite.CopyCandidateForValidation(cand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := markerCount(t, work); err != nil || n != 1 {
+		cleanup()
+		t.Fatalf("validator copy should see the WAL-only row, got n=%d err=%v", n, err)
+	}
+	cleanup()
+
+	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
+	if _, err := Restore(ctx, RestoreOptions{
+		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
+		Confirm: func(sqlite.CandidateInfo) bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (3) activated state == validated state.
+	if n, err := markerCount(t, e.dbPath); err != nil || n != 1 {
+		t.Fatalf("restored database lost the candidate's committed WAL data: n=%d err=%v", n, err)
+	}
+	// Candidate files unchanged by validation and restore.
+	after := snap()
+	for s, b := range before {
+		if string(after[s]) != string(b) {
+			t.Fatalf("candidate file %q%s was modified", cand, s)
+		}
+	}
+	// Staging copies cleaned up.
+	if m, _ := filepath.Glob(filepath.Join(tmp, "dso-restore-*")); len(m) != 0 {
+		t.Fatalf("temporary staging directories were not cleaned up: %v", m)
+	}
+}
+
+func TestRestore_WALCandidate_WrongKeyDoesNotReplaceActiveAndCleansStaging(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	e := setup(t)
+	e.project(t, "proj", "prod")
+	cand := makeWALCandidate(t, e)
+
+	otherKeyPath := filepath.Join(securefstest.TempDir(t), "other.key")
+	if _, err := crypto.InstallKeyFile(otherKeyPath); err != nil {
+		t.Fatal(err)
+	}
+	otherKP, err := crypto.NewFileKeyProvider(otherKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(e.dbPath)
+	_, err = Restore(ctx, RestoreOptions{
+		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: otherKP,
+		Confirm: func(sqlite.CandidateInfo) bool { t.Fatal("confirm must not be reached"); return true },
+	})
+	if !errors.Is(err, ErrWrongRootKey) {
+		t.Fatalf("expected ErrWrongRootKey, got %v", err)
+	}
+	after, _ := os.ReadFile(e.dbPath)
+	if string(before) != string(after) {
+		t.Fatal("active database changed despite a failed key validation")
+	}
+	if m, _ := filepath.Glob(e.dbPath + ".pre-restore-*"); len(m) != 0 {
+		t.Fatalf("no safety snapshot should exist for a pre-snapshot rejection: %v", m)
+	}
+	if m, _ := filepath.Glob(filepath.Join(tmp, "dso-restore-*")); len(m) != 0 {
+		t.Fatalf("staging directories leaked after failure: %v", m)
+	}
+}
+
+func TestRestore_InvalidCandidateCleansStaging(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	e := setup(t)
+	bad := filepath.Join(filepath.Dir(e.dbPath), "bad.db")
+	if err := os.WriteFile(bad, []byte("not a sqlite database, long enough to not be tiny......"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
+	if _, err := Restore(ctx, RestoreOptions{CandidatePath: bad, DBPath: e.dbPath, KeyProvider: kp}); err == nil {
+		t.Fatal("expected a non-SQLite candidate to be rejected")
+	}
+	if m, _ := filepath.Glob(filepath.Join(tmp, "dso-restore-*")); len(m) != 0 {
+		t.Fatalf("staging directories leaked after rejection: %v", m)
+	}
+}
+
+// TestRestore_IncompleteCheckpointAbortsBeforeSidecarsOrMainFileTouched proves
+// the ordering F1 depends on: when the verified checkpoint cannot complete
+// (a reader pins an older snapshot while newer frames exist), Restore aborts
+// BEFORE replaceDatabaseFile runs, so the active database's -wal/-shm
+// companions are still present and its content is intact.
+func TestRestore_IncompleteCheckpointAbortsBeforeSidecarsOrMainFileTouched(t *testing.T) {
+	e := setup(t)
+	e.project(t, "proj", "prod")
+	cand := backupActive(t, e, "cand.db")
+
+	reader, err := sql.Open("sqlite", "file:"+e.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	reader.SetMaxOpenConns(1)
+	tx, err := reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	// New committed frames after the reader's snapshot: a TRUNCATE checkpoint
+	// cannot complete while this reader is open.
+	if _, err := e.svc.CreateEnvironment(ctx, "proj", "staging", "staging"); err != nil {
+		t.Fatal(err)
+	}
+
+	replaceCalled := false
+	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
+	_, err = Restore(ctx, RestoreOptions{
+		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
+		Confirm:                 func(sqlite.CandidateInfo) bool { return true },
+		testReplaceDatabaseFile: func(string, string) error { replaceCalled = true; return nil },
+	})
+	if err == nil || !errors.Is(err, sqlite.ErrCheckpointIncomplete) {
+		t.Fatalf("expected ErrCheckpointIncomplete, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "untouched") {
+		t.Fatalf("error should say the active database is untouched: %v", err)
+	}
+	if replaceCalled {
+		t.Fatal("replacement must not run after a failed checkpoint")
+	}
+	if _, err := os.Stat(e.dbPath + "-wal"); err != nil {
+		t.Fatalf("the active database's -wal must not have been removed: %v", err)
 	}
 }
