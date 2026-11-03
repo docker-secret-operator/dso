@@ -2,15 +2,19 @@
 
 Status: **experimental, local-only, not production-ready.** M1 provides a
 durable, encrypted, versioned secret store and the key-management primitives
-under it. It has **no network API, no authentication, no authorization (RBAC)
-and no audit enforcement** — those are M2/M3. Unit tests do not establish
-production readiness (see "Known limitations").
+under it. It has **no network API, no authentication and no authorization
+(RBAC)**; identity and authorization are planned for M2 and are not built.
+Work after M1 added an append-only, hash-chained audit log, an on-demand
+`backup` command, a `restore` command and a read-only `audit verify` command
+(commits `c4d404c`, `22ee5be`, `ff4d8a5`, `3645b89`); they are described below.
+Their existence does not make the store production-ready, and unit tests do not
+establish production readiness (see "Known limitations" and "Test coverage").
 
 Specification: `docs/design/central-server-design.md` (§ Encryption and key
-management, § Versioning, § Backup, Milestone 1; this file lives in the
-repository owner's working tree and is not part of this branch). Decisions made
-after the independent review of 2026-10-16, and every place M1 deviates from or
-corrects that document, are in `docs/design/m1-design-addendum.md`.
+management, § Versioning, § Backup, Milestone 1; that file is tracked in this
+branch). Decisions made after the independent review of 2026-10-16, and every
+place M1 deviates from or corrects that document, are in
+`docs/design/m1-design-addendum.md`.
 
 ## Packages
 
@@ -19,8 +23,8 @@ corrects that document, are in `docs/design/m1-design-addendum.md`.
 | `internal/securefs` | Verifies directory chains and key/database files (ownership, modes, symlinks) before they are trusted |
 | `internal/crypto` | AES-256-GCM `Seal/Open`, AAD builders, `KeyProvider` interface, `file` and `passphrase` providers, exclusive key installation |
 | `internal/store` | `Store` interface and metadata types. No SQL, no crypto |
-| `internal/store/sqlite` | SQLite (WAL) implementation, embedded forward-only migrations |
-| `internal/centralsvc` | `Service`: composes Store + KeyProvider; binds the database to its root key; the only place plaintext exists |
+| `internal/store/sqlite` | SQLite (WAL) implementation, embedded forward-only migrations, audit-event append and chain verification, on-demand backup, staged restore-candidate validation |
+| `internal/centralsvc` | `Service`: composes Store + KeyProvider; binds the database to its root key; the only package that decrypts secrets (the CLI process also holds plaintext it reads with `readValue` and prints with `secret get --reveal`); also hosts the `Restore` state machine |
 | `internal/cli/central.go` | `dso central …` local administration |
 
 Driver: `modernc.org/sqlite v1.50.0` (pure Go, `CGO_ENABLED=0` compatible, as the
@@ -41,9 +45,9 @@ deliberate. The vault file lock from M0 is a no-op on non-unix platforms.
 SQLite WAL mode needs shared memory and working POSIX locks between processes;
 it is **not supported on NFS, SMB/CIFS or other network filesystems**, where it
 can corrupt the database. Opening the database does not detect this — the
-operator must place it on local storage. Likewise back up the database with the
-`.bak` mechanism or SQLite's online backup, never by copying a live database file
-without its `-wal` companion.
+operator must place it on local storage. Likewise back up the database with
+`dso central backup`, the pre-migration `.bak` mechanism or SQLite's online
+backup, never by copying a live database file without its `-wal` companion.
 
 ## Threat model (what M1 does and does not protect)
 
@@ -62,6 +66,10 @@ an attacker who can *replace* the database file with an older valid copy
 (rollback of whole-database state is not detected); anyone who can run
 `dso central` as the owning OS user. Secret **names, project/environment slugs,
 timestamps and actor strings are metadata and are stored in clear.**
+
+An unkeyed hash-chained audit log now exists, but it is not authenticated
+evidence and does not defend against anyone who can write the database; see
+"Audit log" below.
 
 ### File and directory safety (`internal/securefs`)
 
@@ -147,8 +155,9 @@ root key (KeyProvider; never in the DB)
 ## Schema and migrations
 
 Tables: `projects`, `environments`, `secrets`, `secret_versions`,
-`schema_migrations` (migration `0001`), `store_meta` (migration `0002`). Timestamps
-are UTC unix seconds.
+`schema_migrations` (migration `0001`), `store_meta` (migration `0002`),
+`audit_events` (migration `0003`, see "Audit log"). Timestamps are UTC unix
+seconds.
 
 * Foreign keys `ON DELETE RESTRICT`; `secrets` references
   `(environment_id, project_id)` so an environment from another project is
@@ -183,11 +192,57 @@ are UTC unix seconds.
   version of M1). Restoring = stop DSO, remove `<db>`, `<db>-wal`, `<db>-shm`,
   copy the chosen `.bak` to `<db>` with mode `0600`. Backups are **never deleted
   automatically** (they accumulate and contain ciphertext and wrapped keys —
-  treat them like the database). A full backup/restore *command* is deferred.
+  treat them like the database). The manual procedure above applies to these
+  pre-migration files; whether `dso central restore` accepts a pre-migration
+  `.bak` as a candidate was not verified for this document. `dso central backup`
+  and `restore` are described below.
 * Concurrency: SQLite's locking serialises writers across goroutines and
   processes; the next version number is computed inside the write transaction and
   `PRIMARY KEY(secret_id, version)` is the backstop. Panics inside the sealing
   callback roll the transaction back.
+
+## Audit log (added after M1)
+
+Policy questions about this log (integrity, failure behavior, attribution) are
+under discussion in in-progress draft records that are not committed and are not
+part of the tracked tree; none of them is ratified. Treat what follows as the
+current implementation, not as an approved policy.
+
+Table `audit_events` (migration `0003`): `seq`, `id`, `schema_version`,
+`event_type`, `outcome` (`success`|`failure`), `reason_category` (a closed set,
+never a raw error string), `actor_label`, `project_slug`, `environment_slug`,
+`secret_name`, `version`, `created_at`, `prev_hash`, `event_hash`. Triggers abort
+any `UPDATE` or `DELETE` of a row. `event_hash = SHA-256(prev_hash ||
+canonical(fields))` with length-prefixed fields; there is **no MAC or signing
+key**. Event types: `init`, `project_create`, `environment_create`,
+`secret_create`, `secret_add_version`, `secret_get_reveal`,
+`secret_disable_version`, `secret_delete`, `restore`.
+
+* **Atomic events.** Project, environment and secret creation, version addition,
+  version disabling and secret deletion append their success event in the same
+  transaction as the change; if the audit insert fails, the change rolls back.
+* **Best-effort events.** Failure events and the reveal event (`secret get
+  --reveal`) are appended standalone; if that append fails the operation result
+  is unchanged. The `dso central` commands construct the service without a
+  logger, so these failures are **silently discarded** in the CLI (`init` is the
+  exception: it uses a real logger).
+* **After-the-fact event.** The `restore` event is appended to the restored
+  database after it is reopened; replacement and event are not atomic.
+* **Not audited.** Listings and reads, `backup`, `audit verify`, failed and
+  dry-run restores, and wrong-root-key attempts write no event. Some early error
+  paths (for example ID generation, AAD construction and sealing in secret
+  creation) return without any failure event.
+* **Attribution.** `actor_label` is a caller-supplied string (`local-cli:<user>`)
+  and is not authenticated. Reveal, project-creation, environment-creation and
+  `init` events carry no actor at all.
+* **Appends.** A standalone append reads the previous tip and inserts in one
+  immediate transaction; an in-process concurrency test exists. Concurrent
+  appends from several processes have no dedicated test (see "Test coverage").
+* **Integrity limits (unchanged by any command).** The chain does not detect
+  deletion of the newest events or replacement of the database by an older valid
+  copy. Anyone who can write the database can drop the append-only triggers and
+  recompute a valid chain. A successful `audit verify` is therefore not proof of
+  authenticity.
 
 ## `dso central` (local administration; experimental)
 
@@ -197,7 +252,14 @@ dso central project|environment create|list …
 dso central secret create|add-version <project> <env> <name> [--value-stdin] [--comment …]
 dso central secret get <project> <env> <name> --reveal [--version N]
 dso central secret list|versions|disable-version|delete …
+dso central backup --db D --out FILE
+dso central restore --db D --key-provider … --key-file K --from FILE [--dry-run] [--force]
+dso central audit verify --db D [--json]
 ```
+
+`--db`, `--key-provider`, `--key-file` and `--passphrase-file` are persistent
+flags of the `central` group (`internal/cli/central.go`); `backup` and `audit
+verify` do not load a key.
 
 Security assumptions: runs as the invoking OS user directly against the files;
 **no authentication, no network listener**; file permissions and the directory
@@ -205,9 +267,11 @@ checks above are the only access control. Values are never accepted as arguments
 (shell history / `ps`): they come from a hidden terminal prompt or `--value-stdin`
 (one trailing newline is removed). Plaintext is printed only by `get --reveal`.
 Passphrases come from a hidden prompt or a private `--passphrase-file`, never from
-argv or the environment. Nothing is wired into the REST API or WebUI. The service
-logs ids, names, versions and actor only (tests assert values and key material
-never appear).
+argv or the environment. Nothing is wired into the REST API or WebUI. When a
+logger is supplied the service logs ids, names, versions and actor only (tests
+assert values and key material never appear in the audit events and logs they
+inspect); the `dso central` commands supply no logger, so these log lines are
+discarded.
 
 **`init` and recovery.** `init` checks everything it can *before* writing any key
 material (directory safety, an existing database, an existing key). It then
@@ -219,19 +283,107 @@ that is already there and never modifies it. A plain re-run is refused with thes
 instructions. Do not delete a key unless you are certain no database was ever
 created with it.
 
+### `backup`, `restore` and `audit verify`
+
+* **`backup --out FILE`.** Writes a point-in-time snapshot (`VACUUM INTO`),
+  re-opens it read-only and checks `integrity_check` and the schema version, then
+  fsyncs it. The file is created exclusively with mode `0600`; an existing path is
+  never overwritten, and a partial file is removed on failure. It contains every
+  table including the full audit history and never contains the root key or
+  passphrase. Backups are never pruned. Opening the database to take a backup
+  runs the same open path as every command, so it creates a missing database
+  file and, when the stored schema is older than the binary's, takes a
+  pre-migration `.bak` and migrates (a database already at the latest schema is
+  not changed).
+* **`restore --from FILE`.** An **offline** operator action: it takes no
+  cross-process lock, so a write by another process during the restore can be
+  lost. It stages a private copy of the candidate (and its `-wal`/`-shm`
+  sidecars), validates structure, schema version, the audit chain and the
+  root-key binding on that copy, and activates that same copy; it does not prove
+  every secret version decrypts. Unless `--dry-run`, it asks for confirmation
+  (`--force` skips the prompt), writes a verified safety snapshot
+  `<db>.pre-restore-<time>-<random>.bak`, checkpoints the active database,
+  replaces it and reopens it. Failure modes (from the code and its tests):
+  rejected before any change (active database untouched); replacement failed
+  before activation (active database unchanged); replacement activated but the
+  reopen failed (**not** automatically recovered; recover from the safety
+  snapshot manually); replacement usable but the restore event could not be
+  recorded (command exits non-zero); replacement activated but durability could
+  not be confirmed (event recorded, error reported). Restoring an older backup
+  drops newer audit events from the active chain; they survive only in the
+  safety snapshot.
+* **`audit verify`.** Read-only: it never opens the live database through
+  SQLite; it verifies a staged copy and retries if the files change while being
+  copied. It needs temporary disk space about the size of the database, and
+  after `SIGKILL` or a machine failure a `dso-restore-validate-*` temporary
+  directory (mode `0700`) can remain and must be removed manually. Exit codes:
+  `0` verified, `10` integrity failure, `11` verification unavailable, `1` usage
+  or other errors. It is not a consistent snapshot of a database being written
+  and not proof of authenticity (see "Audit log").
+
 ## Known limitations
 
-* No authn/authz: any process with the OS user's file access can do everything.
-  `created_by/disabled_by` are caller-supplied attribution strings, **not** an
-  audit log and not tamper-evident; audit chain and enforcement are M2.
-* Whole-database rollback to an older valid copy is not detected.
+* No authn/authz: any process with the OS user's file access can do everything,
+  including reveal, delete, backup and restore. Actor strings are caller-supplied
+  and not authenticated; reveal, project/environment creation and `init` events
+  have none. The audit log is unkeyed and not tamper-proof (see "Audit log").
+* Whole-database rollback to an older valid copy is not detected, and `restore`
+  can introduce one deliberately.
+* `restore` is offline, takes no cross-process lock, and does not make
+  replacement and its audit event atomic.
 * Different directories ≠ different volumes (not verified, see above).
-* In-memory plaintext/DEK zeroing is best-effort (Go may copy buffers; no `mlock`).
+* In-memory plaintext/DEK zeroing is best-effort (Go may copy buffers). No
+  `mlock`, dumpability or core-dump controls were found in the repository's own
+  Go sources (a bounded text search; not a proof of absence elsewhere).
 * Secret names are not encrypted; AAD includes the name, so **renaming a secret
   requires re-encrypting its versions** (see the addendum); rollback likewise
   creates a new version by re-encrypting.
-* Single node, SQLite, local filesystem only; no backup/restore/verify commands,
-  no import-vault, no root-key or DEK rotation, no purge.
+* Single node, SQLite, local filesystem only; no import-vault, no root-key or DEK
+  rotation, no purge, and no rename, archive or deletion of projects or
+  environments.
 * Not load-tested, not externally reviewed, not fuzzed. The first independent
   review (2026-10-16) found defects that earlier versions of this document
   contradicted; `docs/reviews/` records them.
+
+## Test coverage
+
+Counts below are `func Test…` declarations found in the source on this date
+(subtests not counted). **No tests were run to prepare this section, so it does
+not state that any test passes.**
+
+| Area | Test files / functions in source |
+|---|---|
+| `internal/centralsvc` | 5 files, 58 tests (binding, service, audit events, restore) |
+| `internal/store/sqlite` | 12 files, 98 tests (store, transactions, migrations, audit chain and verification, backup, restore validation) |
+| `internal/securefs` | 1 file, 13 tests |
+| `internal/crypto` | 3 files, 24 tests |
+| `dso central` CLI | 5 files, 38 tests (init, commands, backup/restore, audit verify, audit logger) |
+
+Present in source: wrong-key and binding tests, tamper and AAD-substitution
+tests, an in-process concurrent audit-append test, a multi-process version-writer
+test, crash-during-writes and uncheckpointed-WAL tests, restore fault-injection
+seams (replacement failure, reopen failure, audit-append failure after
+activation), WAL/SHM-sidecar handling, FIFO and symlink sidecar rejection, and a
+signal-cleanup helper-process test.
+
+**Not found in source (unverified or untested):** multi-process audit appends;
+the CLI's discard of best-effort audit failures (nil logger); a process killed at
+each restore stage; non-Linux runtime behavior; network or layered filesystems;
+memory and core-dump behavior of the key; any authorization behavior (none
+exists).
+
+## Implemented versus not implemented
+
+| Item | State |
+|---|---|
+| Envelope encryption, key providers, key binding, secret versioning, soft delete | Implemented (M1) |
+| `init`, project, environment and secret commands | Implemented |
+| Forward-only migrations with pre-migration backup | Implemented |
+| Hash-chained audit log with atomic mutation events | Implemented; unkeyed, with the limits above |
+| `backup`, `restore`, `audit verify` | Implemented; offline restore, see failure modes |
+| Authentication, authorization, identity, sessions, tokens (planned M2) | **Not implemented.** Only M2.1 (`WithTx`, commit `8c3763c`) exists; M2.2 onward is not authorized |
+| Network API, key-holding service, peer-credential identity for central | **Not implemented** (design analysis only) |
+| Root-key and DEK rotation, import-vault, purge | Not implemented |
+| Project and environment lifecycle (rename, archive, delete) | Not implemented; undecided |
+| Quarantine and its release path | Not implemented; undecided |
+| Production readiness | **Not claimed** |
