@@ -452,10 +452,13 @@ func (s *Service) GetValue(ctx context.Context, projectSlug, envSlug, name strin
 		return Value{}, err
 	}
 	// GetValue is a read: there is no business mutation for its audit event to
-	// roll back alongside, so the event is always appended standalone,
-	// non-blocking, success or failure (approved event-coverage matrix: every
-	// reveal call, not sampled). This is the highest-value event in the whole
-	// design, since it is the one place a secret value is disclosed.
+	// roll back alongside, so a FAILURE outcome is appended standalone,
+	// non-blocking (approved event-coverage matrix: every reveal call, not
+	// sampled). The SUCCESS outcome is different, per the ratified REVEAL-B
+	// policy: it is appended blocking, and its result gates whether the
+	// plaintext is ever returned -- see the end of this function. This is
+	// the highest-value event in the whole design, since it is the one
+	// place a secret value is disclosed.
 	fail := func(err error, recordedVersion int) error {
 		s.appendAuditBestEffort(ctx, store.AuditEvent{
 			EventType: store.AuditSecretGetReveal, Outcome: store.AuditFailure,
@@ -494,10 +497,25 @@ func (s *Service) GetValue(ctx context.Context, projectSlug, envSlug, name strin
 	}
 	s.log.Info("secret read", zap.String("project", projectSlug), zap.String("environment", envSlug),
 		zap.String("secret", name), zap.Int("version", rec.Version))
-	s.appendAuditBestEffort(ctx, store.AuditEvent{
-		EventType: store.AuditSecretGetReveal, Outcome: store.AuditSuccess,
+	// REVEAL-B (ratified): the reveal event must be durably persisted BEFORE
+	// the plaintext is returned, unlike every other best-effort audit event
+	// in this service. A disclosure with no corresponding record is exactly
+	// the gap this policy closes; appendAuditBestEffort's log-only,
+	// availability-first behavior is deliberately not used here. If the
+	// append fails, the plaintext already decrypted into pt is zeroed and
+	// never returned to the caller.
+	evID, err := newID()
+	if err != nil {
+		crypto.Zero(pt)
+		return Value{}, fmt.Errorf("generating reveal audit event id: %w (secret not disclosed)", err)
+	}
+	if _, err := s.store.AppendAuditEvent(ctx, store.AuditEvent{
+		ID: evID, EventType: store.AuditSecretGetReveal, Outcome: store.AuditSuccess,
 		ProjectSlug: projectSlug, EnvironmentSlug: envSlug, SecretName: name, Version: rec.Version,
-	})
+	}); err != nil {
+		crypto.Zero(pt)
+		return Value{}, fmt.Errorf("persisting reveal audit event: %w (secret not disclosed)", err)
+	}
 	return Value{Version: rec.Version, Plaintext: pt}, nil
 }
 

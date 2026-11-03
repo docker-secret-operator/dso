@@ -52,7 +52,14 @@ func (f failingAuditStore) WithTx(ctx context.Context, fn func(ctx context.Conte
 // GetValue uses -- and asserts (F5): the approved availability-first policy
 // holds (the read still succeeds), the failure is logged at error level, and
 // the log contains no secret plaintext or other sensitive value.
-func TestAudit_BestEffortWriteFailureIsLoggedAndDoesNotBlockTheRead(t *testing.T) {
+// TestAudit_RevealAuditWriteFailureFailsClosedAndDisclosesNothing is a
+// regression test for the ratified REVEAL-B policy: unlike every other
+// best-effort audit event in this service (availability-first, per A-2),
+// the secret-reveal event must be durably persisted BEFORE GetValue returns
+// plaintext. When the audit write fails, GetValue must return an error and
+// an empty Value -- never the decrypted secret -- and the plaintext must
+// not leak into any log message or field along the way.
+func TestAudit_RevealAuditWriteFailureFailsClosedAndDisclosesNothing(t *testing.T) {
 	e := setup(t)
 	e.project(t, "p1", "env1")
 	if err := e.svc.CreateSecret(ctx, "p1", "env1", "s1", []byte(plain), "alice", ""); err != nil {
@@ -63,18 +70,14 @@ func TestAudit_BestEffortWriteFailureIsLoggedAndDoesNotBlockTheRead(t *testing.T
 	svc := New(failingAuditStore{Store: e.st}, e.svc.keys, zap.New(core))
 
 	val, err := svc.GetValue(ctx, "p1", "env1", "s1", 0)
-	if err != nil {
-		t.Fatalf("availability-first policy: GetValue must still succeed when the audit write fails, got: %v", err)
+	if err == nil {
+		t.Fatal("REVEAL-B: expected GetValue to fail when its reveal audit event cannot be persisted, got nil error")
 	}
-	if string(val.Plaintext) != plain {
-		t.Fatal("GetValue returned the wrong value")
+	if val.Plaintext != nil {
+		t.Fatalf("REVEAL-B: expected no plaintext on a failed reveal audit write, got %d bytes", len(val.Plaintext))
 	}
 
-	found := false
 	for _, ent := range logs.All() {
-		if ent.Level.String() == "error" && strings.Contains(ent.Message, "audit") {
-			found = true
-		}
 		if strings.Contains(ent.Message, plain) {
 			t.Fatalf("log entry contains the plaintext secret value: %q", ent.Message)
 		}
@@ -84,8 +87,36 @@ func TestAudit_BestEffortWriteFailureIsLoggedAndDoesNotBlockTheRead(t *testing.T
 			}
 		}
 	}
+}
+
+// TestAudit_OtherBestEffortReadFailureStillAvailabilityFirst confirms
+// REVEAL-B's fail-closed behavior is scoped to the reveal SUCCESS path only,
+// exactly as ratified: a failed LOOKUP (no secret disclosed at all) still
+// follows the ordinary availability-first failure-event path and returns
+// the lookup's own error, not some new audit-specific one.
+func TestAudit_OtherBestEffortReadFailureStillAvailabilityFirst(t *testing.T) {
+	e := setup(t)
+	e.project(t, "p1", "env1")
+
+	core, logs := observer.New(zap.DebugLevel)
+	svc := New(failingAuditStore{Store: e.st}, e.svc.keys, zap.New(core))
+
+	_, err := svc.GetValue(ctx, "p1", "env1", "does-not-exist", 0)
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent secret")
+	}
+	if strings.Contains(err.Error(), "secret not disclosed") {
+		t.Fatalf("a lookup failure (nothing was ever decrypted) must not be reported as a REVEAL-B disclosure refusal: %v", err)
+	}
+
+	found := false
+	for _, ent := range logs.All() {
+		if ent.Level.String() == "error" && strings.Contains(ent.Message, "audit") {
+			found = true
+		}
+	}
 	if !found {
-		t.Fatal("expected an error-level log entry reporting the audit-write failure, found none")
+		t.Fatal("expected an error-level log entry reporting the best-effort audit-write failure for the lookup failure, found none")
 	}
 }
 
