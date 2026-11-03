@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/docker-secret-operator/dso/internal/crypto"
 	"github.com/docker-secret-operator/dso/internal/securefs"
@@ -166,6 +167,11 @@ type RestoreOptions struct {
 	// leaves the active database completely untouched.
 	Confirm func(info sqlite.CandidateInfo) bool
 
+	// LockTimeout overrides how long Restore waits for the exclusive
+	// central lock (see sqlite.AcquireExclusiveCentralLock) before failing
+	// with sqlite.ErrCentralLockBusy. <=0 uses the package default.
+	LockTimeout time.Duration
+
 	// testReplaceDatabaseFile, testReopen and testAppendRestoreEvent, when
 	// non-nil, replace the real replaceDatabaseFile/sqlite.Open/
 	// AppendAuditEvent calls for this one Restore call. Unexported: a
@@ -179,6 +185,13 @@ type RestoreOptions struct {
 	testReplaceDatabaseFile func(dbPath, candidatePath string) error
 	testReopen              func(ctx context.Context, path string) (*sqlite.Store, error)
 	testAppendRestoreEvent  func(ctx context.Context, st *sqlite.Store, ev store.AuditEvent) (store.AuditEvent, error)
+	// testSafetySnapshot, when non-nil, replaces active.SafetySnapshot for
+	// this one Restore call -- same seam pattern as the three above, added
+	// specifically to let a test inject a *sqlite.BackupDirectorySyncError
+	// (a real, valid snapshot path paired with a non-fatal durability
+	// warning) without needing to reach into the sqlite package's own
+	// unexported syncBackupDir test seam from outside it.
+	testSafetySnapshot func(ctx context.Context, active *sqlite.Store, dbPath string) (string, error)
 }
 
 // RestoreResult reports what Restore did (or, for a dry run or an aborted
@@ -279,21 +292,60 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		return result, nil
 	}
 
+	// Exclusive central lock for the rest of this function: from here
+	// through the final reopen below, no other dso central process may
+	// have absDB open at all (see docs/security/restore-concurrency-design.md).
+	// Taken AFTER candidate validation (which only ever touches absCandidate,
+	// never absDB) and the dry-run return, so a dry run or a failed
+	// validation never blocks anything else; taken BEFORE Confirm, because
+	// the moment an operator is asked to confirm, this restore has
+	// committed to the database it is about to touch, and nothing else may
+	// act on that database while that decision is pending. A second,
+	// concurrent Restore (or any other `dso central` command) against the
+	// same path fails here with sqlite.ErrCentralLockBusy after
+	// opts.LockTimeout, rather than blocking indefinitely or racing.
+	restoreLock, err := sqlite.AcquireExclusiveCentralLock(absDB, opts.LockTimeout)
+	if err != nil {
+		return result, fmt.Errorf("acquiring exclusive restore lock on %s: %w", absDB, err)
+	}
+	defer func() { _ = restoreLock.Close() }()
+
 	if opts.Confirm != nil && !opts.Confirm(info) {
 		return result, ErrRestoreNotConfirmed
 	}
 
+	var durabilityErr error
 	if fileExists(absDB) {
-		active, err := sqlite.Open(ctx, absDB, sqlite.Options{})
+		// restoreLock.Open, not sqlite.Open: this Restore call already
+		// holds the exclusive central lock on absDB above, and only the
+		// RestoreLock value itself (never a field on Options) can open
+		// without taking a fresh, self-conflicting one.
+		active, err := restoreLock.Open(ctx, absDB, sqlite.Options{})
 		if err != nil {
 			return result, fmt.Errorf("opening active database for safety snapshot: %w", err)
 		}
-		snapshotPath, err := active.SafetySnapshot(ctx, absDB)
-		if err != nil {
+		snapshotFn := active.SafetySnapshot
+		if opts.testSafetySnapshot != nil {
+			snapshotFn = func(ctx context.Context, dbPath string) (string, error) {
+				return opts.testSafetySnapshot(ctx, active, dbPath)
+			}
+		}
+		snapshotPath, err := snapshotFn(ctx, absDB)
+		var snapDirSyncErr *sqlite.BackupDirectorySyncError
+		if err != nil && !errors.As(err, &snapDirSyncErr) {
 			_ = active.Close()
 			return result, fmt.Errorf("creating mandatory safety snapshot: %w (restore aborted; active database untouched)", err)
 		}
 		result.SafetySnapshot = snapshotPath
+		if snapDirSyncErr != nil {
+			// The snapshot file itself is valid and usable (see
+			// SafetySnapshot's doc comment); only its directory-entry
+			// durability is unconfirmed. Carry on -- aborting a restore
+			// over an otherwise-successful safety snapshot would be worse
+			// than reporting the warning at the end, the same tolerance
+			// replaceFn's own unconfirmedDurabilityError gets below.
+			durabilityErr = errors.Join(durabilityErr, snapDirSyncErr)
+		}
 		// Verified checkpoint, not Close's own best-effort one (whose error
 		// is intentionally discarded there -- see CheckpointTruncate's doc
 		// comment): replaceDatabaseFile below removes the active database's
@@ -314,17 +366,30 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		}
 	}
 
+	// TOCTOU window (documented, not mitigated -- same residual limitation
+	// as the "Concurrency limitation" note on Restore's own doc comment
+	// above): between active.Close() returning above and replaceFn running
+	// below, nothing re-verifies that absDB has not been reopened, written
+	// to, or replaced by another process. The verified checkpoint already
+	// taken only proves no conflicting connection blocked it at that
+	// instant; it says nothing about what happens after Close(). Closing
+	// this window for real would mean holding some lock across it that
+	// every OTHER opener of absDB (including a running `dso` server's own
+	// sqlite.Open) also respects -- a change to the store's concurrency
+	// model, not a local fix to this function, and is intentionally left
+	// for a future, explicitly-approved design rather than added silently
+	// here. Operators must continue to run restore only while no other
+	// process has the database open, exactly as already documented above.
 	replaceFn := replaceDatabaseFile
 	if opts.testReplaceDatabaseFile != nil {
 		replaceFn = opts.testReplaceDatabaseFile
 	}
-	var durabilityErr error
 	if err := replaceFn(absDB, staged.Path); err != nil {
 		var ue *unconfirmedDurabilityError
 		if errors.As(err, &ue) {
 			// The rename already happened: the candidate IS the active
 			// database. Carry on (reopen, audit) and report this at the end.
-			durabilityErr = ue
+			durabilityErr = errors.Join(durabilityErr, ue)
 		} else {
 			if result.SafetySnapshot != "" {
 				return result, fmt.Errorf("replacing active database failed before activation: %w "+
@@ -336,7 +401,9 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	}
 
 	reopenFn := func(ctx context.Context, path string) (*sqlite.Store, error) {
-		return sqlite.Open(ctx, path, sqlite.Options{})
+		// Same restoreLock.Open reasoning as the safety-snapshot Open
+		// above: this call is still inside the exclusive critical section.
+		return restoreLock.Open(ctx, path, sqlite.Options{})
 	}
 	if opts.testReopen != nil {
 		reopenFn = opts.testReopen

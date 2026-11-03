@@ -91,13 +91,16 @@ func (c ctxReader) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
 
-// copyCandidateForValidation is the shared staging copy. Residual races, not
+// copyCandidateForValidation is the shared staging copy. Residual race, not
 // eliminated by the checks below: the caller checks the main database file for
 // safety (securefs.OpenPrivateFile) and this function then reopens it BY PATH
 // to copy it, so a check-then-open race remains. The -wal/-shm companions are
-// opened without following symlinks and verified, on the open descriptor, to
-// be regular files, but they do not receive the owner/mode checks the main
-// file gets. None of this protects against a process with the same OS
+// opened without following symlinks, verified on the open descriptor to be
+// regular files, AND -- same as the main file -- checked for owner and mode
+// (securefs.CheckOpenFile) before being trusted: foldWALIntoMain later folds
+// their content into the staged main file as committed state, so an
+// attacker-planted companion must be rejected exactly as an attacker-planted
+// main file is. None of this protects against a process with the same OS
 // identity that can write to the database directory.
 func copyCandidateForValidation(ctx context.Context, path string) (workPath string, cleanup func(), err error) {
 	tmpDir, err := os.MkdirTemp("", "dso-restore-validate-*")
@@ -130,6 +133,11 @@ func copyCandidateForValidation(ctx context.Context, path string) (workPath stri
 		if err != nil {
 			cleanup()
 			return "", nil, stageErr(ErrStageSidecar, fmt.Errorf("companion file %s is not safe to read: %w", src, err))
+		}
+		if err := securefs.CheckOpenFile(sf, src); err != nil {
+			_ = sf.Close()
+			cleanup()
+			return "", nil, stageErr(ErrStageSidecar, fmt.Errorf("companion file %s is not safe to use: %w", src, err))
 		}
 		err = copyFromReader(ctx, sf, workPath+suffix)
 		_ = sf.Close()

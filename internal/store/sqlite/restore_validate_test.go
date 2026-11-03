@@ -182,6 +182,80 @@ func TestValidateCandidate_WALModeCandidateWithPendingFramesIsNeverModified(t *t
 	}
 }
 
+// walShmCandidate builds a candidate main file plus real -wal/-shm
+// companions (reusing the same technique as
+// TestValidateCandidate_WALModeCandidateWithPendingFramesIsNeverModified) and
+// returns the candidate's main-file path.
+func walShmCandidate(t *testing.T) string {
+	t.Helper()
+	s, livePath := open(t)
+	seed(t, s)
+	if _, err := s.db.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		id := "wal-env-" + strconv.Itoa(i)
+		if err := s.CreateEnvironment(ctx, store.Environment{ID: id, ProjectID: "p1", Slug: "wal-slug-" + strconv.Itoa(i), Name: "n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candDir := securefstest.TempDir(t)
+	cand := filepath.Join(candDir, "candidate.db")
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		b, err := os.ReadFile(livePath + suffix)
+		if err != nil {
+			t.Fatalf("expected a real %s companion before checkpoint: %v", suffix, err)
+		}
+		if err := os.WriteFile(cand+suffix, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.db.Close()
+	return cand
+}
+
+// TestValidateCandidate_WALCompanionWithExcessivePermissionsRejected is a
+// regression test for the WAL/SHM owner/mode validation gap identified
+// during code review: copyCandidateForValidation used to open -wal/-shm
+// companions with securefs.OpenRegularNoFollow (symlink-safe, regular-file-
+// only) but WITHOUT the owner/mode checks (securefs.CheckOpenFile) applied
+// to the main candidate file, even though foldWALIntoMain trusts their
+// content as committed state exactly like the main file's. A companion
+// readable/writable by group or others must be rejected the same way an
+// unsafe main file already is.
+func TestValidateCandidate_WALCompanionWithExcessivePermissionsRejected(t *testing.T) {
+	cand := walShmCandidate(t)
+	if err := os.Chmod(cand+"-wal", 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateCandidate(ctx, cand, latestSchema(t)); err == nil {
+		t.Fatal("expected a group/world-accessible -wal companion to be rejected")
+	}
+}
+
+// TestValidateCandidate_SymlinkedWALCompanionRejected is a regression test
+// for the same gap as above, specifically for symlink substitution: a -wal
+// companion that is actually a symlink (e.g. to a file outside the
+// candidate's own directory) must be rejected, not silently followed and
+// trusted as committed WAL state.
+func TestValidateCandidate_SymlinkedWALCompanionRejected(t *testing.T) {
+	cand := walShmCandidate(t)
+	outside := filepath.Join(securefstest.TempDir(t), "attacker-controlled-wal")
+	if err := os.WriteFile(outside, []byte("attacker data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	walPath := cand + "-wal"
+	if err := os.Remove(walPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, walPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateCandidate(ctx, cand, latestSchema(t)); err == nil {
+		t.Fatal("expected a symlinked -wal companion to be rejected")
+	}
+}
+
 func isStoreErrSchemaTooNew(err error) bool {
 	for e := err; e != nil; {
 		if e == store.ErrSchemaTooNew {

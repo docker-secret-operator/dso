@@ -15,6 +15,28 @@ import (
 	"github.com/docker-secret-operator/dso/internal/store/sqlite"
 )
 
+// restoreT calls Restore after closing e's own already-open *sqlite.Store on
+// the same path (if any), simulating what real `dso central restore` usage
+// already requires: a fresh process with nothing else holding the database
+// open (see centralRestoreCmd's own operator warning and
+// docs/security/restore-concurrency-design.md). e.st exists purely as a test
+// convenience for seeding/querying; in production nothing analogous to it
+// holds the database open while `dso central restore` runs, since restore is
+// its own process. Restore's own exclusive central lock would otherwise
+// correctly refuse to run while e.st is still open -- that refusal is the
+// fix working as designed, not a bug, so tests must simulate "stop every
+// other process using this database first" exactly as operators are told to.
+func restoreT(t *testing.T, e *env, opts RestoreOptions) (RestoreResult, error) {
+	t.Helper()
+	if e.st != nil {
+		if err := e.st.Close(); err != nil {
+			t.Fatalf("closing active store before restore: %v", err)
+		}
+		e.st = nil
+	}
+	return Restore(ctx, opts)
+}
+
 // backupActive creates a backup of e's active database and returns its path.
 func backupActive(t *testing.T, e *env, name string) string {
 	t.Helper()
@@ -24,6 +46,50 @@ func backupActive(t *testing.T, e *env, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestRestore_SafetySnapshotDirectorySyncWarningDoesNotAbortRestore is a
+// regression test for Restore's handling of a non-fatal
+// *sqlite.BackupDirectorySyncError from the mandatory safety snapshot: the
+// snapshot file itself is valid (see sqlite.Store.SafetySnapshot's doc
+// comment), so Restore must proceed using it, record its path on the
+// result, and report the durability warning only via the final error --
+// never treat it as "restore aborted; active database untouched", which
+// would also make a real mandatory-snapshot failure harder to tell apart
+// from this merely-cosmetic durability gap.
+func TestRestore_SafetySnapshotDirectorySyncWarningDoesNotAbortRestore(t *testing.T) {
+	e := setup(t)
+	e.project(t, "proj", "prod")
+	cand := backupActive(t, e, "cand.db")
+
+	warnErr := errors.New("simulated directory fsync warning")
+	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
+	result, err := restoreT(t, e, RestoreOptions{
+		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp, Actor: "test-actor",
+		Confirm: func(sqlite.CandidateInfo) bool { return true },
+		testSafetySnapshot: func(ctx context.Context, active *sqlite.Store, dbPath string) (string, error) {
+			path, realErr := active.SafetySnapshot(ctx, dbPath)
+			if realErr != nil {
+				t.Fatalf("test setup: real SafetySnapshot failed: %v", realErr)
+			}
+			return path, sqlite.NewBackupDirectorySyncErrorForTesting(warnErr)
+		},
+	})
+	if result.SafetySnapshot == "" {
+		t.Fatal("expected the valid safety snapshot path to be recorded despite the durability warning")
+	}
+	if _, statErr := os.Stat(result.SafetySnapshot); statErr != nil {
+		t.Fatalf("the recorded safety snapshot must actually exist on disk: %v", statErr)
+	}
+	if result.RestoreEventID == "" {
+		t.Fatal("expected the restore to still complete and record a restore event despite the non-fatal warning")
+	}
+	if err == nil || !errors.Is(err, warnErr) {
+		t.Fatalf("expected the durability warning to be surfaced (not silently dropped) in Restore's returned error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "active database untouched") {
+		t.Fatalf("a non-fatal durability warning must not be reported as an aborted restore: %v", err)
+	}
 }
 
 func TestValidateCandidateKey_WrongKeyRejectedBeforeActiveDatabaseModified(t *testing.T) {
@@ -67,7 +133,7 @@ func TestValidateCandidateKey_CorrectKeyAccepted(t *testing.T) {
 func TestRestore_CandidateAndActivePathsCannotBeConfused(t *testing.T) {
 	e := setup(t)
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	_, err := Restore(ctx, RestoreOptions{CandidatePath: e.dbPath, DBPath: e.dbPath, KeyProvider: kp})
+	_, err := restoreT(t, e, RestoreOptions{CandidatePath: e.dbPath, DBPath: e.dbPath, KeyProvider: kp})
 	if err == nil {
 		t.Fatal("expected Restore to reject a candidate path identical to the active database path")
 	}
@@ -78,6 +144,17 @@ func TestRestore_DryRunDoesNotMutateActiveDatabase(t *testing.T) {
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
 
+	// Close (and checkpoint) e.st before taking the "before" snapshot: Close
+	// itself folds the WAL into the main file, which changes the file's
+	// bytes for reasons that have nothing to do with Restore. restoreT below
+	// will close e.st anyway (simulating no other process holding the
+	// database open) -- doing it here first means "before" and "after" are
+	// both read from the same already-checkpointed state, so only Restore's
+	// own effect (or lack of it) shows up in the comparison.
+	if err := e.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.st = nil
 	before, err := os.ReadFile(e.dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +162,7 @@ func TestRestore_DryRunDoesNotMutateActiveDatabase(t *testing.T) {
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 	confirmCalled := false
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp, DryRun: true,
 		Confirm: func(sqlite.CandidateInfo) bool { confirmCalled = true; return true },
 	})
@@ -126,7 +203,7 @@ func TestRestore_SuccessfulRoundTripAppendsLinkedRestoreEvent(t *testing.T) {
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp, Actor: "test-actor",
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	})
@@ -201,7 +278,7 @@ func TestRestore_OlderValidBackupPassesChainVerification_DocumentedLimitation(t 
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	})
@@ -235,13 +312,19 @@ func TestRestore_ConfirmationDeclinedLeavesActiveDatabaseUntouched(t *testing.T)
 	e := setup(t)
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
+	// See the equivalent comment in TestRestore_DryRunDoesNotMutateActiveDatabase:
+	// close (and checkpoint) before snapshotting "before" bytes.
+	if err := e.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.st = nil
 	before, err := os.ReadFile(e.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	_, err = Restore(ctx, RestoreOptions{
+	_, err = restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return false },
 	})
@@ -267,7 +350,7 @@ func TestRestore_SourceBackupRemainsUnchanged(t *testing.T) {
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	if _, err := Restore(ctx, RestoreOptions{
+	if _, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	}); err != nil {
@@ -351,7 +434,7 @@ func TestRestore_StaleWALAndSHMDoNotCorruptRestoredDatabase(t *testing.T) {
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	if _, err := Restore(ctx, RestoreOptions{
+	if _, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	}); err != nil {
@@ -400,7 +483,7 @@ func TestRestore_UnsafeDestinationDirectoryRejectedWithNoActiveDatabase(t *testi
 	unsafeDBPath := filepath.Join(unsafeDir, "central.db")
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	_, err := Restore(ctx, RestoreOptions{
+	_, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: unsafeDBPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	})
@@ -422,7 +505,7 @@ func TestRestore_NoActiveDatabaseYetSkipsSnapshotAndStillWorks(t *testing.T) {
 	}
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	})
@@ -481,7 +564,7 @@ func TestRestore_AuditEventAppendFailureAfterActivation_ReportsUsableButUnrecord
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 	injectedErr := errors.New("injected: audit sink unavailable")
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 		testAppendRestoreEvent: func(context.Context, *sqlite.Store, store.AuditEvent) (store.AuditEvent, error) {
@@ -541,7 +624,7 @@ func TestRestore_ReplacementFailureBeforeActivation_LeavesActiveDatabaseUsable(t
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 	injectedErr := errors.New("injected: replacement failed")
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm:                 func(sqlite.CandidateInfo) bool { return true },
 		testReplaceDatabaseFile: func(string, string) error { return injectedErr },
@@ -609,7 +692,7 @@ func TestRestore_ReopenFailureAfterReplacement_DoesNotPromiseAutomaticRecovery(t
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 	injectedErr := errors.New("injected: reopen failed")
-	result, err := Restore(ctx, RestoreOptions{
+	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm:    func(sqlite.CandidateInfo) bool { return true },
 		testReopen: func(context.Context, string) (*sqlite.Store, error) { return nil, injectedErr },
@@ -662,6 +745,12 @@ func TestRestore_FailedKeyValidationLeavesActiveDatabaseUntouched(t *testing.T) 
 	e := setup(t)
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
+	// See the equivalent comment in TestRestore_DryRunDoesNotMutateActiveDatabase:
+	// close (and checkpoint) before snapshotting "before" bytes.
+	if err := e.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.st = nil
 	before, err := os.ReadFile(e.dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -677,7 +766,7 @@ func TestRestore_FailedKeyValidationLeavesActiveDatabaseUntouched(t *testing.T) 
 	}
 
 	confirmReached := false
-	_, err = Restore(ctx, RestoreOptions{
+	_, err = restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: otherKP,
 		Confirm: func(sqlite.CandidateInfo) bool { confirmReached = true; return false },
 	})
@@ -791,7 +880,7 @@ func TestRestore_WALCandidate_ActivatedStateEqualsValidatedState(t *testing.T) {
 	cleanup()
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	if _, err := Restore(ctx, RestoreOptions{
+	if _, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 	}); err != nil {
@@ -830,8 +919,14 @@ func TestRestore_WALCandidate_WrongKeyDoesNotReplaceActiveAndCleansStaging(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	// See the equivalent comment in TestRestore_DryRunDoesNotMutateActiveDatabase:
+	// close (and checkpoint) before snapshotting "before" bytes.
+	if err := e.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.st = nil
 	before, _ := os.ReadFile(e.dbPath)
-	_, err = Restore(ctx, RestoreOptions{
+	_, err = restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: otherKP,
 		Confirm: func(sqlite.CandidateInfo) bool { t.Fatal("confirm must not be reached"); return true },
 	})
@@ -859,7 +954,7 @@ func TestRestore_InvalidCandidateCleansStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	if _, err := Restore(ctx, RestoreOptions{CandidatePath: bad, DBPath: e.dbPath, KeyProvider: kp}); err == nil {
+	if _, err := restoreT(t, e, RestoreOptions{CandidatePath: bad, DBPath: e.dbPath, KeyProvider: kp}); err == nil {
 		t.Fatal("expected a non-SQLite candidate to be rejected")
 	}
 	if m, _ := filepath.Glob(filepath.Join(tmp, "dso-restore-*")); len(m) != 0 {
@@ -900,7 +995,7 @@ func TestRestore_IncompleteCheckpointAbortsBeforeSidecarsOrMainFileTouched(t *te
 
 	replaceCalled := false
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	_, err = Restore(ctx, RestoreOptions{
+	_, err = restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm:                 func(sqlite.CandidateInfo) bool { return true },
 		testReplaceDatabaseFile: func(string, string) error { replaceCalled = true; return nil },

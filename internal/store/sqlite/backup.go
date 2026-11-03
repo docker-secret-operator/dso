@@ -110,14 +110,66 @@ func (s *Store) Backup(ctx context.Context, destPath string) (string, error) {
 			return fail(err)
 		}
 	}
-	if d, err := os.Open(dir); err == nil { // #nosec G304 -- directory of the backup file created above, already validated by securefs.EnsureDir
-		_ = d.Sync()
-		_ = d.Close()
-	}
+	// Sync the destination directory too, so the backup file's directory
+	// entry itself survives a crash, not just its content. Unlike the
+	// file-level sync above, a failure here does NOT remove or invalidate
+	// the backup: the file itself is already written, synced, and passed
+	// verifyBackup, so it is a correct, usable backup regardless. But
+	// silently discarding this error (as earlier versions of this function
+	// did) is inconsistent with the fail-closed posture of every other step
+	// here, and it would let Backup report unqualified success when a real
+	// durability guarantee was not actually confirmed. Report it via a
+	// typed, non-fatal error instead so callers can decide (see
+	// BackupDirectorySyncError and SafetySnapshot).
+	dirSyncErr := syncBackupDir(dir)
 	if err := os.Chmod(abs, 0o600); err != nil {
 		return fail(err)
 	}
+	if dirSyncErr != nil {
+		return abs, &BackupDirectorySyncError{dirSyncErr}
+	}
 	return abs, nil
+}
+
+// syncBackupDir fsyncs dir so a backup file's directory entry is durable
+// across a crash. It is a package-level variable, not a direct os.Open/Sync
+// call inlined into Backup, purely so tests can simulate a directory-sync
+// failure deterministically -- OS-level permission failures are unreliable
+// to provoke across platforms and CI sandboxes, the same reason
+// internal/centralsvc.RestoreOptions' own test* seams exist.
+var syncBackupDir = func(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- directory of the backup file created above, already validated by securefs.EnsureDir
+	if err != nil {
+		return fmt.Errorf("opening backup directory %s to sync: %w", dir, err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("syncing backup directory %s: %w", dir, err)
+	}
+	return nil
+}
+
+// BackupDirectorySyncError is returned by Backup only AFTER the backup file
+// itself has been fully written, fsynced, and independently verified
+// (verifyBackup): the backup is correct and usable, but fsyncing its parent
+// directory -- the step that makes the backup's directory entry itself
+// durable across a crash, as distinct from its content -- failed or could
+// not be attempted. Backup still returns the (valid) destination path
+// alongside this error; callers that treat any non-nil error as "no backup
+// was produced" must check for this type first (SafetySnapshot does).
+type BackupDirectorySyncError struct{ err error }
+
+func (e *BackupDirectorySyncError) Error() string { return e.err.Error() }
+func (e *BackupDirectorySyncError) Unwrap() error { return e.err }
+
+// NewBackupDirectorySyncErrorForTesting constructs a *BackupDirectorySyncError
+// wrapping err. BackupDirectorySyncError's own field is deliberately
+// unexported (callers should only ever inspect it via errors.As/Is), which
+// means a test in another package that needs to exercise a caller's
+// handling of this specific error type -- without reaching into Backup's
+// own unexported syncBackupDir seam -- has no other way to construct one.
+func NewBackupDirectorySyncErrorForTesting(err error) error {
+	return &BackupDirectorySyncError{err}
 }
 
 // ErrCheckpointIncomplete is returned by CheckpointTruncate when SQLite
@@ -164,6 +216,16 @@ func (s *Store) CheckpointTruncate(ctx context.Context) error {
 // recommendation for making restore recoverable from its own failure: it
 // must succeed, and be independently verified, before anything about the
 // active database is touched by a restore.
+//
+// A *BackupDirectorySyncError from the underlying Backup call is NOT treated
+// as a failed snapshot here: the snapshot file itself is valid and usable
+// (Backup only returns one once the file is written, synced, and
+// independently re-verified), so retrying the whole snapshot on that basis
+// would be wrong -- it would also exhaust SafetySnapshot's own
+// ErrBackupDestinationExists retry budget for no reason. SafetySnapshot
+// instead returns the valid path AND that error together, exactly as Backup
+// does, so the caller (Restore) can decide how to surface a durability
+// warning without losing the snapshot it depends on for recovery.
 func (s *Store) SafetySnapshot(ctx context.Context, dbPath string) (string, error) {
 	for attempt := 0; ; attempt++ {
 		var rnd [4]byte
@@ -175,6 +237,10 @@ func (s *Store) SafetySnapshot(ctx context.Context, dbPath string) (string, erro
 		path, err := s.Backup(ctx, dst)
 		if err == nil {
 			return path, nil
+		}
+		var dirSyncErr *BackupDirectorySyncError
+		if errors.As(err, &dirSyncErr) {
+			return path, err
 		}
 		if errors.Is(err, ErrBackupDestinationExists) && attempt < 5 {
 			continue

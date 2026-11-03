@@ -313,9 +313,17 @@ func NewUpCmd() *cobra.Command {
 				// os.Exit(1) directly, which bypasses this function's own
 				// defer entirely -- including the ordinary "docker compose
 				// up failed" path, not just crash/signal cases.
-				fail := func(format string, args ...interface{}) error {
+				//
+				// msg is a plain label, never a format string: a generic
+				// `func(format string, args ...interface{}) error` wrapper
+				// around fmt.Errorf defeats go vet's printf/%w checking,
+				// since vet cannot verify format/verb pairs through an
+				// unnamed local closure. Taking a fixed (string, error) pair
+				// and building the one "%s: %w" format internally removes
+				// the ambiguity instead of relying on vet to see through it.
+				fail := func(msg string, err error) error {
 					cleanupTmpFile()
-					return fmt.Errorf(format, args...)
+					return fmt.Errorf("%s: %w", msg, err)
 				}
 
 				v, err := vault.LoadDefault()
@@ -378,10 +386,10 @@ func NewUpCmd() *cobra.Command {
 				enc := yaml.NewEncoder(tmpFile)
 				enc.SetIndent(2)
 				if err := enc.Encode(mutatedRoot); err != nil {
-					return fail("writing AST mutation: %w", err)
+					return fail("writing AST mutation", err)
 				}
 				if err := enc.Close(); err != nil {
-					return fail("finalizing AST mutation: %w", err)
+					return fail("finalizing AST mutation", err)
 				}
 
 				fmt.Println("🐳 Running docker compose...")
@@ -396,7 +404,7 @@ func NewUpCmd() *cobra.Command {
 				execCmd.Stdin = os.Stdin
 
 				if err := execCmd.Run(); err != nil {
-					return fail("docker compose failed: %w", err)
+					return fail("docker compose failed", err)
 				}
 			}
 			return nil

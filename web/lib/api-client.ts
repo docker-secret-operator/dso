@@ -1,5 +1,4 @@
 import axios, { AxiosInstance } from 'axios'
-import { getCsrfHeaders } from './csrf'
 import { handleApiError } from './handle-api-error'
 
 /**
@@ -13,6 +12,16 @@ import { handleApiError } from './handle-api-error'
  * client-readable bearer token. `withCredentials: true` makes the browser
  * attach that cookie automatically on same-origin requests; there is no
  * localStorage token to read or attach here.
+ *
+ * CSRF: there is deliberately no client-side CSRF token here (an earlier
+ * version of this file generated and sent one via `./csrf`, but the Go
+ * backend never read it -- see internal/server/auth_gate.go). The backend's
+ * real CSRF defense is server-side Origin/Sec-Fetch-Site validation
+ * (RESTServer.originAllowed, enforced in internal/server/rest.go for every
+ * state-changing request not using bearer auth), which needs no
+ * client-supplied token at all. A self-issued, self-validated browser token
+ * would have provided no additional protection and risked being mistaken
+ * for a real synchronizer-token mechanism.
  */
 
 const getApiBaseUrl = (): string => {
@@ -44,19 +53,6 @@ class APIClient {
       headers: {
         'Content-Type': 'application/json',
       },
-    })
-
-    // Attach CSRF headers for state-changing requests. No Authorization
-    // header is set here -- the session cookie is sent automatically via
-    // withCredentials.
-    this.client.interceptors.request.use((config) => {
-      if (typeof window !== 'undefined') {
-        if (config.method && ['post', 'put', 'delete', 'patch'].includes(config.method.toLowerCase())) {
-          const csrfHeaders = getCsrfHeaders()
-          Object.assign(config.headers, csrfHeaders)
-        }
-      }
-      return config
     })
 
     this.client.interceptors.response.use(

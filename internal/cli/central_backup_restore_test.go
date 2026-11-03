@@ -369,7 +369,7 @@ func TestCentralRestoreCmd_OfflineWarning_InHelpAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"OFFLINE", "Stop every other process", "no cross-process lock"} {
+	for _, want := range []string{"OFFLINE", "Stop every other process", "exclusive lock"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help is missing %q:\n%s", want, help)
 		}
@@ -378,7 +378,7 @@ func TestCentralRestoreCmd_OfflineWarning_InHelpAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"offline", "stop every other process", "concurrent writes can be lost"} {
+	for _, want := range []string{"offline", "stop every other process", "writes can still be lost"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("prompt is missing %q:\n%s", want, stdout)
 		}

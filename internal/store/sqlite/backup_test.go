@@ -229,6 +229,82 @@ func TestBackup_ConsistentDuringInFlightWriteTransaction(t *testing.T) {
 	}
 }
 
+// TestBackup_DirectorySyncFailureIsSurfacedNotSwallowed exercises the fix for
+// the directory-fsync error that Backup used to discard silently (`_ =
+// d.Sync(); _ = d.Close()`): a failure to fsync the destination directory is
+// now reported via *BackupDirectorySyncError, not dropped. It uses the
+// syncBackupDir test seam rather than a real OS-level permission failure,
+// which is unreliable to provoke deterministically across platforms/CI.
+func TestBackup_DirectorySyncFailureIsSurfacedNotSwallowed(t *testing.T) {
+	s, _ := open(t)
+	dst := filepath.Join(securefstest.TempDir(t), "dirsync.db")
+
+	boom := errors.New("simulated directory fsync failure")
+	prev := syncBackupDir
+	syncBackupDir = func(string) error { return boom }
+	defer func() { syncBackupDir = prev }()
+
+	path, err := s.Backup(ctx, dst)
+	if err == nil {
+		t.Fatal("expected a directory-sync error to be returned, got nil")
+	}
+	var dirSyncErr *BackupDirectorySyncError
+	if !errors.As(err, &dirSyncErr) {
+		t.Fatalf("expected *BackupDirectorySyncError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the underlying simulated error to be unwrappable, got %v", err)
+	}
+	// The backup file itself must still be valid and usable: Backup only
+	// returns this error AFTER the file was written, fsynced, and
+	// independently re-verified -- it is not an incomplete/partial file.
+	if path != dst {
+		t.Fatalf("expected the valid backup path %s even with a directory-sync warning, got %q", dst, path)
+	}
+	if _, statErr := os.Stat(dst); statErr != nil {
+		t.Fatalf("backup file must still exist despite the directory-sync warning: %v", statErr)
+	}
+	restored, err := Open(ctx, path, Options{})
+	if err != nil {
+		t.Fatalf("backup with only a directory-sync warning must still reopen cleanly: %v", err)
+	}
+	restored.Close()
+}
+
+// TestSafetySnapshot_DirectorySyncFailureStillReturnsUsableSnapshot ensures
+// Restore's caller (SafetySnapshot) does not throw away a valid, verified
+// safety snapshot merely because its directory-fsync durability could not be
+// confirmed -- regressing to the old "snapshot failed" behavior here would
+// make a mandatory pre-restore safety snapshot unreliable for no real
+// reason, and would also exhaust SafetySnapshot's own
+// ErrBackupDestinationExists retry loop pointlessly.
+func TestSafetySnapshot_DirectorySyncFailureStillReturnsUsableSnapshot(t *testing.T) {
+	s, path := open(t)
+	seedWithAudit(t, s)
+
+	boom := errors.New("simulated directory fsync failure")
+	prev := syncBackupDir
+	syncBackupDir = func(string) error { return boom }
+	defer func() { syncBackupDir = prev }()
+
+	snap, err := s.SafetySnapshot(ctx, path)
+	if snap == "" {
+		t.Fatalf("expected a usable snapshot path even with a directory-sync warning, got empty path (err=%v)", err)
+	}
+	var dirSyncErr *BackupDirectorySyncError
+	if !errors.As(err, &dirSyncErr) {
+		t.Fatalf("expected the directory-sync warning to be propagated as *BackupDirectorySyncError, got %v", err)
+	}
+	restored, openErr := Open(ctx, snap, Options{})
+	if openErr != nil {
+		t.Fatalf("safety snapshot with only a directory-sync warning must still reopen cleanly: %v", openErr)
+	}
+	defer restored.Close()
+	if _, err := restored.GetProjectBySlug(ctx, "proj"); err != nil {
+		t.Fatalf("safety snapshot missing seeded data: %v", err)
+	}
+}
+
 func TestSafetySnapshot_NamingAndReopenability(t *testing.T) {
 	s, path := open(t)
 	seedWithAudit(t, s)

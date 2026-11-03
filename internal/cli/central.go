@@ -739,13 +739,19 @@ Known limitations:
     checkout): anyone able to run 'dso central' as the owning OS user can
     run it.
 
-Restore is an OFFLINE operator action. Stop every other process that uses the
-active database before restoring. Restore takes no cross-process lock, so a
-write made by another process while it runs can be silently lost.
+Restore is an OFFLINE operator action. It takes an exclusive cross-process
+lock on the active database for the duration of the restore (see
+docs/security/restore-concurrency-design.md): any other 'dso central'
+command running against the same database will fail with a clear
+"database is locked" error rather than racing restore's replacement of the
+file. Stop every other process that uses the active database before
+restoring anyway -- the lock prevents data loss from a concurrent 'dso
+central' invocation, but offers no protection against a process outside
+this codebase (e.g. a script opening the database file directly).
 
 --dry-run performs every validation check and reports the result without
-touching the active database, creating a safety snapshot, or recording a
-restore event.`,
+touching the active database, creating a safety snapshot, recording a
+restore event, or taking the exclusive lock.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := f.requireCommon(); err != nil {
 				return err
@@ -772,8 +778,10 @@ restore event.`,
 					}
 					return promptApprovalIO(cmd.InOrStdin(), cmd.OutOrStdout(), fmt.Sprintf(
 						"This will replace the active database at %s. A safety snapshot will be kept. "+
-							"Restore is offline: stop every other process using this database first "+
-							"(no cross-process lock is taken; concurrent writes can be lost). Continue?", f.db))
+							"Restore is offline and holds an exclusive lock for its duration, so a concurrent "+
+							"'dso central' command will fail rather than race it -- stop every other process "+
+							"using this database anyway, since a tool outside dso is not covered by that lock "+
+							"and its writes can still be lost. Continue?", f.db))
 				},
 			})
 			if errors.Is(err, centralsvc.ErrRestoreNotConfirmed) {

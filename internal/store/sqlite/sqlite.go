@@ -43,6 +43,33 @@ type Options struct {
 	Migrations []Migration
 	// Now overrides the clock. Intended for tests.
 	Now func() time.Time
+
+	// LockMode selects the central sidecar lock (see centrallock.go) this
+	// Open takes. The zero value, LockShared, is correct for every ordinary
+	// caller: reads, writes, and Backup all use LockShared, since SQLite's
+	// own transaction locking already serializes SQL-level writers against
+	// each other -- this sidecar lock exists to keep all of that from
+	// overlapping an exclusive database REPLACEMENT, not to add a second
+	// SQL-level write lock. Only Restore's own top-level critical section
+	// needs LockExclusive, and it takes that directly via
+	// AcquireExclusiveCentralLock rather than through this field, because
+	// its lock must span more than one Store's Open/Close lifetime.
+	LockMode LockMode
+	// LockTimeout overrides the default wait (centralLockDefaultTimeout)
+	// before a busy central lock fails Open. <=0 uses the default.
+	LockTimeout time.Duration
+	// skipCentralLock is intentionally unexported: no caller outside this
+	// package can name or set it. A caller that already holds the
+	// exclusive central lock (Restore) does not get to it through Options
+	// at all -- it uses (*RestoreLock).Open instead, which sets this
+	// internally and only after verifying the path matches the lock it
+	// already holds. An earlier version of this field was exported as
+	// SkipCentralLock, settable by anyone constructing Options{}; that was
+	// a real footgun (nothing stopped a future caller from copying the
+	// pattern without holding any lock at all, silently defeating the
+	// whole protocol) and was removed before this ever shipped, in favor
+	// of this struct-literal-proof design.
+	skipCentralLock bool
 }
 
 // Store is the SQLite-backed store.Store.
@@ -51,6 +78,7 @@ type Store struct {
 	now        func() time.Time
 	lastBackup string
 	path       string
+	lock       *centralLock
 }
 
 // Path returns the filesystem path this Store was opened from (as passed to
@@ -93,6 +121,14 @@ func EmbeddedMigrations() ([]Migration, error) {
 // migrations. It returns clear errors for a database that is unreadable,
 // insecurely permissioned, corrupt, or from a newer schema.
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
+	return openStore(ctx, path, opts)
+}
+
+// open is Open's real implementation, also used by (*RestoreLock).Open
+// (centrallock.go) -- the only other caller, and the only way
+// opts.skipCentralLock is ever set to true, after that caller has itself
+// verified it already holds the matching exclusive lock.
+func openStore(ctx context.Context, path string, opts Options) (*Store, error) {
 	if opts.BusyTimeout <= 0 {
 		opts.BusyTimeout = 5 * time.Second
 	}
@@ -110,6 +146,27 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving database path %s: %w", path, err)
+	}
+
+	var lock *centralLock
+	if !opts.skipCentralLock {
+		// absPathForLock (not plain absPath): the lock's identity must
+		// follow symlinks, so two different symlinked routes to the same
+		// real database take the same lock, not two independent ones that
+		// never coordinate with each other at all.
+		lockPath, err := absPathForLock(path)
+		if err != nil {
+			return nil, err
+		}
+		lock, err = acquireCentralLock(lockPath, opts.LockMode, opts.LockTimeout)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	q := url.Values{}
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", opts.BusyTimeout.Milliseconds()))
 	q.Add("_pragma", "foreign_keys(1)")
@@ -120,26 +177,25 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		_ = lock.Close()
 		return nil, fmt.Errorf("opening database %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(8)
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("resolving database path %s: %w", path, err)
-	}
-	s := &Store{db: db, now: opts.Now, path: absPath}
+	s := &Store{db: db, now: opts.Now, path: absPath, lock: lock}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("opening database %s: %w", path, err)
 	}
 	var mode string
 	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {
 		_ = db.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("database %s: WAL mode could not be enabled (journal_mode=%q, err=%v)", path, mode, err)
 	}
 	if err := s.migrate(ctx, path, migs); err != nil {
 		_ = db.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	return s, nil
@@ -188,7 +244,17 @@ func prepareFile(path string) error {
 // centralsvc.Restore's doc comments).
 func (s *Store) Close() error {
 	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
-	return s.db.Close()
+	closeErr := s.db.Close()
+	// The central lock is released AFTER the database handle is closed, on
+	// every path (both errors are returned, never silently dropped): a
+	// reliable release here, even when db.Close itself failed, is what lets
+	// a later Open (by this or another process) make progress instead of
+	// waiting out the full lock timeout for a Store that is otherwise done.
+	lockErr := s.lock.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+	return lockErr
 }
 
 func (s *Store) migrate(ctx context.Context, path string, migs []Migration) error {
