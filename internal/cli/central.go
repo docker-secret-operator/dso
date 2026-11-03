@@ -151,7 +151,14 @@ func (f *centralFlags) open(cmd *cobra.Command) (*centralsvc.Service, func(), er
 	if err != nil {
 		return nil, nil, err
 	}
-	return centralsvc.New(st, kp, nil), func() { _ = st.Close() }, nil
+	// centralAuditLogger, not nil (CLI-logger decision): every command built
+	// through this helper previously left the service with a nil logger,
+	// which centralsvc.New silently replaced with zap.NewNop() -- a
+	// best-effort audit-write failure for any of these commands was
+	// therefore completely invisible to the operator. This only changes
+	// observability (A-2's own availability-first policy is unchanged:
+	// operations still never block on an audit-write failure).
+	return centralsvc.New(st, kp, centralAuditLogger()), func() { _ = st.Close() }, nil
 }
 
 func actorName() string {
@@ -174,20 +181,35 @@ var centralInitAfterKey func() error
 // on every test run.
 var centralAuditLoggerOverride *zap.Logger
 
-// centralAuditLogger returns the logger `dso central init` uses to report
-// audit-write failures (F1, approved): the same structured logging
-// convention internal/centralsvc's appendAuditBestEffort already uses for
-// every other operation, not a bespoke stderr format. A minimal
-// zap.NewProduction logger is this CLI's own default (no shared
-// `dso`-wide logger construction exists to reuse for a short-lived,
-// one-shot command like `init`); falling back to zap.NewNop() if even that
-// fails is a deliberate choice to never let logger construction itself
-// block or fail the init command.
+// centralAuditLogger returns the logger every `dso central` command uses to
+// report best-effort audit-write failures (CLI-logger decision, ratified):
+// the same structured logging convention internal/centralsvc's own
+// appendAuditBestEffort already uses, not a bespoke stderr format.
+// Originally built for `init` alone; (*centralFlags).open and the `init`
+// Bind call now share it too, so a best-effort audit-write failure for any
+// `dso central` command is observable instead of silently discarded by a
+// nil-becomes-zap.NewNop() logger. This changes observability only -- A-2's
+// availability-first policy is unchanged; no operation blocks or fails
+// because of a logging problem. A minimal zap.NewProduction logger is this
+// CLI's own default (no shared `dso`-wide logger construction exists to
+// reuse for a short-lived, one-shot command); falling back to zap.NewNop()
+// if even that fails is a deliberate choice to never let logger
+// construction itself block or fail a command.
 func centralAuditLogger() *zap.Logger {
 	if centralAuditLoggerOverride != nil {
 		return centralAuditLoggerOverride
 	}
-	l, err := zap.NewProduction()
+	// Error level only, not zap.NewProduction's Info+ default: the approved
+	// requirement (this file's own earlier test comments) is surfacing
+	// best-effort audit-write FAILURES, not routine operational logging
+	// (e.g. centralsvc's own s.log.Info("secret read", ...) on every
+	// successful reveal). Filtering here keeps that distinction exact now
+	// that this logger is shared by every `dso central` command, not just
+	// `init` -- a command that only ever logs at error level in the first
+	// place, so this is not a behavior change for it.
+	cfg := zap.NewProductionConfig()
+	cfg.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	l, err := cfg.Build()
 	if err != nil {
 		return zap.NewNop()
 	}
@@ -329,7 +351,7 @@ database files this run created are removed; fix the cause and re-run with
 				return fail(err)
 			}
 			defer st.Close()
-			if err := centralsvc.New(st, kp, nil).Bind(cmd.Context()); err != nil {
+			if err := centralsvc.New(st, kp, centralAuditLogger()).Bind(cmd.Context()); err != nil {
 				recordInitEvent(st, store.AuditFailure, "db_error")
 				_ = st.Close()
 				return fail(err)
