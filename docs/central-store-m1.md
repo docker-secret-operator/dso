@@ -321,21 +321,48 @@ created with it.
   file and, when the stored schema is older than the binary's, takes a
   pre-migration `.bak` and migrates (a database already at the latest schema is
   not changed).
-* **`restore --from FILE`.** An **offline** operator action. Every `dso central`
-  command that opens the database (`init`, the secret and project commands,
-  `backup`, `restore`) takes an advisory `flock(2)` on the sidecar
-  `<db>.central.lock` (shared; any number of shared holders). A non-dry-run
-  restore takes it **exclusively** after the candidate has been validated and
-  before the confirmation prompt, and holds it through the final reopen, so a
-  concurrent `dso central` command, or a second restore, against the same path
-  fails with `ErrCentralLockBusy` after a 5 s default timeout instead of racing
-  the replacement. `--dry-run` and a candidate that fails validation never take
-  it. The lock is advisory and local only: a process that bypasses `dso central`
-  (for example the `sqlite3` CLI or a script opening the file directly), another
-  host, or a filesystem without working `flock` is not coordinated, and a write
-  from such a process during the restore can still be lost, so stop every other
-  user of the database anyway. The kernel releases the lock when its holder
-  exits or crashes, and the sidecar file is never deleted. It stages a private copy of the candidate (and its `-wal`/`-shm`
+* **`restore --from FILE`.** An **offline** operator action. Cross-process
+  coordination between `dso central` processes uses an advisory `flock(2)` on
+  the sidecar `<db>.central.lock`:
+  * *Shared lock.* Every command that opens the database through the store's
+    normal open path takes it and holds it until that command closes the store:
+    `init`, `project create|list`, `environment create|list`, every `secret`
+    subcommand (`create`, `add-version`, `get`, `list`, `versions`,
+    `disable-version`, `delete`) and `backup` (after its existence check
+    passes). Any number of shared holders can coexist. `secret create` and
+    `secret add-version` open the database before they read the value, so one
+    waiting at its value prompt still holds the shared lock.
+  * *Exclusive lock.* A non-dry-run `restore` does not take a shared lock. It
+    takes the lock **exclusively** after the candidate has been staged and
+    validated (including the root-key check) and before the confirmation
+    prompt, and keeps it through the confirmation, the safety snapshot, the
+    replacement and the final reopen. The lock is requested without blocking
+    and retried every 50 ms, and it is granted only while no other `dso central`
+    process holds the lock in any mode.
+  * *Contention.* If a shared or exclusive holder is still present when the
+    timeout expires (5 s; the CLI does not change this default), `restore`
+    fails with `ErrCentralLockBusy` ("acquiring exclusive restore lock on
+    ..."). That happens before any prompt, safety snapshot or change: the
+    active database is untouched and nothing is audited. Restore is therefore
+    **not** guaranteed to obtain the exclusive lock; let the running command
+    finish (including one sitting at a value prompt) and retry. Conversely,
+    while a restore holds the lock, including while it waits at its
+    confirmation prompt, any other command that opens the database fails with
+    `ErrCentralLockBusy` after the same 5 s instead of racing the replacement.
+  * *No lock.* `restore --dry-run`, a restore whose candidate fails validation
+    (both return before the lock is requested) and `audit verify` (which
+    verifies a private staged copy and never opens the live database) take no
+    central lock.
+  * *Limits.* The lock is advisory and local only: a process that bypasses
+    `dso central` (for example the `sqlite3` CLI or a script opening the file
+    directly), another host, or a filesystem without working `flock` is not
+    coordinated, and a write from such a process during the restore can still
+    be lost, so stop every other user of the database anyway. On a build for a
+    platform without `flock` support, opening the database fails instead of
+    proceeding unlocked. The kernel releases the lock when its holder exits or
+    crashes, and the sidecar file is never deleted.
+
+  It stages a private copy of the candidate (and its `-wal`/`-shm`
   sidecars), validates structure, schema version, the audit chain and the
   root-key binding on that copy, and activates that same copy; it does not prove
   every secret version decrypts. Unless `--dry-run`, it asks for confirmation
