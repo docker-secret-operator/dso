@@ -74,12 +74,14 @@ const (
 	LockShared LockMode = iota
 	// LockExclusive excludes every other holder, shared or exclusive. Only
 	// Restore's own top-level critical section uses this (via
-	// AcquireExclusiveCentralLock), for the entire span from just before the
-	// mandatory safety snapshot through the final reopen -- not merely
-	// around the filesystem replace step -- because the TOCTOU gap this
-	// protocol closes is "something else opens the database while Restore
-	// is partway through", not only "something else opens it during the
-	// literal rename instant".
+	// AcquireExclusiveCentralLock), for the entire span from just after the
+	// candidate has been staged and validated (a dry run returns before the
+	// lock is requested) and before the confirmation prompt, through the
+	// final reopen -- covering the prompt, the mandatory safety snapshot and
+	// the replacement, not merely the filesystem replace step -- because the
+	// TOCTOU gap this protocol closes is "something else opens the database
+	// while Restore is partway through", not only "something else opens it
+	// during the literal rename instant".
 	LockExclusive
 )
 
