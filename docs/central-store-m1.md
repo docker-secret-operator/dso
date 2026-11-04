@@ -321,9 +321,21 @@ created with it.
   file and, when the stored schema is older than the binary's, takes a
   pre-migration `.bak` and migrates (a database already at the latest schema is
   not changed).
-* **`restore --from FILE`.** An **offline** operator action: it takes no
-  cross-process lock, so a write by another process during the restore can be
-  lost. It stages a private copy of the candidate (and its `-wal`/`-shm`
+* **`restore --from FILE`.** An **offline** operator action. Every `dso central`
+  command that opens the database (`init`, the secret and project commands,
+  `backup`, `restore`) takes an advisory `flock(2)` on the sidecar
+  `<db>.central.lock` (shared; any number of shared holders). A non-dry-run
+  restore takes it **exclusively** after the candidate has been validated and
+  before the confirmation prompt, and holds it through the final reopen, so a
+  concurrent `dso central` command, or a second restore, against the same path
+  fails with `ErrCentralLockBusy` after a 5 s default timeout instead of racing
+  the replacement. `--dry-run` and a candidate that fails validation never take
+  it. The lock is advisory and local only: a process that bypasses `dso central`
+  (for example the `sqlite3` CLI or a script opening the file directly), another
+  host, or a filesystem without working `flock` is not coordinated, and a write
+  from such a process during the restore can still be lost, so stop every other
+  user of the database anyway. The kernel releases the lock when its holder
+  exits or crashes, and the sidecar file is never deleted. It stages a private copy of the candidate (and its `-wal`/`-shm`
   sidecars), validates structure, schema version, the audit chain and the
   root-key binding on that copy, and activates that same copy; it does not prove
   every secret version decrypts. Unless `--dry-run`, it asks for confirmation
@@ -355,8 +367,9 @@ created with it.
   have none. The audit log is unkeyed and not tamper-proof (see "Audit log").
 * Whole-database rollback to an older valid copy is not detected, and `restore`
   can introduce one deliberately.
-* `restore` is offline, takes no cross-process lock, and does not make
-  replacement and its audit event atomic.
+* `restore` is offline, and its exclusive cross-process lock is advisory,
+  single-host and covers only `dso central` processes (see above); it does not
+  make replacement and its audit event atomic.
 * Different directories ≠ different volumes (not verified, see above).
 * In-memory plaintext/DEK zeroing is best-effort (Go may copy buffers). No
   `mlock`, dumpability or core-dump controls were found in the repository's own
