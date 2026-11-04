@@ -684,6 +684,20 @@ responsibility.`,
 			if out == "" {
 				return errors.New("--out is required")
 			}
+			// sqlite.Open creates a missing database (and its directory and
+			// lock sidecar), which would turn a mistyped --db into an empty
+			// database and a "successful" backup of nothing. Require an
+			// existing regular file BEFORE anything is opened or created.
+			// Lstat, so a symlink is reported as such rather than followed.
+			fi, statErr := os.Lstat(f.db)
+			switch {
+			case errors.Is(statErr, os.ErrNotExist):
+				return fmt.Errorf("database %s does not exist (backup does not create one)", f.db)
+			case statErr != nil:
+				return fmt.Errorf("inspecting database %s: %w", f.db, statErr)
+			case !fi.Mode().IsRegular():
+				return fmt.Errorf("database %s is not a regular file (backup does not follow symlinks or open directories)", f.db)
+			}
 			st, err := sqlite.Open(cmd.Context(), f.db, sqlite.Options{})
 			if err != nil {
 				return err

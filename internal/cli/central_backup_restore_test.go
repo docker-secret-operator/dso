@@ -548,3 +548,158 @@ func TestCentralRestoreCmd_Declined_NoDatabaseChangeAndNoAuditTrace(t *testing.T
 		})
 	}
 }
+
+// ---- B-2: backup must not create a database that does not exist ----------------
+
+// treeEntries lists every path under root (relative, sorted), so a test can
+// prove a command created nothing at all.
+func treeEntries(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return relErr
+		}
+		out = append(out, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func sameEntries(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestCentralBackupCmd_MissingDatabase_RefusedAndCreatesNothing: the parent
+// directory exists but the database does not. Nothing may be created: no
+// database, no -wal/-shm, no lock sidecar and no backup file.
+func TestCentralBackupCmd_MissingDatabase_RefusedAndCreatesNothing(t *testing.T) {
+	e := newCentralEnv(t)
+	if err := os.Mkdir(filepath.Dir(e.db), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	before := treeEntries(t, e.dir)
+
+	_, _, err := e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...)
+	if err == nil {
+		t.Fatal("expected backup of a nonexistent database to fail")
+	}
+	if !strings.Contains(err.Error(), "does not exist") || !strings.Contains(err.Error(), "backup does not create one") {
+		t.Fatalf("error should say the database does not exist, got: %v", err)
+	}
+	if after := treeEntries(t, e.dir); !sameEntries(before, after) {
+		t.Fatalf("backup of a missing database created files:\nbefore: %v\nafter:  %v", before, after)
+	}
+	for _, p := range []string{e.db, e.db + ".central.lock", e.db + "-wal", e.db + "-shm", out} {
+		if _, statErr := os.Lstat(p); !os.IsNotExist(statErr) {
+			t.Fatalf("%s must not exist after a refused backup (stat err: %v)", p, statErr)
+		}
+	}
+}
+
+// TestCentralBackupCmd_MissingParentDirectory_NotCreated: neither the database
+// nor its parent exists (e.db's "data" directory has not been created).
+func TestCentralBackupCmd_MissingParentDirectory_NotCreated(t *testing.T) {
+	e := newCentralEnv(t)
+	out := filepath.Join(e.dir, "backups", "out.db")
+	before := treeEntries(t, e.dir)
+
+	_, _, err := e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected a does-not-exist error, got: %v", err)
+	}
+	if after := treeEntries(t, e.dir); !sameEntries(before, after) {
+		t.Fatalf("a refused backup created files or directories:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if _, statErr := os.Lstat(filepath.Dir(e.db)); !os.IsNotExist(statErr) {
+		t.Fatalf("the database's parent directory must not be created (stat err: %v)", statErr)
+	}
+}
+
+// TestCentralBackupCmd_ExistingDatabase_OutputUnchanged: the check does not
+// change a valid backup: same two output lines, file written, exit success.
+func TestCentralBackupCmd_ExistingDatabase_OutputUnchanged(t *testing.T) {
+	e := newCentralEnv(t)
+	if _, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	stdout, _, err := e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Backup written to " + out + "\n" +
+		"Reminder: this backup does not include the root key or passphrase; preserve that material separately.\n"
+	if stdout != want {
+		t.Fatalf("output changed:\n got: %q\nwant: %q", stdout, want)
+	}
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatal(statErr)
+	}
+}
+
+// TestCentralBackupCmd_DirectoryAsDatabase_Rejected: a directory given as
+// --db is rejected, and no backup, sidecar or other artifact is created.
+func TestCentralBackupCmd_DirectoryAsDatabase_Rejected(t *testing.T) {
+	e := newCentralEnv(t)
+	dir := filepath.Join(e.dir, "notadb")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	before := treeEntries(t, e.dir)
+
+	args := []string{"backup", "--out", out, "--db", dir, "--key-provider", "file", "--key-file", e.key}
+	_, _, err := e.run(t, "", args...)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected a not-a-regular-file error, got: %v", err)
+	}
+	if after := treeEntries(t, e.dir); !sameEntries(before, after) {
+		t.Fatalf("a rejected backup created files:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+// TestCentralBackupCmd_SymlinkAsDatabase_NotFollowed: a symlink to a real,
+// valid database is refused rather than followed; no backup and no sidecar
+// for the link path are created, and the target is left alone.
+func TestCentralBackupCmd_SymlinkAsDatabase_NotFollowed(t *testing.T) {
+	e := newCentralEnv(t)
+	if _, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(e.dir, "link.db")
+	if err := os.Symlink(e.db, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	eventsBefore := len(auditEventsAt(t, e.db))
+	before := treeEntries(t, e.dir)
+
+	args := []string{"backup", "--out", out, "--db", link, "--key-provider", "file", "--key-file", e.key}
+	_, _, err := e.run(t, "", args...)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected the symlink to be refused, got: %v", err)
+	}
+	if after := treeEntries(t, e.dir); !sameEntries(before, after) {
+		t.Fatalf("a refused symlink backup created files:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if got := len(auditEventsAt(t, e.db)); got != eventsBefore {
+		t.Fatalf("the symlink target gained audit events: %d -> %d", eventsBefore, got)
+	}
+}
