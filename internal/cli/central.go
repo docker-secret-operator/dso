@@ -143,6 +143,17 @@ func (f *centralFlags) open(cmd *cobra.Command) (*centralsvc.Service, func(), er
 	if err := f.requireCommon(); err != nil {
 		return nil, nil, err
 	}
+	// Every ordinary command requires an already-existing database: a mistyped
+	// --db must never silently create (and bind) a new Central Store. Checked
+	// BEFORE key-provider construction so a bad path also cannot trigger a
+	// passphrase prompt, and before sqlite.Open, which would create the
+	// directory, database file and lock sidecar. `init` (which creates the
+	// database) and `restore` (which may restore into a missing one) do not go
+	// through this function.
+	if err := requireExistingDatabase(f.db, "run dso central init first",
+		"symlinks and directories are not accepted"); err != nil {
+		return nil, nil, err
+	}
 	kp, err := f.keyProvider(cmd)
 	if err != nil {
 		return nil, nil, err
@@ -159,6 +170,26 @@ func (f *centralFlags) open(cmd *cobra.Command) (*centralsvc.Service, func(), er
 	// observability (A-2's own availability-first policy is unchanged:
 	// operations still never block on an audit-write failure).
 	return centralsvc.New(st, kp, centralAuditLogger()), func() { _ = st.Close() }, nil
+}
+
+// requireExistingDatabase checks, without creating anything, that path names an
+// existing regular file. It uses Lstat, so a symlink at the FINAL path
+// component is rejected rather than followed; a symlinked parent directory is
+// still resolved by the operating system (the store's own directory checks
+// apply later), so this is not full path-component symlink protection.
+// missingHint and nonRegularHint are the parenthesised advice appended to the
+// two refusals, so each caller keeps its own wording.
+func requireExistingDatabase(path, missingHint, nonRegularHint string) error {
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("database %s does not exist (%s)", path, missingHint)
+	case err != nil:
+		return fmt.Errorf("inspecting database %s: %w", path, err)
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("database %s is not a regular file (%s)", path, nonRegularHint)
+	}
+	return nil
 }
 
 func actorName() string {
@@ -689,14 +720,9 @@ responsibility.`,
 			// database and a "successful" backup of nothing. Require an
 			// existing regular file BEFORE anything is opened or created.
 			// Lstat, so a symlink is reported as such rather than followed.
-			fi, statErr := os.Lstat(f.db)
-			switch {
-			case errors.Is(statErr, os.ErrNotExist):
-				return fmt.Errorf("database %s does not exist (backup does not create one)", f.db)
-			case statErr != nil:
-				return fmt.Errorf("inspecting database %s: %w", f.db, statErr)
-			case !fi.Mode().IsRegular():
-				return fmt.Errorf("database %s is not a regular file (backup does not follow symlinks or open directories)", f.db)
+			if err := requireExistingDatabase(f.db, "backup does not create one",
+				"backup does not follow symlinks or open directories"); err != nil {
+				return err
 			}
 			st, err := sqlite.Open(cmd.Context(), f.db, sqlite.Options{})
 			if err != nil {
