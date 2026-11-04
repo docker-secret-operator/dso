@@ -1,5 +1,11 @@
 # PROPOSED ratification record for dso central (not approved; nothing here is ratified)
 
+> **Update 2026-11-04.** A-1, A-2, D-1, D-2 and D-3 (with the later REVEAL-B, CLI logger and backup/restore audit
+> decisions) are recorded in [2026-11-04-central-decision-record.md](2026-11-04-central-decision-record.md), which
+> the owner signed off on 2026-11-04 (its Part 7). That record, not this one, carries their ratification. This
+> record is otherwise unchanged and its own boxes remain unmarked; D-4, D-5 and D-6 stay pending clarification
+> (that record's Part 3), and Parts B, C and E are unchanged.
+
 Status: **Proposed record awaiting the owner's explicit review. Every item below is unratified.** Written
 2026-10-30. Under the process the owner defined, a decision becomes ratified only when the owner reviews and
 explicitly approves this separate record. Marking a box below is the owner's act; this document does not mark any

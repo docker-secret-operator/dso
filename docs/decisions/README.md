@@ -1,8 +1,14 @@
 # Decision records
 
-These are **new decision records documenting proposals and prior discussion; none is ratified.** They do not
-reproduce documents that could not be recovered from the repository, its history or local backups. "Draft" and
-"DRAFT" mean the owner has not formally ratified the content, including the proposed invariants and options.
+These are decision records documenting proposals and prior discussion. They do not reproduce documents that could
+not be recovered from the repository, its history or local backups. "Draft" and "DRAFT" mean the owner has not
+formally ratified the content, including the proposed invariants and options.
+
+**Update 2026-11-04.** The owner reviewed [the 2026-11-04 decision record](2026-11-04-central-decision-record.md)
+and, on 2026-11-04, approved its seven decisions R-1 to R-7 (CHAIN-A, AUDITFAIL-A, D-1, D-2, REVEAL-B, the CLI audit
+logger, and D-3 with the backup/restore audit coverage). That record is the durable form the process below requires
+and is signed off in its Part 7, so **those seven are ratified, within the wording and limits shown there.** Every
+other document in this directory, and every other item (including D-4, D-5 and D-6), remains a draft or open.
 
 ## Reading guide and option labels
 
@@ -12,7 +18,8 @@ Every statement in these documents is one of these kinds:
 2. **Proposed recommendation**: an option or classification suggested for the owner to consider.
 3. **Owner-selected or owner-confirmed**: chosen or clarified by the owner. These are recorded in working-session
    conversation, not in a repository decision record, and are **not ratification**.
-4. **Ratified**: formally approved through the process below. **Nothing in this directory is ratified.**
+4. **Ratified**: formally approved through the process below. Only the items signed off in the 2026-11-04 record's
+   Part 7 (R-1 to R-7) are ratified; **every other document and item here is unratified.**
 
 Option labels are unique across documents:
 
@@ -37,11 +44,13 @@ record; they do not authorize implementation, Git operations, or immediate ratif
 
 | Record | Status |
 |---|---|
+| [Decision record, 2026-11-04](2026-11-04-central-decision-record.md) | Durable record of decisions R-1 to R-7 with scope, limitations and implementation evidence; **signed off by the owner 2026-11-04 (ratified)**; supersedes the matching items of the proposed record below |
 | [Audit-chain integrity (Gate 3)](2026-10-30-central-audit-chain-integrity.md) | Draft; position CHAIN-A (retain unkeyed SHA-256 chain); **owner-selected proposal** ("Retain both" was the owner's selection); not ratified |
 | [Audit-failure policy (Gate 6)](2026-10-30-central-audit-failure-policy.md) | Draft; position AUDITFAIL-A (availability-first); **owner-selected proposal** (same selection); not ratified |
 | [Authentication and authorization](2026-10-30-central-authn-authz.md) | Draft; **owner-confirmed: analyze and design ARCH-B only**; architecture selection and implementation pending; not ratified |
 | [Authorization architecture and threat model](2026-10-30-central-authz-architecture-threat-model-DRAFT.md) | Design draft, not approved; no architecture selected; ARCH-B is the design focus; bypass paths, hardening questions, identity, socket lifecycle and proposed invariants |
 | [Per-operation audit-failure policy](2026-10-30-central-audit-failure-per-operation-DRAFT.md) | Design draft, not approved; attribution gaps, logging metadata, missing-event paths and the audit-append concurrency verification item |
+| [Proposed ratification record](2026-10-30-central-ratification-record-PROPOSED.md) | Proposed; boxes unmarked; its items A-1, A-2, D-1, D-2 and D-3 are covered by the 2026-11-04 record; D-4 to D-6 remain pending clarification |
 | [Step 5.4 decisions and Step 5.5 questions](2026-10-30-central-step54-step55-register-DRAFT.md) | Register draft; the six Step 5.4 decisions are **substantively approved per the owner's clarification, with formal ratification pending**; scope and unverified caveats recorded; Step 5.5 questions unresolved |
 
 ## Owner clarifications recorded (2026-10-30)
@@ -75,15 +84,15 @@ Open questions, each tracked in the document named; none is approved or implemen
   model, break-glass, principal and role model, operation policy, how backup/restore/verify work under a service:
   [architecture draft](2026-10-30-central-authz-architecture-threat-model-DRAFT.md) sections 3, 4 and 11.
 - Process hardening, supported platforms and filesystems: architecture draft sections 5 and 7.
-- Logger configuration (whether, destination, format, level) and permitted log metadata: per-operation draft
-  sections 0, 3 and 6 ([per-operation draft](2026-10-30-central-audit-failure-per-operation-DRAFT.md)).
-- Reveal audit failure policy (REVEAL-A/B/C), a decision separate from the logger: per-operation draft sections 0
-  and 4b.
+- Logger destination and format beyond the Error-level CLI logger of the 2026-11-04 record (R-6), and any wider
+  logging of metadata: [per-operation draft](2026-10-30-central-audit-failure-per-operation-DRAFT.md) sections 3 and 6.
 - Actor attribution and its schema implications (reveal, project/environment creation and init currently record no
   actor; no schema change is proposed): per-operation draft section 1.
-- Audit of backup, restore failure, dry run, wrong-key and denied attempts; restore and rollback semantics (an older
-  backup drops newer events from the active chain): per-operation draft sections 4c and 6; architecture draft
-  section 4; [audit-chain record](2026-10-30-central-audit-chain-integrity.md).
+- Audit of denied attempts (there is no authorization yet) and restore and rollback semantics (an older backup drops
+  newer events from the active chain): per-operation draft sections 4c and 6; architecture draft section 4;
+  [audit-chain record](2026-10-30-central-audit-chain-integrity.md). Backup, restore failure, dry run and wrong-key
+  audit coverage is decided in the 2026-11-04 record (R-7): backup and restore events are written as specified, and
+  dry run, wrong key, validation failure, lock-busy and a declined confirmation are deliberately unaudited.
 - Verification item: multi-process audit-append behavior (per-operation draft section 2).
 - Quarantine and its release path (B-1); deferred until quarantine itself is approved.
 - Formal ratification of each of the six Step 5.4 decisions through the separate decision record (scope caveats that
