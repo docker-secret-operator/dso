@@ -1,11 +1,35 @@
 package cli
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/docker-secret-operator/dso/internal/store"
+	"github.com/docker-secret-operator/dso/internal/store/sqlite"
 )
+
+// auditEventsAt returns the audit events of the database at path (nothing
+// else may hold it open).
+func auditEventsAt(t *testing.T, path string) []store.AuditEvent {
+	t.Helper()
+	st, err := sqlite.Open(context.Background(), path, sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	evs, err := st.ListAuditEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
 
 // TestCentralBackupCmd_SuccessfulInvocation covers F7 item 1: argument
 // parsing and a successful backup invocation through the real CLI command
@@ -382,5 +406,145 @@ func TestCentralRestoreCmd_OfflineWarning_InHelpAndPrompt(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("prompt is missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestCentralBackupCmd_RecordsBackupSuccessEventInActiveDatabaseOnly proves
+// the CLI wiring: the event is in the active database, not in the backup.
+func TestCentralBackupCmd_RecordsBackupSuccessEventInActiveDatabaseOnly(t *testing.T) {
+	e := newCentralEnv(t)
+	if _, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	if _, _, err := e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	count := func(evs []store.AuditEvent) (n int) {
+		for _, ev := range evs {
+			if ev.EventType == store.AuditBackup {
+				n++
+				if ev.Outcome != store.AuditSuccess || ev.ReasonCategory != "" {
+					t.Fatalf("unexpected backup event %+v", ev)
+				}
+			}
+		}
+		return n
+	}
+	if n := count(auditEventsAt(t, e.db)); n != 1 {
+		t.Fatalf("expected one backup event in the active database, got %d", n)
+	}
+	if n := count(auditEventsAt(t, out)); n != 0 {
+		t.Fatalf("the backup file must not describe its own creation, got %d backup events", n)
+	}
+}
+
+// TestCentralBackupCmd_FailureIsAuditedAsDestinationExists covers a failed
+// backup being recorded through the real CLI path.
+func TestCentralBackupCmd_FailureIsAuditedAsDestinationExists(t *testing.T) {
+	e := newCentralEnv(t)
+	if _, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(e.dir, "backups", "out.db")
+	for i := 0; i < 2; i++ {
+		_, _, _ = e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...)
+	}
+	evs := auditEventsAt(t, e.db)
+	last := evs[len(evs)-1]
+	if last.EventType != store.AuditBackup || last.Outcome != store.AuditFailure || last.ReasonCategory != store.AuditReasonDestinationExists {
+		t.Fatalf("unexpected last event %+v", last)
+	}
+}
+
+// TestCentralBackupCmd_RealAuditPersistenceFailureIsLoggedAndBackupSucceeds
+// forces a genuine persistence failure (a database trigger that rejects
+// backup events) and checks the backup still succeeds, the failure is logged
+// at Error level through the CLI audit logger, and no secret material is in
+// the entry.
+func TestCentralBackupCmd_RealAuditPersistenceFailureIsLoggedAndBackupSucceeds(t *testing.T) {
+	e := newCentralEnv(t)
+	if _, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TRIGGER reject_backup_events BEFORE INSERT ON audit_events
+		WHEN NEW.event_type = 'backup' BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+
+	core, logs := observer.New(zap.DebugLevel)
+	centralAuditLoggerOverride = zap.New(core)
+	defer func() { centralAuditLoggerOverride = nil }()
+
+	out := filepath.Join(e.dir, "backups", "out.db")
+	stdout, _, err := e.run(t, "", append([]string{"backup", "--out", out}, e.file()...)...)
+	if err != nil {
+		t.Fatalf("backup result must be unaffected by an audit persistence failure: %v", err)
+	}
+	if !strings.Contains(stdout, out) {
+		t.Fatalf("expected the backup path in output, got %q", stdout)
+	}
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatal(statErr)
+	}
+	errs := logs.FilterLevelExact(zap.ErrorLevel).All()
+	if len(errs) != 1 {
+		t.Fatalf("expected exactly one Error-level entry, got %d", len(errs))
+	}
+	if errs[0].ContextMap()["event_type"] != "backup" {
+		t.Fatalf("unexpected log fields %v", errs[0].ContextMap())
+	}
+}
+
+// TestCentralRestoreCmd_Declined_NoDatabaseChangeAndNoAuditTrace runs the real
+// command and declines (explicit "n", then EOF / closed stdin): the database
+// bytes must be identical and no backup/restore audit event may exist, because
+// recording a refusal would require opening and writing the active database.
+func TestCentralRestoreCmd_Declined_NoDatabaseChangeAndNoAuditTrace(t *testing.T) {
+	for _, tc := range []struct{ name, stdin string }{{"explicit_no", "n\n"}, {"eof", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, cand := restoreFixture(t)
+			beforeEvents := auditEventsAt(t, e.db)
+			// auditEventsAt opened the database; read the bytes afterwards so
+			// the comparison starts from the state immediately before the command.
+			beforeBytes, err := os.ReadFile(e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			stdout, _, err := e.run(t, tc.stdin, append([]string{"restore", "--from", cand}, e.file()...)...)
+			if err != nil {
+				t.Fatalf("a declined restore is not an error: %v", err)
+			}
+			if !strings.Contains(stdout, "cancelled") {
+				t.Fatalf("expected the cancellation to be reported, got %q", stdout)
+			}
+			afterBytes, err := os.ReadFile(e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(beforeBytes) != string(afterBytes) {
+				t.Fatal("a declined restore must leave the database bytes unchanged")
+			}
+			afterEvents := auditEventsAt(t, e.db)
+			if len(afterEvents) != len(beforeEvents) {
+				t.Fatalf("no audit event may be added by a declined restore: before=%d after=%d", len(beforeEvents), len(afterEvents))
+			}
+			// The fixture's own `backup` run recorded one backup event; a
+			// declined restore must add nothing, in particular no restore event.
+			for i, ev := range afterEvents {
+				if ev.ID != beforeEvents[i].ID || ev.EventType == store.AuditRestore {
+					t.Fatalf("unexpected change to the audit chain after a declined restore: %+v", ev)
+				}
+			}
+			if len(snapshotFiles(t, e)) != 0 {
+				t.Fatal("no safety snapshot may be created by a declined restore")
+			}
+		})
 	}
 }

@@ -31,6 +31,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/docker-secret-operator/dso/internal/crypto"
 	"github.com/docker-secret-operator/dso/internal/securefs"
 	"github.com/docker-secret-operator/dso/internal/store"
@@ -172,6 +174,10 @@ type RestoreOptions struct {
 	// with sqlite.ErrCentralLockBusy. <=0 uses the package default.
 	LockTimeout time.Duration
 
+	// Logger receives Error-level reports of best-effort audit-append
+	// failures (A-2). nil discards them.
+	Logger *zap.Logger
+
 	// testReplaceDatabaseFile, testReopen and testAppendRestoreEvent, when
 	// non-nil, replace the real replaceDatabaseFile/sqlite.Open/
 	// AppendAuditEvent calls for this one Restore call. Unexported: a
@@ -192,6 +198,11 @@ type RestoreOptions struct {
 	// warning) without needing to reach into the sqlite package's own
 	// unexported syncBackupDir test seam from outside it.
 	testSafetySnapshot func(ctx context.Context, active *sqlite.Store, dbPath string) (string, error)
+	// testReopenOriginal, when non-nil, replaces the reopen of the ORIGINAL
+	// active database used only to record a pre-activation
+	// replacement failure (distinct from testReopen, which only affects the
+	// post-replacement reopen of the restored database).
+	testReopenOriginal func(ctx context.Context, path string) (*sqlite.Store, error)
 }
 
 // RestoreResult reports what Restore did (or, for a dry run or an aborted
@@ -310,17 +321,71 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	}
 	defer func() { _ = restoreLock.Close() }()
 
+	// restoreLock.Open, not sqlite.Open: this Restore call already holds the
+	// exclusive central lock on absDB above, and only the RestoreLock value
+	// itself (never a field on Options) can open without taking a fresh,
+	// self-conflicting one.
+	openFn := func(ctx context.Context, path string) (*sqlite.Store, error) {
+		return restoreLock.Open(ctx, path, sqlite.Options{})
+	}
+	reopenFn := openFn // the restored database, after replacement
+	if opts.testReopen != nil {
+		reopenFn = opts.testReopen
+	}
+	openOriginalFn := openFn // the original active database
+	if opts.testReopenOriginal != nil {
+		openOriginalFn = opts.testReopenOriginal
+	}
+	appendFn := func(ctx context.Context, st *sqlite.Store, ev store.AuditEvent) (store.AuditEvent, error) {
+		return st.AppendAuditEvent(ctx, ev)
+	}
+	if opts.testAppendRestoreEvent != nil {
+		appendFn = opts.testAppendRestoreEvent
+	}
+	// recordRestoreEvent appends a restore event to st, best-effort (A-2):
+	// failures are logged at Error level and never change Restore's result.
+	// Callers must only pass a store that is the ORIGINAL active database or
+	// the successfully reopened restored database -- never a candidate or a
+	// database in an uncertain state.
+	recordRestoreEvent := func(st *sqlite.Store, outcome store.AuditOutcome, reason string) string {
+		id, _ := recordAuditBestEffort(ctx, opts.Logger, func(ctx context.Context, ev store.AuditEvent) (store.AuditEvent, error) {
+			return appendFn(ctx, st, ev)
+		}, store.AuditEvent{EventType: store.AuditRestore, Outcome: outcome, ReasonCategory: reason, ActorLabel: opts.Actor})
+		return id
+	}
+	// recordFailureOnOriginal is for a replacement failure, when no handle to
+	// the original active database is open: it reopens the original (still-intact) database
+	// and records the failure there. If there was no active database, or it
+	// cannot be reopened, the failure is left unaudited -- nothing is ever
+	// written to an uncertain database.
+	recordFailureOnOriginal := func(hadActive bool, reason string) {
+		if !hadActive {
+			return
+		}
+		orig, err := openOriginalFn(ctx, absDB)
+		if err != nil {
+			if opts.Logger != nil {
+				opts.Logger.Error("restore failure audit event not recorded: original active database could not be reopened",
+					zap.String("reason_category", reason), zap.Error(err))
+			}
+			return
+		}
+		defer orig.Close()
+		recordRestoreEvent(orig, store.AuditFailure, reason)
+	}
+
+	// A declined confirmation is deliberately NOT audited: recording it would
+	// open and write to the active database, and a refusal must leave that
+	// database untouched (no migration, no new row).
 	if opts.Confirm != nil && !opts.Confirm(info) {
 		return result, ErrRestoreNotConfirmed
 	}
 
+	hadActive := fileExists(absDB)
+
 	var durabilityErr error
-	if fileExists(absDB) {
-		// restoreLock.Open, not sqlite.Open: this Restore call already
-		// holds the exclusive central lock on absDB above, and only the
-		// RestoreLock value itself (never a field on Options) can open
-		// without taking a fresh, self-conflicting one.
-		active, err := restoreLock.Open(ctx, absDB, sqlite.Options{})
+	if hadActive {
+		active, err := openFn(ctx, absDB)
 		if err != nil {
 			return result, fmt.Errorf("opening active database for safety snapshot: %w", err)
 		}
@@ -333,8 +398,9 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		snapshotPath, err := snapshotFn(ctx, absDB)
 		var snapDirSyncErr *sqlite.BackupDirectorySyncError
 		if err != nil && !errors.As(err, &snapDirSyncErr) {
+			recordRestoreEvent(active, store.AuditFailure, store.AuditReasonSnapshotFailed)
 			_ = active.Close()
-			return result, fmt.Errorf("creating mandatory safety snapshot: %w (restore aborted; active database untouched)", err)
+			return result, fmt.Errorf("creating mandatory safety snapshot: %w (restore aborted; active database was not replaced)", err)
 		}
 		result.SafetySnapshot = snapshotPath
 		if snapDirSyncErr != nil {
@@ -356,9 +422,10 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		// the active database has changed -- rather than proceeding on an
 		// unverified assumption.
 		if err := active.CheckpointTruncate(ctx); err != nil {
+			recordRestoreEvent(active, store.AuditFailure, store.AuditReasonCheckpointFailed)
 			_ = active.Close()
 			return result, fmt.Errorf("checkpointing active database before replacement: %w "+
-				"(restore aborted; active database untouched; safety snapshot at %s)", err, snapshotPath)
+				"(restore aborted; active database was not replaced; safety snapshot at %s)", err, snapshotPath)
 		}
 		if err := active.Close(); err != nil {
 			return result, fmt.Errorf("closing active database before replacement: %w (safety snapshot at %s; the active database has not been modified yet)",
@@ -391,23 +458,18 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 			// database. Carry on (reopen, audit) and report this at the end.
 			durabilityErr = errors.Join(durabilityErr, ue)
 		} else {
+			// Activation did not happen: the original database is still in
+			// place. Record only if it can be reopened.
+			recordFailureOnOriginal(hadActive, store.AuditReasonDatabaseReplaceFailed)
 			if result.SafetySnapshot != "" {
 				return result, fmt.Errorf("replacing active database failed before activation: %w "+
-					"(the active database at %s was not replaced and is unchanged; the safety snapshot at %s is not needed)",
+					"(the active database at %s was not replaced; the safety snapshot at %s is not needed)",
 					err, absDB, result.SafetySnapshot)
 			}
 			return result, fmt.Errorf("replacing active database failed before activation: %w (no database was created at %s)", err, absDB)
 		}
 	}
 
-	reopenFn := func(ctx context.Context, path string) (*sqlite.Store, error) {
-		// Same restoreLock.Open reasoning as the safety-snapshot Open
-		// above: this call is still inside the exclusive critical section.
-		return restoreLock.Open(ctx, path, sqlite.Options{})
-	}
-	if opts.testReopen != nil {
-		reopenFn = opts.testReopen
-	}
 	restored, err := reopenFn(ctx, absDB)
 	if err != nil {
 		if result.SafetySnapshot != "" {
@@ -419,31 +481,17 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 	}
 	defer restored.Close()
 
-	evID, err := newID()
-	if err != nil {
-		return result, fmt.Errorf("generating restore event id: %w (restore completed and the database is usable; "+
-			"the restore event could not be recorded; safety snapshot at %s)", err, result.SafetySnapshot)
-	}
-	appendFn := func(ctx context.Context, st *sqlite.Store, ev store.AuditEvent) (store.AuditEvent, error) {
-		return st.AppendAuditEvent(ctx, ev)
-	}
-	if opts.testAppendRestoreEvent != nil {
-		appendFn = opts.testAppendRestoreEvent
-	}
-	_, err = appendFn(ctx, restored, store.AuditEvent{
-		ID:         evID,
-		EventType:  store.AuditRestore,
-		Outcome:    store.AuditSuccess,
-		ActorLabel: opts.Actor,
-	})
-	if err != nil {
-		return result, fmt.Errorf("restore completed and the database is usable, but the restore audit event could not be recorded: %w "+
-			"(safety snapshot at %s)", err, result.SafetySnapshot)
-	}
-	result.RestoreEventID = evID
+	// Best-effort (A-2): the restore has already succeeded and the restored
+	// database is usable, so a failure to record the event is logged at Error
+	// level and does not change the result. RestoreEventID stays empty then.
+	result.RestoreEventID = recordRestoreEvent(restored, store.AuditSuccess, "")
 	if durabilityErr != nil {
-		return result, fmt.Errorf("restore completed and the restore event was recorded, but durability of the replacement could not be confirmed: %w "+
-			"(safety snapshot at %s)", durabilityErr, result.SafetySnapshot)
+		recorded := "the restore event was recorded"
+		if result.RestoreEventID == "" {
+			recorded = "the restore event could not be recorded (see the error log)"
+		}
+		return result, fmt.Errorf("restore completed and %s, but durability of the replacement could not be confirmed: %w "+
+			"(safety snapshot at %s)", recorded, durabilityErr, result.SafetySnapshot)
 	}
 	return result, nil
 }

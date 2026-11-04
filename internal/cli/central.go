@@ -689,7 +689,7 @@ responsibility.`,
 				return err
 			}
 			defer st.Close()
-			path, err := st.Backup(cmd.Context(), out)
+			path, err := centralsvc.BackupWithAudit(cmd.Context(), st, out, actorName(), centralAuditLogger())
 			if err != nil {
 				return err
 			}
@@ -793,6 +793,7 @@ restore event, or taking the exclusive lock.`,
 				KeyProvider:   kp,
 				DryRun:        dryRun,
 				Actor:         actorName(),
+				Logger:        centralAuditLogger(),
 				Confirm: func(info sqlite.CandidateInfo) bool {
 					printCandidateInfo(cmd, from, info)
 					if force {

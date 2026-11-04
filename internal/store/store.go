@@ -224,6 +224,29 @@ const (
 	// Step 5.4 backup/restore design §8 (document not present in this checkout:
 	// docs/reviews/2026-10-25-central-store-phase2-backup-restore-design.md).
 	AuditRestore AuditEventType = "restore"
+	// AuditBackup records an on-demand `dso central backup` outcome. It is
+	// appended to the ACTIVE database after the backup file has been created
+	// and verified; the backup file itself never contains an event describing
+	// its own creation.
+	AuditBackup AuditEventType = "backup"
+)
+
+// Fixed reason categories for backup/restore audit events. These are the only
+// values recorded for those events: never wrapped error text, paths or any
+// key/secret material.
+const (
+	// backup / success (optional): the backup is valid but its directory
+	// fsync could not be confirmed.
+	AuditReasonSyncWarning = "sync_warning"
+	// backup / failure.
+	AuditReasonDestinationInvalid   = "destination_invalid"
+	AuditReasonDestinationExists    = "destination_exists"
+	AuditReasonBackupCreationFailed = "backup_creation_failed"
+	AuditReasonVerificationFailed   = "verification_failed"
+	// restore / failure.
+	AuditReasonSnapshotFailed        = "snapshot_failed"
+	AuditReasonCheckpointFailed      = "checkpoint_failed"
+	AuditReasonDatabaseReplaceFailed = "database_replace_failed"
 )
 
 // AuditOutcome is the result of the operation an audit event records.

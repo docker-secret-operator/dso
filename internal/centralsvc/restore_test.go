@@ -87,7 +87,7 @@ func TestRestore_SafetySnapshotDirectorySyncWarningDoesNotAbortRestore(t *testin
 	if err == nil || !errors.Is(err, warnErr) {
 		t.Fatalf("expected the durability warning to be surfaced (not silently dropped) in Restore's returned error, got %v", err)
 	}
-	if strings.Contains(err.Error(), "active database untouched") {
+	if strings.Contains(err.Error(), "active database was not replaced") {
 		t.Fatalf("a non-fatal durability warning must not be reported as an aborted restore: %v", err)
 	}
 }
@@ -557,33 +557,27 @@ func TestRestore_ContextCancellationDuringValidation(t *testing.T) {
 // the active database actually IS usable and contains the restored data,
 // that this is not misrepresented as a fully successful restore (no
 // RestoreEventID), and that the safety snapshot path is still reported.
-func TestRestore_AuditEventAppendFailureAfterActivation_ReportsUsableButUnrecorded(t *testing.T) {
+func TestRestore_AuditEventAppendFailureAfterActivation_StillSucceeds(t *testing.T) {
 	e := setup(t)
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
 
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
-	injectedErr := errors.New("injected: audit sink unavailable")
 	result, err := restoreT(t, e, RestoreOptions{
 		CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 		Confirm: func(sqlite.CandidateInfo) bool { return true },
 		testAppendRestoreEvent: func(context.Context, *sqlite.Store, store.AuditEvent) (store.AuditEvent, error) {
-			return store.AuditEvent{}, injectedErr
+			return store.AuditEvent{}, errors.New("injected: audit sink unavailable")
 		},
 	})
 
-	if err == nil {
-		t.Fatal("expected a non-nil error when the restore audit event cannot be recorded")
-	}
-	if !errors.Is(err, injectedErr) {
-		t.Fatalf("expected the error to wrap the injected failure, got %v", err)
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "restore completed") || !strings.Contains(msg, "usable") || !strings.Contains(msg, "could not be recorded") {
-		t.Fatalf("expected the error to clearly state the database is restored/usable but the event was not recorded, got: %q", msg)
+	// Ratified best-effort policy (A-2): the restore itself succeeded, so a
+	// failure to record its audit event is logged, not returned.
+	if err != nil {
+		t.Fatalf("a restore whose audit event could not be recorded must still succeed, got %v", err)
 	}
 	if result.RestoreEventID != "" {
-		t.Fatal("must not report a RestoreEventID when the append failed -- that would misrepresent this as a fully successful restore")
+		t.Fatal("must not report a RestoreEventID when the append failed")
 	}
 	if result.SafetySnapshot == "" {
 		t.Fatal("expected the safety snapshot path to still be reported")
@@ -591,13 +585,9 @@ func TestRestore_AuditEventAppendFailureAfterActivation_ReportsUsableButUnrecord
 	if _, statErr := os.Stat(result.SafetySnapshot); statErr != nil {
 		t.Fatalf("expected the reported safety snapshot to actually exist: %v", statErr)
 	}
-
-	// The active database must genuinely be usable and contain the
-	// restored (candidate's) data -- not left in some broken intermediate
-	// state -- even though the append failed.
 	restored, openErr := sqlite.Open(ctx, e.dbPath, sqlite.Options{})
 	if openErr != nil {
-		t.Fatalf("expected the active database to still be usable after the injected append failure: %v", openErr)
+		t.Fatalf("expected the active database to be usable: %v", openErr)
 	}
 	defer restored.Close()
 	if _, getErr := restored.GetProjectBySlug(ctx, "proj"); getErr != nil {
@@ -1003,8 +993,8 @@ func TestRestore_IncompleteCheckpointAbortsBeforeSidecarsOrMainFileTouched(t *te
 	if err == nil || !errors.Is(err, sqlite.ErrCheckpointIncomplete) {
 		t.Fatalf("expected ErrCheckpointIncomplete, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "untouched") {
-		t.Fatalf("error should say the active database is untouched: %v", err)
+	if !strings.Contains(err.Error(), "was not replaced") {
+		t.Fatalf("error should say the active database was not replaced: %v", err)
 	}
 	if replaceCalled {
 		t.Fatal("replacement must not run after a failed checkpoint")

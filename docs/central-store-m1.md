@@ -216,20 +216,46 @@ any `UPDATE` or `DELETE` of a row. `event_hash = SHA-256(prev_hash ||
 canonical(fields))` with length-prefixed fields; there is **no MAC or signing
 key**. Event types: `init`, `project_create`, `environment_create`,
 `secret_create`, `secret_add_version`, `secret_get_reveal`,
-`secret_disable_version`, `secret_delete`, `restore`.
+`secret_disable_version`, `secret_delete`, `backup`, `restore`.
 
 * **Atomic events.** Project, environment and secret creation, version addition,
   version disabling and secret deletion append their success event in the same
   transaction as the change; if the audit insert fails, the change rolls back.
 * **Best-effort events.** Failure events and the reveal event (`secret get
   --reveal`) are appended standalone; if that append fails the operation result
-  is unchanged. The `dso central` commands construct the service without a
-  logger, so these failures are **silently discarded** in the CLI (`init` is the
-  exception: it uses a real logger).
-* **After-the-fact event.** The `restore` event is appended to the restored
-  database after it is reopened; replacement and event are not atomic.
-* **Not audited.** Listings and reads, `backup`, `audit verify`, failed and
-  dry-run restores, and wrong-root-key attempts write no event. Some early error
+  is unchanged. The `dso central` commands pass the Error-level CLI audit logger
+  (and `init`, `backup` and `restore` use it directly), so a failed best-effort
+  append is logged at Error level; that log line is not durable or tamper-proof
+  evidence on its own.
+* **After-the-fact event.** The `restore` success event is appended to the
+  restored database after it is reopened; replacement and event are not atomic.
+  The append is best-effort: if it fails, the failure is logged at Error level
+  and the restore still reports success (no restore event id is printed).
+* **Backup and restore events.** Only the types `backup` and `restore` are used,
+  with the existing `success`/`failure` outcomes and these fixed
+  `reason_category` values (never error text or paths); every append is
+  best-effort and never changes the operation's result:
+
+  | Event | Outcome | Reason | Written to |
+  |---|---|---|---|
+  | `backup` | `success` | none, or `sync_warning` (valid backup, directory fsync unconfirmed) | the active database, after the backup is created and verified; **never inside the backup file** |
+  | `backup` | `failure` | `destination_invalid`, `destination_exists`, `backup_creation_failed`, `verification_failed` | the active database |
+  | `restore` | `success` | none | the restored database |
+  | `restore` | `failure` | `snapshot_failed`, `checkpoint_failed` | the original active database, while still open |
+  | `restore` | `failure` | `database_replace_failed` | the original active database, only if it can be reopened after the failed replacement |
+
+  The mandatory pre-restore safety snapshot is a plain backup and emits no
+  `backup` event of its own. `sync_warning` means the backup file is valid but
+  fsyncing its directory was not confirmed; the audit record says `success`
+  while the `backup` command still returns that warning as an error (existing
+  CLI behavior, unchanged).
+* **Not audited.** Listings and reads, `audit verify`, dry-run restores
+  (success or failure), a **declined restore confirmation** (recording it would
+  open and write to the active database, and a refusal, EOF or closed stdin must
+  leave it untouched), wrong-root-key and other candidate-validation failures,
+  lock-busy failures, and a failed reopen after replacement (the database is then
+  in an uncertain state and is never written to) write no event. A failure
+  before the database exists or can be opened cannot be recorded either. Some early error
   paths (for example ID generation, AAD construction and sealing in secret
   creation) return without any failure event.
 * **Attribution.** `actor_label` is a caller-supplied string (`local-cli:<user>`)
@@ -267,11 +293,11 @@ checks above are the only access control. Values are never accepted as arguments
 (shell history / `ps`): they come from a hidden terminal prompt or `--value-stdin`
 (one trailing newline is removed). Plaintext is printed only by `get --reveal`.
 Passphrases come from a hidden prompt or a private `--passphrase-file`, never from
-argv or the environment. Nothing is wired into the REST API or WebUI. When a
-logger is supplied the service logs ids, names, versions and actor only (tests
-assert values and key material never appear in the audit events and logs they
-inspect); the `dso central` commands supply no logger, so these log lines are
-discarded.
+argv or the environment. Nothing is wired into the REST API or WebUI. The
+service logs ids, names, versions and actor only (tests assert values and key
+material never appear in the audit events and logs they inspect); the `dso
+central` commands supply the Error-level-filtered audit logger, so only
+audit-write failures are shown.
 
 **`init` and recovery.** `init` checks everything it can *before* writing any key
 material (directory safety, an existing database, an existing key). It then
@@ -305,10 +331,10 @@ created with it.
   `<db>.pre-restore-<time>-<random>.bak`, checkpoints the active database,
   replaces it and reopens it. Failure modes (from the code and its tests):
   rejected before any change (active database untouched); replacement failed
-  before activation (active database unchanged); replacement activated but the
+  before activation (the original database remains active and is not replaced; a `database_replace_failed` event may be appended to it if it reopens successfully, and nothing is written if it does not); replacement activated but the
   reopen failed (**not** automatically recovered; recover from the safety
   snapshot manually); replacement usable but the restore event could not be
-  recorded (command exits non-zero); replacement activated but durability could
+  recorded (logged at Error level; the command still succeeds); replacement activated but durability could
   not be confirmed (event recorded, error reported). Restoring an older backup
   drops newer audit events from the active chain; they survive only in the
   safety snapshot.

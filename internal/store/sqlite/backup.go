@@ -30,6 +30,22 @@ import (
 // file, symlink, or directory.
 var ErrBackupDestinationExists = errors.New("sqlite: backup destination already exists")
 
+// ErrBackupDestinationInvalid and ErrBackupVerificationFailed are category
+// markers attached (via errors.Is) to the corresponding Backup failures so a
+// caller can classify them without parsing text. They never change the
+// failure's message.
+var (
+	ErrBackupDestinationInvalid = errors.New("sqlite: backup destination invalid")
+	ErrBackupVerificationFailed = errors.New("sqlite: backup verification failed")
+)
+
+// taggedError keeps err's message unchanged while also matching tag via
+// errors.Is.
+type taggedError struct{ tag, err error }
+
+func (e *taggedError) Error() string   { return e.err.Error() }
+func (e *taggedError) Unwrap() []error { return []error{e.err, e.tag} }
+
 // Backup writes a complete, verified, self-contained snapshot of the current
 // database to destPath and returns the resolved absolute path on success.
 //
@@ -68,11 +84,11 @@ func (s *Store) Backup(ctx context.Context, destPath string) (string, error) {
 	}
 	abs, err := filepath.Abs(destPath)
 	if err != nil {
-		return "", fmt.Errorf("resolving backup destination %s: %w", destPath, err)
+		return "", &taggedError{ErrBackupDestinationInvalid, fmt.Errorf("resolving backup destination %s: %w", destPath, err)}
 	}
 	dir := filepath.Dir(abs)
 	if err := securefs.EnsureDir(dir); err != nil {
-		return "", fmt.Errorf("backup destination directory is not safe: %w", err)
+		return "", &taggedError{ErrBackupDestinationInvalid, fmt.Errorf("backup destination directory is not safe: %w", err)}
 	}
 	wantVersion, err := s.SchemaVersion(ctx)
 	if err != nil {
@@ -99,7 +115,7 @@ func (s *Store) Backup(ctx context.Context, destPath string) (string, error) {
 		return fail(fmt.Errorf("writing backup: %w", err))
 	}
 	if err := verifyBackup(ctx, abs, wantVersion); err != nil {
-		return fail(fmt.Errorf("backup failed verification: %w", err))
+		return fail(&taggedError{ErrBackupVerificationFailed, fmt.Errorf("backup failed verification: %w", err)})
 	}
 	if bf, err := os.OpenFile(abs, os.O_RDWR, 0); err == nil { // #nosec G304 -- abs is the backup file this function just created, at a destination already validated by securefs above
 		err = bf.Sync()
