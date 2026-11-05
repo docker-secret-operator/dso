@@ -154,6 +154,14 @@ func (f *centralFlags) open(cmd *cobra.Command) (*centralsvc.Service, func(), er
 		"symlinks and directories are not accepted"); err != nil {
 		return nil, nil, err
 	}
+	// An existing file is not necessarily an initialized database: a zero-byte
+	// or foreign SQLite file, or one left by an interrupted `init`, must be
+	// refused rather than migrated and bound by Open below. CheckInitialized
+	// inspects the file without modifying it and needs no key, so it also runs
+	// before key-provider construction. Its error is returned unchanged.
+	if err := centralsvc.CheckInitialized(f.db); err != nil {
+		return nil, nil, err
+	}
 	kp, err := f.keyProvider(cmd)
 	if err != nil {
 		return nil, nil, err
