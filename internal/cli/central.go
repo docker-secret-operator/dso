@@ -732,6 +732,17 @@ responsibility.`,
 				"backup does not follow symlinks or open directories"); err != nil {
 				return err
 			}
+			// An existing file is not necessarily an initialized database, and
+			// sqlite.Open would migrate a zero-byte or foreign file, Backup would
+			// append an audit event to whatever it opened, and closing it would
+			// checkpoint away the WAL of an interrupted init. Every state that is
+			// not an initialized (or adoptable) database is refused before anything
+			// is opened or created, including a corrupt binding: backing it up would
+			// append an audit event to the corrupt file. The error is returned
+			// unchanged. To preserve a suspect database, copy its files by hand.
+			if err := centralsvc.CheckInitialized(f.db); err != nil {
+				return err
+			}
 			st, err := sqlite.Open(cmd.Context(), f.db, sqlite.Options{})
 			if err != nil {
 				return err
