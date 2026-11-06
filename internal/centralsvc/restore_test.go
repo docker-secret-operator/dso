@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker-secret-operator/dso/internal/crypto"
 	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
@@ -378,12 +379,24 @@ func TestReplaceDatabaseFile_OrderingAndFailureLeavesOldMainInPlace(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	err := replaceDatabaseFile(db, filepath.Join(dir, "missing-candidate"))
+	lock, lerr := sqlite.AcquireExclusiveCentralLock(db, time.Second)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	defer lock.Close()
+	err := replaceWithDisplacement(lock, db, filepath.Join(dir, "missing-candidate"))
 	if err == nil {
 		t.Fatal("expected failure for a missing candidate")
 	}
 	if b, _ := os.ReadFile(db); string(b) != "OLD-MAIN" {
 		t.Fatalf("a failed replacement must leave the old main file in place, got %q", b)
+	}
+	// F2: the companions must survive a failed replacement too -- the replacement
+	// file is prepared before anything is moved, so nothing was touched.
+	for suffix, content := range map[string]string{"-wal": "w", "-shm": "s"} {
+		if b, err := os.ReadFile(db + suffix); err != nil || string(b) != content {
+			t.Fatalf("a failed replacement must leave %s untouched, got %q (%v)", suffix, b, err)
+		}
 	}
 	// Successful activation: sidecars gone, main is the candidate, no temp files.
 	cand := filepath.Join(dir, "cand")
@@ -395,7 +408,7 @@ func TestReplaceDatabaseFile_OrderingAndFailureLeavesOldMainInPlace(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	if err := replaceDatabaseFile(db, cand); err != nil {
+	if err := replaceWithDisplacement(lock, db, cand); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(db); string(b) != "NEW-MAIN" {

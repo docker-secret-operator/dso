@@ -1575,3 +1575,114 @@ func TestCheckInitialized_SchemaMigrationsOnlyFiles_KeepTheirHistoricalFinding(t
 		})
 	}
 }
+
+// ---- Phase 3a: the recorded schema version ---------------------------------------------------------------------
+
+func TestAssessActive_RecordedVersion(t *testing.T) {
+	t.Parallel()
+	all, _ := sqlite.EmbeddedMigrations()
+	legacy := func(n int) func(*testing.T) string {
+		return func(t *testing.T) string {
+			p := filepath.Join(securefstest.TempDir(t), "v.db")
+			st, err := sqlite.Open(ctx, p, sqlite.Options{Migrations: all[:n]})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+	}
+	bound := func(edits ...string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			e := icBound(t, false)
+			if len(edits) > 0 {
+				icEdit(t, e.dbPath, edits...)
+			}
+			return e.dbPath
+		}
+	}
+	unbound := func(edits ...string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			p := icUnbound(t)
+			if len(edits) > 0 {
+				icEdit(t, p, edits...)
+			}
+			return p
+		}
+	}
+	file := func(content []byte) func(*testing.T) string {
+		return func(t *testing.T) string {
+			p := filepath.Join(securefstest.TempDir(t), "c.db")
+			if err := os.WriteFile(p, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+	}
+	cases := []struct {
+		name  string
+		build func(*testing.T) string
+		known bool
+		ver   int
+		state activeState
+	}{
+		{"latest, bound", bound(), true, 3, stateInitialized},
+		{"latest, unbound", unbound(), true, 3, stateDSOUnbound},
+		{"schema 1, unbound", legacy(1), true, 1, stateDSOUnbound},
+		{"schema 2, unbound", legacy(2), true, 2, stateDSOUnbound},
+		{"history {3} only: the newest valid version", bound(acVersions(3)...), true, 3, stateInitialized},
+		{"history {1,3}: a gap does not hide the version", bound(acVersions(1, 3)...), true, 3, stateInitialized},
+		{"history {0,1,2,3}: an invalid extra row is ignored", bound(acVersions(0, 1, 2, 3)...), true, 3, stateInitialized},
+		{"history {1,2}: an older version", bound(acVersions(1, 2)...), true, 2, stateInitialized},
+		{"history {0} only: not an embedded version", bound(acVersions(0)...), false, 0, stateInitialized},
+		{"no version rows", bound(acVersions()...), false, 0, stateInitialized},
+		{"no schema_migrations table", bound(`DROP TABLE schema_migrations`), false, 0, stateInitialized},
+		{"newer than supported", bound(acVersions(1, 2, 3, 99)...), false, 0, stateTooNew},
+		{"only 99", bound(acVersions(99)...), false, 0, stateTooNew},
+		{"empty schema_migrations only (interrupted init)", func(t *testing.T) string {
+			return icForeign(t, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`)
+		}, false, 0, stateDSOUnbound},
+		{"ambiguous schema_migrations with rows is inconclusive", func(t *testing.T) string {
+			return icForeign(t, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`, `INSERT INTO schema_migrations VALUES (2, 0)`)
+		}, false, 0, stateInconclusive},
+		{"DSO-named foreign table is inconclusive", func(t *testing.T) string { return icForeign(t, `CREATE TABLE secrets(id, name)`) }, false, 0, stateInconclusive},
+		{"foreign file", func(t *testing.T) string { return icForeign(t, `CREATE TABLE customer(id)`) }, false, 0, stateForeign},
+		{"zero-byte file", file(nil), false, 0, stateEmpty},
+		{"non-SQLite file", file([]byte(strings.Repeat("not a database\n", 30))), false, 0, stateNonSQLite},
+		{"missing file", func(t *testing.T) string { return filepath.Join(securefstest.TempDir(t), "absent.db") }, false, 0, stateMissing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := assessActive(tc.build(t))
+			if a.State != tc.state {
+				t.Fatalf("state = %v (err %v), want %v", a.State, a.Err, tc.state)
+			}
+			if a.VersionKnown != tc.known || a.RecordedVersion != tc.ver {
+				t.Fatalf("version = %d known=%v, want %d known=%v", a.RecordedVersion, a.VersionKnown, tc.ver, tc.known)
+			}
+			if !a.VersionKnown && a.RecordedVersion != 0 {
+				t.Fatal("an unknown version must be zero, never a number")
+			}
+		})
+	}
+	t.Run("locked database reports no version", func(t *testing.T) {
+		t.Parallel()
+		e := icBound(t, false)
+		w := icLockExclusive(t, e.dbPath)
+		a := assessActive(e.dbPath)
+		_ = w.Close()
+		if a.State != stateInconclusive || a.VersionKnown || a.RecordedVersion != 0 {
+			t.Fatalf("got %v known=%v v%d", a.State, a.VersionKnown, a.RecordedVersion)
+		}
+	})
+	t.Run("a known version is the newest embedded one a Clean structure relies on", func(t *testing.T) {
+		t.Parallel()
+		a := assessActive(bound()(t))
+		if a.Structure != structureClean || !a.VersionKnown || a.RecordedVersion != 3 {
+			t.Fatalf("got %v known=%v v%d", a.Structure, a.VersionKnown, a.RecordedVersion)
+		}
+	})
+}

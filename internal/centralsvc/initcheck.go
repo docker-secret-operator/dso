@@ -985,6 +985,18 @@ type activeAssessment struct {
 	Structure        structuralFinding
 	StructureReasons []string
 	Err              error
+	// RecordedVersion is the database's own schema version: the newest version
+	// recorded in schema_migrations, valid only when VersionKnown is true.
+	// VersionKnown is false whenever there is no reliable version evidence: no
+	// evidence was collected (a missing, empty, non-SQLite or uninspectable file),
+	// no version is recorded, or the newest recorded version is not an embedded
+	// migration (version 0, an unknown number, or one newer than this binary
+	// supports). It is also never reported for an Inconclusive assessment.
+	// RecordedVersion is then zero and must not be read as "version 0".
+	// A known version says nothing about whether the migration history is
+	// complete; that is part of Structure.
+	RecordedVersion int
+	VersionKnown    bool
 }
 
 // classifyActive classifies path for restore; see assessActive. It returns the
@@ -1065,6 +1077,15 @@ func assessActiveWith(inspect inspectFunc, path string) activeAssessment {
 	}
 	if withEvidence && ev != nil {
 		a.Structure, a.StructureReasons = ev.structure()
+		// An inconclusive assessment reports no version: its evidence is ambiguous by
+		// definition, and a version number must not be read out of it.
+		if a.State != stateInconclusive {
+			if sch, err := dsoStructures(); err == nil {
+				if v, ok := ev.recordedVersion(sch); ok {
+					a.RecordedVersion, a.VersionKnown = v, true
+				}
+			}
+		}
 	}
 	return a
 }
