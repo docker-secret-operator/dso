@@ -2447,3 +2447,261 @@ func TestPublishDir_RacingCreatorIsNeverReplaced(t *testing.T) {
 	}
 	t.Logf("racing creator: %d published, %d refused", published, refused)
 }
+
+// ---- Phase 3a: ActiveSidecars (read-only) ----------------------------------------------------------------------------
+
+// pvSidecarFixture writes the three companions in the requested state:
+// size < 0 absent, 0 empty, > 0 that many bytes.
+func pvSidecarFixture(t *testing.T, path string, wal, journal, shm int64) {
+	t.Helper()
+	for sfx, n := range map[string]int64{"-wal": wal, "-journal": journal, "-shm": shm} {
+		if n < 0 {
+			continue
+		}
+		pvWrite(t, path+sfx, pvBytes(int(n)))
+	}
+}
+
+func TestActiveSidecars_EveryCombination(t *testing.T) {
+	t.Parallel()
+	sizes := []int64{-1, 0, 123}
+	for _, mainExists := range []bool{true, false} {
+		for _, wal := range sizes {
+			for _, jr := range sizes {
+				for _, shm := range sizes {
+					name := fmt.Sprintf("main=%v/wal=%d/journal=%d/shm=%d", mainExists, wal, jr, shm)
+					t.Run(name, func(t *testing.T) {
+						t.Parallel()
+						dir := pvDir(t)
+						path := filepath.Join(dir, "c.db")
+						if mainExists {
+							pvWrite(t, path, pvBytes(500))
+						}
+						pvSidecarFixture(t, path, wal, jr, shm)
+						before := pvStates(t, path)
+						entries, _ := os.ReadDir(dir)
+
+						got, err := ActiveSidecars(path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want := func(n int64) SidecarFile {
+							if n < 0 {
+								return SidecarFile{}
+							}
+							return SidecarFile{Exists: true, Size: n}
+						}
+						if got.MainExists != mainExists || got.WAL != want(wal) || got.Journal != want(jr) || got.SHM != want(shm) {
+							t.Fatalf("got %+v", got)
+						}
+						for label, c := range map[string]struct {
+							f  SidecarFile
+							ne bool
+						}{"wal": {got.WAL, wal > 0}, "journal": {got.Journal, jr > 0}, "shm": {got.SHM, shm > 0}} {
+							if c.f.NonEmpty() != c.ne {
+								t.Fatalf("%s NonEmpty() = %v", label, c.f.NonEmpty())
+							}
+						}
+						// Orphans exist only when the main file is missing, only for non-empty
+						// companions, and in the fixed order -wal, -journal, -shm.
+						var wantOrphans []string
+						if !mainExists {
+							if wal > 0 {
+								wantOrphans = append(wantOrphans, "-wal")
+							}
+							if jr > 0 {
+								wantOrphans = append(wantOrphans, "-journal")
+							}
+							if shm > 0 {
+								wantOrphans = append(wantOrphans, "-shm")
+							}
+						}
+						if strings.Join(got.OrphanNonEmpty(), ",") != strings.Join(wantOrphans, ",") {
+							t.Fatalf("orphans = %v, want %v", got.OrphanNonEmpty(), wantOrphans)
+						}
+						// Read-only: nothing was created, removed or changed.
+						pvSame(t, before, pvStates(t, path))
+						after, _ := os.ReadDir(dir)
+						if len(after) != len(entries) {
+							t.Fatalf("the directory changed: %d entries before, %d after", len(entries), len(after))
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestActiveSidecars_RefusesNonRegularFiles(t *testing.T) {
+	t.Parallel()
+	type tc struct {
+		name  string
+		build func(t *testing.T, dir, path string) (target string)
+		kind  string
+	}
+	cases := []tc{
+		{"wal is a symlink to a file", func(t *testing.T, dir, path string) string {
+			other := filepath.Join(dir, "other")
+			pvWrite(t, other, pvBytes(10))
+			if err := os.Symlink(other, path+"-wal"); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			return path + "-wal"
+		}, "symbolic link"},
+		{"journal is a dangling symlink", func(t *testing.T, dir, path string) string {
+			if err := os.Symlink(filepath.Join(dir, "nowhere"), path+"-journal"); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			return path + "-journal"
+		}, "symbolic link"},
+		{"shm is a directory", func(t *testing.T, dir, path string) string {
+			if err := os.Mkdir(path+"-shm", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return path + "-shm"
+		}, "directory"},
+		{"wal is a named pipe", func(t *testing.T, dir, path string) string {
+			if err := syscall.Mkfifo(path+"-wal", 0o600); err != nil {
+				t.Skipf("mkfifo unavailable: %v", err)
+			}
+			return path + "-wal"
+		}, "named pipe"},
+		{"main is a symlink", func(t *testing.T, dir, path string) string {
+			real := filepath.Join(dir, "real.db")
+			pvWrite(t, real, pvBytes(10))
+			if err := os.Symlink(real, path); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			return path
+		}, "symbolic link"},
+		{"main is a directory", func(t *testing.T, dir, path string) string {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, "directory"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := pvDir(t)
+			path := filepath.Join(dir, "c.db")
+			if !strings.HasPrefix(c.name, "main") {
+				pvWrite(t, path, pvBytes(10))
+			}
+			target := c.build(t, dir, path)
+			before, _ := os.ReadDir(dir)
+			_, err := ActiveSidecars(path)
+			if !errors.Is(err, ErrSidecarNotRegular) {
+				t.Fatalf("want ErrSidecarNotRegular, got %v", err)
+			}
+			if !strings.Contains(err.Error(), target) || !strings.Contains(err.Error(), c.kind) {
+				t.Fatalf("the error should name the path and the kind (%q, %q): %v", target, c.kind, err)
+			}
+			after, _ := os.ReadDir(dir)
+			if len(before) != len(after) {
+				t.Fatal("the directory changed")
+			}
+			if fi, e := os.Lstat(target); e != nil || (c.kind == "symbolic link" && fi.Mode()&os.ModeSymlink == 0) {
+				t.Fatalf("the offending entry was altered: %v", e)
+			}
+		})
+	}
+}
+
+func TestActiveSidecars_OtherFailuresAreErrorsNeverMissing(t *testing.T) {
+	t.Parallel()
+	t.Run("a path component that is a file", func(t *testing.T) {
+		t.Parallel()
+		dir := pvDir(t)
+		file := filepath.Join(dir, "plain")
+		pvWrite(t, file, []byte("x"))
+		info, err := ActiveSidecars(filepath.Join(file, "c.db"))
+		if err == nil || !errors.Is(err, syscall.ENOTDIR) || errors.Is(err, ErrSidecarNotRegular) {
+			t.Fatalf("ENOTDIR must be reported as such, not as a missing file: %+v, %v", info, err)
+		}
+		if info != (ActiveSidecarsInfo{}) {
+			t.Fatalf("no partial result on error: %+v", info)
+		}
+	})
+	t.Run("a directory that cannot be searched", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("permissions do not bind root")
+		}
+		dir := pvDir(t)
+		sub := filepath.Join(dir, "sub")
+		if err := os.Mkdir(sub, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pvWrite(t, filepath.Join(sub, "c.db"), pvBytes(10))
+		if err := os.Chmod(sub, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+		_, err := ActiveSidecars(filepath.Join(sub, "c.db"))
+		if err == nil || !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("a permission failure must be an error, not 'missing': %v", err)
+		}
+	})
+	t.Run("a genuinely absent file is not an error", func(t *testing.T) {
+		t.Parallel()
+		info, err := ActiveSidecars(filepath.Join(pvDir(t), "c.db"))
+		if err != nil || info != (ActiveSidecarsInfo{}) {
+			t.Fatalf("%+v, %v", info, err)
+		}
+	})
+	t.Run("an unnormalised path is resolved", func(t *testing.T) {
+		t.Parallel()
+		dir := pvDir(t)
+		path := filepath.Join(dir, "c.db")
+		pvWrite(t, path, pvBytes(10))
+		pvWrite(t, path+"-wal", pvBytes(20))
+		info, err := ActiveSidecars(dir + "/./sub/../c.db")
+		if err == nil {
+			// "sub" does not exist, so the lexical cleanup makes this the real path.
+			if !info.MainExists || !info.WAL.NonEmpty() {
+				t.Fatalf("%+v", info)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestActiveSidecars_AgreesWithWhatIsPreserved(t *testing.T) {
+	t.Parallel()
+	_, path := pvDB(t, true, true, true)
+	info, err := ActiveSidecars(path)
+	if err != nil || !info.MainExists || !info.WAL.NonEmpty() || !info.Journal.NonEmpty() || !info.SHM.NonEmpty() {
+		t.Fatalf("%+v, %v", info, err)
+	}
+	before := pvStates(t, path)
+	p := pvMustPreserve(t, pvTest(), path)
+	pvSame(t, before, pvStates(t, path))
+	for name, f := range map[string]SidecarFile{"wal": info.WAL, "journal": info.Journal, "shm": info.SHM} {
+		rec, ok := p.record(name)
+		if !ok || rec.Size != f.Size {
+			t.Fatalf("%s: ActiveSidecars says %d bytes, the preservation recorded %+v (%v)", name, f.Size, rec, ok)
+		}
+	}
+}
+
+func TestActiveSidecars_ConcurrentCallsUnderRace(t *testing.T) {
+	t.Parallel()
+	_, path := pvDB(t, true, false, true)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if info, err := ActiveSidecars(path); err != nil || !info.WAL.NonEmpty() {
+					t.Errorf("%+v, %v", info, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

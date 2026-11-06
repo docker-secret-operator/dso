@@ -792,3 +792,110 @@ func removePartial(partial, dir string) {
 	}
 	_ = os.RemoveAll(partial)
 }
+
+// ---- reading the state of the companions (read-only) -------------------------------------------
+
+// ErrSidecarNotRegular: a database or one of its -wal, -journal or -shm
+// companions is a symbolic link, a directory or some other non-regular file. It
+// is never followed or examined further.
+var ErrSidecarNotRegular = errors.New("sqlite: a database file or companion is not a regular file")
+
+// SidecarFile describes one companion file as found, without opening it.
+type SidecarFile struct {
+	Exists bool
+	Size   int64
+}
+
+// NonEmpty reports a companion that exists and holds bytes. An empty -wal is not
+// evidence of a pending WAL (a WAL-aware read can create one), and an empty
+// -journal carries no rollback data.
+func (s SidecarFile) NonEmpty() bool { return s.Exists && s.Size > 0 }
+
+// ActiveSidecarsInfo is what ActiveSidecars found for one database path.
+type ActiveSidecarsInfo struct {
+	MainExists bool
+	WAL        SidecarFile
+	SHM        SidecarFile
+	Journal    SidecarFile
+}
+
+// OrphanNonEmpty lists, in a fixed order ("-wal", "-journal", "-shm"), the
+// non-empty companions that sit beside a MISSING main file. Their data belongs to
+// no database that can be opened, so they must never be deleted or overwritten
+// silently. It is empty whenever the main file exists.
+func (a ActiveSidecarsInfo) OrphanNonEmpty() []string {
+	if a.MainExists {
+		return nil
+	}
+	var out []string
+	if a.WAL.NonEmpty() {
+		out = append(out, "-wal")
+	}
+	if a.Journal.NonEmpty() {
+		out = append(out, "-journal")
+	}
+	if a.SHM.NonEmpty() {
+		out = append(out, "-shm")
+	}
+	return out
+}
+
+// ActiveSidecars reports whether the main database file and each of its -wal,
+// -journal and -shm companions exist, and how large they are. It only looks:
+// it never opens, deletes, renames, truncates or modifies anything, and never
+// follows a link. A main file or companion that exists but is not a regular file
+// (a symlink, a directory, a FIFO, a device) is reported as an error wrapping
+// ErrSidecarNotRegular, and any other failure to look (permissions, a path
+// component that is not a directory, I/O) is returned as an error too; neither is
+// ever treated as "missing". A genuinely absent file is not an error.
+func ActiveSidecars(dbPath string) (ActiveSidecarsInfo, error) {
+	abs, err := filepath.Abs(dbPath)
+	if err != nil {
+		return ActiveSidecarsInfo{}, fmt.Errorf("resolving database path %s: %w", dbPath, err)
+	}
+	look := func(path string) (SidecarFile, error) {
+		fi, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) { // ENOENT only: ENOTDIR, EACCES and the rest are errors
+				return SidecarFile{}, nil
+			}
+			return SidecarFile{}, fmt.Errorf("examining %s: %w", path, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return SidecarFile{}, fmt.Errorf("%w: %s is a %s", ErrSidecarNotRegular, path, fileKind(fi.Mode()))
+		}
+		return SidecarFile{Exists: true, Size: fi.Size()}, nil
+	}
+	var info ActiveSidecarsInfo
+	main, err := look(abs)
+	if err != nil {
+		return ActiveSidecarsInfo{}, err
+	}
+	info.MainExists = main.Exists
+	if info.WAL, err = look(abs + "-wal"); err != nil {
+		return ActiveSidecarsInfo{}, err
+	}
+	if info.Journal, err = look(abs + "-journal"); err != nil {
+		return ActiveSidecarsInfo{}, err
+	}
+	if info.SHM, err = look(abs + "-shm"); err != nil {
+		return ActiveSidecarsInfo{}, err
+	}
+	return info, nil
+}
+
+func fileKind(m os.FileMode) string {
+	switch {
+	case m&os.ModeSymlink != 0:
+		return "symbolic link"
+	case m.IsDir():
+		return "directory"
+	case m&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case m&os.ModeSocket != 0:
+		return "socket"
+	case m&os.ModeDevice != 0:
+		return "device"
+	}
+	return "non-regular file"
+}
