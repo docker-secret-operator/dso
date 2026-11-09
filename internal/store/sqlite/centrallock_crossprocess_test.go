@@ -11,6 +11,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -74,6 +75,21 @@ func TestHelperProcess(t *testing.T) {
 type lockHelper struct {
 	cmd         *exec.Cmd
 	releaseFile string
+	// waitCalled is set to true immediately before this helper's own
+	// (*exec.Cmd).Wait call -- by release or by kill, whichever reaches it
+	// first -- and only then. It distinguishes "Wait has already been
+	// invoked" (by either method, regardless of what Wait itself returns)
+	// from every other state, including release failing before it ever
+	// reaches Wait (for example its releaseFile write failing): a caller's
+	// own cleanup can check this field to decide whether it is safe to call
+	// kill, without ever risking a second Wait on the same *exec.Cmd.
+	waitCalled bool
+	// waitAttempts counts how many times release/kill have invoked
+	// (*exec.Cmd).Wait. It exists purely for test observability -- proving,
+	// for example, that kill reaches Wait even when Process.Kill itself
+	// returned an error -- and is never used for any correctness decision;
+	// waitCalled is.
+	waitAttempts int
 }
 
 // startLockHelper launches the subprocess and blocks until it has actually
@@ -111,6 +127,8 @@ func (h *lockHelper) release(t *testing.T) {
 	if err := os.WriteFile(h.releaseFile, []byte("go"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	h.waitCalled = true
+	h.waitAttempts++
 	if err := h.cmd.Wait(); err != nil {
 		t.Fatalf("lock helper exited uncleanly: %v", err)
 	}
@@ -118,13 +136,25 @@ func (h *lockHelper) release(t *testing.T) {
 
 // kill terminates the helper WITHOUT letting it release its lock itself,
 // simulating a crashed or killed process -- the kernel, not this package,
-// must be what releases the flock.
+// must be what releases the flock. Wait is always attempted, regardless of
+// what Process.Kill returns: a process that has already finished (reported
+// via the well-known os.ErrProcessDone sentinel -- see convertESRCH in the
+// Go standard library's os package) still needs exactly the same Wait call
+// to be reaped if it has not been already, and silently never calling Wait
+// on any Kill error would risk leaving a still-running child unreaped. Only
+// a genuinely unexpected Kill error (anything other than os.ErrProcessDone)
+// is still reported as a failure -- after the wait attempt, not instead of
+// it -- so a real problem is never hidden, and a child is never abandoned
+// merely because Kill reported it was already gone.
 func (h *lockHelper) kill(t *testing.T) {
 	t.Helper()
-	if err := h.cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
+	killErr := h.cmd.Process.Kill()
+	h.waitCalled = true
+	h.waitAttempts++
+	_ = h.cmd.Wait() // Wait's own error is expected and ignored here, exactly as before (e.g. "signal: killed").
+	if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		t.Fatal(killErr)
 	}
-	_ = h.cmd.Wait()
 }
 
 func lockTestDBPath(t *testing.T) string {
@@ -276,6 +306,188 @@ func TestCentralLock_ReleasedByKernelAfterProcessIsKilled(t *testing.T) {
 		t.Fatalf("expected the lock to become available after the holding process was killed, got: %v", err)
 	}
 	_ = lock.Close()
+}
+
+// --- AcquireSharedCentralLock across real OS processes (L-2) ---
+//
+// sharedlock_test.go already proves AcquireSharedCentralLock's compatibility
+// and contention rules within a single process (multiple handles, same
+// goroutine tree). These three reuse this file's existing cross-process
+// machinery (startLockHelper/lockHelper, which re-execs the test binary as a
+// genuine separate OS process) to prove the same rules hold through the
+// kernel's real per-process lock table, specifically through the public
+// AcquireSharedCentralLock entry point the recovery scanner calls -- not
+// just through the lower-level acquireCentralLock the other tests in this
+// file already exercise.
+
+func TestCentralLock_TwoSharedHoldersAcrossRealProcesses_BothSucceed(t *testing.T) {
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "shared", db)
+	defer h.release(t)
+
+	l, err := AcquireSharedCentralLock(db, 2*time.Second)
+	if err != nil {
+		t.Fatalf("a second, independent-process shared holder must be compatible with the first: %v", err)
+	}
+	defer l.Close()
+}
+
+func TestCentralLock_ExclusiveHelperBlocksSharedAcquisitionThenSucceedsAfterRelease(t *testing.T) {
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "exclusive", db)
+	// Registered immediately after the helper starts, so every exit path --
+	// an earlier assertion failing, h.release(t) itself failing before it
+	// ever reaches Wait (for example its releaseFile write failing), h.
+	// release(t) reaching Wait and Wait then erroring, or h.release(t)
+	// succeeding outright -- is covered. h.waitCalled (set by release/kill
+	// themselves, immediately before their own Wait call, never before)
+	// is the one fact that actually determines whether a second Wait would
+	// be unsafe, which a locally-scoped "did we get far enough to attempt
+	// release" flag cannot distinguish from "Wait was truly already called."
+	t.Cleanup(func() {
+		if !h.waitCalled {
+			h.kill(t)
+		}
+	})
+
+	_, err := AcquireSharedCentralLock(db, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected the shared acquisition to fail while another process holds the exclusive lock")
+	}
+	if !isCentralLockBusy(err) {
+		t.Fatalf("expected ErrCentralLockBusy, got: %v", err)
+	}
+
+	h.release(t)
+
+	l, err := AcquireSharedCentralLock(db, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected the shared lock to succeed once the exclusive holder released: %v", err)
+	}
+	l.Close()
+}
+
+// TestCentralLock_ExclusiveHelperCleanup_ReleaseFileWriteFailure_KillsAndReapsHelper
+// exercises the row this file's own cleanup audit identified as previously
+// uncovered: release()'s os.WriteFile failing before cmd.Wait is ever
+// reached. It forces that failure by making the helper's own release-file
+// directory temporarily unwritable, then verifies that a waitCalled-gated
+// cleanup -- exactly the pattern now used by
+// TestCentralLock_ExclusiveHelperBlocksSharedAcquisitionThenSucceedsAfterRelease
+// -- still kills and reaps the helper, with Wait invoked exactly once, well
+// inside the helper's own 10-second internal release-wait timeout.
+func TestCentralLock_ExclusiveHelperCleanup_ReleaseFileWriteFailure_KillsAndReapsHelper(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "exclusive", db)
+
+	// This is exactly the cleanup pattern
+	// TestCentralLock_ExclusiveHelperBlocksSharedAcquisitionThenSucceedsAfterRelease
+	// uses: kill only if Wait has not already been invoked. It also carries
+	// this test's actual verification, since it is the code that runs once
+	// the forced write failure below has happened and the test body below
+	// returns without itself calling release or kill.
+	t.Cleanup(func() {
+		if h.waitCalled {
+			t.Fatal("waitCalled must be false entering cleanup: the forced write failure must never have reached Wait")
+		}
+		start := time.Now()
+		h.kill(t)
+		killDuration := time.Since(start)
+		if !h.waitCalled {
+			t.Fatal("expected kill to set waitCalled after calling Wait")
+		}
+		if h.cmd.ProcessState == nil {
+			t.Fatal("expected kill's Wait to have reaped the helper process (ProcessState is nil)")
+		}
+		// Well inside the helper's own 10-second release-wait deadline: this
+		// cleanup's own kill did the reaping, not that internal timeout.
+		if killDuration >= 5*time.Second {
+			t.Fatalf("kill took %s; expected cleanup to act immediately, not approach the helper's internal timeout", killDuration)
+		}
+	})
+
+	releaseDir := filepath.Dir(h.releaseFile)
+	// Registered after the cleanup above, so it runs first (t.Cleanup is
+	// LIFO): permissions are restored before that cleanup's own kill runs
+	// (kill itself needs none of this, but t.TempDir's later removal does)
+	// and well before TempDir's own removal.
+	t.Cleanup(func() { _ = os.Chmod(releaseDir, 0o700) })
+	if err := os.Chmod(releaseDir, 0o500); err != nil {
+		t.Fatalf("restricting the release directory for this test: %v", err)
+	}
+
+	// The exact operation release() performs before it could ever reach
+	// Wait, called directly rather than via h.release(t) -- which would
+	// itself call t.Fatal on this same failure and end the test immediately,
+	// leaving no chance to report PASS once the Cleanup above confirms the
+	// fix behaved correctly.
+	if err := os.WriteFile(h.releaseFile, []byte("go"), 0o600); err == nil {
+		t.Fatal("expected the release-file write to fail while its directory is read-only")
+	}
+	if h.waitCalled {
+		t.Fatal("waitCalled must still be false: the write failed before Wait could ever be reached")
+	}
+}
+
+// TestLockHelper_Kill_NormalSuccess_InvokesWaitAndReaps is the baseline case
+// for the kill() control-flow fix: an ordinary, successful Process.Kill
+// must still reach exactly one Wait call and reap the helper.
+func TestLockHelper_Kill_NormalSuccess_InvokesWaitAndReaps(t *testing.T) {
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "exclusive", db)
+	h.kill(t)
+	if !h.waitCalled {
+		t.Fatal("expected waitCalled to be true after a normal kill")
+	}
+	if h.waitAttempts != 1 {
+		t.Fatalf("expected exactly one Wait attempt, got %d", h.waitAttempts)
+	}
+	if h.cmd.ProcessState == nil {
+		t.Fatal("expected the process to be reaped (ProcessState set) after kill")
+	}
+}
+
+// TestLockHelper_Kill_AfterAlreadyReaped_GetsErrProcessDoneButStillAttemptsWait
+// exercises kill()'s os.ErrProcessDone branch deterministically, with no
+// timing dependency, race, or fragile process manipulation: killing the
+// SAME already-reaped helper a second time makes Process.Kill short-circuit
+// to os.ErrProcessDone purely from Go's own internal process bookkeeping
+// (confirmed against the Go standard library's os package source during
+// the preceding investigation: see pidSignal/pidfdSendSignal's statusDone
+// check) -- no real signal is even sent. This proves the second kill(t)
+// call does not fail the test on that error, and that a second Wait
+// attempt still happens (waitAttempts reaches 2) rather than being skipped.
+func TestLockHelper_Kill_AfterAlreadyReaped_GetsErrProcessDoneButStillAttemptsWait(t *testing.T) {
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "exclusive", db)
+	h.kill(t) // first kill: a real SIGKILL, reaps normally.
+	if h.waitAttempts != 1 {
+		t.Fatalf("expected exactly one Wait attempt after the first kill, got %d", h.waitAttempts)
+	}
+
+	h.kill(t) // second kill on the same, already-reaped helper: must not fail.
+	if h.waitAttempts != 2 {
+		t.Fatalf("expected a second Wait attempt even though Kill returned ErrProcessDone, got %d total", h.waitAttempts)
+	}
+}
+
+func TestCentralLock_SharedAcquisitionSucceedsAfterExclusiveHelperIsKilled(t *testing.T) {
+	db := lockTestDBPath(t)
+	h := startLockHelper(t, "exclusive", db)
+	h.kill(t) // the helper never gets to call lock.Close itself
+
+	// As in TestCentralLock_ReleasedByKernelAfterProcessIsKilled, the kernel
+	// releases the flock on process teardown; there is no stale-lock-file
+	// cleanup step this package performs. This is the same guarantee,
+	// verified through AcquireSharedCentralLock specifically.
+	l, err := AcquireSharedCentralLock(db, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected the shared lock to become available after the exclusive holder was killed, got: %v", err)
+	}
+	l.Close()
 }
 
 // --- Lock contention and timeout: the busy error must appear within roughly the configured timeout, not hang forever ---

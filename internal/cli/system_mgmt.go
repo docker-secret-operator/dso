@@ -34,6 +34,7 @@ Examples:
 	cmd.AddCommand(newSystemRestartCmd())
 	cmd.AddCommand(newSystemLogsCmd())
 	cmd.AddCommand(newSystemSetupCmd())
+	cmd.AddCommand(newSystemDoctorCmd())
 
 	return cmd
 }

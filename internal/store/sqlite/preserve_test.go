@@ -1767,6 +1767,15 @@ func pvPreserveKillChild(path, point string) {
 			}
 			return real(d)
 		}
+	case "afterpublish": // the publication rename has completed; nothing further happens
+		real := pv.publish
+		pv.publish = func(partial, final string) error {
+			if err := real(partial, final); err != nil {
+				return err
+			}
+			kill()
+			return nil // unreachable: kill never returns
+		}
 	default:
 		os.Exit(2)
 	}

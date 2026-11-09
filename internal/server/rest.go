@@ -128,6 +128,15 @@ type RESTServer struct {
 	// installed by StartRESTServer; nil (the zero value) disables the check.
 	HostGuard *hostGuard
 
+	// allowAnonymous is the only way a request with no valid credential can be
+	// authenticated as authOpen (legacy open mode: no token, no WebUI). Its
+	// zero value is false, so a RESTServer built any way other than through
+	// the explicit opt-in -- including a bare RESTServer{} literal -- rejects
+	// anonymous requests to protected routes (F-E1, structural fail closed).
+	// In production it is set only by enforceCredentialPolicy, and only when
+	// DSO_ALLOW_UNAUTHENTICATED_LOOPBACK is set on a legacy-open wiring.
+	allowAnonymous bool
+
 	// rotationBaseCtx is the lifetime manual rotations run under: StartRESTServer
 	// sets it to the daemon context, so shutting the agent down cancels them.
 	// nil (struct-literal servers in tests) means context.Background().
@@ -1273,8 +1282,10 @@ func (s *RESTServer) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 //
 // SEC-C1: if the server is asked to bind to a non-loopback address while
 // DSO_AUTH_TOKEN is unset, startup fails with an error instead of silently
-// serving an unauthenticated secrets API to the network. Loopback and
-// unix-socket deployments may still run without a token for local development.
+// serving an unauthenticated secrets API to the network. F-E1: a loopback
+// bind without a token (and without the WebUI) still starts, but protected
+// routes return 401 unless DSO_ALLOW_UNAUTHENTICATED_LOOPBACK=1 is set (see
+// enforceCredentialPolicy).
 // The shutdown function should be called on graceful agent shutdown to properly
 // close connections.
 const (
@@ -1398,6 +1409,7 @@ func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.Se
 		rotationBaseCtx: ctx,
 	}
 	restServer.applyAccessWiring(access)
+	restServer.enforceCredentialPolicy(access, logger)
 	// Establish webhook replay state and its restart floor now, before the
 	// listener below accepts a single request (not lazily on the first webhook).
 	restServer.initWebhookGuard(time.Now())

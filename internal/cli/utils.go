@@ -146,13 +146,10 @@ Examples:
 }
 
 func newSystemDoctorCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Doctor command",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return nil
-		},
-	}
+	// Keep system doctor behavior identical to the full, read-only top-level
+	// diagnostics command instead of returning a misleading success with no
+	// checks performed.
+	return NewDoctorCmd()
 }
 
 // setupProviders installs provider plugins

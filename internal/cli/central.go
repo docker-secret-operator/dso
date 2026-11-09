@@ -65,7 +65,7 @@ a production secrets workflow yet.`,
 	cmd.PersistentFlags().StringVar(&f.passphraseFile, "passphrase-file", "", "read the passphrase from this file (mode 0600) instead of prompting")
 
 	cmd.AddCommand(centralInitCmd(f), centralProjectCmd(f), centralEnvCmd(f), centralSecretCmd(f),
-		centralBackupCmd(f), centralRestoreCmd(f), centralAuditCmd(f))
+		centralBackupCmd(f), centralRestoreCmd(f), centralAuditCmd(f), centralRecoveryStatusCmd(f))
 	return cmd
 }
 
@@ -759,6 +759,94 @@ responsibility.`,
 	}
 	cmd.Flags().StringVar(&out, "out", "", "destination path for the backup (required; must not already exist)")
 	return cmd
+}
+
+// centralRecoveryStatusCmd adds `dso central recovery-status` (Phase D): a
+// read-only report of recovery-related artifacts left beside --db by a raw
+// preservation or a Restore displacement (see docs/central-store-crash-
+// recovery.md). It never opens the active database through SQLite, never
+// triggers WAL recovery, never creates or modifies a -wal/-shm/-journal
+// sidecar, and never deletes, renames, repairs or otherwise acts on anything
+// it finds. It is strictly detection, observation, classification and
+// reporting -- recovery and cleanup are out of scope and not implemented
+// here or anywhere else in this phase.
+func centralRecoveryStatusCmd(f *centralFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "recovery-status",
+		Short: "Report recovery-related artifacts left beside the database, without changing anything",
+		Long: `Looks beside --db for the on-disk leftovers a raw preservation or a Restore
+displacement can leave: a raw preservation directory ("<db>.pre-restore-raw-*",
+published or still ".partial"), a displacement aside directory
+("<db>.replaced-*"), and a prepared-replacement temporary file
+("<db>.restoring-*"). It reports, for each one, the filesystem facts the
+scanner can prove and the specific questions it cannot answer -- it never
+claims an artifact is safe to delete or safe to restore, never infers what
+happened from a filename, timestamp or directory shape alone, and never
+treats age alone as proof of anything.
+
+This command does not require --db to exist: a crash can leave the active
+database missing entirely, which is one of the states worth reporting.
+
+Before reading the filesystem it attempts the shared central lock, the same
+one every other dso central command takes. This advisory lock coordinates
+dso central processes only -- it does not exclude an external SQLite process
+or another host. If acquisition succeeds, it scans and reports the recovery
+artifacts it finds. If acquisition fails (for example because an exclusive
+Restore is in progress), scanning and classification are NOT performed: no
+filesystem fact is read or reported for that run, and the result is
+explicitly inconclusive. Retry once the competing dso central operation has
+released the lock.
+
+This command never performs recovery or cleanup: it does not delete, rename,
+move, repair or install anything, and it appends no audit event.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if f.db == "" {
+				return errors.New("--db is required")
+			}
+			res, err := centralsvc.ScanActiveRecoveryArtifacts(f.db, 0)
+			if err != nil {
+				return err
+			}
+			printRecoveryScanResult(cmd, res)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func printRecoveryScanResult(cmd *cobra.Command, res centralsvc.RecoveryScanResult) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Recovery artifact scan for %s\n", res.DBPath)
+	fmt.Fprintf(out, "Shared central lock acquired: %t\n", res.LockAcquired)
+	fmt.Fprintf(out, "  %s\n", res.LockNote)
+	fmt.Fprintln(out, "This scan does not perform recovery or cleanup: nothing was deleted, renamed, repaired or installed.")
+	if !res.Scanned {
+		fmt.Fprintln(out, "Artifact scanning and classification were NOT performed, because the shared lock could not be acquired.")
+		fmt.Fprintln(out, "Whether recovery artifacts exist beside this path is UNKNOWN from this run. Retry once the conflicting dso central process has finished.")
+		return
+	}
+	if len(res.Artifacts) == 0 {
+		fmt.Fprintln(out, "No recovery artifacts were found beside this path.")
+		return
+	}
+	for i, a := range res.Artifacts {
+		fmt.Fprintf(out, "\n[%d] %s\n", i+1, a.Path)
+		fmt.Fprintf(out, "    Kind:       %s\n", a.Kind)
+		fmt.Fprintf(out, "    Confidence: %s\n", a.Confidence)
+		if a.MainDatabaseUnsafe {
+			fmt.Fprintln(out, "    The active database must NOT be treated as safe to open based on this artifact's state.")
+		}
+		fmt.Fprintln(out, "    Facts:")
+		for _, fct := range a.Facts {
+			fmt.Fprintf(out, "      - %s\n", fct)
+		}
+		if len(a.Unresolved) > 0 {
+			fmt.Fprintln(out, "    Unresolved (manual judgment required):")
+			for _, u := range a.Unresolved {
+				fmt.Fprintf(out, "      - %s\n", u)
+			}
+		}
+	}
 }
 
 // printCandidateInfo shows a restore candidate's path and its validated,

@@ -196,6 +196,59 @@ func (r *RestoreLock) Close() error {
 	return r.lock.Close()
 }
 
+// SharedLock is the shared central lock, held for the lifetime of a
+// caller's own coordinated-but-read-only critical section (Phase D's
+// recovery-artifact scanner: see recovery_scan.go). Unlike an ordinary
+// Store open, acquiring it does NOT open, create or touch the database file
+// or its -wal/-shm/-journal sidecars at all -- it holds the sidecar lock
+// only, so a caller that must never risk the side effects of sqlite.Open
+// (creating a database, triggering WAL recovery) can still prove that no
+// other dso central process held an INCOMPATIBLE lock (any other shared
+// holder is fine; a concurrent exclusive Restore is not) for the moment
+// this lock was held.
+//
+// This is a materially weaker guarantee than "no process is using the
+// database": the lock is advisory, local-only, and coordinates only with
+// other dso central processes that go through this package (see the file
+// comment above). A process that opens the sidecar, the database file, or
+// its companions directly is not seen at all. Callers must word their own
+// output accordingly and must never claim broader protection than this.
+type SharedLock struct {
+	path string
+	lock *centralLock
+}
+
+// AcquireSharedCentralLock takes the shared central lock for dbPath: compatible
+// with any number of other shared holders (ordinary dso central commands),
+// incompatible only with a concurrent exclusive Restore critical section.
+// Acquiring it CREATES the sidecar lock file <dbPath>.central.lock if it does
+// not already exist (see acquireCentralLock) -- the one filesystem side effect
+// this call has; it never opens, creates or modifies dbPath itself or any of
+// its SQLite sidecars. On timeout it returns an error matching
+// ErrCentralLockBusy, exactly like AcquireExclusiveCentralLock; there is no
+// fallback that proceeds without the lock. Call (*SharedLock).Close exactly
+// once when the caller's critical section ends.
+func AcquireSharedCentralLock(dbPath string, timeout time.Duration) (*SharedLock, error) {
+	abs, err := absPathForLock(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	l, err := acquireCentralLock(abs, LockShared, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &SharedLock{path: abs, lock: l}, nil
+}
+
+// Close releases the shared lock. Safe to call on a nil *SharedLock and safe
+// to call more than once.
+func (s *SharedLock) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.lock.Close()
+}
+
 // Open opens path exactly like the package-level Open, but without taking a
 // new central lock, because r already holds the exclusive one. It refuses
 // to open any path other than the exact one r was acquired for -- a

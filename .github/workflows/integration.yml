@@ -1,0 +1,100 @@
+name: Docker Integration
+
+# M0-3 (docs/product-evolution/m0-docker-ci-plan.md): a named Docker-backed
+# lane, separate from coverage.yml. This first step runs the S1-S3 baseline
+# scenarios in test/docker (build tag `dockerint`) against the runner's real
+# Docker Engine: no Docker-in-Docker, no privileged service containers.
+# Making this job a required status check is a branch-protection setting on
+# `main` and must be done by a repository admin.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-int-${{ github.ref }}
+  # Superseded PR runs are cancelled; runs for pushes to main are not, so
+  # every main commit gets a completed Docker result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docker-int-baseline:
+    name: Docker Integration (S1-S3 baseline)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Synthetic per-run prefix for every secret value the scenarios use; the
+      # leak scan below fails the job if it shows up in the test log.
+      DSO_IT_SENTINEL: dso-it-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Record Docker environment
+        run: |
+          {
+            echo '### Docker environment'
+            echo '```'
+            docker version
+            docker info --format 'driver={{.Driver}} cgroup={{.CgroupVersion}} kernel={{.KernelVersion}}'
+            docker compose version
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull scenario image
+        run: docker pull busybox:1.36.1
+
+      - name: Run S1-S3
+        run: |
+          set -o pipefail
+          go test -tags dockerint -v -count=1 -timeout 20m ./test/docker/... 2>&1 | tee test.log
+
+      - name: Collect Docker state on failure
+        if: failure()
+        run: |
+          mkdir -p artifacts
+          docker ps -a --filter label=dso.reloader=true > artifacts/containers.txt 2>&1 || true
+          docker events --since 30m --until "$(date +%s)" --filter type=container > artifacts/events.txt 2>&1 || true
+
+      # Scans everything that is uploaded as an artifact. Matching lines are
+      # never echoed (only file names and counts), so a detected leak is not
+      # re-printed into the job log.
+      - name: Leak scan (synthetic secret values must not appear in logs)
+        if: always()
+        run: |
+          leaked=0
+          for f in test.log artifacts/*; do
+            [ -f "$f" ] || continue
+            n=$(grep -cF -- "$DSO_IT_SENTINEL" "$f" || true)
+            if [ "${n:-0}" -gt 0 ]; then
+              echo "::error::synthetic secret value found in $f ($n line(s))"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" -ne 0 ]; then
+            exit 1
+          fi
+          echo "no synthetic secret value in test.log or artifacts/"
+
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-int-baseline
+          path: |
+            test.log
+            artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

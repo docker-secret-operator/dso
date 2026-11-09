@@ -42,7 +42,12 @@ const webhookPath = "/api/events/secret-update"
 //	                                    would otherwise be bypassable by simply
 //	                                    not configuring a token)
 //	token set, nothing valid         -> authNone
-//	no token and no webui            -> authOpen  (legacy, loopback only)
+//	no token and no webui            -> authNone by default (F-E1: the zero
+//	                                    value of allowAnonymous denies);
+//	                                    authOpen only when allowAnonymous was
+//	                                    set by enforceCredentialPolicy on the
+//	                                    explicit DSO_ALLOW_UNAUTHENTICATED_LOOPBACK
+//	                                    opt-in (loopback binds only)
 func (s *RESTServer) authenticate(r *http.Request) (authMethod, *webuiauth.Session) {
 	tokenConfigured := s.Auth.Enabled() // nil-safe; same predicate buildAccessWiring uses
 	if tokenConfigured {
@@ -58,7 +63,9 @@ func (s *RESTServer) authenticate(r *http.Request) (authMethod, *webuiauth.Sessi
 		}
 		return authNone, nil
 	}
-	if tokenConfigured {
+	// Fail closed unless anonymous access was explicitly granted: the zero
+	// value of allowAnonymous denies (see RESTServer.allowAnonymous).
+	if tokenConfigured || !s.allowAnonymous {
 		return authNone, nil
 	}
 	return authOpen, nil

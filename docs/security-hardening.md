@@ -12,7 +12,7 @@ follows:
 
 | `DSO_AUTH_TOKEN` | WebUI (`webui.enabled`) | Anonymous request | Valid credential |
 |---|---|---|---|
-| unset | disabled | **allowed** (legacy mode, loopback only) | n/a |
+| unset | disabled | **401** by default; **allowed** only with `DSO_ALLOW_UNAUTHENTICATED_LOOPBACK=1` (legacy mode, loopback only) | n/a |
 | unset | enabled | **401** | session cookie |
 | set | disabled | 401 | `Authorization: Bearer <token>` |
 | set | enabled | 401 | bearer token **or** session cookie |
@@ -20,6 +20,26 @@ follows:
 **Behavior change:** previously, enabling the WebUI without `DSO_AUTH_TOKEN`
 left every `/api/*` route open to anyone who could reach the port, making the
 login page decorative. Now an enabled WebUI always requires a credential.
+
+**Behavior change (M1, F-E1):** with neither `DSO_AUTH_TOKEN` nor the WebUI
+configured, the REST API on a loopback bind used to serve every protected route
+to any local process (any UID on the host, and containers using
+`network_mode: host`). It now fails closed: the listener still starts and
+`/health` stays public, but protected routes return `401`. To restore the old
+behavior explicitly (not recommended), set `DSO_ALLOW_UNAUTHENTICATED_LOOPBACK=1`
+(any value accepted by Go's `strconv.ParseBool` as true) in the agent's
+environment; startup then logs a `SECURITY:` warning. The opt-in has no effect
+on non-loopback binds, which still refuse to start without a token, and it never
+disables the Host-header (DNS-rebinding) guard. The recommended fix is to set
+`DSO_AUTH_TOKEN` for the agent and for clients such as `docker dso logs --api`.
+
+The fail-closed default is structural, not only a startup step: the REST
+server's internal "anonymous access allowed" flag is false in its zero value,
+so a server constructed through any path that skips the startup policy denies
+anonymous requests to protected routes. Only the startup policy sets it, and
+only for legacy-open wiring (no token, no WebUI) with the explicit opt-in; the
+policy assigns the decision each time rather than inheriting earlier state. A
+configured token or WebUI session is never weakened by the flag.
 
 Public routes (no credential): `GET /health`, `POST /api/auth/login`,
 `POST /api/auth/logout`, the static WebUI shell (any non-`/api` path), and
@@ -420,3 +440,126 @@ password) can still be shown; keep credentials in the documented fields. A file
 that is not valid YAML is **refused** rather than printed raw. A test fails if
 a credential-looking field is added to the schema without a tag.
 To see a value, open the file directly with sufficient permissions.
+
+## 7. Agent IPC socket authorization (M1, PE-11 / PE-28)
+
+The agent's Unix socket (`/run/dso/dso.sock`, `0660 root:dso`) authenticates
+each peer with `SO_PEERCRED` and now also authorizes each **method**. Callers
+can only *name* providers and secrets; only the agent's own `dso.yaml` defines
+them.
+
+| Method | root / agent UID | `dso` group member |
+|---|---|---|
+| `GetEvents`, `GetStatus` | allowed | allowed |
+| `TriggerReconciliation` | allowed | allowed |
+| `GetSecret` | provider/secret pairs defined in `dso.yaml` only | provider/secret pairs defined in `dso.yaml` only |
+| `CheckProviderConnectivity` | allowed (throw-away, never cached) | **denied** |
+
+* `GetSecret` rejects a provider name that `dso.yaml` does not define and a
+  secret name that `dso.yaml` does not map to that provider, with
+  `permission denied`, before any provider is loaded. Caller-supplied provider
+  configuration in the request is ignored. The former "legacy one-off" mode
+  (caller chooses the provider type and its configuration, executed inside the
+  root agent) is removed.
+* `CheckProviderConnectivity` (used by `docker dso apply`'s pre-flight check)
+  loads a provider of the caller's choosing inside the root agent, so it is
+  restricted to root. It never reads or replaces the provider connection the
+  agent uses for rotation.
+* Methods not listed above are denied to everyone. On platforms without
+  `SO_PEERCRED` (non-Linux) every peer is treated as a `dso` group member.
+* Denied calls are logged and recorded in the audit log.
+
+**Compatibility.** `docker dso fetch` and `docker dso apply` continue to work
+for secrets defined in the agent's `dso.yaml`. From a non-root shell,
+`apply` skips the live connectivity check (it prints a notice and validates the
+provider type only); run it as root for the live check.
+
+## 8. Scaled-service rotation policy (M1, verified)
+
+When one rotation matches several replicas of the same service (keyed by
+Compose project **and** service, so `db` in project A and `db` in project B are
+independent), DSO recreates them **one replica at a time**. This is a fixed
+internal default, not a configuration option.
+
+* **Continue after failure.** A replica whose replacement fails is handled by
+  its strategy first: for `restart`, the replacement is removed and the
+  original container is renamed back and restarted (original only removed after
+  the replacement passed its health check); for `rolling`, the shadow is removed
+  and the original keeps running, and when the container's ports are
+  proxy-owned the service is marked degraded instead of falling back. Only after
+  that handling (and, on success, the health gate) has finished does the next
+  replica start. Remaining replicas are still attempted.
+* **Panics.** A panic inside one replica's rotation is recovered, recorded as a
+  failure (lock released, `restart` services marked degraded) and still
+  releases the next replica.
+* **Outcome.** The first failure is the rotation's outcome: no
+  `rotation_succeeded` event, the observed value is not recorded as delivered,
+  and the next poll (after the rotation cooldown) retries.
+
+Known limitations (accepted for M1; the persisted desired/applied ledger is M2):
+
+* A retry re-dispatches the secret to **all** matched targets, including
+  replicas that already rotated successfully, not only the failed one.
+* **Outage window in the non-proxy `rolling` fallback.** When a rolling attempt
+  fails for a reason other than a health-class rejection (for example a Docker
+  API error while inspecting, creating or starting the shadow), DSO falls back
+  to a full restart. A container that publishes fixed host ports cannot run
+  alongside its replacement, so the fallback stops the original container
+  **before** starting the replacement. The service is unavailable from that
+  stop until the replacement is up (on success) or until the original has been
+  restarted (on rollback); this is a brief outage, and this path is **not
+  zero-downtime**. If the replacement fails to start or fails its health check
+  or exec probe, the rollback stops and removes the replacement and renames back
+  and restarts the previous working container. Rollback restores service, but
+  it does not prevent the outage that has already occurred, and if the rollback
+  itself fails the service stays down and is marked degraded. Avoiding this
+  window requires proxy-owned ports (where the fallback is never used) and is
+  not addressed in M1.
+
+Resolved in M1 (previously listed here):
+
+* Health-class failures of the non-proxy `rolling` attempt no longer run the
+  fallback restart. `rotation.WaitHealthy` and `rotation.ExecProbe` wrap the
+  sentinel `rotation.ErrUnhealthy` when the container restarted, exited,
+  reported unhealthy, never became healthy or stable within the timeout, or a
+  file-mode secret was still missing after every probe retry (Docker API errors
+  and context cancellation are not wrapped). When the rolling error satisfies
+  `errors.Is(err, rotation.ErrUnhealthy)`, the fallback -- which would
+  redeploy the same rejected secret after stopping the original -- is skipped:
+  the shadow has already been removed, the original was never renamed, stopped
+  or removed and keeps serving the previous secret, the rotation is audited
+  `failed`, and the reported outcome states the health rejection and that the
+  fallback was skipped. No degraded flag is set on this path (the original is
+  still serving); every other failure still takes the fallback described above.
+
+* The non-proxy fallback restart is now health-gated. The replacement must pass
+  `rotation.WaitHealthy` (same timeout as the rolling attempt) and, for
+  file-mode secrets, `rotation.ExecProbe` before the original is removed; on a
+  failed check the replacement is stopped and removed and the original renamed
+  back and restarted (`executeRollback`, service marked degraded if that
+  fails). The fallback's result, including a failed rollback, is now part of
+  the reported outcome; a successful fallback still reports the rolling
+  failure.
+* The `rolling` path no longer releases the service lock before its failure
+  handling (degrade / fallback restart and its rollback). The lock is released
+  when the rotation goroutine returns, so a rotation of a different secret for
+  the same service is deferred until that handling has finished. Sibling
+  replicas of the same rotation are still sequenced; other services and the
+  same service in another Compose project are not blocked.
+
+## 9. Docker integration lane: scope
+
+`.github/workflows/integration.yml` runs `test/docker` (build tag `dockerint`)
+against a real Docker Engine. It exercises the rotation engine, label
+discovery, the ownership gate and the health gate; secret values are seeded
+directly into the engine's cache. It does **not** exercise the Vault provider
+plugin, the root agent binary, the Unix IPC socket, `SO_PEERCRED`
+authorization, the REST API or the proxy, so a green run is not evidence for
+any of the controls in sections 1-2 or 7. A leak scan fails the job if the
+per-run synthetic secret prefix appears in the test log or uploaded artifacts.
+Execution status: passed locally against Docker Desktop on 2026-11-09; not yet
+run on the GitHub-hosted `ubuntu-24.04` runner (see
+`docs/product-evolution/m0-docker-ci-plan.md` section 7).
+Which environments are authoritative for which tests is set out in
+`docs/product-evolution/m0-docker-ci-plan.md` section 8 (test environment
+policy).

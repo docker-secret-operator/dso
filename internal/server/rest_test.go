@@ -38,6 +38,14 @@ func createTestRESTServer() *RESTServer {
 		Logger:     logger,
 		Hub:        hub,
 		EventStore: newEventStoreAt(100, hub, tmpDir, "events.jsonl"),
+		// This fixture models the legacy loopback open mode (no token, no
+		// WebUI) that most handler tests exercise anonymously. Since F-E1 a
+		// RESTServer's zero value denies anonymous access, so the fixture
+		// opts in explicitly -- the in-process equivalent of
+		// DSO_ALLOW_UNAUTHENTICATED_LOOPBACK=1. Tests that configure a token
+		// or WebUI session are unaffected (allowAnonymous is only consulted
+		// when neither is configured); enforceCredentialPolicy resets it.
+		allowAnonymous: true,
 	}
 }
 

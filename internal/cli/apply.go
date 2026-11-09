@@ -162,6 +162,14 @@ func verifyProviderConnectivity(cfg *config.Config, provName string) error {
 
 	resp, err := client.CheckProviderConnectivity(req)
 	if err != nil {
+		// The live check is root-only on the agent (PE-11): it loads a
+		// provider of the caller's choosing inside the root process. A
+		// non-root dso-group caller falls back to the type-only check, the
+		// same way an unreachable agent does.
+		if strings.Contains(err.Error(), "permission denied") {
+			fmt.Println("[DSO]   (live connectivity check requires root — validated provider type only)")
+			return nil
+		}
 		return fmt.Errorf("connectivity check request failed: %w", err)
 	}
 	if !resp.Reachable {

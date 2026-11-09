@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-07-30T05:36:38.884Z",
-  "projectRoot": "/data/umair_atr1123/All_Data/Antigravity_Work/dso",
+  "timestamp": "2026-11-09T06:27:01.746Z",
+  "projectRoot": "/Users/mdumair/Personal_Work/Antigravity_Work/dso",
   "structure": {
     "hasPackageJson": false,
     "hasTsConfig": false,
     "hasClaudeConfig": true,
     "hasClaudeFlow": true
   },
-  "scannedAt": 1785389798884
+  "scannedAt": 1794205621746
 }

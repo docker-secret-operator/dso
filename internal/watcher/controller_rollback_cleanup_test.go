@@ -182,7 +182,7 @@ func TestExecuteSimpleRestart_ContextEndsDuringCreate_RestoresName(t *testing.T)
 		},
 		func(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) })
 
-	if err := rc.executeSimpleRestart(ctx, "orig-1", nil, nil, nil); err == nil {
+	if err := rc.executeSimpleRestart(ctx, "orig-1", nil, nil, nil, time.Second, "svc"); err == nil {
 		t.Fatal("expected an error")
 	}
 	if log.nEnds("POST", "/containers/orig-1/rename?name=myapp") < 1 {
@@ -204,7 +204,7 @@ func TestExecuteSimpleRestart_ContextEndsDuringStart_RollsBack(t *testing.T) {
 			http.Error(w, `{"message":"x"}`, http.StatusInternalServerError)
 		})
 
-	if err := rc.executeSimpleRestart(ctx, "orig-1", nil, nil, nil); err == nil {
+	if err := rc.executeSimpleRestart(ctx, "orig-1", nil, nil, nil, time.Second, "svc"); err == nil {
 		t.Fatal("expected an error")
 	}
 	if log.n("DELETE", "/containers/new-1") == 0 {

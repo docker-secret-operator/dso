@@ -3,7 +3,10 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/auth"
@@ -66,7 +69,8 @@ func buildAccessWiring(cfg *config.Config, authn *auth.Authenticator, addr strin
 			zap.Strings("allowed_hosts", w.HostGuard.hosts()))
 	}
 	if w.LegacyOpen {
-		logger.Warn("REST API is running without authentication (no DSO_AUTH_TOKEN and WebUI disabled); this is only permitted on a loopback address. Set DSO_AUTH_TOKEN or enable the WebUI to require credentials.")
+		logger.Warn("REST API has no credential configured (no DSO_AUTH_TOKEN and WebUI disabled); requests are served without authentication only on a loopback bind and only when " +
+			envAllowUnauthenticatedLoopback + "=1, otherwise every protected route returns 401. Set DSO_AUTH_TOKEN or enable the WebUI.")
 	}
 
 	if !webUIEnabled {
@@ -125,6 +129,45 @@ func (s *RESTServer) applyAccessWiring(w *accessWiring) {
 	s.HostGuard = w.HostGuard
 	s.WebUIAuth = w.WebUIAuth
 	s.WebUI = w.WebUI
+}
+
+// envAllowUnauthenticatedLoopback is the explicit opt-in that restores the
+// pre-M1 legacy open mode (F-E1): with no DSO_AUTH_TOKEN and the WebUI
+// disabled, the REST API on a loopback bind serves protected routes to any
+// local caller. Accepted values are those of strconv.ParseBool.
+const envAllowUnauthenticatedLoopback = "DSO_ALLOW_UNAUTHENTICATED_LOOPBACK"
+
+// unauthenticatedLoopbackAllowed reports whether the operator explicitly
+// opted in to unauthenticated loopback REST access.
+func unauthenticatedLoopbackAllowed() bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(envAllowUnauthenticatedLoopback)))
+	return err == nil && v
+}
+
+// enforceCredentialPolicy applies F-E1 (fail closed): when the wiring is in
+// legacy open mode (no bearer token, no WebUI), anonymous requests to
+// protected routes are rejected unless the operator set
+// DSO_ALLOW_UNAUTHENTICATED_LOOPBACK. StartRESTServerSupervised calls this
+// after applyAccessWiring; it is a separate step so the wiring helpers keep
+// describing the credential configuration while this decides the deployment
+// policy. Public routes (/health, login/logout, the HMAC-signed webhook) are
+// unaffected.
+//
+// The decision is assigned, never inherited: allowAnonymous is reset to false
+// first, so whatever state the RESTServer was in beforehand, the only outcome
+// that leaves anonymous access open is legacy-open wiring plus the explicit
+// opt-in.
+func (s *RESTServer) enforceCredentialPolicy(w *accessWiring, logger *zap.Logger) {
+	s.allowAnonymous = false
+	if !w.LegacyOpen {
+		return
+	}
+	if unauthenticatedLoopbackAllowed() {
+		s.allowAnonymous = true
+		logger.Warn("SECURITY: " + envAllowUnauthenticatedLoopback + " is set: the REST API serves every protected route WITHOUT authentication to any local process on this host. Set DSO_AUTH_TOKEN instead.")
+		return
+	}
+	logger.Error("REST API has no credential configured; protected routes will return 401. Set DSO_AUTH_TOKEN (or enable the WebUI). To restore the old unauthenticated loopback behaviour, set " + envAllowUnauthenticatedLoopback + "=1 (not recommended).")
 }
 
 // hosts returns the explicitly allowed (non-loopback) hostnames, sorted, for

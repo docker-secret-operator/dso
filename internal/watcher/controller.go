@@ -2,10 +2,12 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/analyzer"
@@ -29,6 +31,25 @@ import (
 type lockInfo struct {
 	startTime   time.Time
 	serviceName string
+	// lastActive (unix nanos, 0 = never) is refreshed each time a further
+	// sibling replica starts rotating under this lock, so a long sequential
+	// multi-replica rotation is not mistaken for a stale lock and reclaimed
+	// by a concurrent reload.
+	lastActive atomic.Int64
+}
+
+// touch records that the rotation holding this lock is still making progress.
+func (l *lockInfo) touch() { l.lastActive.Store(time.Now().UnixNano()) }
+
+// idleFor is how long the lock has gone without progress.
+func (l *lockInfo) idleFor() time.Duration {
+	last := l.startTime
+	if n := l.lastActive.Load(); n != 0 {
+		if t := time.Unix(0, n); t.After(last) {
+			last = t
+		}
+	}
+	return time.Since(last)
 }
 
 type TargetContainer struct {
@@ -50,7 +71,7 @@ type ReloaderController struct {
 	Cache         SecretCache
 	Config        *dsoConfig.Config
 	ProxyManager  *dsoProxy.Manager // nil when no port-bound containers exist
-	rotationLocks sync.Map          // map[string]*lockInfo (key: service name)
+	rotationLocks sync.Map          // map[string]*lockInfo (key: serviceLockKey(project, service))
 	degraded      sync.Map          // map[string]string (key: service name, val: error)
 	eventQueue    *eventqueue.BoundedEventQueue
 
@@ -743,6 +764,133 @@ func (r *ReloaderController) resolveSecretProvider(secretName string) string {
 	return ""
 }
 
+// ErrRotationDeferred is reported to TriggerReload's onComplete when at least
+// one target was skipped because its (project, service) rotation lock was
+// held. Those targets did NOT receive the new value; callers must treat the
+// change as not applied and retry (PE-01).
+var ErrRotationDeferred = errors.New("rotation deferred: target service busy")
+
+// ErrNoTargetsRotated is reported to onComplete when targets matched but none
+// had a strategy that rotates anything (e.g. an unrecognised
+// dso.update.strategy label). Nothing was applied, so this is not a success;
+// retrying will not change the outcome (PE-01).
+var ErrNoTargetsRotated = errors.New("no matched target was rotated")
+
+// serviceLockKey is the rotationLocks key for a target: the Compose project
+// plus service name when known (PE-30), otherwise the bare service/container
+// name.
+func serviceLockKey(project, service string) string {
+	if project == "" {
+		return service
+	}
+	return project + "/" + service
+}
+
+// reloadLock is one TriggerReload's hold on a (project, service) rotation
+// lock, shared by every replica of that service the reload rotates. The
+// underlying lock is released when the last holder releases. Each holder must
+// call release exactly once (the strategy branches already guarantee this).
+type reloadLock struct {
+	refs   atomic.Int32
+	unlock func()
+	// info is the rotationLocks entry this hold owns (nil in unit tests that
+	// build a reloadLock directly).
+	info *lockInfo
+}
+
+func newReloadLock(unlock func()) *reloadLock {
+	l := &reloadLock{unlock: unlock}
+	l.refs.Store(1)
+	return l
+}
+
+// retain adds a holder. It fails once the lock has already been fully
+// released (an earlier sibling finished synchronously), in which case the
+// caller must acquire the lock afresh.
+func (l *reloadLock) retain() bool {
+	for {
+		n := l.refs.Load()
+		if n <= 0 {
+			return false
+		}
+		if l.refs.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+func (l *reloadLock) release() {
+	if l.refs.Add(-1) == 0 {
+		l.unlock()
+	}
+}
+
+// reloadOutcome computes the single result passed to onComplete. A real
+// rotation error wins; otherwise busy-skipped targets make the outcome
+// "deferred", and a reload that rotated nothing is never a success.
+func reloadOutcome(asyncErr error, dispatched, skippedBusy, matched int) error {
+	if asyncErr != nil {
+		return asyncErr
+	}
+	if skippedBusy > 0 {
+		return fmt.Errorf("%w: %d of %d targets not rotated", ErrRotationDeferred, skippedBusy, matched)
+	}
+	if dispatched == 0 {
+		return ErrNoTargetsRotated
+	}
+	return nil
+}
+
+// replicaStep is one replica's place in its service's sequential rotation
+// order within a single TriggerReload.
+type replicaStep struct {
+	// prev is closed when the previous replica of the same service has
+	// finished; nil for the first replica.
+	prev <-chan struct{}
+	// self is closed when this replica has finished.
+	self chan struct{}
+	// touch refreshes the service lock's liveness when this replica starts.
+	touch func()
+}
+
+// await blocks until the previous replica of the same service has finished
+// its rotation -- including the strategy's own health gate (WaitHealthy in
+// the rolling and restart paths) and any rollback -- or ctx is cancelled.
+func (s replicaStep) await(ctx context.Context) error {
+	if s.prev == nil {
+		return nil
+	}
+	select {
+	case <-s.prev:
+		s.touch()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// done releases the next replica. It must be called exactly once.
+func (s replicaStep) done() { close(s.self) }
+
+// replicaSequencer orders the container-recreating rotations (rolling,
+// restart) of sibling replicas that share a service lock key, so a scaled
+// service never has more than one replica being replaced at a time. The
+// concurrency of one replica per service is a fixed internal default, not a
+// configuration option. A replica whose rotation fails has already been
+// rolled back (or kept in service) by its strategy before the next one
+// starts, so later replicas are still attempted; every failure is recorded
+// and the reload outcome reports the first one. Only touched from
+// TriggerReload's synchronous Range callback.
+type replicaSequencer map[string]chan struct{}
+
+// next returns the step for the next replica of lockKey.
+func (q replicaSequencer) next(lockKey string, touch func()) replicaStep {
+	self := make(chan struct{})
+	step := replicaStep{prev: q[lockKey], self: self, touch: touch}
+	q[lockKey] = self
+	return step
+}
+
 // TriggerReload identifies containers using secretName and rotates them. Some
 // strategies (rolling, restart, compose) run their actual work in detached
 // goroutines so TriggerReload can return quickly; onComplete (if non-nil) is
@@ -753,6 +901,12 @@ func (r *ReloaderController) resolveSecretProvider(secretName string) string {
 // return (REL-1 fix).
 func (r *ReloaderController) TriggerReload(ctx context.Context, secretName string, onComplete func(err error)) error {
 	matchedCount := 0
+	// PE-01: matchedCount alone cannot tell "rotated" from "skipped".
+	// dispatched counts targets for which a rotation was actually started
+	// (or covered by a de-duplicated compose restart); skippedBusy counts
+	// targets deferred because their service lock was held.
+	dispatched := 0
+	skippedBusy := 0
 	var asyncWG sync.WaitGroup
 	var asyncMu sync.Mutex
 	var asyncFirstErr error
@@ -773,55 +927,25 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		releaseLock func()
 	}
 	projectsToRestart := make(map[string]restartJob)
-
-	r.Targets.Range(func(key, value interface{}) bool {
-		target := value.(*TargetContainer)
-
-		usesSecret := false
-		if secretName == "" {
-			usesSecret = true
-		} else {
-			for _, s := range target.Secrets {
-				if strings.TrimSpace(s) == secretName {
-					usesSecret = true
-					break
-				}
-			}
+	// Locks acquired by this reload, keyed like rotationLocks. Only touched
+	// from the synchronous Range callback below.
+	heldByThisReload := make(map[string]*reloadLock)
+	// Replicas of one (project, service) that this reload recreates are
+	// rotated sequentially, never all at once (see replicaSequencer).
+	sequencer := make(replicaSequencer)
+	// touchLock returns the liveness refresher for the lock this reload holds
+	// on lockKey. Called only from the synchronous Range callback.
+	touchLock := func(lockKey string) func() {
+		if l := heldByThisReload[lockKey]; l != nil && l.info != nil {
+			return l.info.touch
 		}
+		return func() {}
+	}
 
-		if !usesSecret {
-			return true
-		}
-
-		matchedCount++
-
-		// EXTRACT SERVICE NAME FOR LOCKING
-		serviceName := strings.TrimPrefix(target.ID, "/")
-		inspect, err := r.cli.ContainerInspect(ctx, target.ID)
-		if err == nil {
-			if sn, ok := inspect.Config.Labels["com.docker.compose.service"]; ok {
-				serviceName = sn
-			}
-		}
-
-		// STALE LOCK RECOVERY (5 MINUTES)
-		if val, busy := r.rotationLocks.Load(serviceName); busy {
-			info := val.(*lockInfo)
-			if time.Since(info.startTime) > 5*time.Minute {
-				r.Logger.Warn("Reclaiming stale rotation lock", zap.String("service", serviceName))
-				r.rotationLocks.Delete(serviceName)
-			} else {
-				r.Logger.Debug("Rotation already in progress, skipping", zap.String("service", serviceName))
-				return true
-			}
-		}
-
-		r.rotationLocks.Store(serviceName, &lockInfo{startTime: time.Now(), serviceName: serviceName})
-
-		releaseLock := func() {
-			r.rotationLocks.Delete(serviceName)
-		}
-
+	// rotateTarget runs the strategy for one target whose service lock is
+	// held (releaseLock frees this target's share of it). It returns true so
+	// it can be used directly as the Range callback's result.
+	rotateTarget := func(target *TargetContainer, inspect container.InspectResponse, serviceName, lockKey string, releaseLock func()) bool {
 		activeStrategy := target.Strategy
 		if activeStrategy == "auto" || activeStrategy == "" {
 			if inspect.Config != nil {
@@ -884,11 +1008,13 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// Already handled by project leader
 				releaseLock()
 			}
+			dispatched++
 			return true
 		}
 
 		// EXECUTE PER-CONTAINER STRATEGIES (NON-COMPOSE)
 		if activeStrategy == "signal" {
+			dispatched++
 			r.Logger.Info("Sending SIGHUP to container", zap.String("id", target.ID))
 			if err := r.cli.ContainerKill(ctx, target.ID, "SIGHUP"); err != nil {
 				// Best-effort: SIGHUP-based reload already relies on the
@@ -902,6 +1028,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}
 			releaseLock()
 		} else if activeStrategy == "rolling" {
+			dispatched++
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
 
@@ -1075,9 +1202,37 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// read-only for the remainder of TriggerReload, so capturing them
 			// directly would be safe too, but passing them explicitly keeps this
 			// goroutine's inputs self-contained, matching the existing convention.
+			step := sequencer.next(lockKey, touchLock(lockKey))
 			asyncWG.Add(1)
 			go func(tc *TargetContainer, release func(), newEnvs map[string]string, fileSecrets []rotation.FileSecretSpec, managedEnvs map[string]bool, hTimeout time.Duration, secret, provider string) {
 				defer asyncWG.Done()
+				// Registered first so it runs last: the next sibling replica
+				// of this service starts only once this one has fully
+				// finished, panics included.
+				defer step.done()
+
+				// P2-2: releaseOnce makes the lock release idempotent so the
+				// panic-recovery defer, the step.await early exit and the
+				// deferred release below can never double-release the same
+				// lock, regardless of which one fires first.
+				var released bool
+				releaseOnce := func() {
+					if !released {
+						released = true
+						release()
+					}
+				}
+				// M1: the service lock is held for the WHOLE operation and
+				// released only when this goroutine returns -- after
+				// rs.Execute AND all of its failure handling (markDegraded,
+				// or the non-proxy fallback restart with its health gate and
+				// rollback). Releasing it straight after rs.Execute let a
+				// reload for another secret on the same service start its
+				// own container replacement while this one's fallback was
+				// still recreating the container. Deferred LIFO order on
+				// return: panic recovery -> proxy-pending cleanup -> this
+				// release -> step.done -> asyncWG.Done.
+				defer releaseOnce()
 				// Safety net: whatever happens (health-check failure, secret
 				// injection failure, failed handoff, panic-free early return),
 				// never leave a stale not-ready marker behind. A leaked entry
@@ -1088,17 +1243,6 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}()
 
-				// P2-2: releaseOnce makes the lock release idempotent so the
-				// panic-recovery defer below and the normal-path release()
-				// call further down can never double-release the same lock,
-				// regardless of which one fires.
-				var released bool
-				releaseOnce := func() {
-					if !released {
-						released = true
-						release()
-					}
-				}
 				// P2-2: converts an unexpected panic (rs.Execute, or anything
 				// it calls) into an ordinary rotation failure instead of
 				// crashing the agent -- lock released, outcome audited
@@ -1114,6 +1258,12 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					releaseOnce()
 				})()
 
+				if werr := step.await(ctx); werr != nil {
+					recordAsyncErr(fmt.Errorf("rotation of %s cancelled while waiting for a sibling replica: %w", util.ShortID(tc.ID), werr))
+					releaseOnce()
+					return
+				}
+
 				if r.Server != nil {
 					if as, ok := r.Server.(interface{ Emit(string) }); ok {
 						as.Emit(fmt.Sprintf("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: rolling\n🔄 Rolling Swap Start: %s", util.ShortID(tc.ID)))
@@ -1121,8 +1271,6 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 
 				err := rs.Execute(ctx, tc.ID, newEnvs, fileSecrets, managedEnvs, hTimeout)
-				releaseOnce()
-				recordAsyncErr(err)
 				if err != nil {
 					// AUDIT-3: compliance trail for "secret X was rotated into
 					// container Y" -- this is the point where the rolling
@@ -1138,6 +1286,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					// container keeps serving the previous secret and the
 					// service is flagged degraded for the operator instead.
 					if r.ProxyManager != nil && rollingPortsLabel != "" {
+						recordAsyncErr(err)
 						r.Logger.Error("Rolling rotation failed; keeping old container in service (proxy-managed, fallback restart would drop traffic)",
 							zap.String("id", util.ShortID(tc.ID)),
 							zap.Error(err))
@@ -1150,6 +1299,30 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						return
 					}
 
+					// M1: a health-class rejection (the shadow, carrying the
+					// new secret, restarted/exited/went unhealthy/timed out,
+					// or a file-mode secret probe never passed) means the new
+					// secret itself was rejected. The fallback would recreate
+					// the container with that SAME secret -- stopping the
+					// original first -- only to be rejected again. Skip it:
+					// rs.Execute failed before its swap point, so the original
+					// was never renamed, stopped or removed and is still
+					// serving the previous secret. Only confirmed health-class
+					// failures skip; every other failure (inspect, create,
+					// start, Docker API, context) still takes the fallback.
+					if errors.Is(err, rotation.ErrUnhealthy) {
+						r.Logger.Error("Rolling rotation rejected by health verification; fallback restart skipped, original container kept in service",
+							zap.String("id", util.ShortID(tc.ID)),
+							zap.Error(err))
+						if r.Server != nil {
+							if as, ok := r.Server.(interface{ Emit(string) }); ok {
+								as.Emit(fmt.Sprintf("\033[1;31m[DSO ROTATION]\033[0m\nRolling failed health verification: %v → fallback restart skipped (same secret would be rejected again); original container kept in service", err))
+							}
+						}
+						recordAsyncErr(fmt.Errorf("rolling rotation rejected by health verification; fallback restart skipped to avoid redeploying the rejected secret, original container kept running: %w", err))
+						return
+					}
+
 					r.Logger.Error("Rolling rotation failed, triggering fallback restart", zap.Error(err))
 					if r.Server != nil {
 						if as, ok := r.Server.(interface{ Emit(string) }); ok {
@@ -1157,8 +1330,18 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 						}
 					}
 					// Fallback: full container recreation via shared helper (L5).
-					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs, fileSecrets, managedEnvs); ferr != nil {
+					// It is health-gated and rolls back to the original on a
+					// failed check (see executeSimpleRestart). Its outcome is
+					// part of this rotation's reported result: a failed
+					// fallback (including a failed rollback) must not be
+					// hidden behind the rolling error alone.
+					if ferr := r.executeSimpleRestart(ctx, tc.ID, newEnvs, fileSecrets, managedEnvs, hTimeout, rollingServiceName); ferr != nil {
 						r.Logger.Error("Fallback restart also failed", zap.Error(ferr))
+						recordAsyncErr(fmt.Errorf("rolling rotation failed: %w; fallback restart also failed: %w", err, ferr))
+					} else {
+						// Unchanged reporting: the rolling failure is still the
+						// rotation's outcome even when the fallback recovered.
+						recordAsyncErr(err)
 					}
 					return
 				}
@@ -1172,6 +1355,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}(target, releaseLock, rollingEnvs, rollingFileSecrets, managedEnvNames, healthTimeout, secretName, auditProvider)
 
 		} else if activeStrategy == "restart" {
+			dispatched++
 			r.Logger.Info("Restarting container (Full Recreation)", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
 
@@ -1185,9 +1369,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// arguments (shadowing the sync.Map range variables) so this goroutine
 			// operates on stable, independent values even if the Targets map entry
 			// is concurrently deleted or replaced.
+			step := sequencer.next(lockKey, touchLock(lockKey))
 			asyncWG.Add(1)
 			go func(target *TargetContainer, releaseLock func(), serviceName string) {
 				defer asyncWG.Done()
+				// Registered first so it runs last: the next sibling replica
+				// of this service starts only after this one finished (health
+				// gate and any rollback included), panics included.
+				defer step.done()
 				// P2-2: finished guards finish() so it can never fire twice --
 				// once from an explicit call on a normal error/success path,
 				// and again from the panic-recovery defer below.
@@ -1209,6 +1398,11 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					r.markDegraded(serviceName, fmt.Sprintf("rotation panicked: %v", rec))
 					finish(err)
 				})()
+
+				if werr := step.await(ctx); werr != nil {
+					finish(fmt.Errorf("rotation of %s cancelled while waiting for a sibling replica: %w", util.ShortID(target.ID), werr))
+					return
+				}
 
 				// 1. Inspect original container
 				inspect, err := r.cli.ContainerInspect(ctx, target.ID)
@@ -1391,7 +1585,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 							cacheKey := fmt.Sprintf("%s:%s", pName, secretName)
 							if data, found := r.Cache.Get(cacheKey); found {
 								if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, injectConfig.Path, data, injectConfig.UID, injectConfig.GID); err != nil {
-									r.Logger.Error("Secret injection failed", zap.Error(err))
+									// PE-33: starting the replacement without its
+									// file secret and reporting success would leave
+									// the service on a missing/stale secret. The
+									// original is still running (it is stopped only
+									// in step 6), so discard the replacement, restore
+									// the original's name and fail this target.
+									r.Logger.Error("Secret injection failed, rolling back", zap.String("secret", secretName), zap.Error(err))
+									r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
+									finish(fmt.Errorf("file secret injection for %s failed: %w", secretName, err))
+									return
 								}
 							}
 						}
@@ -1499,6 +1702,73 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			releaseLock()
 		}
 		return true
+	}
+
+	r.Targets.Range(func(key, value interface{}) bool {
+		target := value.(*TargetContainer)
+
+		usesSecret := false
+		if secretName == "" {
+			usesSecret = true
+		} else {
+			for _, s := range target.Secrets {
+				if strings.TrimSpace(s) == secretName {
+					usesSecret = true
+					break
+				}
+			}
+		}
+
+		if !usesSecret {
+			return true
+		}
+
+		matchedCount++
+
+		// EXTRACT SERVICE NAME FOR LOCKING
+		serviceName := strings.TrimPrefix(target.ID, "/")
+		var projectName string
+		inspect, err := r.cli.ContainerInspect(ctx, target.ID)
+		if err == nil && inspect.Config != nil {
+			if sn, ok := inspect.Config.Labels["com.docker.compose.service"]; ok {
+				serviceName = sn
+				projectName = inspect.Config.Labels["com.docker.compose.project"]
+			}
+		}
+		// PE-30: the lock is scoped to the Compose project as well as the
+		// service, so `db` in project A never blocks `db` in project B.
+		lockKey := serviceLockKey(projectName, serviceName)
+
+		// A lock this same reload already holds belongs to a sibling replica
+		// of the same (project, service): that is part of THIS rotation, not
+		// a concurrent one, so the target shares the lock instead of being
+		// deferred. Deferring it would re-dispatch the whole secret on every
+		// poll and never reach the sibling (PE-01 interim fix).
+		if shared, ok := heldByThisReload[lockKey]; ok && shared.retain() {
+			return rotateTarget(target, inspect, serviceName, lockKey, shared.release)
+		}
+
+		// STALE LOCK RECOVERY (5 MINUTES)
+		newLock := &lockInfo{startTime: time.Now(), serviceName: serviceName}
+		if val, busy := r.rotationLocks.LoadOrStore(lockKey, newLock); busy {
+			info := val.(*lockInfo)
+			if info.idleFor() > 5*time.Minute && r.rotationLocks.CompareAndSwap(lockKey, info, newLock) {
+				r.Logger.Warn("Reclaiming stale rotation lock", zap.String("service", lockKey))
+			} else {
+				// PE-01: a busy target is NOT applied. It is counted so the
+				// outcome reported to onComplete is "deferred" (and the caller
+				// retries) rather than success.
+				r.Logger.Warn("Rotation already in progress for service, deferring this target",
+					zap.String("service", lockKey), zap.String("secret", secretName))
+				skippedBusy++
+				return true
+			}
+		}
+
+		shared := newReloadLock(func() { r.rotationLocks.CompareAndDelete(lockKey, newLock) })
+		shared.info = newLock
+		heldByThisReload[lockKey] = shared
+		return rotateTarget(target, inspect, serviceName, lockKey, shared.release)
 	})
 
 	// STAGE 2: EXECUTE DE-DUPLICATED COMPOSE RESTARTS
@@ -1589,7 +1859,8 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		return fmt.Errorf("no managed containers for secret: %s", secretName)
 	}
 
-	r.Logger.Info(fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName))
+	r.Logger.Info(fmt.Sprintf("Triggered rotation for %d managed containers using secret: %s", matchedCount, secretName),
+		zap.Int("dispatched", dispatched), zap.Int("deferred_busy", skippedBusy))
 
 	if onComplete != nil {
 		go func() {
@@ -1607,7 +1878,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			asyncMu.Lock()
 			err := asyncFirstErr
 			asyncMu.Unlock()
-			onComplete(err)
+			onComplete(reloadOutcome(err, dispatched, skippedBusy, matchedCount))
 		}()
 	}
 
@@ -1616,9 +1887,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 // executeRollback attempts to restore the original container after a failed rotation.
 // It removes the newly-created replacement container and renames + restarts the original.
-// On persistent failure it marks the service degraded.
+// On persistent failure it marks the service degraded. It reports whether the
+// original was restarted; callers that only log may ignore the result.
 // Callers must release the rotation lock after this returns.
-func (r *ReloaderController) executeRollback(ctx context.Context, createdID, originalID, originalName, serviceName string) {
+func (r *ReloaderController) executeRollback(ctx context.Context, createdID, originalID, originalName, serviceName string) bool {
 	if ctx.Err() != nil {
 		r.Logger.Warn("Rotation context ended before rollback; rolling back on a bounded cleanup context",
 			zap.String("service", serviceName), zap.Error(ctx.Err()))
@@ -1640,7 +1912,7 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 		cancel()
 		if err == nil {
 			r.Logger.Info("Rollback successful", zap.Int("attempt", i+1), zap.String("service", serviceName))
-			return
+			return true
 		}
 		r.Logger.Warn("Rollback attempt failed, retrying",
 			zap.Int("attempt", i+1),
@@ -1653,6 +1925,7 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 		zap.String("service", serviceName),
 		zap.String("original_id", originalID),
 		zap.String("replacement_id", createdID))
+	return false
 }
 
 // rollbackRetryUnit is the backoff unit between rollback attempts (1x, 2x, 3x).
@@ -1834,8 +2107,21 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 }
 
 // executeSimpleRestart recreates containerID with envOverrides merged into its environment.
-// Used by the rolling-strategy fallback path (L5). It does not perform health checks,
-// exec probes, or proxy swaps — those belong to the primary restart strategy path.
+// Used by the rolling-strategy fallback path (L5) for containers whose traffic
+// is not proxy-owned. It performs no proxy swap.
+//
+// M1: the replacement is health-gated with the same primitives the primary
+// restart path uses (rotation.WaitHealthy, then rotation.ExecProbe for every
+// file-mode secret, bounded by healthTimeout). The original container is kept
+// (renamed, stopped) until the replacement passes those checks and is only
+// then removed. A replacement that starts but fails verification is stopped
+// and executeRollback restores the original (name + start); the returned
+// error says whether that rollback succeeded. Before this, the original was
+// force-removed as soon as ContainerStart returned, so a replacement that
+// failed its health check -- typically the same rejected secret that made the
+// rolling strategy fail in the first place -- destroyed the healthy original.
+// serviceName is the degraded-state key executeRollback marks on a failed
+// rollback.
 //
 // envOverrides must contain only env-mode secrets; fileSecrets carries any
 // file-mode secrets (Inject.Type == "file") that the container depends on,
@@ -1853,7 +2139,7 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 // alone only ever adds/updates keys, it never removes ones that shouldn't be
 // there anymore. Any managedEnvNames entry not present in envOverrides for
 // this rotation is stripped from the inherited env before recreation.
-func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string, fileSecrets []rotation.FileSecretSpec, managedEnvNames map[string]bool) error {
+func (r *ReloaderController) executeSimpleRestart(ctx context.Context, containerID string, envOverrides map[string]string, fileSecrets []rotation.FileSecretSpec, managedEnvNames map[string]bool, healthTimeout time.Duration, serviceName string) error {
 	inspect, err := r.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("executeSimpleRestart: inspect failed: %w", err)
@@ -1927,6 +2213,28 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		r.restoreOriginalName(ctx, containerID, originalName)
 		r.restartOriginal(ctx, containerID, originalName)
 		return fmt.Errorf("executeSimpleRestart: start failed: %w", err)
+	}
+
+	// Verify the replacement before the original is touched again. On failure
+	// the replacement is stopped and executeRollback (bounded cleanup
+	// contexts, retries, degraded marking) restores the original.
+	rollBack := func(cause error) error {
+		r.stopReplacement(ctx, created.ID, stopTO)
+		if !r.executeRollback(ctx, created.ID, containerID, originalName, serviceName) {
+			return fmt.Errorf("%w; rollback to the original container FAILED (service marked degraded, manual recovery required)", cause)
+		}
+		return fmt.Errorf("%w; rolled back to the original container", cause)
+	}
+	if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
+		r.Logger.Error("Fallback replacement unhealthy, rolling back to the original container", zap.Error(err))
+		return rollBack(fmt.Errorf("executeSimpleRestart: replacement failed health verification: %w", err))
+	}
+	for _, fs := range fileSecrets {
+		if err := rotation.ExecProbe(ctx, r.cli, created.ID, fs.Path, 15*time.Second, 3); err != nil {
+			r.Logger.Error("Fallback replacement exec probe failed, rolling back to the original container",
+				zap.String("path", fs.Path), zap.Error(err))
+			return rollBack(fmt.Errorf("executeSimpleRestart: file-mode secret probe failed for %s: %w", fs.Path, err))
+		}
 	}
 
 	_ = r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})

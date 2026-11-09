@@ -744,6 +744,15 @@ func minimalInspect(name, id string) container.InspectResponse {
 	}
 }
 
+// healthyInspectJSON is a running container whose Docker HEALTHCHECK reports
+// healthy, so rotation.WaitHealthy accepts it on the first poll.
+func healthyInspectJSON(name, id string) []byte {
+	in := minimalInspect(name, id)
+	in.State = &container.State{Running: true, Health: &container.Health{Status: "healthy"}}
+	b, _ := json.Marshal(in)
+	return b
+}
+
 // ---- executeRollback tests (H2 regression) ----------------------------------
 
 // TestExecuteRollback_SuccessOnFirstAttempt verifies that a single successful
@@ -845,6 +854,7 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 		origName = "myapp"
 	)
 	inspectJSON, _ := json.Marshal(minimalInspect(origName, origID))
+	newInspectJSON := healthyInspectJSON(origName, newID)
 	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
 
 	var newStarted, origRemoved int32
@@ -854,6 +864,10 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 		case strings.Contains(p, "/containers/"+origID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(inspectJSON)
+		case strings.Contains(p, "/containers/"+newID+"/json"):
+			// M1: the fallback is now health-gated (WaitHealthy).
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(newInspectJSON)
 		case strings.Contains(p, "/rename"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/create"):
@@ -874,7 +888,7 @@ func TestExecuteSimpleRestart_HappyPath(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"}, nil, nil)
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"SECRET": "newval"}, nil, nil, time.Second, "svc")
 	if err != nil {
 		t.Fatalf("L5 regression: unexpected error: %v", err)
 	}
@@ -895,7 +909,7 @@ func TestExecuteSimpleRestart_InspectFailure(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil, nil, nil)
+	err := rc.executeSimpleRestart(context.Background(), "bad-id", nil, nil, nil, time.Second, "svc")
 	if err == nil {
 		t.Error("expected error when inspect fails, got nil")
 	}
@@ -942,7 +956,7 @@ func TestExecuteSimpleRestart_StartFailureRollsBack(t *testing.T) {
 	})
 
 	rc := newMockController(t, handler)
-	err := rc.executeSimpleRestart(context.Background(), origID, nil, nil, nil)
+	err := rc.executeSimpleRestart(context.Background(), origID, nil, nil, nil, time.Second, "svc")
 	if err == nil {
 		t.Error("expected error when new container start fails")
 	}
@@ -972,6 +986,7 @@ func TestExecuteSimpleRestart_StripsStaleManagedSecretEnv(t *testing.T) {
 	// recreation (e.g. before it was switched to file-mode injection).
 	inspect.Config.Env = []string{"EXISTING=old", "STALE_SECRET=leaked-value", "FRESH_SECRET=old-value"}
 	inspectJSON, _ := json.Marshal(inspect)
+	newInspectJSON := healthyInspectJSON(origName, newID)
 	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
 
 	var createdEnv []string
@@ -981,6 +996,10 @@ func TestExecuteSimpleRestart_StripsStaleManagedSecretEnv(t *testing.T) {
 		case strings.Contains(p, "/containers/"+origID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(inspectJSON)
+		case strings.Contains(p, "/containers/"+newID+"/json"):
+			// M1: the fallback is now health-gated (WaitHealthy).
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(newInspectJSON)
 		case strings.Contains(p, "/rename"):
 			w.WriteHeader(http.StatusNoContent)
 		case strings.Contains(p, "/containers/create"):
@@ -1011,7 +1030,7 @@ func TestExecuteSimpleRestart_StripsStaleManagedSecretEnv(t *testing.T) {
 	// still env-mode and has just rotated to a new value) -- it must survive
 	// with the NEW value, not be stripped as stale.
 	managedEnvNames := map[string]bool{"STALE_SECRET": true, "FRESH_SECRET": true}
-	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"FRESH_SECRET": "new-value"}, nil, managedEnvNames)
+	err := rc.executeSimpleRestart(context.Background(), origID, map[string]string{"FRESH_SECRET": "new-value"}, nil, managedEnvNames, time.Second, "svc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
