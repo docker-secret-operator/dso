@@ -48,6 +48,11 @@ jobs:
           echo "COVERAGE_PCT=${COVERAGE}" >> $GITHUB_ENV
 
       - name: Upload to Codecov
+        # Skip for fork PRs: CODECOV_TOKEN is a repository secret, and a
+        # pull_request-triggered job still has access to it even though the
+        # GITHUB_TOKEN above is read-only. A fork PR could otherwise exfiltrate
+        # the token via a crafted test/build step (P-05 finding).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.out

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type TriggerEngine struct {
 	events            sync.Map
 	secretHashes      sync.Map
 	lastRotations     sync.Map
+	observeLocks      sync.Map // map[string]*sync.Mutex, key provider:secret (PE-31)
 	Server            *AgentServer
 	Config            *config.Config
 	ctx               context.Context
@@ -43,19 +45,73 @@ type TriggerEngine struct {
 	// StateTracker transition, via a non-blocking Dispatch that cannot
 	// fail, block, or otherwise influence rotation state.
 	Dispatcher *notify.Dispatcher
+
+	// Test seams; zero means the production defaults
+	// (defaultSecretLockTimeout, defaultRotationCooldown).
+	secretLockTimeout time.Duration
+	rotationCooldown  time.Duration
 }
 
-// emitEvent dispatches a rotation/recovery outcome event when a Dispatcher
-// is configured. containerIDs is the comma-joined form StateTracker uses.
+// emitEvent records a rotation outcome onto observability.EventStream,
+// unconditionally -- this is what makes rotation outcomes visible via
+// /api/audit and /api/events, which previously only ever saw SIGHUP signal
+// outcomes (see internal/injector/docker.go's LogInjectionEvent). Metadata
+// only: secret/provider/container identifiers, status, and a redacted
+// error string -- never a secret value. containerIDs is the comma-joined
+// form StateTracker uses.
+//
+// Phase 4.1: this no longer calls t.Dispatcher.Dispatch directly.
+// internal/alert.Evaluator now owns the sole decision of whether a
+// rotation_failed/rotation_succeeded notification is actually sent
+// (deduplicated and cooldown-gated) -- it subscribes to the same
+// EventStream this function pushes to, from internal/server.
+// StartRESTServer's single consumer loop. t.Dispatcher is still wired at
+// startup (internal/cli/agent.go) and handed to that same Evaluator; this
+// function keeps the field only because internal/agent/recovery.go's
+// crash-recovery events (RecoverySucceeded/RecoveryFailed -- a distinct,
+// narrower signal than rotation_failed, out of Phase 4.1's alert scope)
+// still dispatch directly.
 func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secretName, containerIDs string, duration time.Duration, err error) {
-	if t.Dispatcher == nil {
-		return
-	}
 	var containers []string
 	if containerIDs != "" {
 		containers = strings.Split(containerIDs, ",")
 	}
-	t.Dispatcher.Dispatch(notify.NewEvent(eventType, providerName, secretName, containers, duration, err))
+	ev := notify.NewEvent(eventType, providerName, secretName, containers, duration, err)
+
+	status := "success"
+	if eventType == notify.RotationFailed || eventType == notify.RecoveryFailed {
+		status = "failure"
+	}
+
+	// Phase 3 Analytics Overview counters -- process-lifetime-only, reset
+	// on restart (see pkg/observability/counters.go). Only rotation
+	// outcomes are counted here; recovery outcomes (RecoverySucceeded/
+	// RecoveryFailed) are a distinct signal and deliberately left uncounted
+	// for this MVP rather than conflated with rotation counts.
+	switch eventType {
+	case notify.RotationSucceeded:
+		observability.RotationSuccessTotal.Add(1)
+	case notify.RotationFailed:
+		observability.RotationFailureTotal.Add(1)
+	}
+
+	streamEvent := map[string]interface{}{
+		"timestamp":  ev.Timestamp.Format(time.RFC3339),
+		"secret":     ev.SecretName,
+		"container":  strings.Join(ev.Containers, ","),
+		"event_type": string(ev.Type),
+		"status":     status,
+	}
+	if ev.Provider != "" {
+		streamEvent["provider"] = ev.Provider
+	}
+	if ev.ErrorMessage != "" {
+		streamEvent["error"] = ev.ErrorMessage
+	}
+	select {
+	case observability.EventStream <- streamEvent:
+	default:
+	}
 }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
@@ -118,6 +174,9 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	// Create a recovery handler
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
 	ar.Dispatcher = t.Dispatcher
+	if t.Config != nil {
+		ar.OwnerID = t.Config.Agent.OwnerID
+	}
 
 	// Validate state file integrity and cleanup stale state
 	ar.ValidateStateOnStartup(t.ctx)
@@ -202,9 +261,53 @@ func (t *TriggerEngine) StartAll() error {
 	return nil
 }
 
-func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) {
-	cacheKey := fmt.Sprintf("%s:%s", providerName, secretName)
-	newHash := ComputeHash(secretData)
+// Defaults for the per-secret rotation guards. Overridable per engine (via
+// the unexported fields below) only so tests do not have to wait them out.
+const (
+	defaultSecretLockTimeout = 5 * time.Second
+	defaultRotationCooldown  = 30 * time.Second
+)
+
+func (t *TriggerEngine) secretLockWait() time.Duration {
+	if t.secretLockTimeout > 0 {
+		return t.secretLockTimeout
+	}
+	return defaultSecretLockTimeout
+}
+
+func (t *TriggerEngine) cooldown() time.Duration {
+	if t.rotationCooldown > 0 {
+		return t.rotationCooldown
+	}
+	return defaultRotationCooldown
+}
+
+// keyMutex returns the mutex serialising observe-check-store for one
+// provider:secret key (PE-31).
+func (t *TriggerEngine) keyMutex(cacheKey string) *sync.Mutex {
+	m, _ := t.observeLocks.LoadOrStore(cacheKey, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// rollbackHash forgets newHash as the "last seen" value for cacheKey so the
+// next poll (or webhook / IPC reconcile) re-dispatches it. It only removes
+// the entry if it still holds newHash: a newer value observed concurrently by
+// another caller is never discarded by an older attempt's rollback (PE-31).
+func (t *TriggerEngine) rollbackHash(cacheKey, newHash string) {
+	t.secretHashes.CompareAndDelete(cacheKey, newHash)
+}
+
+// commitObservation is the atomic observe-check-store step of
+// ExecuteRotation. Under the per-key mutex it compares the new value against
+// the last dispatched one, applies the cooldown, records the new hash and
+// writes the cache, so poll, webhook and IPC reconcile callers can neither
+// dispatch the same value twice nor leave the stored hash describing a
+// different value than the cache (PE-31). It reports whether the caller
+// must dispatch a rotation.
+func (t *TriggerEngine) commitObservation(cacheKey, secretName, newHash string, secretData map[string]string) bool {
+	mu := t.keyMutex(cacheKey)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// 1. Smart Optimization: Avoid unnecessary restarts
 	var oldHash string
@@ -218,14 +321,15 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		if t.Server != nil {
 			t.Server.Emit(msg)
 		}
-		return
+		return false
 	}
 
-	// 2. Add cooldown window (30s)
+	// 2. Add cooldown window. Returns BEFORE storing the hash, so the next
+	// poll retries.
 	if lastRot, ok := t.lastRotations.Load(cacheKey); ok {
-		if time.Since(lastRot.(time.Time)) < 30*time.Second {
+		if time.Since(lastRot.(time.Time)) < t.cooldown() {
 			t.Logger.Debug("Cooldown active, skipping rotation", zap.String("secret", secretName))
-			return
+			return false
 		}
 	}
 
@@ -241,11 +345,21 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 				zap.String("secret", secretName),
 				zap.Error(err))
 			// Roll back the hash so the next poll retries instead of skipping.
-			t.secretHashes.Delete(cacheKey)
-			return
+			t.rollbackHash(cacheKey, newHash)
+			return false
 		}
 	} else {
 		t.Cache.Set(cacheKey, secretData)
+	}
+	return true
+}
+
+func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) {
+	cacheKey := fmt.Sprintf("%s:%s", providerName, secretName)
+	newHash := ComputeHash(secretData)
+
+	if !t.commitObservation(cacheKey, secretName, newHash, secretData) {
+		return
 	}
 
 	t.Logger.Debug("Diagnostic: Rotation triggered for secret label", zap.String("sec_name", secretName))
@@ -284,8 +398,15 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 
 		// Use distributed lock to prevent concurrent rotations of same secret
 		if t.LockManager != nil {
-			if err := t.LockManager.AcquireLock(secretName, 5*time.Second); err != nil {
-				t.Logger.Warn("Failed to acquire rotation lock", zap.String("secret", secretName), zap.Error(err))
+			if err := t.LockManager.AcquireLock(secretName, t.secretLockWait()); err != nil {
+				// PE-01 (D1): nothing was applied. Forget the hash so the next
+				// poll retries this value instead of treating it as delivered.
+				t.Logger.Warn("Failed to acquire rotation lock; rotation not applied, will retry on next poll",
+					zap.String("secret", secretName), zap.Error(err))
+				t.rollbackHash(cacheKey, newHash)
+				if t.Server != nil {
+					t.Server.Emit(fmt.Sprintf("Rotation of %s deferred (secret busy); will retry", secretName))
+				}
 				return
 			}
 			defer t.LockManager.ReleaseLock(secretName)
@@ -308,6 +429,14 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		// Measured here (not at poll time): this is where the reload
 		// actually begins.
 		rotationStart := time.Now()
+		outcome := rotationOutcome{
+			providerName: providerName,
+			secretName:   secretName,
+			cacheKey:     cacheKey,
+			newHash:      newHash,
+			containerIDs: originalContainerIDs,
+			start:        rotationStart,
+		}
 
 		// Note: The Reloader internally handles the strategy logic (restart/signal).
 		// Some strategies rotate containers in detached goroutines that outlive
@@ -315,31 +444,14 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		// once onComplete fires with the real, final outcome (REL-1 fix) rather
 		// than immediately after TriggerReload returns.
 		onComplete := func(asyncErr error) {
-			if asyncErr != nil {
-				t.Logger.Warn("Rotation failed after async completion", zap.String("secret", secretName), zap.Error(asyncErr))
-				t.secretHashes.Delete(cacheKey)
-				if t.StateTracker != nil {
-					_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
-				}
-				// Notification is emitted AFTER the authoritative state
-				// transition above, and via a non-blocking dispatch --
-				// delivery outcome can never feed back into rotation state.
-				t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), asyncErr)
-				return
-			}
-			if t.StateTracker != nil {
-				if err := t.StateTracker.CompleteRotation(providerName, secretName, originalContainerIDs); err != nil {
-					t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
-				}
-			}
-			t.emitEvent(notify.RotationSucceeded, providerName, secretName, originalContainerIDs, time.Since(rotationStart), nil)
+			t.finishRotation(outcome, asyncErr)
 		}
 
 		if err := t.Reloader.TriggerReload(ctx, secretName, onComplete); err != nil {
 			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
 			// Remove the cached hash so the next poll retries the rotation instead
 			// of treating this failed attempt as a successful "no change" baseline.
-			t.secretHashes.Delete(cacheKey)
+			t.rollbackHash(cacheKey, newHash)
 			if t.StateTracker != nil {
 				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 			}
@@ -347,6 +459,68 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			return
 		}
 	}()
+}
+
+// rotationOutcome carries what finishRotation needs about one dispatch.
+type rotationOutcome struct {
+	providerName string
+	secretName   string
+	cacheKey     string
+	newHash      string
+	containerIDs string
+	start        time.Time
+}
+
+// finishRotation records the final outcome of one TriggerReload dispatch.
+//
+// PE-01: success is emitted only when the reloader reports that targets were
+// actually rotated without error. A deferred outcome (a target's service was
+// busy) is "not applied": the hash is rolled back so the value is retried,
+// and no success event is emitted. A reload that rotated nothing by
+// configuration is likewise never reported as a success.
+func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
+	switch {
+	case errors.Is(asyncErr, watcher.ErrRotationDeferred):
+		t.Logger.Warn("Rotation not applied to every target (service busy); will retry on next poll",
+			zap.String("secret", o.secretName), zap.Error(asyncErr))
+		t.rollbackHash(o.cacheKey, o.newHash)
+		if t.StateTracker != nil {
+			// Nothing to recover: the busy targets were never touched and any
+			// others finished their own rotation. Leaving "in_progress" would
+			// make crash recovery treat this as an interrupted rotation.
+			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
+		}
+		if t.Server != nil {
+			t.Server.Emit(fmt.Sprintf("Rotation of %s deferred: %v", o.secretName, asyncErr))
+		}
+		return
+	case errors.Is(asyncErr, watcher.ErrNoTargetsRotated):
+		// Retrying cannot change a configuration-driven no-op, so the hash
+		// is kept; but it is not a success either.
+		t.Logger.Warn("No matched container was rotated (no rotating strategy); not reporting success",
+			zap.String("secret", o.secretName))
+		if t.StateTracker != nil {
+			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
+		}
+		return
+	case asyncErr != nil:
+		t.Logger.Warn("Rotation failed after async completion", zap.String("secret", o.secretName), zap.Error(asyncErr))
+		t.rollbackHash(o.cacheKey, o.newHash)
+		if t.StateTracker != nil {
+			_ = t.StateTracker.MarkRollback(o.providerName, o.secretName, o.containerIDs)
+		}
+		// Notification is emitted AFTER the authoritative state
+		// transition above, and via a non-blocking dispatch --
+		// delivery outcome can never feed back into rotation state.
+		t.emitEvent(notify.RotationFailed, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), asyncErr)
+		return
+	}
+	if t.StateTracker != nil {
+		if err := t.StateTracker.CompleteRotation(o.providerName, o.secretName, o.containerIDs); err != nil {
+			t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
+		}
+	}
+	t.emitEvent(notify.RotationSucceeded, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), nil)
 }
 
 func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderConfig, sec config.SecretMapping, baseInterval time.Duration) error {
@@ -413,8 +587,11 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 
 			// Adaptive back-off: if data unchanged, slowly increase poll interval
 			// (up to 4x base). Reset to base the moment a change is detected.
+			// A rolled-back (deferred or failed) rotation leaves no stored
+			// hash; keep the base interval so it is retried promptly (PE-01).
 			oldData, exists := t.Cache.Get(cacheKey)
-			if !exists || ComputeHash(oldData) != ComputeHash(data) {
+			_, dispatched := t.secretHashes.Load(cacheKey)
+			if !exists || !dispatched || ComputeHash(oldData) != ComputeHash(data) {
 				currentInterval = baseInterval
 			} else if currentInterval < maxInterval {
 				currentInterval = time.Duration(float64(currentInterval) * 1.5)

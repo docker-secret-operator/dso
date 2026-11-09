@@ -139,7 +139,7 @@ func (ppi *ProviderPluginInstaller) writeHashManifest(pluginDir string) error {
 	// plugin names and SHA256 hashes of public binary content, so unlike a
 	// credentials file this is not a confidentiality concern; only its write
 	// path (root-owned directory, per SEC-3) matters for integrity.
-	if err := os.WriteFile(manifestPath, []byte(content), 0644); err != nil { // #nosec G306
+	if err := os.WriteFile(manifestPath, []byte(content), 0644); err != nil { // #nosec G306 -- 0644 is intentional: the manifest holds only plugin names and public SHA256 hashes and must be readable by the unprivileged agent; see the comment above
 		return fmt.Errorf("failed to write manifest %s: %w", manifestPath, err)
 	}
 	ppi.logger.Info("Plugin hash manifest written", "path", manifestPath)

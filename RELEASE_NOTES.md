@@ -1,0 +1,44 @@
+# Release Notes
+
+## DSO Container Ownership
+
+Each `dso.yaml` now carries a generated `agent.owner_id`, which is stamped as a `dso.owner` Docker label on containers managed by that configuration. This ownership identity — not the Docker network, Compose project, or secret name — determines which DSO agent can discover, rotate, restart, and recover a container.
+
+Containers without a matching `dso.owner` label are never discovered, rotated, restarted, or recovered by an agent they don't belong to. This is default-deny by design: DSO does not guess ownership from any other signal.
+
+### `owner_id` semantics
+
+`agent.owner_id` is a **configuration/management-domain identity**, not a process ID and not a transient runtime value. It is generated once and persisted automatically into `dso.yaml` — it does not change across agent restarts, and it is not derived from the container ID, socket path, or Docker network.
+
+### ⚠️ Copied configuration warning
+
+If you copy a `dso.yaml` to a new, unrelated environment, **clear the existing `agent.owner_id`** before starting DSO so a new identity is generated. Otherwise, two configurations pointed at the same Docker daemon can share the same management identity and potentially manage overlapping containers.
+
+Leave the identity unchanged only when the shared configuration is intentionally used for an HA/failover management pair — sharing the identity across such a pair is correct and expected.
+
+### Upgrading existing installations
+
+When upgrading from a pre-ownership DSO version, the agent (`dso agent`) and `dso compose up` automatically generate and persist an `agent.owner_id` in your configuration. Read-only commands (`doctor`, `export`, `fetch`, `apply`, `notifications test`, ...) never write the file and work on a config they can read but not write. Containers created by the previous version do not have the new `dso.owner` label and are therefore **not automatically adopted**.
+
+These legacy containers will not receive secret rotations, restarts, or recovery from the upgraded agent until they are recreated/re-labeled. Re-run the appropriate DSO `apply`, `up`, or `compose` workflow to create containers carrying the new ownership label.
+
+DSO intentionally does not automatically adopt ownerless containers — this is a security property, not a gap to be worked around.
+
+After upgrading, run:
+
+```
+dso doctor
+```
+
+`DSO-DOCTOR-023` reports containers that look DSO-managed but are ownerless or belong to another management identity, with actionable guidance. This diagnostic is read-only — it never modifies, adopts, or mutates a container.
+
+### Known limitations
+
+1. A copied configuration file preserves `agent.owner_id`; clear it manually for unrelated environments (see warning above).
+2. Legacy (pre-upgrade) ownerless containers require recreation or re-labeling before DSO will manage them again.
+3. No `dso adopt` command exists yet for claiming legacy containers in place.
+4. **Config-driven targets.** A container named in `secrets[].targets.containers` (matched by name, without the `dso.reloader` label) is an explicit operator opt-in: an ownerless container named there is still managed, but a container carrying a *different* agent's `dso.owner` is never adopted.
+5. **Proxy discovery.** Every proxy registration path honors ownership: the startup scan (`ScanAndRegister`) and the Docker start-event path skip a container whose `dso.owner` names a different agent. As with config-driven targets, an ownerless container that is otherwise eligible (carries `dso.host_ports`) is still proxied for backward compatibility. Scans only read labels; they never write or claim ownership.
+6. `SignalContainers` (`internal/injector`) has no callers and is unchanged. It is dormant legacy code: it signals every `dso.reloader=true`, `dso.update.strategy=signal` container without owner or secret filtering, so owner-aware filtering must be added before it is ever used.
+7. When the owner id is first written into an existing `dso.yaml`, the file is replaced atomically under an exclusive lock (`.dso-owner-id.lock`, created 0600 beside the config and never removed), so concurrent first starts converge on one id. The file keeps its owner and group (if they cannot be preserved the update is refused with instructions rather than changing them) and its mode is tighten-only (`0664` becomes `0640`, `0600` stays `0600`). The directory must therefore be writable by the user that starts the agent the first time; otherwise set `agent.owner_id` by hand. On platforms without `flock` (non-Unix) the lock is a no-op, so separate processes could still race there; Linux is the supported platform.
+8. The first write of `agent.owner_id` is refused, with an actionable error and without touching the file, when: (a) `dso.yaml` was edited while the id was being written (retry); (b) the file needs a rewrite but contains more than one YAML document -- convert it to a single document or set `agent.owner_id` yourself. This applies only when an id has to be persisted: a trailing `---`, even one followed only by a comment, counts as a second document, whereas `LoadConfig` still reads such a file (its first document), and a file whose first document already has `agent.owner_id` is never rewritten; (c) the file has no YAML document at all (empty, whitespace or comments only) -- write a valid DSO configuration first; or (d) the configured `agent.owner_id` has leading/trailing whitespace or control characters -- DSO never rewrites an established id (a blank value counts as missing), so fix it yourself. Problems with the config content are reported as such and do not suggest changing file permissions. If the directory sync fails after the replace, the error says the file already holds the new id and the next start adopts it. A write landing between the final content check and the rename cannot be detected (rename has no compare-and-swap).

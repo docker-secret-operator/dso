@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,12 +22,30 @@ func createTestRESTServer() *RESTServer {
 	logger, _ := zap.NewDevelopment()
 	hub := NewHub(logger)
 	go hub.Run(context.Background())
+	// Use an isolated temp directory rather than NewEventStore's real,
+	// machine-global /var/run/dso path: since EventStore now replays
+	// events.jsonl on construction, using the real path here would make
+	// these tests pick up whatever history any actual `dso agent` process
+	// on the same host happens to have written, breaking the isolation
+	// TestRESTServer_HandleEvents_EmptyResponse and similar tests depend on.
+	tmpDir, err := os.MkdirTemp("", "dso-eventstore-test-*")
+	if err != nil {
+		panic(err)
+	}
 	return &RESTServer{
 		Cache:      agent.NewSecretCache(1 * time.Hour),
 		Config:     &config.Config{},
 		Logger:     logger,
 		Hub:        hub,
-		EventStore: NewEventStore(100, hub),
+		EventStore: newEventStoreAt(100, hub, tmpDir, "events.jsonl"),
+		// This fixture models the legacy loopback open mode (no token, no
+		// WebUI) that most handler tests exercise anonymously. Since F-E1 a
+		// RESTServer's zero value denies anonymous access, so the fixture
+		// opts in explicitly -- the in-process equivalent of
+		// DSO_ALLOW_UNAUTHENTICATED_LOOPBACK=1. Tests that configure a token
+		// or WebUI session are unaffected (allowAnonymous is only consulted
+		// when neither is configured); enforceCredentialPolicy resets it.
+		allowAnonymous: true,
 	}
 }
 

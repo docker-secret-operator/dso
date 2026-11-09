@@ -662,6 +662,7 @@ Working examples for common providers:
 | **[Persistence Model](docs/PERSISTENCE_MODEL.md)** | What data DSO persists |
 | **[GitHub Action](docs/github-action.md)** | CI validation via `docker dso validate`, version pinning, security model |
 | **[Notifications](docs/notifications.md)** | Rotation/recovery event webhooks, payload, delivery semantics, security model |
+| **[Web UI](docs/webui.md)** | Optional browser dashboard: enabling it, pages, authentication, security model |
 
 ---
 

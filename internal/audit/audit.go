@@ -61,4 +61,55 @@ func Log(_ context.Context, action string, user string, provider string, secretN
 	}
 
 	auditLogger.Info("audit_event", fields...)
+
+	// Project "secret_fetch" activity into the queryable EventStore
+	// (internal/server/eventstore.go, fed via observability.EventStream) --
+	// previously this activity was only visible in the zap log stream, not
+	// through /api/audit or /api/events. Deliberately excludes the "rotate"
+	// action: rotation outcomes already flow into EventStream via
+	// internal/agent.TriggerEngine.emitEvent, which is the single
+	// authoritative completion point for every rotation strategy
+	// (restart/rolling/signal). internal/watcher/controller.go's per-target
+	// audit.Log(ctx, "rotate", ...) calls only fire inside the rolling-
+	// strategy branch, so routing "rotate" here too would double-count
+	// rolling-strategy rotations. Metadata only -- action/provider/secret
+	// name/container id/status, never a secret value.
+	if action != "secret_fetch" {
+		return
+	}
+	normalizedStatus := status
+	if normalizedStatus == "failed" {
+		// Normalize to the "success"/"failure" convention every other
+		// EventStream producer already uses (LogInjectionEvent,
+		// TriggerEngine.emitEvent), so the existing frontend's severity
+		// badge/filter logic (which checks ev.status === 'failure') applies
+		// consistently instead of silently falling into its "unknown"
+		// (warning) bucket for fetch failures specifically.
+		normalizedStatus = "failure"
+	}
+	streamEvent := map[string]interface{}{
+		"timestamp":  time.Now().Format(time.RFC3339),
+		"secret":     secretName,
+		"event_type": action,
+		"status":     normalizedStatus,
+	}
+	if provider != "" {
+		streamEvent["provider"] = provider
+	}
+	if containerID != "" {
+		streamEvent["container"] = containerID
+	}
+	// Phase 5: surface the caller-supplied identity (the Unix-socket peer's
+	// resolved OS username -- see internal/agent/server.go's resolveAuditUser
+	// -- never a secret or credential) so /api/audit can show a real Actor
+	// instead of fabricating "System" for every row. Only added here, not to
+	// the other EventStream producers, since "secret_fetch" is the only
+	// event type that already carries a meaningful caller identity today.
+	if user != "" {
+		streamEvent["user"] = user
+	}
+	select {
+	case observability.EventStream <- streamEvent:
+	default:
+	}
 }

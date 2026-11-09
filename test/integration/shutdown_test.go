@@ -59,7 +59,7 @@ func TestGracefulShutdown_RESTServerShutdown(t *testing.T) {
 
 	// Start REST server
 	apiAddr := "127.0.0.1:0" // Use random port
-	restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger)
+	restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, nil, cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("StartRESTServer failed: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// Start REST server with timeout context
-	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger)
+	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("StartRESTServer failed: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestGracefulShutdown_SignalHandling(t *testing.T) {
 	})
 
 	// Create REST server with cancellable context
-	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger)
+	restShutdown, err := server.StartRESTServer(ctx, "127.0.0.1:0", cache, nil, &config.Config{}, logger, nil)
 	if err != nil {
 		t.Fatalf("StartRESTServer failed: %v", err)
 	}

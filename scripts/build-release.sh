@@ -56,6 +56,15 @@ esac
 
 echo "Target: ${GOOS}/${GOARCH}"
 
+# ── Regenerate Web UI assets ────────────────────────────────────────────────
+# internal/webui/assets/ (embedded via //go:embed) must always reflect the
+# current web/ source for a release build -- never trust whatever happens to
+# be checked in. See scripts/build-webui.sh for details.
+echo ""
+echo "Regenerating Web UI assets..."
+"${SCRIPT_DIR}/build-webui.sh"
+echo "✓ Web UI assets regenerated"
+
 # ── Build main binary ──────────────────────────────────────────────────────
 echo ""
 echo "Building DSO binary..."

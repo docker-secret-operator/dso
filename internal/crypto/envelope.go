@@ -1,0 +1,168 @@
+// Package crypto implements the envelope-encryption primitives used by the
+// central secrets store: per-project data-encryption keys (DEKs) that encrypt
+// secret versions, and a KeyProvider that protects the DEKs at rest.
+//
+// Nothing in this package logs, and no error returned from it contains key
+// material, plaintext or ciphertext.
+package crypto
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+)
+
+const (
+	// KeySize is the size of every key in the hierarchy (AES-256).
+	KeySize = 32
+	// NonceSize is the GCM nonce size; every Seal uses a fresh random nonce.
+	NonceSize = 12
+	// MaxPlaintextSize bounds a single secret value.
+	MaxPlaintextSize = 1 << 20
+)
+
+var (
+	// ErrDecrypt is returned for every authentication or format failure when
+	// opening a ciphertext. It is deliberately uninformative: wrong key,
+	// tampered ciphertext and mismatched AAD are indistinguishable.
+	ErrDecrypt = errors.New("crypto: decryption failed (wrong key, corrupted data, or data bound to a different context)")
+	// ErrInvalidKey is returned for a key of the wrong size.
+	ErrInvalidKey = errors.New("crypto: invalid key")
+	// ErrPlaintextTooLarge is returned by Seal for oversized values.
+	ErrPlaintextTooLarge = errors.New("crypto: value exceeds maximum size")
+)
+
+// randReader is replaced in tests to simulate entropy failure.
+var randReader io.Reader = rand.Reader
+
+// GenerateKey returns a new random 256-bit key.
+func GenerateKey() ([]byte, error) {
+	k := make([]byte, KeySize)
+	if _, err := io.ReadFull(randReader, k); err != nil {
+		return nil, fmt.Errorf("crypto: reading random bytes: %w", err)
+	}
+	return k, nil
+}
+
+func newGCM(key []byte) (cipher.AEAD, error) {
+	if len(key) != KeySize {
+		return nil, ErrInvalidKey
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, ErrInvalidKey
+	}
+	return cipher.NewGCM(block)
+}
+
+// Seal encrypts plaintext under key with AES-256-GCM, authenticating aad. A
+// fresh random 96-bit nonce is generated per call and returned separately; the
+// returned ciphertext includes the GCM tag.
+func Seal(key, plaintext, aad []byte) (nonce, ciphertext []byte, err error) {
+	if len(plaintext) > MaxPlaintextSize {
+		return nil, nil, ErrPlaintextTooLarge
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	nonce = make([]byte, NonceSize)
+	if _, err := io.ReadFull(randReader, nonce); err != nil {
+		return nil, nil, fmt.Errorf("crypto: reading random nonce: %w", err)
+	}
+	return nonce, gcm.Seal(nil, nonce, plaintext, aad), nil
+}
+
+// Open authenticates and decrypts. Any failure returns ErrDecrypt.
+func Open(key, nonce, ciphertext, aad []byte) ([]byte, error) {
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != NonceSize || len(ciphertext) < gcm.Overhead() {
+		return nil, ErrDecrypt
+	}
+	pt, err := gcm.Open(nil, nonce, ciphertext, aad)
+	if err != nil {
+		return nil, ErrDecrypt
+	}
+	return pt, nil
+}
+
+// Zero overwrites b. It is best-effort hygiene: Go may have copied the slice.
+func Zero(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// MaxAADFieldSize bounds one associated-data field. Real fields are short
+// identifiers and names; the cap keeps a hostile oversized input from forcing
+// a large allocation and guarantees the 4-byte length prefix cannot overflow.
+const MaxAADFieldSize = 1 << 20
+
+// ErrAADFieldTooLarge is returned when an associated-data field exceeds
+// MaxAADFieldSize.
+var ErrAADFieldTooLarge = errors.New("crypto: associated-data field exceeds maximum size")
+
+// fieldLen validates n and converts it to the wire length prefix. The explicit
+// range check (rather than a bare uint32(n)) makes truncation, which would let
+// two different field lists encode identically, impossible.
+func fieldLen(n int) (uint32, error) {
+	if n < 0 || n > MaxAADFieldSize || n > math.MaxUint32 {
+		return 0, ErrAADFieldTooLarge
+	}
+	return uint32(n), nil
+}
+
+// aad builds an unambiguous, length-prefixed associated-data encoding so that
+// ("ab","c") and ("a","bc") can never collide.
+func aad(domain string, fields ...string) ([]byte, error) {
+	out := make([]byte, 0, 64)
+	out, err := appendField(out, domain)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fields {
+		if out, err = appendField(out, f); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func appendField(b []byte, s string) ([]byte, error) {
+	n, err := fieldLen(len(s))
+	if err != nil {
+		return nil, err
+	}
+	var l [4]byte
+	binary.BigEndian.PutUint32(l[:], n)
+	b = append(b, l[:]...)
+	return append(b, s...), nil
+}
+
+// SecretAAD is the authenticated context of one secret version. Binding it to
+// the ciphertext makes a ciphertext valid only for exactly this project,
+// environment, secret and version, so database-level row swaps fail closed.
+func SecretAAD(projectID, environmentID, secretID, name string, version int, dekVersion int) ([]byte, error) {
+	return aad("dso/secret-version/v1", projectID, environmentID, secretID, name,
+		fmt.Sprintf("v%d", version), fmt.Sprintf("dek%d", dekVersion))
+}
+
+// DEKAAD is the authenticated context of a wrapped project DEK.
+// BindingAAD is the authenticated context of the database-to-root-key canary.
+// It names the root key id, so a canary wrapped under one key cannot verify as
+// another's.
+func BindingAAD(keyID string) ([]byte, error) {
+	return aad("dso/store-binding/v1", keyID)
+}
+
+func DEKAAD(projectID, keyID string, dekVersion int) ([]byte, error) {
+	return aad("dso/project-dek/v1", projectID, keyID, fmt.Sprintf("dek%d", dekVersion))
+}

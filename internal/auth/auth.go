@@ -39,3 +39,11 @@ func (a *Authenticator) Verify(providedToken string) error {
 func (a *Authenticator) GetToken() string {
 	return a.token
 }
+
+// Enabled reports whether a bearer token is configured. Callers must use this
+// (not Verify's nil result) to decide whether bearer authentication is in
+// force: Verify deliberately returns nil when no token is configured, which
+// must never be treated as "the caller proved anything".
+func (a *Authenticator) Enabled() bool {
+	return a != nil && a.token != ""
+}

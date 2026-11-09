@@ -2,12 +2,21 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
+
+// ErrUnhealthy classifies a readiness rejection of a container: it restarted,
+// exited, reported unhealthy, never became healthy/stable within the timeout,
+// or (ExecProbe) a file-mode secret was still missing after every retry.
+// WaitHealthy and ExecProbe wrap it on exactly those paths; Docker API errors
+// and context cancellation are NOT wrapped, so errors.Is(err, ErrUnhealthy)
+// means "the container ran and was rejected", not "something went wrong".
+var ErrUnhealthy = errors.New("rotation: container failed health verification")
 
 // WaitHealthy monitors the shadow instance status before cutover
 // CRITICAL: Does not return success until app is actually healthy, not just running
@@ -27,12 +36,12 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 
 		// CRITICAL: If container is restarting, fail immediately
 		if inspect.State.Restarting {
-			return fmt.Errorf("container is restarting - indicates startup failure")
+			return fmt.Errorf("container is restarting - indicates startup failure: %w", ErrUnhealthy)
 		}
 
 		// CRITICAL: If container exited, fail immediately
 		if !inspect.State.Running {
-			return fmt.Errorf("container exited or stopped before becoming healthy")
+			return fmt.Errorf("container exited or stopped before becoming healthy: %w", ErrUnhealthy)
 		}
 
 		// Check Docker native health check status if present
@@ -42,7 +51,7 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 			case "healthy":
 				return nil
 			case "unhealthy":
-				return fmt.Errorf("container became unhealthy during rotation")
+				return fmt.Errorf("container became unhealthy during rotation: %w", ErrUnhealthy)
 			case "starting":
 				// still waiting...
 			}
@@ -67,11 +76,11 @@ func WaitHealthy(ctx context.Context, cli *client.Client, containerID string, ti
 	// (If it had reached "healthy", we'd have returned nil already inside the
 	// loop above, so reaching this line at all means it never did.)
 	if hasHealthCheck {
-		return fmt.Errorf("rotation timed out after %v - container has health check but never reached healthy state", timeout)
+		return fmt.Errorf("rotation timed out after %v - container has health check but never reached healthy state: %w", timeout, ErrUnhealthy)
 	}
 
 	// No health check defined and we never got two consecutive stable polls within timeout
-	return fmt.Errorf("rotation timed out after %v - container did not reach stable running state", timeout)
+	return fmt.Errorf("rotation timed out after %v - container did not reach stable running state: %w", timeout, ErrUnhealthy)
 }
 
 // ExecProbe runs a specific command inside the container to verify state (e.g. secret existence).
@@ -139,5 +148,5 @@ func ExecProbe(ctx context.Context, cli *client.Client, containerID string, path
 		}
 	}
 
-	return fmt.Errorf("exec probe failed for %s after %d retries", path, retries)
+	return fmt.Errorf("exec probe failed for %s after %d retries: %w", path, retries, ErrUnhealthy)
 }

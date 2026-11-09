@@ -105,7 +105,7 @@ func NewComposeCmd() *cobra.Command {
 		Use:                "compose [args...]",
 		Short:              "Wrapper around docker compose that injects secrets",
 		DisableFlagParsing: true,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath := extractConfigFromArgs(os.Args)
 			if configPath == "" {
 				configPath = ResolveConfig()
@@ -113,8 +113,7 @@ func NewComposeCmd() *cobra.Command {
 
 			// Validate arguments before any processing
 			if err := validateDockerArgs(args); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("%w", err)
 			}
 
 			var dockerArgs []string
@@ -145,21 +144,18 @@ func NewComposeCmd() *cobra.Command {
 					} else if _, err := os.Stat("docker-compose.yaml"); err == nil {
 						composeFile = "docker-compose.yaml"
 					} else {
-						fmt.Fprintln(os.Stderr, "Error: No docker-compose.yml or docker-compose.yaml found.")
-						os.Exit(1)
+						return fmt.Errorf("%s", "Error: No docker-compose.yml or docker-compose.yaml found.")
 					}
 				}
 				if err := core.RunComposeUpWithEnv(composeFile, upExtraArgs, configPath, false); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("%w", err)
 				}
-				return
+				return nil
 			}
 
 			cfg, err := config.LoadConfig(configPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error loading config: %v\nTip: Create /etc/dso/dso.yaml or pass --config /path/to/dso.yaml\n", err)
-				os.Exit(1)
+				return fmt.Errorf("loading config: %v\nTip: Create /etc/dso/dso.yaml or pass --config /path/to/dso.yaml", err)
 			}
 
 			socketPath := "/run/dso/dso.sock"
@@ -169,15 +165,13 @@ func NewComposeCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Agent connection failed. Is the DSO agent running? Error: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Agent connection failed. Is the DSO agent running? Error: %w", err)
 			}
 			defer func() { _ = client.Close() }()
 
 			injectedEnvs, err := client.FetchAllEnvs(cfg)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching secrets: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("fetching secrets: %w", err)
 			}
 
 			envMap := make(map[string]string)
@@ -196,16 +190,15 @@ func NewComposeCmd() *cobra.Command {
 
 			dockerPath, err := exec.LookPath("docker")
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "docker executable not found in PATH")
-				os.Exit(1)
+				return fmt.Errorf("%s", "docker executable not found in PATH")
 			}
 
 			fullArgs := append([]string{"docker", "compose"}, dockerArgs...)
 			// #nosec G204 -- docker execution uses strictly validated arguments
 			if err := syscall.Exec(dockerPath, fullArgs, finalEnvs); err != nil {
-				fmt.Fprintf(os.Stderr, "Exec failed: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Exec failed: %w", err)
 			}
+			return nil
 		},
 	}
 }

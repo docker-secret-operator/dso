@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	dsoconfig "github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +32,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newConfigShowCmd())
+	cmd.AddCommand(newConfigPathCmd())
 	cmd.AddCommand(newConfigEditCmd())
 	cmd.AddCommand(newConfigValidateCmd())
 
@@ -48,9 +51,11 @@ func newConfigShowCmd() *cobra.Command {
 
 The configuration file location is determined by:
 1. CLI flag (-c/--config)
-2. /etc/dso/dso.yaml (system-wide, readable by dso group)
-3. ~/.dso/config.yaml (if in local mode)
-4. ./dso.yaml (current directory)
+2. /etc/dso/dso.yaml (system-wide)
+3. ./dso.yaml (current directory)
+4. ~/.dso/dso.yaml (per-user; used only if none of the above exist)
+
+Run 'docker dso config path' to see which file is selected and why.
 
 Examples:
   docker dso config show              # Show default config
@@ -71,10 +76,24 @@ func showConfig(configPath string) error {
 		return fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
 
+	// The file can contain credentials (webhook hmac_secret / auth_token, the
+	// WebUI password_hash, provider auth parameters, notification URLs).
+	// Display a schema-aware redacted rendering, never the raw bytes. If the
+	// file cannot be parsed we cannot know what is secret, so fail closed
+	// instead of printing it.
+	redacted, err := dsoconfig.RedactYAML(data)
+	if err != nil {
+		return fmt.Errorf("refusing to display %s: %w (open the file directly to inspect it)", configPath, err)
+	}
+
 	fmt.Println()
 	fmt.Printf("Config file: %s\n", configPath)
 	fmt.Println()
-	fmt.Println(string(data))
+	fmt.Println(string(redacted))
+	fmt.Fprintln(os.Stderr, "Note: credential values are redacted; open the file directly (with sufficient permissions) to see them.")
+	if advisory := dsoconfig.PermissionAdvisory(configPath); advisory != "" {
+		fmt.Fprintln(os.Stderr, "WARNING: "+advisory)
+	}
 
 	return nil
 }
@@ -152,7 +171,7 @@ func editConfig(configPath string) error {
 	// Open editor — binary is resolved via LookPath, args are kept separate,
 	// so the OS never passes this through a shell interpreter.
 	cmdArgs := append(editorArgs, configPath)
-	cmd := exec.Command(editorBin, cmdArgs...) // #nosec G204 — binary verified via LookPath
+	cmd := exec.Command(editorBin, cmdArgs...) // #nosec G204 -- editor binary resolved via LookPath from the operator's own $EDITOR; no shell involved
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -354,4 +373,45 @@ func getConfigPath() string {
 
 	// Default
 	return filepath.Join(homeDir, ".dso/config.yaml")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// CONFIG PATH SUBCOMMAND
+// ════════════════════════════════════════════════════════════════════════════
+
+type configPathReport struct {
+	Path     string   `json:"path"`
+	Source   string   `json:"source"`
+	Exists   bool     `json:"exists"`
+	Shadowed []string `json:"shadowed,omitempty"`
+}
+
+func newConfigPathCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "path",
+		Short: "Show which configuration file is in effect (never prints its contents)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			src := ResolveConfigSource()
+			rep := configPathReport{Path: src.Path, Source: src.Kind, Exists: fileExists(src.Path), Shadowed: src.Shadowed}
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(rep)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), rep.Path)
+			fmt.Fprintf(cmd.ErrOrStderr(), "source: %s", rep.Source)
+			if !rep.Exists {
+				fmt.Fprint(cmd.ErrOrStderr(), " (file does not exist)")
+			}
+			fmt.Fprintln(cmd.ErrOrStderr())
+			for _, p := range rep.Shadowed {
+				fmt.Fprintf(cmd.ErrOrStderr(), "ignored (lower priority): %s  -- pass -c %s to use it\n", p, p)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+	return cmd
 }

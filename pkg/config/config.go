@@ -1,11 +1,22 @@
 package config
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,10 +31,49 @@ type WatchConfig struct {
 	Webhook         WebhookConfig `yaml:"webhook"`
 }
 
+// Struct-tag vocabulary used by RedactYAML (see redact.go) to keep credentials
+// out of `dso config show` and any other human-readable dump of the file:
+//
+//	dso:"secret"        every scalar under this field is a credential
+//	dso:"url"           URL whose userinfo/path/query may carry a credential
+//	dso:"free-form"     free-form map (provider settings, legacy config): every
+//	                    value is redacted EXCEPT those under a short allowlist
+//	                    of known non-sensitive keys (region, namespace, ...);
+//	                    URL values keep only scheme://host. Fail-closed: an
+//	                    unrecognised key is treated as sensitive.
+//
+// Any new field that holds a credential MUST carry one of these tags;
+// TestSchemaCredentialFieldsAreTagged fails if a credential-looking field
+// is added without one.
 type WebhookConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	AuthToken string `yaml:"auth_token"`
+	Enabled bool `yaml:"enabled"`
+	// AuthToken is the LEGACY shared bearer credential
+	// ("Authorization: Bearer <auth_token>"). It has no body integrity and no
+	// replay protection and is deprecated in favor of HMACSecret. It is still
+	// honored when it is the ONLY webhook credential. When HMACSecret is also
+	// set it is IGNORED unless AllowLegacyAuth is true, so configuring HMAC
+	// cannot leave the weaker credential silently bypassing timestamp and
+	// replay protection.
+	AuthToken string `yaml:"auth_token" dso:"secret"`
 	Endpoint  string `yaml:"endpoint,omitempty"`
+	// HMACSecret is the shared key used to verify HMAC-SHA256 request
+	// signatures (X-DSO-Timestamp / X-DSO-Signature). Minimum 16 bytes. It is
+	// independent of DSO_AUTH_TOKEN and of AuthToken.
+	HMACSecret string `yaml:"hmac_secret,omitempty" dso:"secret"`
+	// TimestampTolerance is the maximum clock difference accepted between the
+	// signed timestamp and the server clock, as a Go duration (default "5m",
+	// maximum "1h"). It also bounds how long replay-protection state is kept.
+	TimestampTolerance string `yaml:"timestamp_tolerance,omitempty"`
+	// DisableLegacyAuth rejects the deprecated bearer-token form so only
+	// signed requests are accepted.
+	DisableLegacyAuth bool `yaml:"disable_legacy_auth,omitempty"`
+	// AllowLegacyAuth is the explicit compatibility opt-in for accepting the
+	// legacy bearer token while HMACSecret is configured (a migration window
+	// for senders that cannot sign yet). It has no effect without HMACSecret
+	// (legacy is already accepted then) and is overridden by
+	// DisableLegacyAuth. While active, an unsigned request authenticated by
+	// the bearer token has NO timestamp, body-integrity or replay protection.
+	AllowLegacyAuth bool `yaml:"allow_legacy_auth,omitempty"`
 }
 
 // NotificationsConfig configures outbound rotation-event notifications
@@ -34,11 +84,18 @@ type WebhookConfig struct {
 type NotificationsConfig struct {
 	Enabled  bool                  `yaml:"enabled"`
 	Webhooks []NotificationWebhook `yaml:"webhooks,omitempty"`
+	// AlertCooldown bounds how often a repeated identical alert (same
+	// dedup key: rotation_failed:<secret>, injection_failed:<container>,
+	// degraded:<container>) may send another notification, e.g. "5m".
+	// Empty/invalid -> internal/alert's 5-minute default. Does not affect
+	// resolution notifications (service_recovered, rotation_succeeded),
+	// which always fire exactly once per firing->resolved transition.
+	AlertCooldown string `yaml:"alert_cooldown,omitempty"`
 }
 
 // NotificationWebhook is one outbound notification destination.
 type NotificationWebhook struct {
-	URL string `yaml:"url"`
+	URL string `yaml:"url" dso:"url"`
 	// Timeout per delivery attempt, e.g. "10s". Default 10s.
 	Timeout string `yaml:"timeout,omitempty"`
 	// MaxRetries for transient failures (network errors, HTTP 5xx).
@@ -52,6 +109,55 @@ type NotificationWebhook struct {
 	AllowInsecureHTTP bool `yaml:"allow_insecure_http,omitempty"`
 }
 
+// WebUIConfig configures the optional browser-facing dashboard. Disabled by
+// default: an existing deployment must never start serving a web UI (or
+// listening on a new address) merely because a new DSO version was
+// installed. The web UI is session-authenticated separately from the
+// DSO_AUTH_TOKEN mechanism that protects the underlying REST API (see
+// internal/auth) -- both protections coexist.
+type WebUIConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// ListenAddress is the host:port the web UI is served on. If empty,
+	// the web UI mounts onto the existing REST API listener (--api-addr)
+	// instead of opening a second listener.
+	ListenAddress string `yaml:"listen_address,omitempty"`
+	// Username is the single operator identity allowed to log in.
+	Username string `yaml:"username,omitempty"`
+	// PasswordHash is a bcrypt hash of the operator's password. Never
+	// store a plaintext password here.
+	PasswordHash string `yaml:"password_hash,omitempty" dso:"secret"`
+	// SessionIdleTimeout is how long an unused session stays valid, e.g.
+	// "30m". Defaults to 30m if empty.
+	SessionIdleTimeout string `yaml:"session_idle_timeout,omitempty"`
+	// CookieSecure controls the Secure attribute on the WebUI session cookie.
+	// "auto" (default/empty) infers it from the bind address (existing
+	// behavior, preserved for backward compatibility). "always" forces
+	// Secure=true -- use this when DSO is behind a TLS-terminating reverse
+	// proxy (the browser talks HTTPS to the proxy even though DSO itself
+	// speaks plain HTTP on a loopback or internal address). "never" forces
+	// Secure=false -- local plain-HTTP development only.
+	CookieSecure string `yaml:"cookie_secure,omitempty"`
+	// SessionMaxLifetime is the absolute lifetime of a session regardless of
+	// activity, as a Go duration (default "24h"). "0" disables the cap.
+	SessionMaxLifetime string `yaml:"session_max_lifetime,omitempty"`
+	// AllowedOrigins lists additional browser origins (e.g.
+	// "https://dso.example.com") permitted to make cookie-authenticated
+	// state-changing requests. Same-origin requests are always allowed. Needed
+	// only when a reverse proxy rewrites the Host header. Their hosts are also
+	// accepted by the Host check.
+	AllowedOrigins []string `yaml:"allowed_origins,omitempty"`
+	// AllowedHosts lists additional Host header values (hostnames, no port)
+	// accepted by the REST API. Loopback names are always accepted. When the
+	// API runs without any authentication (legacy loopback mode) a Host check
+	// is always enforced to defeat DNS rebinding; list your reverse proxy's
+	// public hostname here if you front that mode with one.
+	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
+	// TrustedProxies lists IPs/CIDRs of reverse proxies whose X-Forwarded-For
+	// header is honored for per-client login throttling. Empty (default)
+	// means forwarded headers are never trusted.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
+}
+
 type RotationConfigV2 struct {
 	Enabled            bool   `yaml:"enabled"`
 	Strategy           string `yaml:"strategy"` // restart, signal, none
@@ -61,7 +167,7 @@ type RotationConfigV2 struct {
 
 type AuthConfig struct {
 	Method string            `yaml:"method"` // iam_role, access_key, token, env
-	Params map[string]string `yaml:"params,omitempty"`
+	Params map[string]string `yaml:"params,omitempty" dso:"secret"`
 }
 
 type RetryConfig struct {
@@ -74,7 +180,7 @@ type ProviderConfig struct {
 	Region string            `yaml:"region,omitempty"`
 	Auth   AuthConfig        `yaml:"auth,omitempty"`
 	Retry  RetryConfig       `yaml:"retry,omitempty"`
-	Config map[string]string `yaml:"config,omitempty"`
+	Config map[string]string `yaml:"config,omitempty" dso:"free-form"`
 }
 
 type InjectionConfig struct {
@@ -106,6 +212,17 @@ type AgentConfig struct {
 	RestartStrategy RestartStrategy  `yaml:"restart_strategy"`
 	Watch           WatchConfig      `yaml:"watch"`
 	Rotation        RotationConfigV2 `yaml:"rotation"`
+	// OwnerID is this DSO agent instance's stable ownership identity
+	// (SEC-P0 container-discovery isolation fix). It is written as the
+	// dso.owner=<OwnerID> label on every container this agent creates or
+	// manages, and required (in addition to dso.reloader=true / dso.secrets
+	// matching) for this agent to register, rotate, or otherwise mutate a
+	// container. It is generated once (see EnsureOwnerID) and persisted back
+	// into this same config file so it survives agent restarts -- it is NOT
+	// a secret and is safe to log, but treat it as an opaque identifier
+	// rather than exposing it gratuitously (e.g. over the WebUI) since it
+	// has no operator-facing meaning.
+	OwnerID string `yaml:"owner_id,omitempty"`
 }
 
 // ProxyConfig configures the DSO proxy's host-port binding behavior.
@@ -135,11 +252,12 @@ type Config struct {
 	Logging       LoggingConfig             `yaml:"logging,omitempty"`
 	Proxy         ProxyConfig               `yaml:"proxy,omitempty"`
 	Notifications NotificationsConfig       `yaml:"notifications,omitempty"`
+	WebUI         WebUIConfig               `yaml:"webui,omitempty"`
 	Secrets       []SecretMapping           `yaml:"secrets"`
 
 	// Legacy fields for backward compatibility detection
 	LegacyProvider string            `yaml:"provider,omitempty"`
-	LegacyConfig   map[string]string `yaml:"config,omitempty"`
+	LegacyConfig   map[string]string `yaml:"config,omitempty" dso:"free-form"`
 }
 
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
@@ -177,6 +295,13 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// legacyMappingFallbacks counts secret mappings that needed the legacy (v1)
+// decode path during the current LoadConfig call.
+var legacyMappingFallbacks atomic.Int64
+
+// legacyNoticed records config paths whose legacy-format notice was printed.
+var legacyNoticed sync.Map
+
 // SecretMapping custom unmarshaler to handle legacy formats
 func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 	// 1. Try to decode as the standard V2 structure first
@@ -186,7 +311,10 @@ func (s *SecretMapping) UnmarshalYAML(value *yaml.Node) error {
 		// First-pass failure is expected for legacy (v1) format entries; fall through
 		// to the raw-map path below which handles them. Log so operators can diagnose
 		// accidental misconfiguration vs. intentional legacy format.
-		fmt.Fprintf(os.Stderr, "[DSO] config: v2 decode of secret mapping failed (will attempt legacy fallback): %v\n", err)
+		// Counted, not printed: LoadConfig emits ONE consolidated notice per
+		// load instead of one line per mapping. The decode error is dropped on
+		// purpose; it can quote config content.
+		legacyMappingFallbacks.Add(1)
 	}
 	*s = SecretMapping(v2)
 
@@ -330,6 +458,21 @@ func (c *Config) Validate() error {
 		c.Secrets[i] = sec
 	}
 
+	// Validate WebUI auth config: an enabled WebUI with no username or an
+	// unparsable password hash would fail every login attempt at runtime
+	// instead of at startup, so catch it here.
+	if c.WebUI.Enabled {
+		if c.WebUI.Username == "" {
+			return fmt.Errorf("webui.enabled is true but webui.username is missing")
+		}
+		if c.WebUI.PasswordHash == "" {
+			return fmt.Errorf("webui.enabled is true but webui.password_hash is missing")
+		}
+		if _, err := bcrypt.Cost([]byte(c.WebUI.PasswordHash)); err != nil {
+			return fmt.Errorf("webui.password_hash is not a valid bcrypt hash: %w", err)
+		}
+	}
+
 	// Validate Docker socket accessibility
 	dockerSocket := os.Getenv("DOCKER_HOST")
 	if dockerSocket == "" {
@@ -349,6 +492,433 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+// generateOwnerID returns a new cryptographically random ownership identity
+// for the dso.owner container label (SEC-P0 discovery-isolation fix). 32
+// bytes of crypto/rand hex-encoded (256 bits) -- unguessable, and not
+// derived from PID, socket path, container ID, or Docker network, all of
+// which are either reused across independent agents or predictable/spoofable
+// by anything else on the same host.
+func generateOwnerID() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate owner id: %w", err)
+	}
+	return "dso-" + hex.EncodeToString(buf), nil
+}
+
+// EnsureOwnerID guarantees cfg.Agent.OwnerID is set, generating and
+// persisting one into cfgFile if it is missing.
+//
+// Identity scope (see the "copied config" analysis in the P0 report):
+// ownership here is CONFIG identity, not host identity or install identity.
+// The owner ID lives inside dso.yaml itself and travels with that file. This
+// is a deliberate choice: DSO's unit of "an agent's mandate" is already the
+// config file (which secrets, which providers, which targets it manages) --
+// tying ownership to the same artifact keeps a single mental model instead
+// of inventing a second identity store (e.g. a dotfile beside the config,
+// which would silently detach from the config on copy/rename and could
+// itself be forgotten during backup/restore).
+//
+// Consequence an operator must know: copying dso.yaml from environment A to
+// environment B copies the owner ID too. If both copies then run
+// simultaneously against overlapping containers on the same host (or
+// visible over the same Docker socket), they are, by this design,
+// INDISTINGUISHABLE -- they will co-manage the same containers, which is the
+// correct behavior for an intentional HA/failover pair sharing one config,
+// but is a footgun for "I copied the config as a starting point for an
+// unrelated environment." Mitigation shipped now: EnsureOwnerID never
+// regenerates an ID that is already present, so an operator who wants
+// distinct identity after copying a config must explicitly clear the
+// owner_id field (or a future `dso rotate-owner` command, documented as a
+// follow-up) to get a fresh one. This is called out explicitly in the
+// report's Remaining Limitations section rather than silently assumed away.
+//
+// Persistence failure modes are handled fail-closed: if cfgFile cannot be
+// safely rewritten (read-only, unwritable directory, path outside what
+// IsSafePath allows), this returns an error instead of proceeding with an
+// in-memory-only, unpersisted ID -- an unpersisted ID would silently change
+// on every restart, which would make the agent lose track of (default-deny)
+// every container it created in the prior run, a worse outcome than
+// refusing to start.
+func EnsureOwnerID(cfg *Config, cfgFile string) error {
+	if cfgFile == "" {
+		cfgFile = "dso.yaml"
+	}
+	if strings.TrimSpace(cfg.Agent.OwnerID) != "" {
+		// An established identity is never replaced -- but an unusable one is
+		// an error here, before any container is stamped with it.
+		if err := validateOwnerID(cfg.Agent.OwnerID); err != nil {
+			return fmt.Errorf("%s: %w", cfgFile, err)
+		}
+		return nil
+	}
+	safePath, err := IsSafeConfigPath(cfgFile)
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: invalid config path: %w", err)
+	}
+	// A symlinked config is updated in place: the rename must replace the file
+	// the link points at, never the link itself.
+	realPath, err := filepath.EvalSymlinks(safePath)
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id: config file %s not accessible: %w", cfgFile, err)
+	}
+
+	id, err := ensureOwnerIDInFile(realPath)
+	var contentErr *configContentError
+	var recoverErr *recoverableOwnerIDError
+	if errors.As(err, &contentErr) || errors.As(err, &recoverErr) {
+		// A problem with the config's content, or a conflict / post-replace sync
+		// failure whose message already says what to do: keep the error as is
+		// and do not suggest permissions.
+		return fmt.Errorf("%s: %w", cfgFile, err)
+	}
+	if err != nil {
+		return fmt.Errorf("cannot persist generated owner id for %s: %w; "+
+			"set agent.owner_id manually in the config to a unique value and retry, or make the file and its directory writable "+
+			"by the user that starts the agent", cfgFile, err)
+	}
+	cfg.Agent.OwnerID = id
+	return nil
+}
+
+// ownerIDLockTimeout bounds how long a first-run caller waits for another
+// process that is initialising the same config.
+const ownerIDLockTimeout = 10 * time.Second
+
+// ownerIDLockFile is the advisory lock beside the config. It is created 0600
+// and deliberately never removed: unlinking a lock file races with waiters
+// that already opened it and would let two holders coexist.
+const ownerIDLockFile = ".dso-owner-id.lock"
+
+// ownerInitMu serialises initialisation inside one process on platforms where
+// the cross-process lock is a no-op (see lockOwnerID).
+var ownerInitMu sync.Mutex
+
+// osRename is os.Rename, replaceable in tests to inject a write failure.
+var osRename = os.Rename
+
+// configContentError marks a problem with what is IN the config (an invalid
+// agent.owner_id, an empty or unparsable file, several YAML documents), as
+// opposed to a failure to persist. Such errors carry their own recovery advice;
+// EnsureOwnerID must not add the "make the file writable" hint to them, because
+// file permissions are not the problem.
+type configContentError struct{ err error }
+
+func (e *configContentError) Error() string { return e.err.Error() }
+func (e *configContentError) Unwrap() error { return e.err }
+
+func contentErrorf(format string, args ...any) error {
+	return &configContentError{err: fmt.Errorf(format, args...)}
+}
+
+// recoverableOwnerIDError marks a failure that is neither a content problem nor
+// a permissions problem and whose message already says what to do: a conflict
+// detected before the replace (retry; the operator's edit is intact) and a
+// directory-sync failure after the replace (re-run to adopt the id already in
+// the file). EnsureOwnerID must not append the "make the file writable" hint.
+type recoverableOwnerIDError struct{ err error }
+
+func (e *recoverableOwnerIDError) Error() string { return e.err.Error() }
+func (e *recoverableOwnerIDError) Unwrap() error { return e.err }
+
+func recoverablef(format string, args ...any) error {
+	return &recoverableOwnerIDError{err: fmt.Errorf(format, args...)}
+}
+
+// errNoYAMLDocument is returned by hasMultipleYAMLDocuments for a file with no
+// YAML document at all (empty, whitespace or comments only).
+var errNoYAMLDocument = errors.New("config file contains no YAML document (it is empty or only comments); it needs a valid DSO configuration")
+
+// syncDirFn is syncDir, replaceable in tests to inject a directory-sync failure.
+var syncDirFn = syncDir
+
+// beforeReplaceCheck runs immediately before the pre-replacement content check;
+// tests use it to modify the config at the worst possible moment.
+var beforeReplaceCheck = func() {}
+
+// validateOwnerID is the one rule for an owner id, applied to ids read from the
+// config (before a container is stamped with them). The id becomes a Docker
+// label value, so it must be non-blank, valid UTF-8, free of control characters
+// (NUL, newline, CR, tab, ...) and free of leading/trailing whitespace. Existing
+// ids are NEVER trimmed or rewritten: an id that breaks the rule is reported and
+// the operator fixes it explicitly, because silently changing an identity would
+// orphan every container stamped with the old value. Generated ids ("dso-"+hex)
+// always satisfy it.
+func validateOwnerID(id string) error {
+	switch {
+	case strings.TrimSpace(id) == "":
+		return fmt.Errorf("agent.owner_id is blank")
+	case !utf8.ValidString(id):
+		return fmt.Errorf("agent.owner_id is not valid UTF-8")
+	case strings.TrimSpace(id) != id:
+		return fmt.Errorf("agent.owner_id has leading or trailing whitespace; remove it (DSO will not change an established identity itself)")
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("agent.owner_id contains a control character (U+%04X); use printable characters only", r)
+		}
+	}
+	return nil
+}
+
+// hasMultipleYAMLDocuments reports whether raw holds more than one YAML
+// document (a second "---" section). Rewriting re-encodes only the first.
+func hasMultipleYAMLDocuments(raw []byte) (bool, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	var first yaml.Node
+	if err := dec.Decode(&first); err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, errNoYAMLDocument
+		}
+		return false, err
+	}
+	var next yaml.Node
+	switch err := dec.Decode(&next); {
+	case err == io.EOF:
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return true, nil
+	}
+}
+
+// ownerIDProbe reads only agent.owner_id; unknown keys are ignored.
+type ownerIDProbe struct {
+	Agent struct {
+		OwnerID string `yaml:"owner_id"`
+	} `yaml:"agent"`
+}
+
+// ensureOwnerIDInFile returns the canonical owner id of the config at path,
+// creating and durably persisting one if the file has none.
+//
+// Guarantees (Linux/Unix; see lockOwnerID for other platforms):
+//   - Concurrent callers, in one process or many, converge on ONE id: the check
+//     for an existing id, the generation and the atomic replace all happen
+//     under an exclusive flock, and the file is re-read after the lock is
+//     taken, so a caller that lost the race adopts the winner's id.
+//   - The returned id is the one read back from the file after the replace; an
+//     id whose persistence failed is never returned.
+//   - An id already present is never overwritten; a config that cannot be
+//     parsed, or whose agent.owner_id is not a string, is left untouched and
+//     reported as an error.
+//   - The replacement is atomic (same-directory temp file, fsync, rename) and
+//     keeps the file's owner and group (an error, not a silent change, if they
+//     cannot be preserved) with a tighten-only mode (perm & 0640). The temp file
+//     is created 0600 and removed on every failure path. Immediately before the
+//     rename the path must still be the same file AND hold exactly the bytes the
+//     replacement was built from, so an operator's in-place edit is never
+//     overwritten (the caller gets a retry error). RESIDUAL: rename(2) has no
+//     compare-and-swap, so a write landing between that check and the rename
+//     cannot be detected.
+//   - A file with several YAML documents is refused (a rewrite would drop the
+//     rest); an owner id that is blank is treated as missing, one with control
+//     characters or surrounding whitespace is an error (validateOwnerID) and is
+//     never rewritten.
+//   - Once the file is replaced it is not rolled back (that could destroy a
+//     concurrent edit). If the directory entry then cannot be synced (anything
+//     but "unsupported"), no id is returned and the error says the file already
+//     holds the new id; the next caller adopts it.
+func ensureOwnerIDInFile(path string) (string, error) {
+	ownerInitMu.Lock()
+	defer ownerInitMu.Unlock()
+
+	dir := filepath.Dir(path)
+	release, err := lockOwnerID(filepath.Join(dir, ownerIDLockFile), ownerIDLockTimeout)
+	if err != nil {
+		return "", fmt.Errorf("cannot lock the config directory: %w", err)
+	}
+	defer func() { _ = release() }()
+
+	f, err := os.Open(path) // #nosec G304 -- path is IsSafePath-validated and symlink-resolved by EnsureOwnerID.
+	if err != nil {
+		return "", err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	raw, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		return "", err
+	}
+
+	var probe ownerIDProbe
+	if err := yaml.Unmarshal(raw, &probe); err != nil {
+		return "", contentErrorf("config is not valid YAML (left untouched): %w", err)
+	}
+	if strings.TrimSpace(probe.Agent.OwnerID) != "" {
+		// Another process won (or the operator set it): never overwrite, but do
+		// not hand out an id that cannot be a label value either.
+		if err := validateOwnerID(probe.Agent.OwnerID); err != nil {
+			return "", &configContentError{err: err}
+		}
+		return probe.Agent.OwnerID, nil
+	}
+	// A rewrite re-encodes the FIRST document only: refuse rather than silently
+	// discard the rest.
+	if multi, err := hasMultipleYAMLDocuments(raw); errors.Is(err, errNoYAMLDocument) {
+		return "", &configContentError{err: err}
+	} else if err != nil {
+		return "", contentErrorf("config is not valid YAML (left untouched): %w", err)
+	} else if multi {
+		return "", contentErrorf("config contains more than one YAML document (\"---\"); DSO reads only the first and will not rewrite the file " +
+			"because that would discard the rest -- convert it to a single document, or set agent.owner_id yourself")
+	}
+
+	id, err := generateOwnerID()
+	if err != nil {
+		return "", err
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		return "", fmt.Errorf("failed to parse config for update: %w", err)
+	}
+	if err := setOwnerIDNode(&node, id); err != nil {
+		return "", err
+	}
+	out, err := yaml.Marshal(&node)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-marshal config: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".dso-owner-id-*.tmp") // 0600
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	replaced := false
+	defer func() {
+		if !replaced {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := preserveFileOwner(tmp, info); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("cannot preserve the config file's owner/group: %w", err)
+	}
+	// Tighten-only (M1 config-permission policy, same bound as
+	// PermissionAdvisory / DSO-DOCTOR-009): owner/group read bits are kept,
+	// group-write, world access and execute bits are never carried over. A 0600
+	// file stays 0600; 0664 becomes 0640.
+	if err := tmp.Chmod(info.Mode().Perm() & 0o640); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Refuse to replace a file that was swapped OR edited in place since it was
+	// read: same inode is not enough, so compare the bytes the replacement was
+	// built from with what is on disk now. rename(2) has no compare-and-swap, so
+	// a write landing between this check and the rename is not detectable (the
+	// window is two syscalls and requires an operator saving at that instant).
+	beforeReplaceCheck()
+	cur, err := os.Lstat(path)
+	if err != nil || !os.SameFile(info, cur) {
+		return "", recoverablef("config file was replaced while the owner id was being written; nothing was written -- retry")
+	}
+	now, err := os.ReadFile(path) // #nosec G304 -- see above.
+	if err != nil {
+		return "", fmt.Errorf("could not re-read the config before replacing it: %w", err)
+	}
+	if !bytes.Equal(now, raw) {
+		return "", recoverablef("config file was modified while the owner id was being written; nothing was written and your edit is intact -- retry")
+	}
+	if err := osRename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("failed to replace config file: %w", err)
+	}
+	replaced = true
+	// From here the new file is visible; it cannot be rolled back (that could
+	// destroy a concurrent operator edit). If the directory entry cannot be made
+	// durable, report it instead of claiming a durable id: no id is returned, the
+	// file already holds one, and the next caller adopts that same id.
+	if err := syncDirFn(dir); err != nil {
+		return "", recoverablef("the config file now contains a new agent.owner_id, but the directory could not be synced, so its durability is uncertain; "+
+			"the replacement was not rolled back -- re-run to adopt the id already in the file: %w", err)
+	}
+
+	// The id handed to callers is what is now on disk.
+	got, err := os.ReadFile(path) // #nosec G304 -- see above.
+	if err != nil {
+		return "", fmt.Errorf("could not verify the persisted owner id: %w", err)
+	}
+	var verify ownerIDProbe
+	if err := yaml.Unmarshal(got, &verify); err != nil || verify.Agent.OwnerID != id {
+		return "", fmt.Errorf("persisted owner id did not verify")
+	}
+	return id, nil
+}
+
+// setOwnerIDNode inserts/updates agent.owner_id in a parsed yaml.Node tree,
+// preserving every other field, comment, and ordering in the file -- a
+// naive re-marshal of the decoded Config struct would silently drop
+// comments and reorder keys throughout the operator's dso.yaml.
+func setOwnerIDNode(doc *yaml.Node, id string) error {
+	if len(doc.Content) == 0 {
+		return contentErrorf("config file has no YAML document; it needs a valid DSO configuration")
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return contentErrorf("config document is not a YAML mapping (a bare \"---\", a scalar or a list); it needs a valid DSO configuration")
+	}
+
+	var agentNode *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "agent" {
+			agentNode = root.Content[i+1]
+			break
+		}
+	}
+	if agentNode == nil {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "agent"}
+		agentNode = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, keyNode, agentNode)
+	}
+	// "agent:" with no value (or with every child commented out) is a null
+	// scalar: LoadConfig accepts it, so it becomes an empty mapping here. Any
+	// other non-mapping value (a string, a list) is a genuinely invalid config
+	// and is reported, not reinterpreted.
+	if agentNode.Kind == yaml.ScalarNode && agentNode.ShortTag() == "!!null" {
+		agentNode.Kind = yaml.MappingNode
+		agentNode.Tag = "!!map"
+		agentNode.Value = ""
+		agentNode.Style = 0
+	}
+	if agentNode.Kind != yaml.MappingNode {
+		return contentErrorf("config 'agent' section is not a YAML mapping; fix it or set agent.owner_id yourself")
+	}
+
+	for i := 0; i+1 < len(agentNode.Content); i += 2 {
+		if agentNode.Content[i].Value == "owner_id" {
+			agentNode.Content[i+1].Value = id
+			agentNode.Content[i+1].Tag = "!!str"
+			return nil
+		}
+	}
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "owner_id"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: id},
+	)
 	return nil
 }
 
@@ -438,10 +1008,25 @@ func IsSafePath(baseDir, userPath string) (string, error) {
 //     already uses for plugin binaries. A nonexistent leaf (Lstat failing
 //     with "not exist") is not an error -- creating a new file is legitimate.
 func rejectEscapingSymlink(baseAbs, fullAbs string) error {
+	// Resolve baseAbs itself through any symlinks in ITS OWN ancestry before
+	// comparing against the resolved parent below. Without this, baseAbs and
+	// resolvedParent are in different "coordinate systems" whenever baseDir
+	// sits under a symlinked ancestor that has nothing to do with userPath
+	// (e.g. macOS's /var -> /private/var, or a symlinked /tmp on some Linux
+	// setups) -- filepath.Rel then sees two paths that don't share a prefix
+	// at all and reports a false escape. Resolving both sides the same way
+	// still catches a genuine escape (an intermediate symlink pointing at a
+	// different, unrelated subtree), since that case diverges after the
+	// shared resolved ancestor rather than before it.
+	resolvedBase := baseAbs
+	if rb, err := filepath.EvalSymlinks(baseAbs); err == nil {
+		resolvedBase = rb
+	}
+
 	parent := filepath.Dir(fullAbs)
 	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
 		resolvedFull := filepath.Join(resolvedParent, filepath.Base(fullAbs))
-		rel, err := filepath.Rel(baseAbs, resolvedFull)
+		rel, err := filepath.Rel(resolvedBase, resolvedFull)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("path traversal detected: resolved path escapes base directory via a symlinked parent directory")
 		}
@@ -470,13 +1055,34 @@ func pathWithinDir(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// UserConfigPath is the per-user configuration file, ~/.dso/dso.yaml, or ""
+// when the home directory is unknown.
+func UserConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".dso", "dso.yaml")
+}
+
+// IsSafeConfigPath is IsSafePath plus one exact-match exception: the
+// per-user config file at UserConfigPath(). It is the only absolute path
+// outside DSO's system directories that is accepted, so the generic
+// path-safety rules (used for output files, compose files, etc.) are unchanged.
+func IsSafeConfigPath(userPath string) (string, error) {
+	if u := UserConfigPath(); u != "" && filepath.Clean(userPath) == u {
+		return u, nil
+	}
+	return IsSafePath("", userPath)
+}
+
 func LoadConfig(cfgFile string) (*Config, error) {
 	if cfgFile == "" {
 		cfgFile = "dso.yaml"
 	}
 
 	// Standard validation for config file path
-	safePath, err := IsSafePath("", cfgFile)
+	safePath, err := IsSafeConfigPath(cfgFile)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config path: %w", err)
 	}
@@ -487,8 +1093,16 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	var cfg Config
+	legacyMappingFallbacks.Store(0)
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse yaml config: %w", err)
+	}
+	// One notice per file per process: `validate`/`doctor` load the same file
+	// several times and would otherwise repeat it.
+	if n := legacyMappingFallbacks.Swap(0); n > 0 {
+		if _, seen := legacyNoticed.LoadOrStore(cfgFile, struct{}{}); !seen {
+			fmt.Fprintf(os.Stderr, "[DSO] config: %d secret mapping(s) in %s use the legacy format and were read via the compatibility path\n", n, cfgFile)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -496,6 +1110,28 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// LoadConfigWithOwnerID is LoadConfig plus EnsureOwnerID: for the callers that
+// create or manage containers (the agent, compose up) and so need a durable
+// dso.owner identity (SEC-P0 discovery isolation). It may write cfgFile -- once,
+// when agent.owner_id is missing -- and fails closed rather than return a
+// configuration whose identity could not be persisted (an unpersisted identity
+// would change on restart and orphan every container the agent created).
+//
+// Read-only callers (doctor, export, fetch, apply, notifications test, ...)
+// must use LoadConfig, which never writes the file and works on a config the
+// invoking user can read but not write; their Agent.OwnerID is simply empty
+// when the file has none yet.
+func LoadConfigWithOwnerID(cfgFile string) (*Config, error) {
+	cfg, err := LoadConfig(cfgFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := EnsureOwnerID(cfg, cfgFile); err != nil {
+		return nil, fmt.Errorf("failed to ensure agent owner id: %w", err)
+	}
+	return cfg, nil
 }
 
 // LoadConfigWithDecryption loads config and decrypts credentials using provided master key

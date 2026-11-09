@@ -43,6 +43,12 @@ const (
 	DoctorCatProvider      DoctorCategory = "provider"
 	DoctorCatRuntime       DoctorCategory = "runtime"
 	DoctorCatService       DoctorCategory = "service"
+	// DoctorCatRotation covers Phase 7 / P2-5's operational-visibility
+	// checks: rotation state, degraded services, orphaned rotation
+	// containers, proxy host-port conflicts, and secret-destination
+	// reachability -- state a healthy-looking doctor run must not silently
+	// omit.
+	DoctorCatRotation DoctorCategory = "rotation"
 )
 
 // ─── Result model ─────────────────────────────────────────────────────────────
@@ -90,6 +96,10 @@ type DoctorOptions struct {
 	ConfigPath   string
 	RuntimeDir   string
 	DockerSocket string
+	// SocketPath is the DSO agent's own IPC Unix socket (distinct from
+	// DockerSocket, which is the Docker daemon's) -- used by the Phase 7
+	// rotation/degraded-service checks to query the live running agent.
+	SocketPath string
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
@@ -104,6 +114,7 @@ type Doctor struct {
 	provider *ProviderChecks
 	runtime  *RuntimeChecks
 	service  *ServiceChecks
+	rotation *RotationChecks
 }
 
 // NewDoctor constructs a Doctor wired to real OS hooks.
@@ -125,6 +136,11 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 			opts.RuntimeDir = doctorExpandHome("~/.dso/run")
 		}
 	}
+	if opts.SocketPath == "" {
+		// Matches internal/cli/agent.go's --socket default and
+		// internal/cli/status.go's own fallback.
+		opts.SocketPath = "/run/dso/dso.sock"
+	}
 	return &Doctor{
 		opts:     opts,
 		docker:   newDockerChecks(opts.DockerSocket),
@@ -133,6 +149,7 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 		provider: newProviderChecks(opts.Provider),
 		runtime:  newRuntimeChecks(opts.RuntimeDir),
 		service:  newServiceChecks(),
+		rotation: newRotationChecks(opts.SocketPath, opts.ConfigPath),
 	}
 }
 
@@ -146,6 +163,7 @@ func (d *Doctor) Run(ctx context.Context) *DoctorResult {
 	checks = append(checks, d.provider.run(ctx)...)
 	checks = append(checks, d.runtime.run(ctx)...)
 	checks = append(checks, d.service.run(ctx)...)
+	checks = append(checks, d.rotation.run(ctx)...)
 
 	return &DoctorResult{
 		OverallStatus: doctorComputeOverall(checks),

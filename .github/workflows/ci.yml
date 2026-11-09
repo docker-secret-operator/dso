@@ -185,6 +185,62 @@ jobs:
           echo "✅ govulncheck: no unlisted reachable vulnerabilities"
 
   # ── DCO Check ─────────────────────────────────────────────────────────────
+  webui:
+    name: Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # Non-interactive (eslint.config.mjs) and zero-warning: --max-warnings=0
+        # is part of the npm script, so any warning fails the job.
+        working-directory: web
+        run: npm run lint
+
+      - name: Dependency audit (critical blocks)
+        # Ratchet: the tree currently has 0 critical advisories; remaining
+        # high-severity findings are build-time-only (see docs/reviews). Raise
+        # to --audit-level=high once Tailwind 4 removes the braces/fast-glob chain.
+        working-directory: web
+        run: npm audit --audit-level=critical
+
+      - name: Test
+        working-directory: web
+        run: npm test
+
+      - name: Regenerate internal/webui/assets from web/ source
+        # Reuses the same build script as `make webui-build` and
+        # scripts/build-release.sh (single source of truth), so this job
+        # exercises the exact commands a contributor is expected to run.
+        run: ./scripts/build-webui.sh
+
+      - name: Verify committed assets match the regenerated build
+        run: |
+          if [ -n "$(git status --porcelain internal/webui/assets)" ]; then
+            echo "❌ internal/webui/assets/ is out of date with web/ source."
+            echo "   Run 'make webui-build' locally, then commit the diff in internal/webui/assets/."
+            git status --porcelain internal/webui/assets
+            git diff internal/webui/assets || true
+            exit 1
+          fi
+          echo "✅ internal/webui/assets/ matches web/ source"
+
   dco:
     name: DCO Sign-off
     runs-on: ubuntu-latest

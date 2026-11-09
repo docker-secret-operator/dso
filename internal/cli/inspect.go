@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/docker/docker/client"
@@ -17,18 +16,16 @@ func NewInspectCmd() *cobra.Command {
 		Use:   "inspect [container-id]",
 		Short: "Inspect injected secrets for a running container",
 		Args:  cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to connect to Docker daemon: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("Failed to connect to Docker daemon: %w", err)
 			}
 
 			containerInfo, err := cli.ContainerInspect(context.Background(), containerID)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to inspect container %s: %v\n", containerID, err)
-				os.Exit(1)
+				return fmt.Errorf("Failed to inspect container %s: %v", containerID, err)
 			}
 
 			fmt.Printf("Container Environment Variables for %s (%s):\n", containerInfo.Name, util.ShortID(containerID))
@@ -61,6 +58,7 @@ func NewInspectCmd() *cobra.Command {
 			if !hasSecrets {
 				fmt.Println("  No dedicated secret mounts found.")
 			}
+			return nil
 		},
 	}
 }

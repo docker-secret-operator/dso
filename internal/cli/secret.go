@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/vault"
@@ -42,6 +45,18 @@ func parseKey(input string) (string, string, error) {
 	}
 
 	return project, path, nil
+}
+
+// resolveKey parses "<project>/<path>" and, when the project is omitted,
+// tells the operator (on stderr, so captured output is unaffected) that the
+// legacy default project "global" is being used. The default itself is kept
+// for compatibility: set, get, list and env import all share it.
+func resolveKey(cmd *cobra.Command, arg string) (project, path string, err error) {
+	project, path, err = parseKey(arg)
+	if err == nil && !strings.Contains(strings.TrimSpace(arg), "/") {
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: no project given; using the default project %q (write %s/%s to be explicit)\n", project, project, path)
+	}
+	return project, path, err
 }
 
 // NewInitCmd initializes the Native Vault
@@ -83,43 +98,84 @@ func NewSecretCmd() *cobra.Command {
 	return cmd
 }
 
+// maxSecretSize is the largest secret value `secret set` accepts.
+const maxSecretSize = 1 << 20
+
+// readSecretValue reads a secret value from in without altering it.
+//
+// Input handling contract:
+//   - Piped/redirected stdin (including `< file`): the exact bytes are stored.
+//     No whitespace, CR or LF is stripped, so PEM blocks keep their final
+//     newline. Note that `echo secret | dso secret set ...` therefore stores
+//     "secret\n"; use `printf %s` / `echo -n`, or pass trimNewline.
+//   - Interactive terminal: the hidden prompt returns the typed line without
+//     its terminating newline; nothing else is altered.
+//   - trimNewline (--trim-newline) is the only transformation: it removes
+//     exactly one trailing "\n" or "\r\n" and never other whitespace.
+//
+// Storage is JSON text, so values must be valid UTF-8; anything else is
+// rejected rather than silently rewritten.
+func readSecretValue(cmd *cobra.Command, label string, trimNewline bool) (string, error) {
+	in := cmd.InOrStdin()
+
+	var raw []byte
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { // #nosec G115 -- file descriptors are small OS-provided values.
+		fmt.Fprintf(cmd.ErrOrStderr(), "Enter secret for '%s': ", label)
+		b, err := term.ReadPassword(int(f.Fd())) // #nosec G115 -- see above.
+		fmt.Fprintln(cmd.ErrOrStderr())
+		if err != nil {
+			return "", fmt.Errorf("failed to read password: %w", err)
+		}
+		raw = b
+	} else {
+		b, err := io.ReadAll(io.LimitReader(in, maxSecretSize+1))
+		if err != nil {
+			return "", fmt.Errorf("failed to read from stdin: %w", err)
+		}
+		raw = b
+		if trimNewline {
+			if bytes.HasSuffix(raw, []byte("\r\n")) {
+				raw = raw[:len(raw)-2]
+			} else if bytes.HasSuffix(raw, []byte("\n")) {
+				raw = raw[:len(raw)-1]
+			}
+		}
+	}
+
+	if len(raw) > maxSecretSize {
+		return "", fmt.Errorf("secret exceeds max size of 1MB")
+	}
+	if !utf8.Valid(raw) {
+		return "", fmt.Errorf("secret value is not valid UTF-8; the vault stores text only")
+	}
+	if len(raw) == 0 {
+		return "", fmt.Errorf("secret value cannot be empty")
+	}
+	return string(raw), nil
+}
+
 func newSecretSetCmd() *cobra.Command {
-	return &cobra.Command{
+	var trimNewline bool
+	cmd := &cobra.Command{
 		Use:   "set <project>/<path>",
 		Short: "Set a secret securely in the vault",
-		Args:  cobra.ExactArgs(1),
+		Long: `Store a secret read from a hidden prompt or from stdin.
+
+The value is stored byte-for-byte: leading/trailing whitespace, tabs, carriage
+returns and trailing newlines are preserved. Piped input is NOT trimmed, so
+'echo secret | dso secret set p/k' stores "secret\n". Use 'printf %s secret |',
+'dso secret set p/k < file', or --trim-newline (removes one trailing newline).
+Values must be valid UTF-8 and at most 1MB.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			project, path, err := parseKey(args[0])
+			project, path, err := resolveKey(cmd, args[0])
 			if err != nil {
 				return err
 			}
 
-			var value string
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				// Read from piped stdin securely, max 1MB
-				lr := io.LimitReader(os.Stdin, (1<<20)+1)
-				bytes, err := io.ReadAll(lr)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				if len(bytes) > 1<<20 {
-					return fmt.Errorf("secret exceeds max size of 1MB")
-				}
-				value = strings.TrimSpace(string(bytes))
-			} else {
-				// Interactive hidden prompt
-				fmt.Printf("Enter secret for '%s/%s': ", project, path)
-				bytes, err := term.ReadPassword(int(os.Stdin.Fd())) // #nosec G115 -- stdin file descriptors are small OS-provided values.
-				fmt.Println()
-				if err != nil {
-					return fmt.Errorf("failed to read password: %w", err)
-				}
-				value = strings.TrimSpace(string(bytes))
-			}
-
-			if value == "" {
-				return fmt.Errorf("secret value cannot be empty")
+			value, err := readSecretValue(cmd, project+"/"+path, trimNewline)
+			if err != nil {
+				return err
 			}
 
 			v, err := vault.LoadDefault()
@@ -131,10 +187,12 @@ func newSecretSetCmd() *cobra.Command {
 				return fmt.Errorf("failed to save secret: %w", err)
 			}
 
-			fmt.Printf("✅ Secret '%s/%s' saved successfully.\n", project, path)
+			fmt.Fprintf(cmd.OutOrStdout(), "✅ Secret '%s/%s' saved successfully.\n", project, path)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&trimNewline, "trim-newline", false, "Remove one trailing newline from piped input (nothing else is trimmed)")
+	return cmd
 }
 
 func newSecretGetCmd() *cobra.Command {
@@ -142,9 +200,14 @@ func newSecretGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <project>/<path>",
 		Short: "Retrieve a secret from the vault",
-		Args:  cobra.ExactArgs(1),
+		Long: `Print a secret's value to stdout, without a trailing newline unless -n is given.
+
+<project>/<path> selects the secret. If no project is given the default
+project "global" is used (the same default as 'secret set', 'secret list' and
+'env import'); a note is written to stderr when this happens.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			project, path, err := parseKey(args[0])
+			project, path, err := resolveKey(cmd, args[0])
 			if err != nil {
 				return err
 			}
@@ -156,13 +219,16 @@ func newSecretGetCmd() *cobra.Command {
 
 			sec, err := v.Get(project, path)
 			if err != nil {
-				return fmt.Errorf("secret not found: %w", err)
+				if errors.Is(err, vault.ErrSecretNotFound) {
+					return err
+				}
+				return fmt.Errorf("failed to read secret: %w", err)
 			}
 
 			if newline {
-				fmt.Println(sec.Value)
+				fmt.Fprintln(cmd.OutOrStdout(), sec.Value)
 			} else {
-				fmt.Print(sec.Value)
+				fmt.Fprint(cmd.OutOrStdout(), sec.Value)
 			}
 			return nil
 		},

@@ -46,6 +46,15 @@ func newTestAgentServer(t *testing.T) *AgentServer {
 	}
 }
 
+// authorizeVaultDBPassword makes "vault:db_password" an authorized
+// provider/secret pair in cfg. Since PE-11 the cache fast path is gated by
+// the same dso.yaml authorization as the slow path, so a cache-hit test must
+// configure the pair it reads (no provider is loaded on a cache hit).
+func authorizeVaultDBPassword(cfg *config.Config) {
+	cfg.Providers["vault"] = config.ProviderConfig{Type: "vault"}
+	cfg.Secrets = append(cfg.Secrets, config.SecretMapping{Name: "db_password", Provider: "vault"})
+}
+
 // TestGetSecret_AuditLogsOnCacheHit is a regression test for wiring
 // internal/audit into AgentServer.GetSecret. Before this change, audit.Log
 // was fully built, SEC-1-hardened, and unit-tested, but had zero production
@@ -55,6 +64,7 @@ func newTestAgentServer(t *testing.T) *AgentServer {
 func TestGetSecret_AuditLogsOnCacheHit(t *testing.T) {
 	buf := captureAuditLog(t)
 	s := newTestAgentServer(t)
+	authorizeVaultDBPassword(s.Config)
 	s.Cache.Set("vault:db_password", map[string]string{"value": "hunter2"})
 
 	req := &api.AgentRequest{Provider: "vault", Secret: "db_password"}
@@ -119,6 +129,7 @@ func TestGetSecret_AuditLogsOnProviderFailure(t *testing.T) {
 func TestGetSecret_HTTPDriverPathAttributesDistinctUser(t *testing.T) {
 	buf := captureAuditLog(t)
 	s := newTestAgentServer(t)
+	authorizeVaultDBPassword(s.Config)
 	s.Cache.Set("vault:db_password", map[string]string{"value": "hunter2"})
 
 	req := &api.AgentRequest{Provider: "vault", Secret: "db_password"}
@@ -150,6 +161,7 @@ func TestStartSocketServer_AuditLogsRealPeerIdentity(t *testing.T) {
 	cache.Set("vault:db_password", map[string]string{"value": "hunter2"})
 	store := providers.NewSecretStoreManager(zap.NewNop())
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{}}
+	authorizeVaultDBPassword(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -54,6 +54,15 @@ func (d *DockerInjector) LogInjectionEvent(secretName, containerName, eventType,
 	default:
 	}
 
+	// Phase 3 Analytics Overview counters -- process-lifetime-only, reset
+	// on restart (see pkg/observability/counters.go).
+	switch status {
+	case "success":
+		observability.InjectionSuccessTotal.Add(1)
+	case "failure":
+		observability.InjectionFailureTotal.Add(1)
+	}
+
 	if errorMsg != "" {
 		d.Logger.Error("Secret Injection Event",
 			zap.String("secret", secretName),

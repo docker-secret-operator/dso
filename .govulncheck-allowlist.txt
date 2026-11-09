@@ -13,9 +13,11 @@
 # leaving it here — re-check this list whenever `go.mod`'s `github.com/docker/docker`
 # version changes, and periodically otherwise (e.g. each release).
 #
-# All three entries below are in github.com/docker/docker@v28.5.2+incompatible,
-# confirmed via `govulncheck ./...` on 2026-07-29 to have no fix available
-# upstream at that time.
+# Both entries below are in github.com/docker/docker@v28.5.2+incompatible and
+# are advisories against the Docker *daemon* (AuthZ plugin handling), reported
+# for the module as a whole. DSO only uses the client packages; govulncheck's
+# traces are package-init and client calls, not the daemon code. Re-verified
+# with `govulncheck ./...` on 2026-10-23: still "Fixed in: N/A".
+# GO-2026-5668 (previously listed) is no longer reported and was removed.
 GO-2026-4883
 GO-2026-4887
-GO-2026-5668

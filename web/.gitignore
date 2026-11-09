@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+yarn.lock
+# package-lock.json is intentionally tracked (npm ci in CI/dev needs it for
+# reproducible installs) -- only yarn.lock is ignored since npm is the
+# package manager actually used here.
+
+# Testing
+.nyc_output/
+coverage/
+
+# Next.js
+.next/
+out/
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Build output
+ui-dist/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

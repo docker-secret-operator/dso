@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // InjectOptions holds flags for the inject command
@@ -20,7 +18,10 @@ type InjectOptions struct {
 	Container string
 	Secret    string
 	Value     string
-	Mount     string
+	// ValueStdin reads the value from stdin instead of --value.
+	ValueStdin  bool
+	TrimNewline bool
+	Mount       string
 }
 
 var injectOpts = InjectOptions{
@@ -43,10 +44,19 @@ This is a one-time injection useful for:
 The secret is mounted as a file inside the container. This does NOT
 persist to the vault or configuration - use configuration for persistent changes.
 
-Examples:
-  docker dso inject --container my-app --secret db_password --value "secret123"
-  docker dso inject --container abc123 --secret api_key  # Prompts for value
-  echo "secret123" | docker dso inject --container my-app --secret pwd --mount /etc/secrets`,
+Providing the value (safest first):
+  - Hidden prompt (default on a terminal).
+  - --value-stdin, or piping into the command: the exact bytes are injected;
+    a trailing newline is kept unless --trim-newline is given.
+  - --value: UNSAFE for real secrets. Command-line arguments are visible in
+    shell history, process listings (ps, /proc), CI logs and audit/diagnostic
+    tooling. Use it only for throwaway test values.
+
+Examples (synthetic values):
+  docker dso inject --container abc123 --secret api_key              # hidden prompt
+  printf %s "$NEW_VALUE" | docker dso inject --container my-app --secret pwd --value-stdin
+  docker dso inject --container my-app --secret tls_key --value-stdin < key.pem
+  docker dso inject --container my-app --secret scratch --value "test-only-value"  # unsafe`,
 		RunE: injectCommand,
 	}
 
@@ -55,7 +65,11 @@ Examples:
 	cmd.Flags().StringVar(&injectOpts.Secret, "secret", "",
 		"Secret path/name (required)")
 	cmd.Flags().StringVar(&injectOpts.Value, "value", "",
-		"Secret value (will prompt if not provided)")
+		"UNSAFE for real secrets: visible in shell history, process lists and CI logs. Prefer --value-stdin or the prompt")
+	cmd.Flags().BoolVar(&injectOpts.ValueStdin, "value-stdin", false,
+		"Read the secret value from stdin (exact bytes, nothing trimmed)")
+	cmd.Flags().BoolVar(&injectOpts.TrimNewline, "trim-newline", false,
+		"Remove one trailing newline from stdin input (nothing else is trimmed)")
 	cmd.Flags().StringVar(&injectOpts.Mount, "mount", "/run/secrets",
 		"Mount path inside container")
 
@@ -72,21 +86,22 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--secret is required")
 	}
 
-	// 2. Get secret value (prompt if not provided)
-	if injectOpts.Value == "" {
-		fmt.Printf("Secret value for '%s': ", injectOpts.Secret)
-		// #nosec G115 -- os.Stdin.Fd() is a real OS file descriptor (always a
-		// small, non-negative int in practice); term.ReadPassword requires an int
-		valueBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-		if err != nil {
-			return fmt.Errorf("failed to read secret value: %w", err)
+	// 2. Get secret value: --value (unsafe), else stdin/prompt with the same
+	// exact-byte semantics as `secret set`.
+	if cmd.Flags().Changed("value") {
+		if injectOpts.ValueStdin {
+			return fmt.Errorf("--value and --value-stdin are mutually exclusive")
 		}
-		fmt.Println() // newline after password input
-		injectOpts.Value = string(valueBytes)
-
 		if injectOpts.Value == "" {
 			return fmt.Errorf("secret value cannot be empty")
 		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --value puts the secret in the command line (shell history, process list, CI logs); prefer --value-stdin or the prompt")
+	} else {
+		v, err := readSecretValue(cmd, injectOpts.Secret, injectOpts.TrimNewline)
+		if err != nil {
+			return err
+		}
+		injectOpts.Value = v
 	}
 
 	// 3. Connect to Docker

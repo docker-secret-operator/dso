@@ -75,6 +75,12 @@ secrets/
 # fabricated values), not real environment/secret files, and are required
 # for internal/cli's migration test suite to pass on a fresh clone.
 !internal/cli/testdata/migrate/**/.env
+
+# Exception: the WebUI's /secrets route is a Next.js page directory (source
+# code only -- it renders read-only secret *metadata* and never plaintext
+# values, see web/components/secrets-content.tsx), not a real secrets
+# directory. Without this it would be silently excluded by `secrets/` above.
+!web/app/secrets/
 test_local_secret
 .claude
 # Dependencies
@@ -89,10 +95,17 @@ CLAUDE.md
 # Local release utility — not committed, run manually
 scripts/bump-version.sh
 
-# Web UI artifacts (from feature/web-ui branch)
-web/
+# Web UI build artifacts (source under web/ is tracked; see web/.gitignore
+# for node_modules/.next/out exclusions within that tree). The BUILT output
+# of this source, internal/webui/assets/, is intentionally NOT ignored --
+# it is committed and embedded via go:embed in internal/webui/embed.go.
+# Regenerate it with `make webui-build` (scripts/build-webui.sh) after
+# changing web/; the "webui" job in .github/workflows/ci.yml fails the
+# build if internal/webui/assets/ drifts out of sync with web/.
+web/node_modules/
+web/.next/
+web/out/
 ui-dist/
-internal/webui/
 docs/audit
 .claude/
 .claude*

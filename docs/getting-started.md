@@ -474,6 +474,23 @@ docker exec <container_name> env | grep DB_PASSWORD
 
 ---
 
+## Optional: Web UI
+
+DSO can also serve an optional browser dashboard alongside its REST API.
+It's **disabled by default** — nothing changes for existing deployments
+until you opt in via the `webui:` section of `dso.yaml`. Once enabled, it
+runs on the same agent/API listener (no separate process or port).
+
+The Web UI provides operational and observability views (dashboard,
+secrets metadata, containers, events, audit, drift, integrations) plus
+two supported operational actions: triggering a manual secret rotation
+and sending a test notification. It never exposes secret values.
+
+See [`docs/webui.md`](webui.md) for exact configuration, authentication
+setup, and access instructions.
+
+---
+
 ## All CLI Commands Reference
 
 ### Setup & Initialization

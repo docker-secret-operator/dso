@@ -8,11 +8,26 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 
 	"github.com/docker-secret-operator/dso/internal/util"
 )
+
+// DrainWindow is how long a backend stays in the registry as "draining"
+// after SwapBackend hands traffic to its replacement. It bounds two things
+// that must both hold for a rotation to be genuinely zero-downtime:
+//
+//   - a connection that selected the old backend just before the swap still
+//     has time to dial it and complete, and
+//   - the caller must not stop or remove the old CONTAINER until this has
+//     elapsed, or those in-flight connections are killed anyway and the
+//     drain is only nominal.
+//
+// Exported so the rotation path can honour the second requirement without
+// duplicating the constant.
+const DrainWindow = 5 * time.Second
 
 // PortMap is a single host-port → container-port mapping parsed from the
 // dso.host_ports label, e.g. "3306:3306".
@@ -53,6 +68,34 @@ type Manager struct {
 	// deployments are unaffected until an operator opts in via
 	// SetAllowedHostPorts.
 	allowedHostPorts *portAllowList
+
+	// ownerID is this agent's dso.owner identity. When set, discovery paths
+	// that read container labels (ScanAndRegister) skip a container whose
+	// dso.owner names a DIFFERENT agent. "" disables the check.
+	ownerID string
+}
+
+// SetOwnerID sets this agent's dso.owner identity for ScanAndRegister's
+// ownership gate. Call before ScanAndRegister.
+func (m *Manager) SetOwnerID(id string) {
+	m.mu.Lock()
+	m.ownerID = id
+	m.mu.Unlock()
+}
+
+// OwnerAllowed reports whether labels may be registered by this agent: true
+// when no owner identity is configured, when the container carries no
+// dso.owner (unowned, kept for backward compatibility), or when it carries
+// this agent's own. A container owned by a different agent is never allowed.
+func (m *Manager) OwnerAllowed(labels map[string]string) bool {
+	m.mu.Lock()
+	self := m.ownerID
+	m.mu.Unlock()
+	if self == "" {
+		return true
+	}
+	owner := labels["dso.owner"]
+	return owner == "" || owner == self
 }
 
 // NewManager creates a Manager and starts the underlying TCP proxy server.
@@ -158,7 +201,7 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 		// connections are not dropped; this just ensures we don't remove the backend
 		// entry while something is still dialing it.
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(DrainWindow):
 		case <-m.ctx.Done():
 			// Manager is shutting down; the whole registry is being torn down
 			// with it, so there is nothing useful left to remove.
@@ -303,9 +346,21 @@ func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
 		return
 	}
 
+	m.registerScanned(containers)
+}
+
+// registerScanned registers the listed containers' dso.host_ports. It never
+// writes labels, so repeated scans cannot claim or change another agent's
+// ownership.
+func (m *Manager) registerScanned(containers []container.Summary) {
 	for _, c := range containers {
 		portsLabel := c.Labels["dso.host_ports"]
 		if portsLabel == "" {
+			continue
+		}
+		if !m.OwnerAllowed(c.Labels) {
+			m.log.Warn("proxy: container is owned by a different DSO agent instance; not registering",
+				zap.String("id", util.ShortID(c.ID)))
 			continue
 		}
 		portMaps := ParseHostPorts(portsLabel)

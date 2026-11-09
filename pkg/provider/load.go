@@ -320,7 +320,7 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.
 	// This is a plugin-based architecture where the command must be dynamic.
 	fmt.Printf("[DSO] Using %s provider plugin: %s\n", strings.ToUpper(providerName), pluginPath)
-	cmd := exec.Command(pluginPath) // #nosec G702 G204
+	cmd := exec.Command(pluginPath) // #nosec G702 G204 -- pluginPath passed validatePluginPath (allowed system dirs) and enforceHashVerification above; the plugin architecture requires a dynamic command
 	cmd.Env = sanitizeEnv(providerName)
 
 	client := plugin.NewClient(&plugin.ClientConfig{

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,54 @@ import (
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
+
+// oldContainerSuffixPattern matches the restart strategy's rename-away
+// naming convention: "<originalName>_old_<unixTimestamp>" (see
+// executeRollback/executeSimpleRestart in internal/watcher/controller.go,
+// which construct this exact suffix). Anchored to the end of the string and
+// requiring the suffix to be all digits deliberately makes this narrow: a
+// bare `strings.Contains(name, "_old_")` would also match unrelated,
+// operator-owned containers like "my_old_database" or "legacy_old_service".
+// This regex will not.
+var oldContainerSuffixPattern = regexp.MustCompile(`_old_[0-9]+$`)
+
+// isDSOBackupContainerName reports whether cleanName matches the rolling
+// strategy's backup-container naming convention.
+func isDSOBackupContainerName(cleanName string) bool {
+	return strings.Contains(cleanName, "_dso_backup_")
+}
+
+// isDSONewContainerName reports whether cleanName matches the rolling
+// strategy's shadow/new-container naming convention.
+func isDSONewContainerName(cleanName string) bool {
+	return strings.Contains(cleanName, "_dso_new_")
+}
+
+// isDSORestartOldContainerName reports whether cleanName matches the
+// restart strategy's rename-away naming convention. See
+// oldContainerSuffixPattern's doc comment for why this must stay a narrow,
+// suffix-anchored match rather than a broad substring check -- cleanup
+// logic must only ever recognize container names DSO itself constructed,
+// never delete an arbitrary operator container that happens to contain
+// "_old_" somewhere in its name.
+func isDSORestartOldContainerName(cleanName string) bool {
+	return oldContainerSuffixPattern.MatchString(cleanName)
+}
+
+// IsDSORotationArtifactName reports whether cleanName (a container name with
+// any leading "/" already trimmed) matches one of DSO's own rotation-
+// artifact naming conventions ("_dso_backup_", "_dso_new_", or the restart
+// strategy's "_old_<unix timestamp>" suffix). Exported so other DSO-owned
+// tooling (specifically `dso doctor`'s orphan-container diagnostic, which
+// runs as a separate process and must never re-derive or drift from this
+// security-sensitive matching logic on its own) can reuse the exact same
+// ownership determination this package's own cleanup/recovery logic uses,
+// rather than duplicating it.
+func IsDSORotationArtifactName(cleanName string) bool {
+	return isDSOBackupContainerName(cleanName) ||
+		isDSONewContainerName(cleanName) ||
+		isDSORestartOldContainerName(cleanName)
+}
 
 // shortID returns up to the first 12 characters of id, safe for empty or short strings.
 func shortID(id string) string {
@@ -33,6 +82,38 @@ type AutomaticRecovery struct {
 	// authoritative MarkRecovered/MarkCriticalError transition, never
 	// before, and never in a way recovery logic can observe.
 	Dispatcher *notify.Dispatcher
+
+	// OwnerID is this agent's dso.owner identity (SEC-P0 discovery-isolation
+	// fix). Set via SetOwnerID before RecoverFromCrash/CleanupOrphanedContainers
+	// run. Recovery/cleanup act purely on Docker-visible naming conventions
+	// and label filters, which -- like normal discovery before this fix --
+	// carry no per-agent identity of their own; without this, a crash-
+	// recovery or orphan sweep on a host running a second, independent DSO
+	// agent could stop/remove a container that agent owns merely because it
+	// happens to match DSO's rotation-artifact naming pattern (e.g. an
+	// unrelated "*_dso_backup_*"-named container it created). Empty means
+	// ownership enforcement is skipped (matches pre-fix behavior; not
+	// reachable from a real `dso agent` process, which always has an
+	// OwnerID from EnsureOwnerID).
+	OwnerID string
+}
+
+// SetOwnerID wires this agent's dso.owner identity into the recovery/cleanup
+// paths below so they enforce the same ownership boundary as normal
+// discovery (internal/watcher.ReloaderController.checkOwnership).
+func (ar *AutomaticRecovery) SetOwnerID(id string) {
+	ar.OwnerID = id
+}
+
+// ownedByMe reports whether labels carries this agent's dso.owner value.
+// Default-deny: a missing/empty dso.owner label, or one that names a
+// different agent, is NOT owned by me. See OwnerID's doc comment for why an
+// empty ar.OwnerID (no Config wired up) instead skips enforcement entirely.
+func (ar *AutomaticRecovery) ownedByMe(labels map[string]string) bool {
+	if ar.OwnerID == "" {
+		return true
+	}
+	return labels["dso.owner"] == ar.OwnerID
 }
 
 func (ar *AutomaticRecovery) emitRecoveryEvent(t notify.EventType, rotation *RotationState, err error) {
@@ -86,14 +167,27 @@ func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 		return nil
 	}
 
-	// Index containers by name for O(1) lookup
+	// Index containers by name for O(1) lookup. SEC-P0: only containers this
+	// agent owns are eligible for recovery actions below -- a dso.reloader
+	// container without a matching dso.owner label (or none at all) must
+	// never be touched by crash recovery, exactly as normal discovery
+	// refuses to register it.
 	containersByName := make(map[string]string)
+	skippedUnowned := 0
 	for _, c := range containers {
+		if !ar.ownedByMe(c.Labels) {
+			skippedUnowned++
+			continue
+		}
 		for _, name := range c.Names {
 			// Remove leading slash from Docker's name format
 			cleanName := strings.TrimPrefix(name, "/")
 			containersByName[cleanName] = c.ID
 		}
+	}
+	if skippedUnowned > 0 {
+		ar.logger.Warn("Crash recovery: skipped dso.reloader containers not owned by this agent",
+			zap.Int("count", skippedUnowned))
 	}
 
 	// Perform recovery for each pending rotation
@@ -109,9 +203,11 @@ func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 // recoverSingleRotation performs recovery for a single pending rotation.
 //
 // It detects orphaned containers using DSO's naming conventions and cleans them up:
-// - Containers named "*_dso_backup_*" (old containers) are removed
-// - Containers named "*_dso_new_*" (new containers) are removed
-// - The original container should remain running with its original name
+//   - Containers named "*_dso_backup_*" (rolling strategy's old container) are removed
+//   - Containers named "*_dso_new_*" (rolling strategy's shadow container) are removed
+//   - Containers named "*_old_<unix timestamp>" (restart strategy's renamed-away
+//     original) are removed -- see isDSORestartOldContainerName's doc comment
+//   - The original container should remain running with its original name
 //
 // If the original container is missing, this is a critical error and the operator
 // must manually intervene.
@@ -126,18 +222,18 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 	)
 
 	// Detect orphaned containers by searching for DSO naming patterns
-	backupPattern := "_dso_backup_"
-	newPattern := "_dso_new_"
-
 	var backupContainers []string
 	var newContainers []string
+	var oldContainers []string
 
 	for name, containerID := range containersByName {
-		if strings.Contains(name, backupPattern) {
+		switch {
+		case isDSOBackupContainerName(name):
 			backupContainers = append(backupContainers, containerID)
-		}
-		if strings.Contains(name, newPattern) {
+		case isDSONewContainerName(name):
 			newContainers = append(newContainers, containerID)
+		case isDSORestartOldContainerName(name):
+			oldContainers = append(oldContainers, containerID)
 		}
 	}
 
@@ -165,6 +261,21 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
 		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 			logger.Warn("Failed to remove new container",
 				zap.String("new_id", shortID(containerID)),
+				zap.Error(err))
+		}
+	}
+
+	// Clean up restart-strategy containers left under their "_old_<ts>"
+	// rename after a crash interrupted that rotation before cleanup ran.
+	for _, containerID := range oldContainers {
+		logger.Info("Removing orphaned restart-strategy container",
+			zap.String("old_id", shortID(containerID)))
+
+		// Best-effort stop and remove
+		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
+		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+			logger.Warn("Failed to remove restart-strategy old container",
+				zap.String("old_id", shortID(containerID)),
 				zap.Error(err))
 		}
 	}
@@ -321,11 +432,30 @@ func (ar *AutomaticRecovery) CleanupOrphanedContainers(ctx context.Context) erro
 
 	var cleanedUp int
 	for _, c := range containers {
+		// SEC-P0: a rotation-artifact-shaped NAME alone is not proof this
+		// agent created the container -- an independent DSO agent on the
+		// same host can produce identically-shaped names
+		// ("*_dso_backup_*", "*_dso_new_*", "*_old_<ts>"). Require this
+		// agent's own dso.owner label before touching it; default-deny
+		// (skip + warn) an unowned or foreign-owned match instead of
+		// silently sweeping it up.
+		if !ar.ownedByMe(c.Labels) {
+			for _, name := range c.Names {
+				cleanName := strings.TrimPrefix(name, "/")
+				if isDSOBackupContainerName(cleanName) || isDSONewContainerName(cleanName) || isDSORestartOldContainerName(cleanName) {
+					ar.logger.Warn("Orphan cleanup: skipping rotation-artifact-named container not owned by this agent",
+						zap.String("container_id", shortID(c.ID)),
+						zap.String("container_name", cleanName))
+					break
+				}
+			}
+			continue
+		}
 		for _, name := range c.Names {
 			cleanName := strings.TrimPrefix(name, "/")
 
 			// Check for DSO naming patterns
-			if strings.Contains(cleanName, "_dso_backup_") || strings.Contains(cleanName, "_dso_new_") {
+			if isDSOBackupContainerName(cleanName) || isDSONewContainerName(cleanName) || isDSORestartOldContainerName(cleanName) {
 				ar.logger.Info("Cleaning up orphaned DSO container",
 					zap.String("container_id", shortID(c.ID)),
 					zap.String("container_name", cleanName))

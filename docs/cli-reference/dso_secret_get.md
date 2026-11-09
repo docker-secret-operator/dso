@@ -2,6 +2,14 @@
 
 Retrieve a secret from the vault
 
+### Synopsis
+
+Print a secret's value to stdout, without a trailing newline unless -n is given.
+
+<project>/<path> selects the secret. If no project is given the default
+project "global" is used (the same default as 'secret set', 'secret list' and
+'env import'); a note is written to stderr when this happens.
+
 ```
 dso secret get <project>/<path> [flags]
 ```
@@ -16,7 +24,8 @@ dso secret get <project>/<path> [flags]
 ### Options inherited from parent commands
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO

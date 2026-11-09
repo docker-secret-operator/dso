@@ -163,6 +163,19 @@ func (s *AgentServer) GetStatus(_ *api.StatusRequest, resp *api.StatusResponse) 
 		resp.PendingRotations = len(s.Trigger.StateTracker.GetPendingRotations())
 	}
 
+	// Phase 7 / P2-5: expose the live agent's degraded-service state so
+	// `dso doctor` (a separate process) can report on it -- this is
+	// in-memory-only state (internal/watcher's ReloaderController.degraded),
+	// so the running agent process is the only place it can come from.
+	if s.Trigger != nil && s.Trigger.Reloader != nil {
+		for _, d := range s.Trigger.Reloader.DegradedServices() {
+			resp.DegradedServices = append(resp.DegradedServices, api.DegradedServiceInfo{
+				Service: d.Service,
+				Reason:  d.Reason,
+			})
+		}
+	}
+
 	for name := range s.Config.Providers {
 		info := api.ProviderStatusInfo{Name: name}
 		healthy, known := s.Store.Health(name)
@@ -188,20 +201,25 @@ func (s *AgentServer) GetStatus(_ *api.StatusRequest, resp *api.StatusResponse) 
 // against a config the agent may not have applied yet. A single attempt
 // (no retry backoff) keeps a pre-flight check from blocking for the same
 // multi-attempt backoff window a real rotation would tolerate.
+//
+// PE-11: the check runs on an ephemeral, never-cached provider instance, so
+// it can neither be answered by nor replace the connection the agent uses
+// for rotation. Over IPC it is a privileged (root / agent UID) method: the
+// caller chooses the provider type and endpoint, which the root agent then
+// loads (see ipcMethodTiers).
 func (s *AgentServer) CheckProviderConnectivity(req *api.ProviderCheckRequest, resp *api.ProviderCheckResponse) error {
 	pCfg := config.ProviderConfig{
 		Type:   req.Type,
 		Region: req.Region,
 		Config: req.Config,
-		Retry:  config.RetryConfig{Attempts: 1},
 	}
 	if req.AuthMethod != "" {
 		pCfg.Auth = config.AuthConfig{Method: req.AuthMethod, Params: req.AuthParams}
 	}
 
-	if _, err := s.Store.GetProvider(req.ProviderName, pCfg); err != nil {
+	if err := s.Store.CheckConnectivity(pCfg); err != nil {
 		resp.Reachable = false
-		resp.Error = err.Error()
+		resp.Error = fmt.Sprintf("provider %s initialization %v", req.ProviderName, err)
 		return nil
 	}
 
@@ -209,10 +227,88 @@ func (s *AgentServer) CheckProviderConnectivity(req *api.ProviderCheckRequest, r
 	return nil
 }
 
-func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, auditUser string) error {
-	cacheKey := fmt.Sprintf("%s:%s", req.Provider, req.Secret)
+// errIPCPermissionDenied is returned (wrapped) for every request the agent
+// refuses on authorization grounds.
+var errIPCPermissionDenied = errors.New("permission denied")
 
-	// fast path cache
+// resolveConfiguredProvider maps a GetSecret request onto a provider name
+// defined in the agent's own dso.yaml. PE-28: callers may only NAME a
+// provider; they can never define one. An empty req.Provider is resolved
+// from the secret's own mapping (when it names exactly one provider) or, if
+// the agent has a single provider, to that provider.
+func (s *AgentServer) resolveConfiguredProvider(req *api.AgentRequest) (string, config.ProviderConfig, error) {
+	pName := req.Provider
+	if pName == "" {
+		explicit := map[string]struct{}{}
+		for _, sec := range s.Config.Secrets {
+			if sec.Name == req.Secret && sec.Provider != "" {
+				explicit[sec.Provider] = struct{}{}
+			}
+		}
+		switch {
+		case len(explicit) == 1:
+			for name := range explicit {
+				pName = name
+			}
+		case len(s.Config.Providers) == 1:
+			for name := range s.Config.Providers {
+				pName = name
+			}
+		default:
+			return "", config.ProviderConfig{}, fmt.Errorf("%w: no provider specified and it cannot be resolved unambiguously", errIPCPermissionDenied)
+		}
+	}
+
+	pCfg, ok := s.Config.Providers[pName]
+	if !ok {
+		return "", config.ProviderConfig{}, fmt.Errorf("%w: provider %q is not configured on this agent", errIPCPermissionDenied, pName)
+	}
+	return pName, pCfg, nil
+}
+
+// secretConfigured reports whether dso.yaml maps secretName to providerName.
+// A mapping without an explicit provider is served by every configured
+// provider, matching how TriggerEngine.StartAll polls it.
+func (s *AgentServer) secretConfigured(providerName, secretName string) bool {
+	for _, sec := range s.Config.Secrets {
+		if sec.Name == secretName && (sec.Provider == "" || sec.Provider == providerName) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, auditUser string) error {
+	// PE-11 / PE-28: default-deny authorization BEFORE the cache is consulted
+	// or any provider is loaded. Authorization applies to the operation, not
+	// merely to the provider lookup that populates the cache: a value cached
+	// by an earlier authorized call (or by the agent's own pollers) must never
+	// be returned to a caller this check would refuse. The provider must be
+	// defined in this agent's dso.yaml (the former "legacy one-off" branch,
+	// which built a provider of caller-chosen type from caller-supplied
+	// req.Config inside the root agent, is gone), and the secret must be one
+	// dso.yaml maps to that provider. req.Config is never used.
+	pName, pCfg, err := s.resolveConfiguredProvider(req)
+	if err == nil && !s.secretConfigured(pName, req.Secret) {
+		err = fmt.Errorf("%w: secret %q is not configured for provider %q", errIPCPermissionDenied, req.Secret, pName)
+	}
+	if err != nil {
+		s.Logger.Warn("Denied secret request", zap.String("user", auditUser), zap.Error(err))
+		audit.Log(context.Background(), "secret_fetch", auditUser, req.Provider, req.Secret, "", "failed")
+		resp.Error = err.Error()
+		return err
+	}
+	if len(req.Config) > 0 {
+		s.Logger.Debug("Ignoring caller-supplied provider config; the agent only uses its own configuration",
+			zap.String("provider", pName))
+	}
+
+	// Keyed by the RESOLVED provider name, the same "<provider>:<secret>"
+	// form the agent's pollers write, so an authorized request that left
+	// req.Provider empty still hits the poller-populated entry.
+	cacheKey := fmt.Sprintf("%s:%s", pName, req.Secret)
+
+	// fast path cache (only reachable after authorization above).
 	if data, found := s.Cache.Get(cacheKey); found {
 		s.Logger.Debug("Cache hit", zap.String("secret", req.Secret))
 		observability.SecretCacheHitsTotal.WithLabelValues(req.Secret).Inc()
@@ -223,32 +319,13 @@ func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, 
 	}
 
 	observability.SecretCacheMissesTotal.Inc()
-	s.Logger.Info("Fetching secret from provider", zap.String("provider", req.Provider), zap.String("secret", req.Secret))
 
-	// slow path provider lookup
+	s.Logger.Info("Fetching secret from provider", zap.String("provider", pName), zap.String("secret", req.Secret))
+
+	// slow path provider lookup. GetProvider's config-digest check (PE-11)
+	// still guarantees the provider instance matches pCfg.
 	timer := observability.SecretFetchLatency.WithLabelValues(req.Provider)
 	start := time.Now()
-
-	// Find the provider config in the global config
-	pName := req.Provider
-	if pName == "" {
-		// Fallback to legacy default if only one provider exists
-		if len(s.Config.Providers) == 1 {
-			for name := range s.Config.Providers {
-				pName = name
-				break
-			}
-		}
-	}
-
-	pCfg, ok := s.Config.Providers[pName]
-	if !ok {
-		// If not found in map, check if it's a legacy one-off request
-		pCfg = config.ProviderConfig{
-			Type:   pName,
-			Config: req.Config,
-		}
-	}
 
 	prov, err := s.Store.GetProvider(pName, pCfg)
 	if err != nil {
@@ -307,23 +384,119 @@ func (s *AgentServer) getSecret(req *api.AgentRequest, resp *api.AgentResponse, 
 	return nil
 }
 
+// ipcTier is the privilege class of an authenticated IPC peer, and the
+// minimum class an IPC method requires (PE-11 method-level authorization).
+type ipcTier int
+
+const (
+	// tierNone is never granted; it marks the zero value as "no access".
+	tierNone ipcTier = iota
+	// tierRestricted: a member of the dso group (or, on platforms without
+	// SO_PEERCRED, any peer the socket's root:dso file mode admitted).
+	tierRestricted
+	// tierPrivileged: root, or the agent's own UID.
+	tierPrivileged
+)
+
+func (t ipcTier) String() string {
+	switch t {
+	case tierRestricted:
+		return "restricted"
+	case tierPrivileged:
+		return "privileged"
+	default:
+		return "none"
+	}
+}
+
+// ipcMethodTiers is the complete IPC authorization table. A method absent
+// from this table is denied to everyone (default deny). Every RPC method
+// agentConn exposes must have an entry; TestAgentConn_EveryRPCMethodHasATier
+// enforces this.
+var ipcMethodTiers = map[string]ipcTier{
+	"GetEvents":             tierRestricted,
+	"GetStatus":             tierRestricted,
+	"TriggerReconciliation": tierRestricted,
+	// Restricted to provider/secret pairs defined in dso.yaml (getSecret).
+	"GetSecret": tierRestricted,
+	// Loads a provider of caller-chosen type and endpoint inside the root
+	// agent, so only callers who are already root may use it.
+	"CheckProviderConnectivity": tierPrivileged,
+}
+
+// peerTier classifies an already-authenticated peer.
+func peerTier(p peerIdentity, selfUID int) ipcTier {
+	if p.uid == 0 || int(p.uid) == selfUID {
+		return tierPrivileged
+	}
+	return tierRestricted
+}
+
 // agentConn is the net/rpc receiver registered for one accepted IPC
 // connection. net/rpc dispatches calls by reflecting on a single registered
-// receiver value with no per-call hook for connection-scoped data, so there is
-// no way to thread a connection's SO_PEERCRED-authenticated peer identity into
-// a shared *AgentServer's GetSecret. Instead, each connection gets its own
-// *rpc.Server and its own agentConn value (AUDIT-1 follow-up): *AgentServer is
-// embedded so every other RPC method (GetEvents, and any added later) is
-// promoted unchanged, and only GetSecret is overridden here to attribute audit
-// log entries to this connection's real, already-authorized caller instead of
-// a fixed placeholder.
+// receiver value with no per-call hook for connection-scoped data, so each
+// connection gets its own *rpc.Server and its own agentConn value carrying
+// that connection's SO_PEERCRED-derived audit identity (AUDIT-1) and
+// privilege tier (PE-11).
+//
+// The *AgentServer is held in an unexported field rather than embedded, so no
+// AgentServer method is ever promoted onto the IPC surface implicitly: every
+// method below is an explicit wrapper that checks ipcMethodTiers first.
 type agentConn struct {
-	*AgentServer
+	srv       *AgentServer
 	auditUser string
+	tier      ipcTier
+}
+
+// authorize enforces ipcMethodTiers for one call.
+func (c *agentConn) authorize(method string) error {
+	required, ok := ipcMethodTiers[method]
+	if ok && required != tierNone && c.tier >= required {
+		return nil
+	}
+	c.srv.Logger.Warn("Denied IPC method call",
+		zap.String("method", method),
+		zap.String("user", c.auditUser),
+		zap.Stringer("peer_tier", c.tier),
+		zap.Stringer("required_tier", required))
+	audit.Log(context.Background(), "ipc_call", c.auditUser, "", method, "", "denied")
+	return fmt.Errorf("%w: %s requires %s access", errIPCPermissionDenied, method, required)
+}
+
+func (c *agentConn) GetEvents(req *api.AgentRequest, resp *api.AgentResponse) error {
+	if err := c.authorize("GetEvents"); err != nil {
+		return err
+	}
+	return c.srv.GetEvents(req, resp)
+}
+
+func (c *agentConn) GetStatus(req *api.StatusRequest, resp *api.StatusResponse) error {
+	if err := c.authorize("GetStatus"); err != nil {
+		return err
+	}
+	return c.srv.GetStatus(req, resp)
+}
+
+func (c *agentConn) TriggerReconciliation(req *api.ReconcileRequest, resp *api.ReconcileResponse) error {
+	if err := c.authorize("TriggerReconciliation"); err != nil {
+		return err
+	}
+	return c.srv.TriggerReconciliation(req, resp)
 }
 
 func (c *agentConn) GetSecret(req *api.AgentRequest, resp *api.AgentResponse) error {
-	return c.getSecret(req, resp, c.auditUser)
+	if err := c.authorize("GetSecret"); err != nil {
+		resp.Error = err.Error()
+		return err
+	}
+	return c.srv.getSecret(req, resp, c.auditUser)
+}
+
+func (c *agentConn) CheckProviderConnectivity(req *api.ProviderCheckRequest, resp *api.ProviderCheckResponse) error {
+	if err := c.authorize("CheckProviderConnectivity"); err != nil {
+		return err
+	}
+	return c.srv.CheckProviderConnectivity(req, resp)
 }
 
 // StartSocketServer starts the internal IPC RPC server on a Unix domain socket.
@@ -466,15 +639,18 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 			// SEC-C2: authenticate and audit the peer before serving. AUDIT-1:
 			// connUser also becomes this connection's audit-log identity.
 			var connUser string
+			var connTier ipcTier
 			peer, perr := readPeerIdentity(conn)
 			switch {
 			case errors.Is(perr, errPeerCredUnsupported):
 				// Non-Linux platform: peer-credential auth is unavailable, so we
 				// fall back to the socket's filesystem permissions (the same guard
 				// the code had before SEC-C2). Production runs on Linux where the
-				// full check applies.
+				// full check applies. Without a verified UID the peer cannot be
+				// proven privileged, so it gets the restricted tier (PE-11).
 				logger.Warn("Peer credential check unsupported on this platform; relying on socket file permissions")
 				connUser = "unknown(peer-cred-unsupported)"
+				connTier = tierRestricted
 			case perr != nil:
 				logger.Warn("Rejecting IPC connection: cannot read peer credentials",
 					zap.Error(perr))
@@ -493,6 +669,7 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 					zap.Uint32("peer_uid", peer.uid),
 					zap.Uint32("peer_gid", peer.gid))
 				connUser = resolveAuditUser(peer)
+				connTier = peerTier(peer, selfUID)
 			}
 
 			connMu.Lock()
@@ -505,7 +682,7 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 			connMu.Unlock()
 
 			wg.Add(1)
-			go func(c net.Conn, auditUser string) {
+			go func(c net.Conn, auditUser string, tier ipcTier) {
 				defer wg.Done()
 				defer func() {
 					connMu.Lock()
@@ -517,12 +694,12 @@ func StartSocketServer(ctx context.Context, socketPath string, cache *SecretCach
 				// comment above for why this can't be the shared, process-wide
 				// registration net/rpc normally uses.
 				connServer := rpc.NewServer()
-				if err := connServer.RegisterName("Agent", &agentConn{AgentServer: server, auditUser: auditUser}); err != nil {
+				if err := connServer.RegisterName("Agent", &agentConn{srv: server, auditUser: auditUser, tier: tier}); err != nil {
 					logger.Error("Failed to register per-connection RPC service", zap.Error(err))
 					return
 				}
 				connServer.ServeConn(c)
-			}(conn, connUser)
+			}(conn, connUser, connTier)
 		}
 	}()
 
