@@ -112,7 +112,7 @@ func TestLoadConfig_AcceptsExplicitConfigAndGeneratesRunID(t *testing.T) {
 	if cfg.Labels()[LabelRun] != cfg.RunID || cfg.Labels()[LabelEnvironment] != "env-0123456789ab" {
 		t.Fatalf("labels wrong: %v", cfg.Labels())
 	}
-	if NewRunID() == NewRunID() {
+	if a, b := NewRunID(), NewRunID(); a == b {
 		t.Fatal("run ids must be unique")
 	}
 }

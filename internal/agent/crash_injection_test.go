@@ -177,7 +177,7 @@ func TestCrashInjection_EveryTransition_RecoveryPreservesAHealthyWorkloadAndIsId
 					t.Fatal(err)
 				}
 				crashed, execErr := runCrashing(t, cli, st, pt.point, proxied)
-				if crashed != pt.point && !(pt.point == "after_cleanup_before_ack" || execErr == nil) {
+				if crashed != pt.point && pt.point != "after_cleanup_before_ack" && execErr != nil {
 					// Some points only exist on the proxied path.
 					if !proxied && strings.Contains(pt.point, "handoff") {
 						t.Skip("point exists only on the proxied path")

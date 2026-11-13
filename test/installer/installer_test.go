@@ -346,7 +346,7 @@ func TestInstaller_FailedInstallationPreservesTheExistingInstallation(t *testing
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0o755)
+	defer func() { _ = os.Chmod(dir, 0o755) }()
 	r := f.install(nil, "")
 	if r.code == 0 {
 		t.Fatalf("install into a read-only directory must fail:\n%s", r.out)

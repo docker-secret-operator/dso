@@ -195,7 +195,7 @@ func TestInjectScript_RequireTmpfs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(disk)
+	defer func() { _ = os.RemoveAll(disk) }()
 	abs, _ := filepath.Abs(disk)
 	if fsIsTmpfs(abs) {
 		t.Skip("working directory is on tmpfs; cannot test the non-tmpfs refusal here")
@@ -214,7 +214,7 @@ func TestInjectScript_RequireTmpfs(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot use /dev/shm: %v", err)
 	}
-	defer os.RemoveAll(shm)
+	defer func() { _ = os.RemoveAll(shm) }()
 	if code, msg := runScript(t, filepath.Join(shm, "dso"), "x", me, mg, true, stdinPayload("v")); code != 0 {
 		t.Fatalf("tmpfs: exit %d %s", code, msg)
 	}
@@ -276,10 +276,10 @@ func TestInjectScript_SecretNeverInArgvAndModeSetBeforePublish(t *testing.T) {
 	}
 	sc := injectScript
 	iu, im, ic, imv := strings.Index(sc, "umask 077"), strings.Index(sc, "mktemp"), strings.Index(sc, "chmod 0400"), strings.Index(sc, "mv -f")
-	if !(iu >= 0 && iu < im && im < ic && ic < imv) {
+	if iu < 0 || iu >= im || im >= ic || ic >= imv {
 		t.Fatalf("order must be umask < mktemp < chmod < mv (got %d %d %d %d)", iu, im, ic, imv)
 	}
-	if ich := strings.Index(sc, `chown "$uid:$gid"`); !(ich > 0 && ich < imv) {
+	if ich := strings.Index(sc, `chown "$uid:$gid"`); ich <= 0 || ich >= imv {
 		t.Fatal("chown must happen before publication")
 	}
 }

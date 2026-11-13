@@ -116,7 +116,7 @@ func TestSignalRotation_DeliversAndVerifiesBeforeSignalling(t *testing.T) {
 	}
 	ev := l.get()
 	d, p, s, rd := idx(ev, "deliver:"), idx(ev, "probe:"), idx(ev, "signal:"), idx(ev, "ready")
-	if !(d >= 0 && d < p && p < s && s < rd) {
+	if d < 0 || d >= p || p >= s || s >= rd {
 		t.Fatalf("order must be deliver < probe < signal < ready, got %v", ev)
 	}
 	if ev[s] != "signal:SIGHUP" {

@@ -2388,7 +2388,7 @@ func instFlipBytes(t *testing.T, path string, off int64, n int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, n)
 	if _, err := f.ReadAt(buf, off); err != nil {
 		t.Fatal(err)
@@ -3113,7 +3113,7 @@ func TestDisplace_NoOpMutationIsNotAChange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			if _, err := f.WriteAt([]byte{0xAB}, 100); err != nil {
 				t.Fatal(err)
 			}

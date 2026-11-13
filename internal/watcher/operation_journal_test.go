@@ -101,7 +101,7 @@ func TestSignalJournal_RecordsHowFarEachInterruptedOperationGot(t *testing.T) {
 				t.Fatalf("did not crash at %s: %v", c.point, err)
 			}
 			names := j.names()
-			if names[len(names)-1] != c.last && !(c.point == "signal:after_publish_before_ack" && names[len(names)-1] == rotation.TrIntentSignalPublish) {
+			if names[len(names)-1] != c.last {
 				t.Fatalf("last durable transition %q, want %q (all: %v)", names[len(names)-1], c.last, names)
 			}
 			for _, n := range names {

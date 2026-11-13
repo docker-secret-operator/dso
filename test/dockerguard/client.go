@@ -205,7 +205,7 @@ func CleanupFromEnv(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 	api := &realAPI{cli: cli}
 	if err := Verify(ctx, cfg, api); err != nil {
 		return err
