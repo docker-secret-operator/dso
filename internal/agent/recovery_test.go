@@ -108,7 +108,12 @@ func TestValidateStateOnStartup_DiscardsStaleState(t *testing.T) {
 	if len(pendingBefore) != 1 {
 		t.Fatalf("expected 1 pending rotation before backdating, got %d", len(pendingBefore))
 	}
-	pendingBefore[0].StartTime = pendingBefore[0].StartTime.Add(-25 * time.Hour)
+	// The tracker returns copies, so backdate the live record under its own lock.
+	st.mu.Lock()
+	for _, live := range st.states {
+		live.StartTime = live.StartTime.Add(-25 * time.Hour)
+	}
+	st.mu.Unlock()
 
 	ar := NewAutomaticRecovery(cli, logger, st)
 	ok := ar.ValidateStateOnStartup(context.Background())

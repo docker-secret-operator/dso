@@ -60,6 +60,16 @@ type RotationState struct {
 	ErrorMessage          string    `json:"error_message,omitempty"` // For critical_error status
 }
 
+// clone returns a deep copy. The tracker hands out clones, never its live records:
+// recovery and the dispatch guard read records while Record() may be updating them
+// under st.mu, and a shared pointer would make those reads a data race.
+func (r *RotationState) clone() *RotationState {
+	c := *r
+	c.OriginalContainerIDs = append([]string(nil), r.OriginalContainerIDs...)
+	c.CandidateContainerIDs = append([]string(nil), r.CandidateContainerIDs...)
+	return &c
+}
+
 // OriginalIDs returns the container IDs of this rotation as a slice, from the
 // structured field when present, otherwise by splitting the legacy comma-joined
 // string (blank entries dropped).
@@ -201,11 +211,11 @@ func (st *StateTracker) GetPendingRotations() []*RotationState {
 	for _, state := range st.states {
 		// Include in_progress rotations older than 5 minutes (assume crashed)
 		if state.Status == "in_progress" && now.Sub(state.LastUpdate) > 5*time.Minute {
-			pending = append(pending, state)
+			pending = append(pending, state.clone())
 		}
 		// Include explicit rollback_required or critical_error states
 		if state.Status == "rollback_required" || state.Status == "critical_error" {
-			pending = append(pending, state)
+			pending = append(pending, state.clone())
 		}
 	}
 	return pending
@@ -223,7 +233,7 @@ func (st *StateTracker) GetUnfinishedRotationsAtStartup() []*RotationState {
 	for _, state := range st.states {
 		switch state.Status {
 		case "in_progress", "rollback_required", "critical_error":
-			out = append(out, state)
+			out = append(out, state.clone())
 		}
 	}
 	return out
@@ -263,15 +273,53 @@ func (st *StateTracker) CleanupOldStates(retentionPeriod time.Duration) error {
 func (st *StateTracker) MarkRecoveredRecord(rec *RotationState) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	rec.Status, rec.LastUpdate = "recovered", time.Now()
+	live := st.liveRecord(rec)
+	if live == nil {
+		return fmt.Errorf("rotation record %q not found in the journal", rec.RotationID)
+	}
+	now := time.Now()
+	live.Status, live.LastUpdate = "recovered", now
+	rec.Status, rec.LastUpdate = "recovered", now
 	return st.persistState()
 }
 
 func (st *StateTracker) MarkCriticalRecord(rec *RotationState, msg string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	rec.Status, rec.ErrorMessage, rec.LastUpdate = "critical_error", msg, time.Now()
+	live := st.liveRecord(rec)
+	if live == nil {
+		return fmt.Errorf("rotation record %q not found in the journal", rec.RotationID)
+	}
+	now := time.Now()
+	live.Status, live.ErrorMessage, live.LastUpdate = "critical_error", msg, now
+	rec.Status, rec.ErrorMessage, rec.LastUpdate = "critical_error", msg, now
 	return st.persistState()
+}
+
+// liveRecord resolves a (possibly cloned) record to the tracker's own record by
+// identity: the RotationID when present, else provider/secret/original/start time.
+// The caller must hold st.mu.
+func (st *StateTracker) liveRecord(rec *RotationState) *RotationState {
+	for _, s := range st.states {
+		if s == rec {
+			return s
+		}
+	}
+	if rec.RotationID != "" {
+		for _, s := range st.states {
+			if s.RotationID == rec.RotationID {
+				return s
+			}
+		}
+		return nil
+	}
+	for _, s := range st.states {
+		if s.ProviderName == rec.ProviderName && s.SecretName == rec.SecretName &&
+			s.OriginalContainerID == rec.OriginalContainerID && s.StartTime.Equal(rec.StartTime) {
+			return s
+		}
+	}
+	return nil
 }
 
 // snapshotRecords returns the current records (read-only use by recovery).
@@ -280,7 +328,7 @@ func (st *StateTracker) snapshotRecords() []*RotationState {
 	defer st.mu.RUnlock()
 	out := make([]*RotationState, 0, len(st.states))
 	for _, s := range st.states {
-		out = append(out, s)
+		out = append(out, s.clone())
 	}
 	return out
 }
