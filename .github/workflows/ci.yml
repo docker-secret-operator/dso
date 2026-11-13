@@ -159,7 +159,7 @@ jobs:
         # GO-2026-5668 in docker/docker, Fixed in: N/A) -- anything fixable should be
         # resolved by upgrading the dependency, not allowlisted.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           GOVULNCHECK=$(go env GOPATH)/bin/govulncheck
 
           "$GOVULNCHECK" -format json ./... > govulncheck-report.json || true

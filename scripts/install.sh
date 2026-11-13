@@ -158,7 +158,70 @@ fi
 
 # ── Download to temp directory (nothing is installed until everything verifies) ──
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+
+# ── Transaction state (see "Install" below) ────────────────────────────────────
+# Everything that will be published is staged first, then published with atomic
+# renames. If anything fails, or the installer is interrupted (INT/TERM/HUP), the
+# EXIT handler rolls every already-published item back, so the previous working
+# installation (core binary + provider plugins + symlink) is restored exactly.
+# (SIGKILL / power loss cannot be trapped: see docs/getting-started.md.)
+COMMITTED=0
+ITEM_STAGE=(); ITEM_DEST=(); ITEM_HAD=(); ITEM_OLDLINK=(); ITEM_BAK=(); ITEM_STATE=()
+CREATED_DIRS=()
+
+rollback_item() { # rollback_item INDEX
+    local i="$1" stage dest
+    stage="${ITEM_STAGE[$i]}"; dest="${ITEM_DEST[$i]}"
+    if [ -e "${stage}" ] || [ -L "${stage}" ]; then
+        # Never renamed into place: the destination is untouched. Drop the staging file.
+        rm -f "${stage}" 2>/dev/null || true
+        [ -z "${ITEM_BAK[$i]}" ] || rm -f "${ITEM_BAK[$i]}" 2>/dev/null || true
+        return 0
+    fi
+    [ "${ITEM_STATE[$i]}" -ge 1 ] || return 0
+    # Renamed into place: put the previous state back (or remove a new file).
+    if [ "${ITEM_HAD[$i]}" = 1 ]; then
+        if [ -n "${ITEM_OLDLINK[$i]}" ]; then
+            local tl="${dest}.dso-rb.$$"
+            rm -f "${tl}" 2>/dev/null || true
+            if ln -s "${ITEM_OLDLINK[$i]}" "${tl}" 2>/dev/null; then mv -f "${tl}" "${dest}" 2>/dev/null || true; fi
+        elif [ -n "${ITEM_BAK[$i]}" ] && [ -e "${ITEM_BAK[$i]}" ]; then
+            mv -f "${ITEM_BAK[$i]}" "${dest}" 2>/dev/null || true
+        fi
+    else
+        rm -f "${dest}" 2>/dev/null || true
+    fi
+}
+
+rollback_all() {
+    local n="${#ITEM_STAGE[@]}" i d any=0
+    i=$((n - 1))
+    while [ "${i}" -ge 0 ]; do
+        if [ "${ITEM_STATE[$i]}" -ge 1 ]; then any=1; fi
+        rollback_item "${i}"
+        i=$((i - 1))
+    done
+    for d in ${CREATED_DIRS[@]+"${CREATED_DIRS[@]}"}; do rmdir "${d}" 2>/dev/null || true; done
+    if [ "${any}" = 1 ]; then
+        echo -e "${YELLOW}Installation did not complete: the previous installation was restored.${NC}" >&2
+    fi
+}
+
+on_exit() {
+    local rc=$?
+    trap - EXIT INT TERM HUP
+    # shellcheck disable=SC2046
+    kill $(jobs -p) 2>/dev/null || true
+    if [ "${COMMITTED}" != 1 ]; then
+        rollback_all
+    fi
+    rm -rf "${TMP_DIR}"
+    exit "${rc}"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 fetch() { # fetch URL DEST  -- fails (non-zero) on any HTTP/network error or empty file
     local url="$1" dest="$2"
@@ -273,34 +336,132 @@ if [ -z "${EXTRACTED_BINARY}" ]; then
     exit 1
 fi
 
-# ── Install binary ─────────────────────────────────────────────────────────────
-mkdir -p "${PLUGIN_DIR}" "${INSTALL_DIR}"
+# ── Install (transactional) ────────────────────────────────────────────────────
+# Test-only failure injection (DSO_INSTALL_TEST_FAILPOINT): it can ONLY make the
+# installer fail or pause AFTER verification has passed; it cannot skip, weaken or
+# replace any check. Used by test/installer to prove rollback at every stage.
+failpoint() { # failpoint NAME  -> non-zero when that failure is injected
+    case "${DSO_INSTALL_TEST_FAILPOINT:-}" in
+        "$1") echo "injected failure at $1" >&2; return 1 ;;
+        "pause:$1") echo "DSO_INSTALL_PAUSED $1"; sleep 60 & wait $! || true ;;
+    esac
+    return 0
+}
 
-# Install atomically: copy to a temporary name in the destination directory, then
-# rename over the target. A failure before the rename leaves any existing working
-# installation exactly as it was.
-atomic_install() { # atomic_install SRC DEST
-    local src="$1" dest="$2" tmp
-    tmp="$(mktemp "${dest}.XXXXXX")" || return 1
-    if ! cp "${src}" "${tmp}" || ! chmod 0755 "${tmp}" || ! mv -f "${tmp}" "${dest}"; then
-        rm -f "${tmp}"
-        return 1
+ensure_dir() { # create DIR (and parents), remembering what we created for rollback
+    local d="$1" chain=()
+    while [ ! -e "${d}" ] && [ ! -L "${d}" ] && [ "${d}" != "/" ] && [ "${d}" != "." ]; do
+        chain+=("${d}"); d="$(dirname "${d}")"
+    done
+    mkdir -p "$1" || return 1
+    CREATED_DIRS+=(${chain[@]+"${chain[@]}"})
+}
+
+# Probe once: GNU mv -T never moves INTO an existing directory destination.
+MV_RENAME=(mv -f)
+if mv --help 2>&1 | grep -q -- ' -T'; then MV_RENAME=(mv -fT); fi
+
+register_item() { # register_item STAGE DEST  (records the pre-existing state of DEST)
+    local stage="$1" dest="$2"
+    ITEM_STAGE+=("${stage}"); ITEM_DEST+=("${dest}"); ITEM_BAK+=(""); ITEM_STATE+=(0)
+    if [ -L "${dest}" ]; then
+        ITEM_HAD+=(1); ITEM_OLDLINK+=("$(readlink "${dest}")")
+    elif [ -e "${dest}" ]; then
+        ITEM_HAD+=(1); ITEM_OLDLINK+=("")
+    else
+        ITEM_HAD+=(0); ITEM_OLDLINK+=("")
     fi
 }
-atomic_install "${EXTRACTED_BINARY}" "${PLUGIN_DIR}/${BINARY_NAME}" || { echo -e "${RED}Error: could not install the binary; any existing installation was left unchanged.${NC}"; exit 1; }
 
-# Symlink for standalone dso usage
-ln -sf "${PLUGIN_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/dso"
+stage_file() { # stage_file SRC DEST : copy SRC next to DEST under a temporary name
+    local src="$1" dest="$2" tmp
+    if [ -d "${dest}" ]; then echo -e "${RED}Error: ${dest} is a directory.${NC}"; return 1; fi
+    tmp="$(mktemp "${dest}.dso-stage.XXXXXX")" || return 1
+    register_item "${tmp}" "${dest}"
+    cp "${src}" "${tmp}" && chmod 0755 "${tmp}"
+}
 
-# Install bundled provider plugins when present in the release archive.
-# Cloud Mode loads providers from /usr/local/lib/dso/plugins by default.
+stage_link() { # stage_link TARGET DEST : create a temporary symlink next to DEST
+    local target="$1" dest="$2" tmp="${2}.dso-stage.$$"
+    if [ -d "${dest}" ] && [ ! -L "${dest}" ]; then echo -e "${RED}Error: ${dest} is a directory.${NC}"; return 1; fi
+    rm -f "${tmp}"
+    register_item "${tmp}" "${dest}"
+    ln -s "${target}" "${tmp}"
+}
+
+publish_item() { # publish_item INDEX : back up the old entry, then rename the new one over it
+    local i="$1" dest stage bak
+    dest="${ITEM_DEST[$i]}"; stage="${ITEM_STAGE[$i]}"
+    ITEM_STATE[$i]=1
+    if [ "${ITEM_HAD[$i]}" = 1 ] && [ -z "${ITEM_OLDLINK[$i]}" ]; then
+        # A hard link keeps the old bytes (and mode) intact after the rename replaces
+        # the name; fall back to a copy where hard links are unavailable.
+        bak="${dest}.dso-bak.$$"
+        rm -f "${bak}"
+        ln "${dest}" "${bak}" 2>/dev/null || cp -p "${dest}" "${bak}" || return 1
+        ITEM_BAK[$i]="${bak}"
+    fi
+    "${MV_RENAME[@]}" "${stage}" "${dest}" || return 1
+    ITEM_STATE[$i]=2
+}
+
+fail_install() { echo -e "${RED}Error: $1 The existing installation was left unchanged.${NC}"; exit 1; }
+
+ensure_dir "${PLUGIN_DIR}" && ensure_dir "${INSTALL_DIR}" || fail_install "could not create the install directories."
+
+# Stage 1 - build everything under temporary names next to its destination (same
+# filesystem, so the later rename is atomic). Nothing live changes in this stage.
+PROVIDER_STAGE_FIRST=${#ITEM_STAGE[@]}
 PROVIDER_COUNT=0
 while IFS= read -r provider_binary; do
     [ -n "${provider_binary}" ] || continue
-    mkdir -p "${PROVIDER_PLUGIN_DIR}"
-    atomic_install "${provider_binary}" "${PROVIDER_PLUGIN_DIR}/$(basename "${provider_binary}")" || { echo -e "${RED}Error: could not install $(basename "${provider_binary}").${NC}"; exit 1; }
+    ensure_dir "${PROVIDER_PLUGIN_DIR}" || fail_install "could not create ${PROVIDER_PLUGIN_DIR}."
+    failpoint stage_provider || fail_install "could not stage $(basename "${provider_binary}")."
+    stage_file "${provider_binary}" "${PROVIDER_PLUGIN_DIR}/$(basename "${provider_binary}")" || fail_install "could not stage $(basename "${provider_binary}")."
     PROVIDER_COUNT=$((PROVIDER_COUNT + 1))
 done < <(find "${TMP_DIR}" -maxdepth 2 -type f -name 'dso-provider-*' | sort)
+CORE_INDEX=${#ITEM_STAGE[@]}
+failpoint stage_core || fail_install "could not stage the binary."
+stage_file "${EXTRACTED_BINARY}" "${PLUGIN_DIR}/${BINARY_NAME}" || fail_install "could not stage the binary."
+LINK_INDEX=${#ITEM_STAGE[@]}
+failpoint stage_link || fail_install "could not stage the dso symlink."
+stage_link "${PLUGIN_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/dso" || fail_install "could not stage the dso symlink."
+
+# Stage 2 - publish with atomic renames: providers, then the core binary, then the
+# symlink. Any failure (or signal) rolls back everything already published.
+publish_or_die() { # publish_or_die INDEX
+    publish_item "$1" || { echo -e "${RED}Error: could not install ${ITEM_DEST[$1]}.${NC}"; exit 1; }
+}
+i=${PROVIDER_STAGE_FIRST}
+while [ "${i}" -lt "${CORE_INDEX}" ]; do
+    failpoint publish_provider || { echo -e "${RED}Error: could not install a provider plugin.${NC}"; exit 1; }
+    publish_or_die "${i}"
+    i=$((i + 1))
+done
+failpoint "after_providers"
+failpoint publish_core || { echo -e "${RED}Error: could not install the binary.${NC}"; exit 1; }
+publish_or_die "${CORE_INDEX}"
+failpoint "after_core"
+failpoint publish_link || { echo -e "${RED}Error: could not update the dso symlink.${NC}"; exit 1; }
+publish_or_die "${LINK_INDEX}"
+
+# Stage 3 - verify the published result (as root the binary is run once); a failure
+# here rolls the whole installation back as well.
+failpoint postcheck || { echo -e "${RED}Error: post-install verification failed.${NC}"; exit 1; }
+if [ "${IS_ROOT}" = true ]; then
+    echo -e "${BLUE}Verifying installed binary...${NC}"
+    if ! "${PLUGIN_DIR}/${BINARY_NAME}" version >/dev/null 2>&1; then
+        echo -e "${RED}Error: Installed binary did not run successfully.${NC}"
+        echo -e "${YELLOW}Fix: Re-run the installer or inspect ${PLUGIN_DIR}/${BINARY_NAME}.${NC}"
+        exit 1
+    fi
+fi
+
+# Commit: the new installation is complete; discard the backups of the old one.
+COMMITTED=1
+for bak in ${ITEM_BAK[@]+"${ITEM_BAK[@]}"}; do
+    [ -z "${bak}" ] || rm -f "${bak}" 2>/dev/null || true
+done
 
 # ── Print result and context-aware next steps ──────────────────────────────────
 echo ""
@@ -358,14 +519,4 @@ else
     echo "  See the full setup guide:"
     echo "     https://github.com/docker-secret-operator/dso/blob/main/docs/getting-started.md"
     echo ""
-fi
-
-# ── Post-install Verification ──────────────────────────────────────────────────
-if [ "${IS_ROOT}" = true ]; then
-    echo -e "${BLUE}Verifying installed binary...${NC}"
-    if ! "${PLUGIN_DIR}/${BINARY_NAME}" version >/dev/null 2>&1; then
-        echo -e "${RED}Error: Installed binary did not run successfully.${NC}"
-        echo -e "${YELLOW}Fix: Re-run the installer or inspect ${PLUGIN_DIR}/${BINARY_NAME}.${NC}"
-        exit 1
-    fi
 fi
