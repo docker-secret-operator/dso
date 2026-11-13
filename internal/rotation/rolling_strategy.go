@@ -3,6 +3,7 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -274,7 +275,14 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("new_container_id", newContainerID),
 		zap.Duration("timeout", timeout))
 
-	if err := WaitHealthy(ctx, rs.cli, newContainerID, timeout); err != nil {
+	readiness, err := WaitReady(ctx, rs.cli, newContainerID, timeout)
+	if err == nil && readiness == ReadinessProcessStable {
+		// Honest reporting: without a HEALTHCHECK only "process stayed running" is
+		// known; application readiness (and thus zero downtime) is NOT established.
+		rs.logger.Warn("Replacement has no HEALTHCHECK: readiness limited to process-running evidence",
+			zap.String("new_container_id", newContainerID))
+	}
+	if err != nil {
 		// Rollback: remove the unhealthy container
 		rs.logger.Warn("Health check failed, rolling back",
 			zap.String("new_container_id", newContainerID),
@@ -288,7 +296,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	// stream succeeded but something removed/overwrote the file) rather than
 	// swapping traffic onto a container missing a secret it needs.
 	for _, fs := range fileSecrets {
-		if err := ExecProbe(ctx, rs.cli, newContainerID, fs.Path, 15*time.Second, 3); err != nil {
+		if err := ExecProbeFiles(ctx, rs.cli, newContainerID, fs.Path, secretFileNames(fs.Data), 15*time.Second, 3); err != nil {
 			rs.logger.Warn("File-mode secret probe failed, rolling back",
 				zap.String("new_container_id", newContainerID),
 				zap.String("path", fs.Path),
@@ -488,4 +496,14 @@ func (rs *RollingStrategy) verifyAtomicSwap(ctx context.Context,
 		zap.String("active_name", originalName))
 
 	return nil
+}
+
+// secretFileNames returns the file names delivered for a FileSecretSpec.
+func secretFileNames(data map[string]string) []string {
+	names := make([]string, 0, len(data))
+	for n := range data {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }

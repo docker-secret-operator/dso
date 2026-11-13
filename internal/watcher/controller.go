@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2230,7 +2231,12 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		return rollBack(fmt.Errorf("executeSimpleRestart: replacement failed health verification: %w", err))
 	}
 	for _, fs := range fileSecrets {
-		if err := rotation.ExecProbe(ctx, r.cli, created.ID, fs.Path, 15*time.Second, 3); err != nil {
+		names := make([]string, 0, len(fs.Data))
+		for n := range fs.Data {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		if err := rotation.ExecProbeFiles(ctx, r.cli, created.ID, fs.Path, names, 15*time.Second, 3); err != nil {
 			r.Logger.Error("Fallback replacement exec probe failed, rolling back to the original container",
 				zap.String("path", fs.Path), zap.Error(err))
 			return rollBack(fmt.Errorf("executeSimpleRestart: file-mode secret probe failed for %s: %w", fs.Path, err))

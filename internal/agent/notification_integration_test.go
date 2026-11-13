@@ -1,3 +1,10 @@
+//go:build dockerint_legacy
+
+// NOTE (M0): starts a container through testcontainers on whatever daemon the
+// environment/default socket selects, so it is excluded from every ordinary build
+// (a plain `go test ./...` without -short used to create containers on the
+// developer daemon). Not guard-compliant yet; tracked under M0-11.
+
 package agent
 
 import (
