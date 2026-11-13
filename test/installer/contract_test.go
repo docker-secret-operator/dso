@@ -61,9 +61,12 @@ func TestContract_SigningIdentityMatchesInstaller(t *testing.T) {
 	if strings.Contains(inst, "certificate-identity-regexp") {
 		t.Error("install.sh must use an exact --certificate-identity")
 	}
-	// Repository named in the installer must be this repository's origin.
-	if !strings.Contains(readRepo(t, ".git/config"), "docker-secret-operator/dso") {
-		t.Log("origin remote differs from install.sh REPO; check the fork/release repo")
+	// Repository named in the installer must be this module's repository. go.mod is
+	// used (not .git/config) so the test also holds in a source archive, which by
+	// design carries no git metadata.
+	repoM := regexp.MustCompile(`(?m)^REPO="?([^"\s]+)"?`).FindStringSubmatch(inst)
+	if repoM == nil || !strings.Contains(readRepo(t, "go.mod"), "module github.com/"+repoM[1]+"\n") {
+		t.Errorf("install.sh REPO %v does not match this module's repository (go.mod)", repoM)
 	}
 	// GoReleaser signs the CHECKSUM file with detached files, in the format install.sh verifies.
 	for _, must := range []string{"artifacts: checksum", "--output-signature=", "--output-certificate=", "--new-bundle-format=false", "--use-signing-config=false"} {
