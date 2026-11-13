@@ -115,6 +115,14 @@ func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secr
 }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
+	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, "/var/lib/dso/state", "/var/lib/dso/locks")
+}
+
+// NewTriggerEngineWithDirs is NewTriggerEngine with explicit state and lock
+// directories. Production uses the /var/lib/dso defaults through
+// NewTriggerEngine; out-of-package integration tests (which cannot reach the
+// engine's unexported context) pass per-test temporary directories.
+func NewTriggerEngineWithDirs(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client, stateDir, lockDir string) (*TriggerEngine, error) {
 	if rw != nil {
 		rw.Cache = cache
 		rw.Config = cfg
@@ -123,7 +131,7 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// Initialize state tracker and lock manager for crash recovery and synchronization
 	// Note: StateTracker is best-effort (optional), but LockManager is CRITICAL for rotation safety
-	stateTracker, err := NewStateTracker("/var/lib/dso/state", logger)
+	stateTracker, err := NewStateTracker(stateDir, logger)
 	if err != nil {
 		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
 			zap.Error(err))
@@ -133,12 +141,12 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// CRITICAL: Lock manager must be initialized. Rotation safety depends on it.
 	// Fail fast if lock manager initialization fails to prevent data corruption.
-	lockManager, err := rotation.NewLockManager("/var/lib/dso/locks", logger)
+	lockManager, err := rotation.NewLockManager(lockDir, logger)
 	if err != nil {
 		logger.Error("CRITICAL: Failed to initialize rotation lock manager - refusing to start",
 			zap.Error(err))
 		logger.Error("Lock manager is REQUIRED for rotation safety. Cannot proceed without it.",
-			zap.String("path", "/var/lib/dso/locks"))
+			zap.String("path", lockDir))
 		cancel()
 		return nil, fmt.Errorf("rotation lock manager initialization failed: %w", err)
 	}

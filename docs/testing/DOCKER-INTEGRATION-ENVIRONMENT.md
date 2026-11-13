@@ -33,9 +33,10 @@ Variables: `DSO_INTEGRATION_TESTS=1`, `DSO_TEST_DOCKER_HOST` (unix:// or tcp://)
 `DSO_TEST_DAEMON_ID`, `DSO_TEST_ENVIRONMENT_ID`, optional `DSO_TEST_RUN_ID`
 (`dso-it-<8-16 hex>`), optional `DSO_TEST_PROHIBITED_DAEMON_IDS` (comma list).
 
-Legacy suite: `test/integration` Docker tests predate the guard and are behind the
-build tag `dockerint_legacy`; they are excluded from every normal build and must not
-be run until migrated (tracked under M0-11).
+Legacy suite: the former `dockerint_legacy` Docker tests (ambient-daemon, `testcontainers`/
+`client.FromEnv`) have all been migrated into `test/docker` behind the guard and
+deleted; no code under that tag remains. Per-test coverage mapping and honest
+compiled/executed status: `docs/testing/LEGACY-DOCKER-TESTS.md`.
 
 ## Environment
 
