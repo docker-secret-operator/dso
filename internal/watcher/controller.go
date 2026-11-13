@@ -1034,6 +1034,18 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			releaseLock()
 		} else if activeStrategy == "rolling" {
 			dispatched++
+			// M0-02: reject BEFORE any mutation when the container cannot run beside
+			// its candidate (Docker-published ports, host networking). The old path
+			// created the candidate, saw the start fail on the port conflict and then
+			// fell back to stopping the healthy container.
+			if eerr := rollingEligibility(inspect); eerr != nil {
+				r.Logger.Error("Rolling rotation rejected before any change",
+					zap.String("id", util.ShortID(target.ID)), zap.Error(eerr))
+				audit.Log(ctx, "rotate", "system", r.resolveSecretProvider(secretName), secretName, target.ID, "failed")
+				recordAsyncErr(eerr)
+				releaseLock()
+				return true
+			}
 			r.Logger.Info("🚀 Executing Zero-Downtime Rolling Rotation", zap.String("id", target.ID))
 			RecordDSOAction(target.ID)
 
