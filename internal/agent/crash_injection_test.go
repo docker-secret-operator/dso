@@ -70,6 +70,37 @@ func runCrashing(t *testing.T, cli *client.Client, st *StateTracker, crashAt str
 	return "", execErr
 }
 
+// crashRouting models the live proxy table at each crash point: before the handoff
+// the proxy routes to the original; from the handoff on it routes to the candidate.
+type crashRouting struct {
+	d     *fakeDaemon
+	point string
+}
+
+func (c crashRouting) ActiveBackends(_ context.Context, _ string) ([]string, bool) {
+	c.d.mu.Lock()
+	defer c.d.mu.Unlock()
+	var original, candidate string
+	for _, x := range c.d.ctrs {
+		if x.id == "o1" {
+			original = x.id
+		}
+		if strings.HasPrefix(x.id, "created-") {
+			candidate = x.id
+		}
+	}
+	switch c.point {
+	case "after_handoff_before_ack", "after_intent_swap", "between_renames", "after_swap_before_commit_ack", "after_swap_committed", "after_intent_cleanup", "after_cleanup_before_ack":
+		if candidate != "" {
+			return []string{candidate}, true
+		}
+	}
+	if original != "" {
+		return []string{original}, true
+	}
+	return nil, true
+}
+
 func owned(d *fakeDaemon) (running []string, all []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -107,11 +138,25 @@ func TestCrashInjection_EveryTransition_RecoveryPreservesAHealthyWorkloadAndIsId
 		{"after_intent_cleanup", expectation{name: "cleanup intent, backup still present", removed: []string{"app_dso_backup_*"}}},
 		{"after_cleanup_before_ack", expectation{name: "backup already removed, completion unacknowledged", removed: nil}},
 	}
-	for _, proxied := range []bool{false, true} {
+	for _, mode := range []string{"unproxied", "proxied-routing-unknown", "proxied-routing-verified"} {
+		proxied := mode != "unproxied"
 		for _, pt := range points {
-			name := pt.point
-			if proxied {
-				name += "/proxied"
+			pt := pt
+			name := pt.point + "/" + mode
+			// Proxied rotations need LIVE routing evidence before anything that might
+			// be serving is retired. Without it (unknown) every workload is preserved
+			// once the handoff intent exists; with it, retirement follows the routing.
+			handoffStarted := map[string]bool{"after_intent_handoff": true, "after_handoff_before_ack": true, "after_intent_swap": true,
+				"between_renames": true, "after_swap_before_commit_ack": true, "after_swap_committed": true, "after_intent_cleanup": true, "after_cleanup_before_ack": true}
+			if mode == "proxied-routing-unknown" && handoffStarted[pt.point] && pt.point != "between_renames" && pt.point != "after_cleanup_before_ack" {
+				pt.expect = expectation{name: pt.expect.name + " (live routing unknown: preserve)", critical: true}
+			}
+			if mode == "proxied-routing-verified" {
+				switch pt.point {
+				case "after_handoff_before_ack", "after_intent_swap":
+					// The proxy already points at the CANDIDATE while the original holds the name.
+					pt.expect = expectation{name: pt.expect.name + " (proxy routes to the candidate: must not remove it)", critical: true}
+				}
 			}
 			t.Run(name, func(t *testing.T) {
 				// A bystander that must never be touched, plus the original workload.
@@ -155,6 +200,9 @@ func TestCrashInjection_EveryTransition_RecoveryPreservesAHealthyWorkloadAndIsId
 				ar := NewAutomaticRecovery(cli, logger, st2)
 				ar.OwnerID = me
 				ar.Timings = &recoveryTimings{healthWait: 0, minStableRunning: 30 * time.Second}
+				if mode == "proxied-routing-verified" {
+					ar.Routing = crashRouting{d: d, point: pt.point}
+				}
 				if err := ar.RecoverFromCrash(context.Background()); err != nil {
 					t.Fatal(err)
 				}
@@ -257,6 +305,7 @@ func TestRecoveryJournal_ProxiedRotationNeedsHandoffEvidenceBeforeRetiringTheOri
 	})
 	t.Run("handoff observed on the holder: the old workload may be retired", func(t *testing.T) {
 		d, f := setup(rotation.TrHandoffDone, "n1")
+		f.ar.Routing = fixedRouting{ids: []string{"n1"}, known: true}
 		f.run()
 		eq(t, "removed", d.removedSorted(), []string{"app_dso_backup_1"})
 	})
@@ -269,6 +318,7 @@ func TestRecoveryJournal_ProxiedRotationNeedsHandoffEvidenceBeforeRetiringTheOri
 	})
 	t.Run("swap intent (only written after the handoff returned) permits retirement", func(t *testing.T) {
 		d, f := setup(rotation.TrIntentSwap, "")
+		f.ar.Routing = fixedRouting{ids: []string{"n1"}, known: true}
 		f.run()
 		eq(t, "removed", d.removedSorted(), []string{"app_dso_backup_1"})
 	})
@@ -355,5 +405,71 @@ func TestJournal_NoPlaintextSecretIsEverPersisted(t *testing.T) {
 	}
 	if strings.Contains(string(b), secret) {
 		t.Fatal("a secret value reached the journal")
+	}
+}
+
+type fixedRouting struct {
+	ids   []string
+	known bool
+}
+
+func (f fixedRouting) ActiveBackends(context.Context, string) ([]string, bool) { return f.ids, f.known }
+
+// The durable handoff acknowledgement is necessary but NOT sufficient: the proxy may
+// have restarted or been reconfigured since. Live routing decides.
+func TestRecoveryRouting_LiveStateOverridesDurableHandoffEvidence(t *testing.T) {
+	ctx := context.Background()
+	build := func(r RoutingVerifier) (*fakeDaemon, *recFixture) {
+		old := artifact("o1", "app_dso_backup_1")
+		old.labels = map[string]string{"dso.host_ports": "8080:80"}
+		cand := healthy("n1", "app")
+		cand.labels = map[string]string{rotation.LabelRotationID: "rot-r", "dso.host_ports": "8080:80"}
+		d := newFakeDaemon(old, cand)
+		f := newRec(t, d, "-")
+		for _, e := range []rotation.JournalEvent{
+			{RotationID: "rot-r", ServiceID: "app", Transition: rotation.TrIntentCreateCandidate, OriginalIDs: []string{"o1"}},
+			{RotationID: "rot-r", Transition: rotation.TrCandidateCreated, CandidateIDs: []string{"n1"}},
+			{RotationID: "rot-r", Transition: rotation.TrIntentHandoff, ExpectedProxyTarget: "n1"},
+			{RotationID: "rot-r", Transition: rotation.TrHandoffDone, ObservedProxyTarget: "n1"},
+			{RotationID: "rot-r", Transition: rotation.TrSwapCommitted},
+		} {
+			if err := f.st.Record(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.ar.Routing = r
+		return d, f
+	}
+	cases := []struct {
+		name   string
+		r      RoutingVerifier
+		remove bool
+	}{
+		{"journal says committed but routing cannot be inspected", fixedRouting{known: false}, false},
+		{"no verifier at all", nil, false},
+		{"proxy restarted and lost its table (empty, known)", fixedRouting{ids: nil, known: true}, false},
+		{"proxy still points at the ORIGINAL", fixedRouting{ids: []string{"o1"}, known: true}, false},
+		{"proxy points at an UNEXPECTED workload", fixedRouting{ids: []string{"stranger"}, known: true}, false},
+		{"proxy points at both candidate and original", fixedRouting{ids: []string{"n1", "o1"}, known: true}, false},
+		{"proxy points only at the candidate", fixedRouting{ids: []string{"n1"}, known: true}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, f := build(c.r)
+			f.run()
+			if c.remove {
+				eq(t, "removed", d.removedSorted(), []string{"app_dso_backup_1"})
+				if f.status() != "recovered" {
+					t.Fatalf("status %s", f.status())
+				}
+				return
+			}
+			if len(d.removed) != 0 {
+				t.Fatalf("live routing does not clearly favour the holder: nothing may be removed, got %v", d.removed)
+			}
+			if f.status() != "critical_error" {
+				t.Fatalf("preserved workloads must leave the rotation flagged for manual recovery, got %s", f.status())
+			}
+		})
 	}
 }

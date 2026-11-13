@@ -87,6 +87,23 @@ Docker is authoritative for *what exists*; the journal is authoritative for *wha
 
 **Fault injection.** `RollingStrategy.FaultHook` (nil in production; set only by tests, it is a Go field, not an API) is called at named points; tests panic from it to model the process dying there. `internal/agent/crash_injection_test.go` runs the real strategy against a stateful fake daemon with the real tracker as journal, "restarts" by loading the journal from disk in a new tracker, runs the real recovery, and asserts per point: a healthy workload survives, unmanaged and foreign containers are untouched, exactly the permitted containers are removed, the rotation ends recovered or critical as expected, and repeated recovery changes nothing. Points: after_intent_create_candidate, after_candidate_create_before_ack, after_secret_delivery, after_start_before_verify, after_candidate_verified, after_intent_handoff, after_handoff_before_ack, after_intent_swap, between_renames, after_swap_before_commit_ack, after_swap_committed, after_intent_cleanup, after_cleanup_before_ack (the two handoff points exist only on the proxied path).
 
+### 3a. Live routing reconciliation (added after review)
+
+A journalled handoff acknowledgement proves the proxy was switched *at some point*; the proxy may since have restarted, lost its in-memory table or been reconfigured. For a **proxied** rotation (one that journalled an expected proxy target) recovery therefore also needs the LIVE routing state through `RoutingVerifier.ActiveBackends`:
+
+| Live routing | Retire the ORIGINAL | Retire the CANDIDATE |
+|---|---|---|
+| cannot be established / no verifier | **preserve both** | **preserve both** |
+| holder receives traffic, artifact does not | allowed | (n/a) |
+| original (holder) receives traffic, candidate does not | (n/a) | allowed |
+| proxy still reaches the artifact, or an unexpected/empty set | **preserve** | **preserve** |
+
+Preserved workloads leave the rotation `critical_error` (manual recovery), they are never reported "recovered". A rotation that never reached the handoff intent never routed traffic to its candidate, so only the name-holder rule applies to it.
+
+**The agent does not yet wire a real `RoutingVerifier`**: the proxy is in-process and empty at the moment recovery runs, so on a real agent every *interrupted proxied* rotation currently ends in preserve + manual recovery. That is deliberately conservative, not a claim of automated recovery; providing a live proxy introspection hook is the follow-up that would let those cases self-heal.
+
+**Unproxied rotations:** a healthy container holding the real name is the only signal DSO has. It is not proof that external service discovery, a load balancer or DNS sends it traffic, and DSO cannot verify that.
+
 ## 4. What is NOT done (honest limits)
 
 * **Real process kill, real Docker, continuous traffic: UNVERIFIED.** The crash tests use a fake daemon in-process. The guarded real-daemon tests in `test/docker/recovery_test.go` build post-crash layouts but do not kill a DSO process mid-rotation, and no traffic is generated across a rotation. Prepared for the disposable VM, not run.

@@ -99,6 +99,11 @@ type AutomaticRecovery struct {
 
 	// Timings overrides the default health/stability waits (tests).
 	Timings *recoveryTimings
+
+	// Routing, when set, lets recovery verify LIVE traffic routing for proxied
+	// services. Nil means routing is unknown, in which case recovery preserves
+	// every workload of a proxied rotation (fail closed).
+	Routing RoutingVerifier
 }
 
 // SetOwnerID wires this agent's dso.owner identity into the recovery/cleanup
@@ -134,6 +139,16 @@ func NewAutomaticRecovery(cli *client.Client, logger *zap.Logger, st *StateTrack
 		logger: logger,
 		st:     st,
 	}
+}
+
+// RoutingVerifier reports which backends currently receive traffic for a service.
+// known=false means routing CANNOT be established (proxy restarted and lost its
+// state, cannot be inspected, ...). A journalled handoff acknowledgement proves only
+// that the proxy was switched at some point; the proxy may have restarted, lost its
+// in-memory configuration or been reconfigured since, so recovery re-checks the live
+// state before retiring anything that might still be serving.
+type RoutingVerifier interface {
+	ActiveBackends(ctx context.Context, serviceID string) (ids []string, known bool)
 }
 
 // recoveryTimings are injectable so tests do not wait.
@@ -268,7 +283,25 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 
 	// Retire redundant artifacts (only those with a verified healthy holder).
 	removed, kept := ar.retireSafeArtifacts(ctx, logger)
-	preserved = append(preserved, kept...)
+	// Artifacts of THIS rotation's service that had to be preserved (live routing
+	// unknown, journal does not authorise, holder not proven) leave the rotation
+	// unresolved: the operator must be told, not shown "recovered".
+	relevant := map[string]bool{rotation.ServiceID: rotation.ServiceID != ""}
+	for _, id := range ids {
+		if insp, err := ar.cli.ContainerInspect(ctx, id); err == nil {
+			if b, _, ok := artifactBase(strings.TrimPrefix(insp.Name, "/")); ok {
+				relevant[b] = true
+			} else {
+				relevant[strings.TrimPrefix(insp.Name, "/")] = true
+			}
+		}
+	}
+	for _, k := range kept {
+		if relevant[k.base] {
+			allResolved = false
+			preserved = append(preserved, k.text)
+		}
+	}
 
 	if !allResolved {
 		manual("no verified healthy workload could be established for every original container", preserved)
@@ -428,7 +461,7 @@ func (ar *AutomaticRecovery) journalRecordFor(id string, labels map[string]strin
 //     handoff returned).
 //   - Retiring a CANDIDATE: the holder must be one of the journalled originals (the
 //     previously active workload is still serving).
-func (ar *AutomaticRecovery) journalPermits(artifactID string, artifactLabels map[string]string, holderID string, holderLabels map[string]string) (string, bool) {
+func (ar *AutomaticRecovery) journalPermits(ctx context.Context, artifactID string, artifactLabels map[string]string, holderID string, holderLabels map[string]string) (string, bool) {
 	rec := ar.journalRecordFor(artifactID, artifactLabels)
 	if rec == nil || rec.Seq == 0 {
 		if artifactLabels["dso.host_ports"] != "" && (rec == nil || rec.Seq == 0) {
@@ -454,14 +487,43 @@ func (ar *AutomaticRecovery) journalPermits(artifactID string, artifactLabels ma
 				return "no durable evidence that traffic was handed to the healthy holder", false
 			}
 		}
-		return "", true
+		return ar.liveRouting(ctx, rec, artifactID, holderID, "original")
 	case isCandidate:
 		if !idIn(rec.OriginalIDs(), holderID) {
 			return "the healthy name holder is not the journalled original", false
 		}
-		return "", true
+		return ar.liveRouting(ctx, rec, artifactID, holderID, "candidate")
 	}
 	return "artifact is not part of its journal record", false
+}
+
+// liveRouting applies the live-routing requirement for PROXIED rotations (those
+// that journalled an expected proxy target). The artifact may only be retired when
+// routing is positively established: the holder is receiving traffic and the
+// artifact is not. If routing cannot be established, or still reaches the artifact,
+// both workloads are preserved. A rotation that never reached the handoff intent
+// (empty ExpectedProxyTarget) never routed traffic to its candidate, so only the
+// name-holder rule applies. For UNPROXIED services DSO has no routing signal at all:
+// a healthy container holding the name is NOT proof that external service discovery
+// or a load balancer sends it traffic; that limit is documented, not hidden.
+func (ar *AutomaticRecovery) liveRouting(ctx context.Context, rec *RotationState, artifactID, holderID, role string) (string, bool) {
+	if rec.ExpectedProxyTarget == "" {
+		return "", true
+	}
+	if ar.Routing == nil {
+		return "live proxy routing cannot be established (no routing verifier): preserving potentially active workloads", false
+	}
+	ids, known := ar.Routing.ActiveBackends(ctx, rec.ServiceID)
+	if !known {
+		return "live proxy routing cannot be established: preserving potentially active workloads", false
+	}
+	if !idIn(ids, holderID) {
+		return "the healthy name holder is not receiving traffic according to the live proxy state", false
+	}
+	if idIn(ids, artifactID) {
+		return "the live proxy still routes to the " + role + " that would be retired", false
+	}
+	return "", true
 }
 
 // artifactBase splits a rotation-artifact name into the real service name and the
@@ -483,7 +545,9 @@ func artifactBase(cleanName string) (base, kind string, ok bool) {
 // verified healthy real-name holder, and ONLY those. Each candidate is
 // re-inspected immediately before removal (identity, ownership, name) and the
 // holder is re-verified. Everything else is preserved and returned for reporting.
-func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *zap.Logger) (removed int, preserved []string) {
+type keptArtifact struct{ base, text string }
+
+func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *zap.Logger) (removed int, preserved []keptArtifact) {
 	list, err := ar.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		logger.Error("Failed to list containers for artifact retirement; nothing removed", zap.Error(err))
@@ -509,23 +573,23 @@ func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *za
 			if !ok {
 				logger.Warn("Preserving rotation artifact: no verified healthy workload holds the real name",
 					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName), zap.String("reason", why))
-				preserved = append(preserved, cleanName+"("+why+")")
+				preserved = append(preserved, keptArtifact{base, cleanName + "(" + why + ")"})
 				break
 			}
-			if why, permitted := ar.journalPermits(c.ID, c.Labels, holderID, byID[holderID].Labels); !permitted {
+			if why, permitted := ar.journalPermits(ctx, c.ID, c.Labels, holderID, byID[holderID].Labels); !permitted {
 				logger.Warn("Preserving rotation artifact: the transition journal does not establish that retiring it is safe",
 					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName), zap.String("reason", why))
-				preserved = append(preserved, cleanName+"("+why+")")
+				preserved = append(preserved, keptArtifact{base, cleanName + "(" + why + ")"})
 				break
 			}
 			// Re-verify identity right before the destructive step.
 			insp, ierr := ar.cli.ContainerInspect(ctx, c.ID)
 			if ierr != nil || strings.TrimPrefix(insp.Name, "/") != cleanName || insp.Config == nil || !ar.ownedByMe(insp.Config.Labels) {
-				preserved = append(preserved, cleanName+"(identity changed)")
+				preserved = append(preserved, keptArtifact{base, cleanName + "(identity changed)"})
 				break
 			}
 			if again, why := ar.holderHealthy(ctx, base, c.ID); !again {
-				preserved = append(preserved, cleanName+"("+why+")")
+				preserved = append(preserved, keptArtifact{base, cleanName + "(" + why + ")"})
 				break
 			}
 			logger.Info("Retiring redundant rotation artifact (a verified healthy workload holds the real name)",
@@ -533,7 +597,7 @@ func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *za
 			_ = ar.cli.ContainerStop(ctx, c.ID, container.StopOptions{})
 			if rerr := ar.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); rerr != nil {
 				logger.Warn("Failed to remove artifact", zap.String("container_id", shortID(c.ID)), zap.Error(rerr))
-				preserved = append(preserved, cleanName+"(removal failed)")
+				preserved = append(preserved, keptArtifact{base, cleanName + "(removal failed)"})
 			} else {
 				removed++
 			}
