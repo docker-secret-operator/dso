@@ -19,13 +19,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/docker-secret-operator/dso/test/dockerguard"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -83,31 +83,29 @@ func (c *fakeCache) set(value string) {
 	c.data[providerName+":"+secretName] = map[string]string{"value": value}
 }
 
+// TestMain installs the isolation guard: with DSO_INTEGRATION_TESTS unset every
+// scenario skips without a Docker client; with it set, the daemon identity is
+// verified once before any scenario runs and the package FAILS if it cannot be.
+func TestMain(m *testing.M) { dockerguard.Main(m) }
+
+// dockerClient returns the guard-verified client for the designated test
+// daemon. It never consults DOCKER_HOST, DOCKER_CONTEXT or the default socket.
 func dockerClient(t *testing.T) *client.Client {
 	t.Helper()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Fatalf("docker client: %v", err)
-	}
-	t.Cleanup(func() { _ = cli.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Fatalf("Docker daemon not reachable (these scenarios require one): %v", err)
-	}
-	return cli
+	return dockerguard.Current(t).Client
 }
 
-func runCmd(t *testing.T, name string, args ...string) string {
+// dockerCmd runs the docker CLI against the verified test endpoint only.
+func dockerCmd(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := dockerguard.Current(t).Docker(t, args...)
 	if err != nil {
 		// Redact synthetic secret values (e.g. `-e APP_TOKEN=...`) so the
 		// workflow's leak scan only ever trips on a real product leak.
 		redact := func(v string) string { return strings.ReplaceAll(v, sentinel, "<redacted>") }
-		t.Fatalf("%s %s: %v\n%s", name, redact(strings.Join(args, " ")), err, redact(string(out)))
+		t.Fatalf("docker %s: %v\n%s", redact(strings.Join(args, " ")), err, redact(out))
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // uniqueName returns a per-test name so runs never collide.
@@ -205,7 +203,9 @@ func rotate(t *testing.T, r *watcher.ReloaderController) {
 func runWorkload(t *testing.T, strategy, runLabel string) (id, name string) {
 	t.Helper()
 	name = uniqueName(t, "dso-it-"+strategy)
-	id = runCmd(t, "docker", "run", "-d", "--name", name,
+	args := []string{"run", "-d", "--name", name}
+	args = append(args, dockerguard.Current(t).LabelArgs()...)
+	args = append(args,
 		"--label", "dso.reloader=true",
 		"--label", "dso.owner="+ownerID,
 		"--label", "dso.secrets="+secretName,
@@ -213,6 +213,7 @@ func runWorkload(t *testing.T, strategy, runLabel string) (id, name string) {
 		"--label", "dso.it.run="+runLabel,
 		"-e", envName+"="+syntheticValue("v1"),
 		testImage, "sh", "-c", workloadScript)
+	id = dockerCmd(t, args...)
 	return id, name
 }
 
@@ -268,6 +269,11 @@ func writeCompose(t *testing.T, project string, ownerLabel bool) string {
 	if ownerLabel {
 		owner = "      dso.owner: \"" + ownerID + "\"\n"
 	}
+	sess := dockerguard.Current(t)
+	guardLabels := ""
+	for k, v := range sess.Labels() {
+		guardLabels += fmt.Sprintf("      %s: %q\n", k, v)
+	}
 	yaml := fmt.Sprintf(`services:
   web:
     image: %s
@@ -275,16 +281,16 @@ func writeCompose(t *testing.T, project string, ownerLabel bool) string {
     environment:
       %s: %q
     labels:
-      dso.reloader: "true"
+%s      dso.reloader: "true"
       dso.secrets: %q
       dso.update.strategy: "restart"
-%s`, testImage, workloadScript, envName, syntheticValue("v1"), secretName, owner)
+%s`, testImage, workloadScript, envName, syntheticValue("v1"), guardLabels, secretName, owner)
 	path := filepath.Join(dir, "compose.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "compose", "-p", project, "-f", path, "down", "-v", "--remove-orphans", "-t", "2").Run()
+		_, _ = sess.Docker(t, "compose", "-p", project, "-f", path, "down", "-v", "--remove-orphans", "-t", "2")
 	})
 	return path
 }
@@ -292,7 +298,7 @@ func writeCompose(t *testing.T, project string, ownerLabel bool) string {
 // composeService resolves the single `web` container of a Compose project.
 func composeService(t *testing.T, cli *client.Client, project, path string) (id, name string) {
 	t.Helper()
-	ids := strings.Fields(runCmd(t, "docker", "compose", "-p", project, "-f", path, "ps", "-q", "web"))
+	ids := strings.Fields(dockerCmd(t, "compose", "-p", project, "-f", path, "ps", "-q", "web"))
 	if len(ids) != 1 {
 		t.Fatalf("expected exactly one web container in %s, got %v", project, ids)
 	}
@@ -315,8 +321,8 @@ func TestS1_ComposeServiceAdoption(t *testing.T) {
 	unowned := uniqueName(t, "dso-it-s1-unowned")
 	ownedPath := writeCompose(t, owned, true)
 	unownedPath := writeCompose(t, unowned, false)
-	runCmd(t, "docker", "compose", "-p", owned, "-f", ownedPath, "up", "-d", "--wait")
-	runCmd(t, "docker", "compose", "-p", unowned, "-f", unownedPath, "up", "-d", "--wait")
+	dockerCmd(t, "compose", "-p", owned, "-f", ownedPath, "up", "-d", "--wait")
+	dockerCmd(t, "compose", "-p", unowned, "-f", unownedPath, "up", "-d", "--wait")
 	ownedID, _ := composeService(t, cli, owned, ownedPath)
 	unownedID, _ := composeService(t, cli, unowned, unownedPath)
 
@@ -342,7 +348,7 @@ func TestS2_EnvSecretInjection(t *testing.T) {
 
 	project := uniqueName(t, "dso-it-s2")
 	path := writeCompose(t, project, true)
-	runCmd(t, "docker", "compose", "-p", project, "-f", path, "up", "-d", "--wait")
+	dockerCmd(t, "compose", "-p", project, "-f", path, "up", "-d", "--wait")
 	oldID, oldName := composeService(t, cli, project, path)
 
 	r := startController(t, cache)
@@ -408,8 +414,8 @@ func TestS3_RotationStrategies(t *testing.T) {
 		// trap's marker with a deadline.
 		deadline := time.Now().Add(15 * time.Second)
 		for {
-			out, err := exec.Command("docker", "exec", id, "cat", "/tmp/dso-hup").CombinedOutput()
-			if err == nil && strings.TrimSpace(string(out)) == "hup" {
+			out, err := dockerguard.Current(t).Docker(t, "exec", id, "cat", "/tmp/dso-hup")
+			if err == nil && strings.TrimSpace(out) == "hup" {
 				return
 			}
 			if time.Now().After(deadline) {

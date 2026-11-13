@@ -56,10 +56,20 @@ jobs:
       - name: Pull scenario image
         run: docker pull busybox:1.36.1
 
+      # The integration suites refuse to touch any daemon that is not
+      # provisioned as the designated test environment (test/dockerguard).
+      # A GitHub-hosted runner is a disposable VM, so it may be provisioned
+      # here; the bootstrap refuses on any other kind of host.
+      - name: Provision designated test environment
+        run: sudo env DSO_BOOTSTRAP_DISPOSABLE_VM=yes GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" ./scripts/integration/bootstrap-test-vm.sh --ci-ephemeral
+
       - name: Run S1-S3
+        env:
+          DSO_IT_ARTIFACTS: artifacts/it
+          DSO_IT_TIMEOUT: 20m
         run: |
           set -o pipefail
-          go test -tags dockerint -v -count=1 -timeout 20m ./test/docker/... 2>&1 | tee test.log
+          ./scripts/integration/run-integration.sh 2>&1 | tee test.log
 
       - name: Collect Docker state on failure
         if: failure()

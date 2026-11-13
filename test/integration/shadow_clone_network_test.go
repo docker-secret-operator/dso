@@ -1,3 +1,11 @@
+//go:build dockerint_legacy
+
+// NOTE (M0): this suite predates the integration isolation guard
+// (test/dockerguard). It talks to whatever Docker daemon the environment or
+// the default socket selects, so it is excluded from every ordinary build and
+// must NOT be run until it is migrated to dockerguard (tracked under M0-11).
+// Build tag: dockerint_legacy.
+
 package integration
 
 import (
