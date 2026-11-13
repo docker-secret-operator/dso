@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker/docker/api/types/container"
@@ -195,6 +196,7 @@ func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 		return nil
 	}
 	ar.logger.Warn("Detected unfinished rotations, performing safe recovery", zap.Int("count", len(pending)))
+	faultinject.Hit("recovery:start")
 
 	for _, rotation := range pending {
 		ar.recoverSingleRotation(ctx, rotation)
@@ -621,12 +623,14 @@ func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *za
 			}
 			logger.Info("Retiring redundant rotation artifact (a verified healthy workload holds the real name)",
 				zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName))
+			faultinject.Hit("recovery:before_retire_artifact")
 			_ = ar.cli.ContainerStop(ctx, c.ID, container.StopOptions{})
 			if rerr := ar.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); rerr != nil {
 				logger.Warn("Failed to remove artifact", zap.String("container_id", shortID(c.ID)), zap.Error(rerr))
 				preserved = append(preserved, keptArtifact{base, cleanName + "(removal failed)"})
 			} else {
 				removed++
+				faultinject.Hit("recovery:after_retire_artifact")
 			}
 			break
 		}

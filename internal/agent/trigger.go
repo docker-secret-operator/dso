@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/providers"
 	"github.com/docker-secret-operator/dso/internal/rotation"
@@ -121,7 +122,16 @@ const (
 )
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
-	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, defaultTriggerStateDir, defaultTriggerLockDir)
+	stateDir, lockDir := defaultTriggerStateDir, defaultTriggerLockDir
+	// Test-only (-tags dsofault): per-test directories for the real-process crash
+	// harness. In a normal build Param never overrides anything.
+	if v, ok := faultinject.Param("state_dir"); ok {
+		stateDir = v
+	}
+	if v, ok := faultinject.Param("lock_dir"); ok {
+		lockDir = v
+	}
+	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, stateDir, lockDir)
 }
 
 // NewTriggerEngineWithDirs is NewTriggerEngine with explicit state and lock

@@ -10,6 +10,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 )
 
 // RollingStrategy coordinates the zero-downtime rotation lifecycle with atomic guarantees
@@ -80,6 +82,8 @@ func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *Rolli
 }
 
 func (rs *RollingStrategy) fault(point string) {
+	// Real-process crash harness: a no-op unless built with -tags dsofault.
+	faultinject.Hit("rolling:" + point)
 	if rs.FaultHook != nil {
 		rs.FaultHook(point)
 	}
@@ -129,6 +133,7 @@ func (rs *RollingStrategy) discardShadow(ctx context.Context, shadowID, shadowNa
 	cctx, cancel := CleanupContext(ctx)
 	defer cancel()
 	rs.ack(cctx, JournalEvent{Transition: TrIntentRollback, CandidateIDs: []string{shadowID}, Detail: "discarding the not-yet-promoted candidate; the original is untouched"})
+	rs.fault("after_intent_rollback")
 	defer rs.ack(cctx, JournalEvent{Transition: TrRolledBack, CandidateIDs: []string{shadowID}})
 	if stop {
 		if err := rs.cli.ContainerStop(cctx, shadowID, container.StopOptions{}); err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 )
 
@@ -346,9 +347,11 @@ func (st *StateTracker) persistState() error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("failed to close state file: %w", err)
 	}
+	faultinject.Hit("state:before_persist_rename")
 	if err := os.Rename(tmpFile, stateFile); err != nil {
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
+	faultinject.Hit("state:after_persist_rename")
 	if d, err := os.Open(st.stateDir); err == nil { // #nosec G304 -- agent state dir
 		_ = d.Sync()
 		_ = d.Close()

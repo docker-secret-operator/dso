@@ -15,6 +15,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/audit"
 	"github.com/docker-secret-operator/dso/internal/core"
 	eventqueue "github.com/docker-secret-operator/dso/internal/events"
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/strategy"
@@ -105,6 +106,8 @@ type ReloaderController struct {
 }
 
 func (r *ReloaderController) fault(point string) {
+	// Real-process crash harness: a no-op unless built with -tags dsofault.
+	faultinject.Hit(point)
 	if r.FaultHook != nil {
 		r.FaultHook(point)
 	}

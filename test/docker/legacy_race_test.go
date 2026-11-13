@@ -6,7 +6,9 @@ package docker
 // (M0-11): TestRace_ContainerClone_ConcurrentMutations and
 // TestRace_ContainerRename_AtomicSwap. The other two original tests
 // (DebounceWindow_ConcurrentUpdates, SocketPermission_Concurrent) never touched
-// Docker; see docs/testing/LEGACY-DOCKER-TESTS.md for where they went.
+// Docker; see docs/testing/LEGACY-DOCKER-TESTS.md for where they went
+// (SocketPermission_Concurrent was retired here and replaced by Docker-free
+// regression tests in internal/agent/socket_permission_race_test.go).
 //
 // Fixed names ("test-race-base", "atomic-test", "atomic-test_new",
 // "atomic-test_backup") and the pre-run `ContainerRemove` of those fixed names are
@@ -179,12 +181,4 @@ func TestRace_ContainerRename_AtomicSwap(t *testing.T) {
 			t.Errorf("container %s is not running after the swap (err=%v)", id[:12], err)
 		}
 	}
-}
-
-// Original: TestRace_SocketPermission_Concurrent. The original contained no
-// assertion at all (it logged that the test "would require full infrastructure
-// setup"). It is kept as an explicit SKIP rather than a vacuous PASS so the gap is
-// visible; nothing could be preserved because nothing was asserted.
-func TestRace_SocketPermission_Concurrent(t *testing.T) {
-	t.Skip("placeholder carried over from the legacy suite: it asserted nothing; concurrent socket-permission coverage is NOT provided (tracked in docs/testing/LEGACY-DOCKER-TESTS.md)")
 }

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/backend/env"
 	"github.com/docker-secret-operator/dso/pkg/backend/file"
@@ -46,6 +47,11 @@ func validatePluginPath(path string) error {
 		"/var/lib/dso/plugins",
 		"/usr/local/lib/dso/plugins",
 		"/etc/dso/plugins",
+	}
+	// Test-only (-tags dsofault): the real-process crash harness installs the
+	// plugin under a per-test directory. A normal build never adds a directory.
+	if d, ok := faultinject.Param("plugin_dir"); ok {
+		allowedDirs = append(allowedDirs, d)
 	}
 
 	isAllowed := false
