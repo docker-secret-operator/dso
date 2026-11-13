@@ -114,8 +114,14 @@ func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secr
 	}
 }
 
+// Production state and lock directories. Pinned by TestTriggerEngine_DefaultDirsPinned.
+const (
+	defaultTriggerStateDir = "/var/lib/dso/state"
+	defaultTriggerLockDir  = "/var/lib/dso/locks"
+)
+
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
-	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, "/var/lib/dso/state", "/var/lib/dso/locks")
+	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, defaultTriggerStateDir, defaultTriggerLockDir)
 }
 
 // NewTriggerEngineWithDirs is NewTriggerEngine with explicit state and lock
