@@ -10,9 +10,27 @@ import (
 	"time"
 )
 
+// newFastReactor builds the real reactor with SHORT timing windows injected through
+// its fields. Production values (5 s batch tick, 1 s dedup window) are unchanged in
+// NewEventReactorImpl; tests exercise the same logic without waiting for them.
+func newFastReactor(trigger RotationTrigger) *EventReactorImpl {
+	r := NewEventReactorImpl(trigger)
+	r.batchTimeout = 40 * time.Millisecond
+	r.dedupWindow = 300 * time.Millisecond
+	return r
+}
+
+// TestNewEventReactorImpl_ProductionTimingsAreUnchanged pins the production windows.
+func TestNewEventReactorImpl_ProductionTimingsAreUnchanged(t *testing.T) {
+	r := NewEventReactorImpl(func(context.Context, string, EventPriority) error { return nil })
+	if r.batchTimeout != 5*time.Second || r.dedupWindow != time.Second {
+		t.Fatalf("production timings changed: batch=%s dedup=%s", r.batchTimeout, r.dedupWindow)
+	}
+}
+
 // TestEventReactorImpl_ProcessSecretEvent_Enqueue tests basic event enqueuing
 func TestEventReactorImpl_ProcessSecretEvent_Enqueue(t *testing.T) {
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		return nil
 	})
 
@@ -42,7 +60,7 @@ func TestEventReactorImpl_ProcessSecretEvent_Enqueue(t *testing.T) {
 // daemon's lifetime. This verifies deduplicateSecret opportunistically evicts
 // entries older than lastSeenEvictionAge while keeping recent ones.
 func TestEventReactorImpl_LastSeenEviction(t *testing.T) {
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		return nil
 	})
 
@@ -75,7 +93,7 @@ func TestEventReactorImpl_LastSeenEviction(t *testing.T) {
 // TestEventReactorImpl_Deduplication_1sWindow tests that duplicate events within 1s are deduplicated
 func TestEventReactorImpl_Deduplication_1sWindow(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
 	})
@@ -101,7 +119,7 @@ func TestEventReactorImpl_Deduplication_1sWindow(t *testing.T) {
 		t.Fatalf("second ProcessSecretEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second) // Wait for batch processing
+	time.Sleep(500 * time.Millisecond) // Wait for batch processing
 
 	// Should only process once (second is deduplicated)
 	finalCount := atomic.LoadInt32(&callCount)
@@ -115,7 +133,7 @@ func TestEventReactorImpl_PriorityOrdering(t *testing.T) {
 	var callOrder []string
 	var mu sync.Mutex
 
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		mu.Lock()
 		callOrder = append(callOrder, secretName)
 		mu.Unlock()
@@ -144,7 +162,7 @@ func TestEventReactorImpl_PriorityOrdering(t *testing.T) {
 		Timestamp:  time.Now(),
 	})
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// Should process in order: Critical, High, Low
 	mu.Lock()
@@ -171,7 +189,7 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 	var batchTimestamps []time.Time
 	var mu sync.Mutex
 
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		mu.Lock()
 		batchTimestamps = append(batchTimestamps, time.Now())
 		mu.Unlock()
@@ -196,7 +214,7 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 		}
 	}
 
-	time.Sleep(12 * time.Second) // Wait for both batches (5s + processing overhead)
+	time.Sleep(900 * time.Millisecond) // Wait for both batches (5s + processing overhead)
 
 	// Should have processed all 7
 	finalCount := atomic.LoadInt32(&callCount)
@@ -217,7 +235,7 @@ func TestEventReactorImpl_Batching_5sWindow(t *testing.T) {
 // TestEventReactorImpl_ProcessContainerEvent tests container event processing
 func TestEventReactorImpl_ProcessContainerEvent(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
 	})
@@ -243,7 +261,7 @@ func TestEventReactorImpl_ProcessContainerEvent(t *testing.T) {
 		t.Fatalf("ProcessContainerEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	finalCount := atomic.LoadInt32(&callCount)
 	if finalCount < 1 {
@@ -253,7 +271,7 @@ func TestEventReactorImpl_ProcessContainerEvent(t *testing.T) {
 
 // TestEventReactorImpl_IsHealthy tests health check based on last event time
 func TestEventReactorImpl_IsHealthy(t *testing.T) {
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		return nil
 	})
 
@@ -277,7 +295,7 @@ func TestEventReactorImpl_IsHealthy(t *testing.T) {
 		t.Fatalf("ProcessSecretEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second) // Wait for batch processing
+	time.Sleep(500 * time.Millisecond) // Wait for batch processing
 
 	// After event processing, should be healthy
 	if !reactor.IsHealthy() {
@@ -288,7 +306,7 @@ func TestEventReactorImpl_IsHealthy(t *testing.T) {
 // TestEventReactorImpl_ConcurrentAccess tests thread-safety
 func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
 	})
@@ -318,7 +336,7 @@ func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
-	time.Sleep(6 * time.Second) // Let last batch process
+	time.Sleep(500 * time.Millisecond) // Let last batch process
 
 	// Should complete without panic
 	// TEST-1: was t.Logf. 250 events are enqueued above, so at least one
@@ -332,7 +350,7 @@ func TestEventReactorImpl_ConcurrentAccess(t *testing.T) {
 // TestEventReactorImpl_CallbackError_Continues tests that processing continues even on callback errors
 func TestEventReactorImpl_CallbackError_Continues(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		if secretName == "fail-secret" {
 			return errors.New("simulated error")
@@ -362,7 +380,7 @@ func TestEventReactorImpl_CallbackError_Continues(t *testing.T) {
 		Timestamp:  time.Now(),
 	})
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// Should have called all 3 despite one error
 	finalCount := atomic.LoadInt32(&callCount)
@@ -374,7 +392,7 @@ func TestEventReactorImpl_CallbackError_Continues(t *testing.T) {
 // TestEventReactorImpl_MultipleStartCalls tests that Start is idempotent
 func TestEventReactorImpl_MultipleStartCalls(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
 	})
@@ -399,7 +417,7 @@ func TestEventReactorImpl_MultipleStartCalls(t *testing.T) {
 		t.Fatalf("ProcessSecretEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	_ = reactor.Stop(context.Background())
 
@@ -412,7 +430,7 @@ func TestEventReactorImpl_MultipleStartCalls(t *testing.T) {
 // TestEventReactorImpl_DeduplicationWindow_Expiry tests that deduplication window expires after 1s
 func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 	callCount := int32(0)
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
 	})
@@ -442,10 +460,10 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 		t.Fatalf("second ProcessSecretEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second) // Wait for batch
+	time.Sleep(500 * time.Millisecond) // Wait for batch
 
 	// After 1s+ from first event, should process
-	time.Sleep(1 * time.Second) // Now 1.1s from first event
+	time.Sleep(450 * time.Millisecond) // Now 1.1s from first event
 
 	// Third event after 1s window (should be processed)
 	err = reactor.ProcessSecretEvent(context.Background(), event)
@@ -453,7 +471,7 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 		t.Fatalf("third ProcessSecretEvent failed: %v", err)
 	}
 
-	time.Sleep(6 * time.Second) // Wait for another batch
+	time.Sleep(500 * time.Millisecond) // Wait for another batch
 
 	// Should have processed first and third events (second was deduplicated)
 	finalCount := atomic.LoadInt32(&callCount)
@@ -464,7 +482,7 @@ func TestEventReactorImpl_DeduplicationWindow_Expiry(t *testing.T) {
 
 // TestEventReactorImpl_EmptyEvent tests handling of empty/zero-value events
 func TestEventReactorImpl_EmptyEvent(t *testing.T) {
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		return nil
 	})
 
@@ -494,7 +512,7 @@ func TestEventReactorImpl_QueueMaxBatch(t *testing.T) {
 	var timestamps []time.Time
 	var mu sync.Mutex
 
-	reactor := NewEventReactorImpl(func(ctx context.Context, secretName string, priority EventPriority) error {
+	reactor := newFastReactor(func(ctx context.Context, secretName string, priority EventPriority) error {
 		mu.Lock()
 		defer mu.Unlock()
 		timestamps = append(timestamps, time.Now())
