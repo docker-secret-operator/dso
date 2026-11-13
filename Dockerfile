@@ -18,7 +18,11 @@ RUN go mod download
 # source. CI (.github/workflows/ci.yml "webui" job) enforces that sync by
 # regenerating assets/ and diffing against git. Do not add
 # internal/webui/assets/ to .gitignore or exclude it via .dockerignore.
-COPY . .
+# [M0-09] The build context is allowlisted by .dockerignore (deny by default);
+# keep these COPY lines and that allowlist in sync.
+COPY cmd ./cmd
+COPY internal ./internal
+COPY pkg ./pkg
 
 # Build DSO Core
 # Use -ldflags to reduce binary size and remove symbol tables

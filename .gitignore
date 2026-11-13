@@ -109,3 +109,16 @@ ui-dist/
 docs/audit
 .claude/
 .claude*
+# --- M0-09: runtime state and local build artifacts must never be committed ---
+/dso
+/docker-dso
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.rvf
+*.rvf.lock
+.swarm/
+**/.swarm/
+local-secrets/
