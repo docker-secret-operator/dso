@@ -122,3 +122,8 @@ docs/audit
 .swarm/
 **/.swarm/
 local-secrets/
+
+# Agent/orchestration tool state (M0): generated, never project config
+.claude-flow/
+**/.claude-flow/
+.claude/
