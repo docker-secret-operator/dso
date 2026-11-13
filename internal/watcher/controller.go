@@ -89,6 +89,9 @@ type ReloaderController struct {
 	// Losing this map on daemon restart is safe -- reconciliation re-registers
 	// whatever is actually running, and recovery removes orphaned shadows.
 	pendingProxy sync.Map // map[string]struct{} (key: container ID)
+
+	// signalRunHook, when set (tests only), replaces runSignalRotation.
+	signalRunHook func(ctx context.Context, target *TargetContainer, serviceName, secretName string) error
 }
 
 // ownerID returns this agent's dso.owner identity (see EnsureOwnerID in
@@ -1016,16 +1019,17 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		// EXECUTE PER-CONTAINER STRATEGIES (NON-COMPOSE)
 		if activeStrategy == "signal" {
 			dispatched++
-			r.Logger.Info("Sending SIGHUP to container", zap.String("id", target.ID))
-			if err := r.cli.ContainerKill(ctx, target.ID, "SIGHUP"); err != nil {
-				// Best-effort: SIGHUP-based reload already relies on the
-				// target noticing a changed file and reloading itself, so a
-				// signal that never arrived (e.g. the container disappeared
-				// mid-rotation) has the same practical effect as one that
-				// arrived but was ignored. Logged for operator visibility
-				// rather than surfaced as a rotation failure.
-				r.Logger.Debug("SIGHUP delivery failed, target likely already gone",
-					zap.String("id", target.ID), zap.Error(err))
+			// M0-03: deliver the new secret FILES atomically, verify them, then
+			// send the reload signal. A bare SIGHUP used to be sent with nothing
+			// delivered and any failure was logged at Debug and reported as
+			// success. Env-mode secrets are rejected; see signal_rotation.go.
+			r.Logger.Info("Executing signal rotation (deliver files, then reload)", zap.String("id", target.ID))
+			signalRun := r.runSignalRotation
+			if r.signalRunHook != nil {
+				signalRun = r.signalRunHook
+			}
+			if err := signalRun(ctx, target, serviceName, secretName); err != nil {
+				recordAsyncErr(err)
 			}
 			releaseLock()
 		} else if activeStrategy == "rolling" {

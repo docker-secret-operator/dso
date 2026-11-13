@@ -394,3 +394,15 @@ Return StrategyDecision
 - `internal/analyzer/`: Container analysis engine
 - Rotation executor documentation (rolling and restart strategies)
 - Secret management workflow documentation
+
+## Signal strategy (`strategy: signal`) — what it does and does not guarantee
+
+Signal rotation is for **file-mode** secrets (`inject.type: file`) in a *running* container whose application reloads them on a signal.
+
+Lifecycle, in this order, under the service lock: verify the container is running and owned by this agent → resolve the new value from the agent cache (missing value = fail, nothing changes) → deliver each file atomically (`mktemp` in the same directory under umask 077, SHA-256 check, owner + `0400` set before the rename; tmpfs required) → verify the delivered files with an exec probe → send the configured reload signal (`rotation.signal`; only `SIGHUP`, `SIGUSR1`, `SIGUSR2` are allowed, default `SIGHUP`) → check readiness. The signal is **never** sent unless every file was delivered and verified.
+
+* **Environment-variable secrets are rejected.** A signal cannot change the environment of a running process. Use `restart` or `rolling` for env-mode secrets; a container mapped to any env-mode secret is refused before anything is changed.
+* **Success means "delivered and reload requested", not "adopted".** DSO has no application-level acknowledgement. An application that already holds the old file open keeps reading the old inode until it reopens the file, and not every application implements the reload signal. Readiness is reported as Docker HEALTHCHECK `healthy` when the image defines one, otherwise only "process still running".
+* **Failure after the new file is published cannot be rolled back automatically.** DSO keeps no plaintext backup of the previous value and cannot see the application's state, so the rotation is reported failed, the service is flagged degraded and manual recovery (reload or restart) is required.
+* A *set* of files is not replaced atomically as a group; each file is replaced atomically on its own.
+* The applied version is not durably recorded by this strategy (the committed state model does not track per-secret applied versions yet); the audit log records `reload_requested` or `failed`.

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,6 +28,9 @@ const secretDir = "/run/secrets/dso"
 
 // Options tunes file injection.
 type Options struct {
+	// Dir is the in-container directory to deliver into. Empty means the
+	// default /run/secrets/dso. It must be an absolute, clean, non-root path.
+	Dir string
 	// RequireTmpfs makes injection fail unless secretDir is on a tmpfs mount,
 	// so plaintext never lands on the container's writable (host-disk) layer.
 	// The DSO compose rewrite mounts a tmpfs there; a container started some
@@ -53,6 +57,9 @@ func InjectFiles(ctx context.Context, cli *client.Client, containerID string, fi
 func InjectFilesWithOptions(ctx context.Context, cli *client.Client, containerID string, files map[string]string, uid, gid int, opts Options) error {
 	if len(files) == 0 {
 		return nil
+	}
+	if _, err := resolveDir(opts.Dir); err != nil {
+		return err
 	}
 	// Validate every name before any write so a bad name cannot leave a
 	// partially delivered set.
@@ -93,12 +100,16 @@ func injectOneFileOpts(ctx context.Context, cli *client.Client, containerID, fil
 	if uid < 0 || gid < 0 {
 		return fmt.Errorf("invalid uid/gid %d:%d for %s", uid, gid, fileName)
 	}
+	dir, err := resolveDir(opts.Dir)
+	if err != nil {
+		return err
+	}
 
 	execID, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		AttachStdin:  true,
 		AttachStdout: false,
 		AttachStderr: false,
-		Cmd:          injectArgv(secretDir, fileName, uid, gid, opts.RequireTmpfs),
+		Cmd:          injectArgv(dir, fileName, uid, gid, opts.RequireTmpfs),
 	})
 	if err != nil {
 		return fmt.Errorf("exec create failed for %s: %w", fileName, err)
@@ -138,6 +149,17 @@ func injectOneFileOpts(ctx context.Context, cli *client.Client, containerID, fil
 	}
 
 	return fmt.Errorf("exec timed out writing %s", fileName)
+}
+
+// resolveDir validates the delivery directory (default secretDir).
+func resolveDir(dir string) (string, error) {
+	if dir == "" {
+		return secretDir, nil
+	}
+	if !path.IsAbs(dir) || path.Clean(dir) != dir || dir == "/" || strings.ContainsRune(dir, 0) {
+		return "", fmt.Errorf("invalid secret directory %q: must be an absolute, clean, non-root path", dir)
+	}
+	return dir, nil
 }
 
 func exitReason(code int) string {

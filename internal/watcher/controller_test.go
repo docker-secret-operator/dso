@@ -720,10 +720,19 @@ func newMockController(t *testing.T, handler http.Handler) *ReloaderController {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	return &ReloaderController{
+	rc := &ReloaderController{
 		Logger: zaptest.NewLogger(t),
 		cli:    cli,
 	}
+	// These harness tests exercise the lock/dispatch machinery with the cheapest
+	// strategy. The production signal rotation (M0-03) needs configuration, a
+	// cache and exec support; here the hook keeps the old "send one signal"
+	// behaviour so the mock daemon's kill counters stay meaningful. The real
+	// signal lifecycle is tested in signal_rotation_test.go.
+	rc.signalRunHook = func(ctx context.Context, target *TargetContainer, serviceName, secretName string) error {
+		return rc.cli.ContainerKill(ctx, target.ID, "SIGHUP")
+	}
+	return rc
 }
 
 // minimalInspect returns a ContainerJSON with just enough fields populated for

@@ -152,11 +152,16 @@ func newConfig() *dsoConfig.Config {
 // loop) wired to cache, and stops it at test end.
 func startController(t *testing.T, cache *fakeCache) *watcher.ReloaderController {
 	t.Helper()
+	return startControllerCfg(t, cache, newConfig())
+}
+
+func startControllerCfg(t *testing.T, cache *fakeCache, cfg *dsoConfig.Config) *watcher.ReloaderController {
+	t.Helper()
 	r, err := watcher.NewReloaderController(zaptest.NewLogger(t, zaptest.Level(zap.InfoLevel)))
 	if err != nil {
 		t.Fatalf("NewReloaderController: %v", err)
 	}
-	r.Config = newConfig()
+	r.Config = cfg
 	r.Cache = cache
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -393,7 +398,10 @@ func TestS3_RotationStrategies(t *testing.T) {
 		})
 	}
 
-	t.Run("signal", func(t *testing.T) {
+	// M0-03: a bare signal cannot change the environment of a running process, so
+	// signal rotation of an ENV-mode secret must be rejected: no signal is sent,
+	// the container is untouched, and the outcome is an error.
+	t.Run("signal-rejects-env-secret", func(t *testing.T) {
 		cli := dockerClient(t)
 		runLabel := uniqueName(t, "run")
 		cleanupByLabel(t, cli, "dso.it.run", runLabel)
@@ -405,23 +413,24 @@ func TestS3_RotationStrategies(t *testing.T) {
 		waitTarget(t, r, id)
 
 		cache.set(syntheticValue("v2"))
-		rotate(t, r)
-
+		done := make(chan error, 1)
+		if err := r.TriggerReload(context.Background(), secretName, func(err error) { done <- err }); err != nil {
+			t.Fatalf("TriggerReload: %v", err)
+		}
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "environment") {
+				t.Fatalf("env-mode signal rotation must fail with an explanatory error, got %v", err)
+			}
+		case <-time.After(rotateWait):
+			t.Fatal("no outcome before the deadline")
+		}
 		if got := currentIDByName(t, cli, name); got != id {
-			t.Fatalf("signal strategy must not recreate the container (%s -> %s)", id[:12], got[:12])
+			t.Fatalf("rejected rotation must not touch the container (%s -> %s)", id[:12], got[:12])
 		}
-		// SIGHUP delivery is asynchronous inside the container; wait for the
-		// trap's marker with a deadline.
-		deadline := time.Now().Add(15 * time.Second)
-		for {
-			out, err := dockerguard.Current(t).Docker(t, "exec", id, "cat", "/tmp/dso-hup")
-			if err == nil && strings.TrimSpace(out) == "hup" {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("SIGHUP marker never appeared: %v %s", err, out)
-			}
-			time.Sleep(250 * time.Millisecond)
+		if out, err := dockerguard.Current(t).Docker(t, "exec", id, "cat", "/tmp/dso-hup"); err == nil {
+			t.Fatalf("no signal may be sent for a rejected rotation, marker present: %s", out)
 		}
+		assertEnvValue(t, cli, id, syntheticValue("v1"))
 	})
 }
