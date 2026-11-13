@@ -104,10 +104,16 @@ Preserved workloads leave the rotation `critical_error` (manual recovery), they 
 
 **Unproxied rotations:** a healthy container holding the real name is the only signal DSO has. It is not proof that external service discovery, a load balancer or DNS sends it traffic, and DSO cannot verify that.
 
+### 3b. Signal and restart durable state
+
+**Signal rotation** writes `intent_signal_publish` before the first file is replaced (a failed write refuses publication), `signal_published`, `intent_signal_reload` before the signal (a failed write refuses the signal), `signal_reload_sent`, and a terminal `signal_done` (state `reload_requested_adoption_unverified`, **never** "adopted") or `signal_failed` (named `SignalState`; `manual_recovery` set for every state except `nothing_published`). After a restart, an unfinished signal operation is recovered **conservatively**: nothing in Docker is touched, **nothing is re-delivered or re-signalled** (repeating a reload is not known to be safe for the application and an older credential may be revoked), and the record ends `critical_error` with a message saying exactly how far it got. The affected service is re-flagged degraded at startup from the journal; a later clean rotation of the same service supersedes the record so a restart does not re-flag a repaired service.
+
+**Restart (recreation) strategy** is **not zero downtime**: the original is stopped before the replacement starts unless the DSO proxy owns the ports. It writes `intent_rename_original`, `intent_create_candidate` (+ `dso.rotation.id` label, `candidate_created`), `intent_stop_original`/`original_stopped`, `intent_start_replacement`/`replacement_started`, `candidate_ready`, `intent_cleanup`, `completed`; every intent is written before its step and a failed write aborts before the step (undoing the not-yet-destructive steps). Recovery applies the name-holder + journal rules: the original is retired only when the journalled replacement holds the real name healthy; an unstarted replacement, an unhealthy one, or a renamed-away original with no holder are **preserved for manual recovery** (the service is not auto-renamed back; that automatic restoration is a possible follow-up).
+
 ## 4. What is NOT done (honest limits)
 
 * **Real process kill, real Docker, continuous traffic: UNVERIFIED.** The crash tests use a fake daemon in-process. The guarded real-daemon tests in `test/docker/recovery_test.go` build post-crash layouts but do not kill a DSO process mid-rotation, and no traffic is generated across a rotation. Prepared for the disposable VM, not run.
-* **Restart strategy and signal rotation are not journalled yet** (only the rolling strategy is). Signal rotation's degraded state is in memory; restart-strategy recovery relies on the name-holder rule only.
+* The **restart (recreation) strategy and signal rotation are now journalled** (below); the restart strategy's proxy zero-downtime swap path (`SwapBackend`) is NOT journalled (no expected-proxy-target evidence), so for it recovery relies on the name-holder rule.
 * **No journalling of the proxy itself**: recovery cannot read the proxy's routing table (it is in-process and dies with the agent); it relies on the handoff evidence recorded in the journal.
 * **Partial multi-file secret delivery** is reported precisely in-process (`SignalState`), but the persisted journal does not yet record per-file progress for signal rotation.
 * Durability is process-crash safe, and intended power-loss safe where fsync is honoured; not a Docker+file transaction.

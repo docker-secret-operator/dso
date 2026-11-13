@@ -50,6 +50,8 @@ type RotationState struct {
 	Committed             bool      `json:"committed,omitempty"` // swap_committed acknowledged
 	CleanupStatus         string    `json:"cleanup_status,omitempty"`
 	Seq                   int       `json:"seq,omitempty"`
+	OperationState        string    `json:"operation_state,omitempty"` // named condition, e.g. partially_published
+	ManualRecovery        bool      `json:"manual_recovery,omitempty"`
 	Detail                string    `json:"detail,omitempty"`
 	Status                string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
 	StartTime             time.Time `json:"start_time"`
@@ -404,6 +406,12 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	if e.Detail != "" {
 		state.Detail = e.Detail
 	}
+	if e.State != "" {
+		state.OperationState = e.State
+	}
+	if e.ManualRecovery {
+		state.ManualRecovery = true
+	}
 	state.Seq++
 	state.Transition, state.Phase = e.Transition, e.Transition
 	state.LastUpdate = time.Now()
@@ -420,9 +428,32 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	case rotation.TrCompleted:
 		state.CleanupStatus = "done"
 		state.Status = "completed"
+	case rotation.TrSignalDone:
+		// Terminal. The record keeps OperationState (reload requested, adoption NOT
+		// verified): "completed" never means the application loaded the secret.
+		state.Status = "completed"
+	case rotation.TrSignalFailed:
+		if e.ManualRecovery {
+			state.Status = "critical_error"
+			state.ErrorMessage = "signal rotation ended in state " + e.State + "; manual recovery required"
+		} else {
+			state.Status = "recovered"
+		}
 	case rotation.TrRolledBack:
 		// The candidate was discarded and the original never touched: terminal.
 		state.Status = "recovered"
+	}
+	// A later rotation of the same service that reached a clean terminal state
+	// supersedes earlier manual-recovery records of that service, so a restart does
+	// not re-flag a service the operator has since repaired.
+	if (e.Transition == rotation.TrSignalDone || e.Transition == rotation.TrCompleted) && state.ServiceID != "" {
+		for _, other := range st.states {
+			if other != state && other.ServiceID == state.ServiceID && other.Status == "critical_error" {
+				other.Status = "recovered"
+				other.Detail = "superseded by a later successful rotation " + state.RotationID
+				other.LastUpdate = time.Now()
+			}
+		}
 	}
 	return st.persistState()
 }

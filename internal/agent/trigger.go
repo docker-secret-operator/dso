@@ -198,6 +198,16 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 		// Don't fail startup; recovery is best-effort
 	}
 
+	// A restart must not make an uncertain or manual-recovery rotation look healthy:
+	// re-flag the affected services from the durable journal.
+	if t.Reloader != nil && t.StateTracker != nil {
+		for _, rec := range t.StateTracker.snapshotRecords() {
+			if rec.Status == "critical_error" && rec.ServiceID != "" {
+				t.Reloader.MarkDegradedFromJournal(rec.ServiceID, "interrupted rotation ("+rec.Strategy+", "+rec.Transition+"): "+rec.ErrorMessage)
+			}
+		}
+	}
+
 	// Perform a broad cleanup of any orphaned DSO containers
 	// This catches containers that might not be tracked in state
 	if err := ar.CleanupOrphanedContainers(t.ctx); err != nil {

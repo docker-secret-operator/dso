@@ -37,6 +37,21 @@ const (
 	TrIntentRollback        = "intent_rollback"
 	TrRolledBack            = "rolled_back"
 	TrFailed                = "failed"
+
+	// Restart (full recreation) strategy.
+	TrIntentRenameOriginal   = "intent_rename_original"
+	TrIntentStopOriginal     = "intent_stop_original"
+	TrOriginalStopped        = "original_stopped"
+	TrIntentStartReplacement = "intent_start_replacement"
+	TrReplacementStarted     = "replacement_started"
+
+	// Signal (file re-delivery + reload) strategy.
+	TrIntentSignalPublish = "intent_signal_publish"
+	TrSignalPublished     = "signal_published"
+	TrIntentSignalReload  = "intent_signal_reload"
+	TrSignalReloadSent    = "signal_reload_sent"
+	TrSignalDone          = "signal_done"   // terminal: adoption still unverified
+	TrSignalFailed        = "signal_failed" // terminal; State names the precise condition
 )
 
 // JournalEvent is one durable record. Zero-value fields mean "unchanged".
@@ -60,6 +75,12 @@ type JournalEvent struct {
 	ObservedProxyTarget string
 
 	Detail string
+
+	// State is a named end/progress condition (e.g. the signal strategy's
+	// partially_published); ManualRecovery marks that an operator must act. Neither
+	// carries secret material.
+	State          string
+	ManualRecovery bool
 }
 
 // Journal persists JournalEvents. Record must be durable when it returns nil. When

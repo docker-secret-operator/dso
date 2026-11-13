@@ -172,6 +172,55 @@ func fileNames(data map[string]string) []string {
 	return n
 }
 
+// jctx carries the rotation identity used for every journal record of one operation.
+type jstate struct {
+	rid      string
+	strategy string
+}
+
+func (r *ReloaderController) newJState(ctx context.Context, strategy string) *jstate {
+	rid := rotation.RotationIDFrom(ctx)
+	if rid == "" {
+		rid = rotation.NewRotationID()
+	}
+	return &jstate{rid: rid, strategy: strategy}
+}
+
+// jIntent persists an INTENT before the guarded action. With no journal it is a
+// no-op unless the agent made one mandatory (RequireJournal), in which case it
+// refuses. A failed write means the caller must not perform the action.
+func (r *ReloaderController) jIntent(ctx context.Context, j *jstate, e rotation.JournalEvent) error {
+	if r.Journal == nil {
+		if r.RequireJournal {
+			return errors.New("the rotation journal is unavailable: refusing a destructive step that could not be recovered after a crash")
+		}
+		return nil
+	}
+	e.RotationID, e.OwnerID, e.Strategy = j.rid, r.ownerID(), j.strategy
+	if err := r.Journal.Record(ctx, e); err != nil {
+		return fmt.Errorf("rotation journal could not record %q, refusing the next step: %w", e.Transition, err)
+	}
+	return nil
+}
+
+// jAck persists an acknowledgement; failure is logged only (the intent is durable).
+func (r *ReloaderController) jAck(ctx context.Context, j *jstate, e rotation.JournalEvent) {
+	if r.Journal == nil {
+		return
+	}
+	e.RotationID, e.OwnerID, e.Strategy = j.rid, r.ownerID(), j.strategy
+	if err := r.Journal.Record(ctx, e); err != nil {
+		r.Logger.Warn("rotation journal could not record an acknowledgement; the intent remains durable",
+			zap.String("transition", e.Transition), zap.Error(err))
+	}
+}
+
+// MarkDegradedFromJournal restores, after an agent restart, the degraded flag of a
+// service whose interrupted rotation left an uncertain or manual-recovery state.
+func (r *ReloaderController) MarkDegradedFromJournal(serviceName, reason string) {
+	r.markDegraded(serviceName, reason)
+}
+
 // signalMu serialises signal rotations per container so two concurrent
 // deliveries can never interleave "deliver, deliver, signal, signal".
 var signalMu sync.Map // containerID -> *sync.Mutex
@@ -278,9 +327,26 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 		return out, err
 	}
 
+	js := r.newJState(ctx, "signal")
+	totalFiles := 0
+	for _, sp := range specs {
+		totalFiles += len(sp.Data)
+	}
+	// Durable intent BEFORE any file is replaced. If it cannot be recorded nothing
+	// has been published, so this is a clean refusal.
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{
+		Transition: rotation.TrIntentSignalPublish, ServiceID: serviceName, OriginalIDs: []string{target.ID},
+		State:  "publishing",
+		Detail: fmt.Sprintf("%d file(s) in %d secret(s); publication may be partial if interrupted", totalFiles, len(specs)),
+	}); err != nil {
+		return out, &SignalRotationError{State: SignalNothingPublished, Stage: "journal", Cause: err}
+	}
+	r.fault("signal:after_intent_publish")
+
 	fail := func(state SignalState, stage string, cause error) (SignalOutcome, error) {
 		out.State = state
 		serr := &SignalRotationError{State: state, Stage: stage, Cause: cause}
+		r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrSignalFailed, State: string(state), ManualRecovery: state != SignalNothingPublished, Detail: stage})
 		if state != SignalNothingPublished && serviceName != "" {
 			r.markDegraded(serviceName, serr.Error())
 		}
@@ -288,7 +354,7 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 	}
 
 	filesBefore := 0
-	for _, spec := range specs {
+	for specIdx, spec := range specs {
 		if err := ops.deliver(ctx, target.ID, spec); err != nil {
 			// Delivery is atomic PER FILE. If any file could already have been
 			// replaced (an earlier spec, or an earlier file of a multi-file spec),
@@ -299,6 +365,7 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 			return fail(SignalPartiallyPublished, "secret delivery", err)
 		}
 		filesBefore += len(spec.Data)
+		r.fault(fmt.Sprintf("signal:after_spec_%d_published", specIdx))
 	}
 	for _, spec := range specs {
 		if err := ops.probe(ctx, target.ID, spec); err != nil {
@@ -307,11 +374,19 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 		out.DeliveredFiles = append(out.DeliveredFiles, fileNames(spec.Data)...)
 	}
 	out.Delivered = true
+	r.fault("signal:after_publish_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrSignalPublished, State: "published_reload_not_requested"})
 
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentSignalReload, State: "reload_pending", Detail: sig}); err != nil {
+		return fail(SignalPublishedNotSignalled, "journal before reload signal", err)
+	}
+	r.fault("signal:after_intent_reload")
 	if err := ops.signal(ctx, target.ID, sig); err != nil {
 		return fail(SignalPublishedNotSignalled, "reload signal delivery", err)
 	}
 	out.ReloadRequested = true
+	r.fault("signal:after_signal_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrSignalReloadSent, State: "signal_sent_outcome_unknown"})
 
 	readyTimeout := 30 * time.Second
 	if r.Config != nil && r.Config.Agent.Rotation.HealthCheckTimeout != "" {
@@ -319,12 +394,16 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 			readyTimeout = d
 		}
 	}
+	r.fault("signal:during_readiness")
 	ev, err := ops.ready(ctx, target.ID, readyTimeout)
 	if err != nil {
 		return fail(SignalSentOutcomeUnknown, "post-reload readiness", err)
 	}
 	out.Readiness = ev
 	out.State = SignalReloadRequested
+	r.fault("signal:before_final_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrSignalDone, State: string(SignalReloadRequested),
+		Detail: "readiness: " + ev.String() + "; application adoption NOT verified"})
 	return out, nil
 }
 

@@ -232,6 +232,11 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 		ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New(msg))
 	}
 
+	if rotation.Strategy == "signal" {
+		ar.recoverInterruptedSignal(logger, rotation, manual)
+		return
+	}
+
 	ids := rotation.OriginalIDs()
 	if len(ids) == 0 {
 		// Nothing identifies the workload: we cannot tell artifacts of this
@@ -331,6 +336,28 @@ func (ar *AutomaticRecovery) originalRetiredByCommittedRotation(ctx context.Cont
 	}
 	holderID, ok, _ := ar.holderState(ctx, rec.ServiceID, "")
 	return ok && idIn(rec.CandidateContainerIDs, holderID)
+}
+
+// recoverInterruptedSignal handles a signal rotation that never reached a terminal
+// state. Nothing in Docker is touched and nothing is re-delivered or re-signalled:
+// DSO cannot tell whether the file was replaced, whether the application reloaded, or
+// whether signalling again is safe for it, and it must not re-apply a credential that
+// may since have been revoked. The interrupted operation therefore stays UNCERTAIN
+// (never "successful") until an operator acts.
+func (ar *AutomaticRecovery) recoverInterruptedSignal(logger *zap.Logger, rec *RotationState, manual func(string, []string)) {
+	cond := map[string]string{
+		rotation.TrIntentSignalPublish: "secret files may be partially published (publication started, not acknowledged)",
+		rotation.TrSignalPublished:     "secret files were published and verified-or-not-yet-verified but the reload was never requested",
+		rotation.TrIntentSignalReload:  "files were published; the reload signal may or may not have been delivered",
+		rotation.TrSignalReloadSent:    "the reload signal was delivered; the application's outcome and readiness are unknown",
+	}[rec.Transition]
+	if cond == "" {
+		cond = "state after the last durable step is unknown"
+	}
+	logger.Warn("Interrupted signal rotation left uncertain; no automatic re-delivery or re-signal",
+		zap.String("last_transition", rec.Transition), zap.String("service", rec.ServiceID))
+	manual("interrupted signal rotation ("+rec.Transition+"): "+cond+
+		"; no automatic re-delivery or re-signal was attempted; verify the secret files and reload or restart the container", nil)
 }
 
 // ensureHolder makes sure a verified healthy container holds the real name

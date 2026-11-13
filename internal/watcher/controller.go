@@ -96,8 +96,18 @@ type ReloaderController struct {
 	Journal        rotation.Journal
 	RequireJournal bool
 
+	// FaultHook is a TEST-ONLY hook called at named transition points of the signal
+	// and restart strategies; tests panic from it to model the process dying there.
+	FaultHook func(point string)
+
 	// signalRunHook, when set (tests only), replaces runSignalRotation.
 	signalRunHook func(ctx context.Context, target *TargetContainer, serviceName, secretName string) error
+}
+
+func (r *ReloaderController) fault(point string) {
+	if r.FaultHook != nil {
+		r.FaultHook(point)
+	}
 }
 
 // ownerID returns this agent's dso.owner identity (see EnsureOwnerID in
@@ -1521,12 +1531,29 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 
+				// M0-04: restart (full recreation) journal. It may involve downtime BY
+				// DESIGN (not zero downtime unless the DSO proxy owns the ports) and
+				// writes intents before the steps that rename, stop or remove a
+				// workload; a failed intent aborts before the action.
+				js := r.newJState(ctx, "restart")
+				if jerr := r.jIntent(ctx, js, rotation.JournalEvent{
+					Transition: rotation.TrIntentRenameOriginal, ServiceID: originalName, OriginalIDs: []string{target.ID},
+					Detail: "rename " + originalName + " -> " + tempOldName,
+				}); jerr != nil {
+					r.Logger.Error("Restart rotation refused before any change", zap.Error(jerr))
+					finish(jerr)
+					return
+				}
+				r.fault("restart:after_intent_rename")
+
 				// 3. Rename old to clear path
 				if err := r.cli.ContainerRename(ctx, target.ID, tempOldName); err != nil {
 					r.Logger.Error("Failed to rename original container", zap.Error(err))
+					r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "rename of the original failed; nothing changed"})
 					finish(err)
 					return
 				}
+				r.fault("restart:after_rename")
 
 				// 4. Prepare new config. CQ-H5: deep-copy before mutating so we never
 				// modify the struct returned by the Docker client.
@@ -1573,13 +1600,28 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					// bridge for the container still serving traffic.
 					EndpointsConfig: rotation.SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
 				}
+				// Operation identity that exists even if we crash before the
+				// replacement's container ID is journalled.
+				if config.Labels == nil {
+					config.Labels = map[string]string{}
+				}
+				config.Labels[rotation.LabelRotationID] = js.rid
+				if jerr := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentCreateCandidate, ServiceID: originalName, OriginalIDs: []string{target.ID}}); jerr != nil {
+					r.restoreOriginalName(ctx, target.ID, originalName)
+					finish(jerr)
+					return
+				}
+				r.fault("restart:after_intent_create")
 				created, err := r.cli.ContainerCreate(ctx, config, inspect.HostConfig, networkingConfig, nil, originalName)
 				if err != nil {
 					r.Logger.Error("Failed to create new container, rolling back name", zap.Error(err))
 					r.restoreOriginalName(ctx, target.ID, originalName)
+					r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "replacement creation failed; original name restored"})
 					finish(err)
 					return
 				}
+				r.fault("restart:after_create_before_ack")
+				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}})
 
 				// Keep the replacement out of the proxy until it passes the
 				// health check and exec probes below. Without this the "start"
@@ -1645,8 +1687,29 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				stopTimeout := 10
 
 				if !useZeroDowntime {
+					// Downtime begins here: journal the intent first. If it cannot be
+					// recorded, undo the not-yet-destructive steps and keep the original.
+					if jerr := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentStopOriginal, OriginalIDs: []string{target.ID}, CandidateIDs: []string{created.ID}}); jerr != nil {
+						r.discardReplacement(ctx, created.ID)
+						r.restoreOriginalName(ctx, target.ID, originalName)
+						finish(jerr)
+						return
+					}
+					r.fault("restart:after_intent_stop")
 					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
+					r.fault("restart:after_stop_before_ack")
+					r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrOriginalStopped, OriginalIDs: []string{target.ID}})
 				}
+				if jerr := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentStartReplacement, CandidateIDs: []string{created.ID}}); jerr != nil {
+					r.discardReplacement(ctx, created.ID)
+					r.restoreOriginalName(ctx, target.ID, originalName)
+					if !useZeroDowntime {
+						r.restartOriginal(ctx, target.ID, originalName)
+					}
+					finish(jerr)
+					return
+				}
+				r.fault("restart:after_intent_start")
 
 				if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 					r.Logger.Error("Failed to start new container, rolling back with retries", zap.Error(err))
@@ -1727,8 +1790,20 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
 				}
 
+				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{created.ID}})
+				// Retire the old container only after its removal intent is durable;
+				// otherwise leave it for recovery rather than delete without a record.
+				if jerr := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentCleanup, OriginalIDs: []string{target.ID}}); jerr != nil {
+					r.Logger.Warn("Not removing the old container: the cleanup intent could not be journalled", zap.Error(jerr))
+					r.clearDegraded(serviceName)
+					finish(nil)
+					return
+				}
+				r.fault("restart:after_intent_cleanup")
 				r.Logger.Info("Rotation successful, removing old container", zap.String("id", target.ID))
 				_ = r.cli.ContainerRemove(ctx, target.ID, container.RemoveOptions{Force: true})
+				r.fault("restart:after_cleanup_before_ack")
+				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCompleted})
 				r.clearDegraded(serviceName)
 				finish(nil)
 			}(target, releaseLock, serviceName)
@@ -2183,9 +2258,24 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	originalName := strings.TrimPrefix(inspect.Name, "/")
 	tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
 
+	// Restart (full recreation) journal: it may involve downtime BY DESIGN (the
+	// original is stopped before the replacement is started) and is not zero downtime.
+	// Intents are written before the transitions that can leave a workload renamed,
+	// stopped or removed; a failed intent write aborts before the action.
+	js := r.newJState(ctx, "restart")
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{
+		Transition: rotation.TrIntentRenameOriginal, ServiceID: originalName, OriginalIDs: []string{containerID},
+		Detail: "rename " + originalName + " -> " + tempOldName,
+	}); err != nil {
+		return fmt.Errorf("executeSimpleRestart: %w", err)
+	}
+	r.fault("restart:after_intent_rename")
+
 	if err := r.cli.ContainerRename(ctx, containerID, tempOldName); err != nil {
+		r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "rename of the original failed; nothing changed"})
 		return fmt.Errorf("executeSimpleRestart: rename failed: %w", err)
 	}
+	r.fault("restart:after_rename")
 
 	// CQ-H5: deep-copy before mutating so we never modify the Docker-returned struct.
 	cfg := cloneContainerConfig(inspect.Config)
@@ -2223,12 +2313,26 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: rotation.SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
 	}
+	// Operation identity that exists even if we crash before the replacement's ID is
+	// journalled.
+	if cfg.Labels == nil {
+		cfg.Labels = map[string]string{}
+	}
+	cfg.Labels[rotation.LabelRotationID] = js.rid
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentCreateCandidate, ServiceID: originalName, OriginalIDs: []string{containerID}}); err != nil {
+		r.restoreOriginalName(ctx, containerID, originalName)
+		return fmt.Errorf("executeSimpleRestart: %w", err)
+	}
+	r.fault("restart:after_intent_create")
 	created, err := r.cli.ContainerCreate(ctx, cfg, inspect.HostConfig, networkingConfig, nil, originalName)
 	if err != nil {
 		// Rename back so the original container keeps its name.
 		r.restoreOriginalName(ctx, containerID, originalName)
+		r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "replacement creation failed; original name restored"})
 		return fmt.Errorf("executeSimpleRestart: container create failed: %w", err)
 	}
+	r.fault("restart:after_create_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}})
 
 	// Stream file-mode secrets before starting, same ordering as the primary
 	// restart/rolling paths -- the app must never start without them present.
@@ -2241,8 +2345,26 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	}
 
 	stopTO := 10
+	// Stopping the original is where downtime begins: record the intent first. If it
+	// cannot be recorded, undo the not-yet-destructive steps and keep the original.
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentStopOriginal, OriginalIDs: []string{containerID}, CandidateIDs: []string{created.ID}}); err != nil {
+		r.discardReplacement(ctx, created.ID)
+		r.restoreOriginalName(ctx, containerID, originalName)
+		return fmt.Errorf("executeSimpleRestart: %w", err)
+	}
+	r.fault("restart:after_intent_stop")
 	_ = r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTO})
+	r.fault("restart:after_stop_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrOriginalStopped, OriginalIDs: []string{containerID}})
 
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentStartReplacement, CandidateIDs: []string{created.ID}}); err != nil {
+		// The original is already stopped: bring it back rather than leave nothing running.
+		r.discardReplacement(ctx, created.ID)
+		r.restoreOriginalName(ctx, containerID, originalName)
+		r.restartOriginal(ctx, containerID, originalName)
+		return fmt.Errorf("executeSimpleRestart: %w", err)
+	}
+	r.fault("restart:after_intent_start")
 	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 		r.discardReplacement(ctx, created.ID)
 		r.restoreOriginalName(ctx, containerID, originalName)
@@ -2260,6 +2382,8 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		}
 		return fmt.Errorf("%w; rolled back to the original container", cause)
 	}
+	r.fault("restart:after_start_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrReplacementStarted, CandidateIDs: []string{created.ID}})
 	if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
 		r.Logger.Error("Fallback replacement unhealthy, rolling back to the original container", zap.Error(err))
 		return rollBack(fmt.Errorf("executeSimpleRestart: replacement failed health verification: %w", err))
@@ -2277,6 +2401,16 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		}
 	}
 
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{created.ID}})
+	// The replacement serves; retire the original. Record the intent first, and if it
+	// cannot be recorded keep the (stopped) original for recovery rather than delete.
+	if err := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentCleanup, OriginalIDs: []string{containerID}}); err != nil {
+		r.Logger.Warn("Not removing the old container: the cleanup intent could not be journalled", zap.Error(err))
+		return nil
+	}
+	r.fault("restart:after_intent_cleanup")
 	_ = r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	r.fault("restart:after_cleanup_before_ack")
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCompleted})
 	return nil
 }
