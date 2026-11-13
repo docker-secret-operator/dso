@@ -45,23 +45,27 @@ Single-shot injection, no daemon:
 3. **Resolve Secrets** (in-memory) — mutate the parsed compose AST in place:
    - `dso://secret-name` → environment variable injection
    - `dsofile://secret-name` → tmpfs file injection (recommended)
-4. **Write & Execute** — the fully-resolved compose document, which at this
-   point contains plaintext secret values, is written to a restricted-permission
-   (`0600`) temporary file and passed to `docker compose up -f <tempfile>`
+4. **Pipe & Execute** — the fully-resolved compose document, which at this
+   point contains plaintext values for `dso://` environment secrets, is **piped
+   to `docker compose -f -` over standard input**; it is never written to a file
+   and never appears in a process argument. `-p` and `--project-directory` are
+   passed explicitly so relative paths, `.env` and `env_file` resolve against
+   the directory of your original compose file
 5. **Container Runtime** — Docker injects secrets into container process
-6. **Cleanup** — the temp file is removed once `docker compose up` returns, or
-   on `SIGINT`/`SIGTERM`; a stale-file sweep at the start of the next `dso up`
-   also removes any file older than an hour left behind by an abrupt
-   termination (`SIGKILL`, crash) that no in-process handler can catch
+6. **Cancellation** — `SIGINT`/`SIGTERM` send a graceful `SIGTERM` to the compose
+   child. A stale-file sweep still removes `docker-compose-dso-*.yaml` files older
+   than an hour that releases *before* this change may have left in the temp
+   directory
 
-**Local mode briefly writes plaintext-resolved secrets to a `0600` temp file
-in `/tmp` for the duration of the `docker compose up` call.** This is not a
-zero-persistence guarantee — same-user read access to that file is possible
-for that brief window, and an abrupt termination can leave the file behind
-until the next run's stale-file sweep. If you need the stronger,
-disk-never-touched guarantee, use **Cloud Mode** below, where secrets are
-streamed directly into the container over the Docker API and never written
-to a file on the host at all.
+**What this does and does not protect (M0-13).** No resolved compose file is
+written by `dso up` any more, so there is no temp file to be read, backed up or
+left behind after `SIGKILL`/power loss. The plaintext still exists in the `dso up`
+process memory and in the stdin pipe while compose runs, and **secrets injected
+as environment variables (`dso://`) become container environment, which anyone
+with Docker daemon access can read with `docker inspect`.** Use `dsofile://`
+(tmpfs file delivery) to avoid that. A `docker compose` validation error may
+echo parts of the configuration to stderr; DSO passes that stream through
+unchanged and does not log the resolved document.
 
 ### Cloud Mode (Production)
 

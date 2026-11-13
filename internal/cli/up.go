@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -25,8 +25,10 @@ import (
 )
 
 // staleTempComposeAge is how old an orphaned docker-compose-dso-*.yaml temp
-// file must be before sweepStaleTempComposeFiles will remove it. These files
-// briefly hold plaintext-resolved secret values (LIFECYCLE-2); a file this
+// file must be before sweepStaleTempComposeFiles will remove it. Releases before
+// M0-13 wrote the plaintext-resolved compose file there (S401); current releases
+// pipe it over stdin and create no such file, but a prior version may have left
+// one behind after SIGKILL or a crash, so the sweep stays. A file this
 // old was almost certainly orphaned by a killed or crashed prior process
 // rather than one still in use by a concurrently-running `docker dso up`.
 const staleTempComposeAge = 1 * time.Hour
@@ -282,49 +284,13 @@ func NewUpCmd() *cobra.Command {
 				// prior `docker dso up` that was killed or crashed (LIFECYCLE-2).
 				sweepStaleTempComposeFiles()
 
-				// LIFECYCLE-2: local mode briefly writes the fully-resolved
-				// (plaintext) compose file to a temp file in /tmp for the
-				// duration of the `docker compose up` call below. The
-				// function's own `defer` only covers a normal return; SIGINT
-				// and SIGTERM would otherwise bypass it entirely (Go's
-				// default disposition for those signals is to terminate the
-				// process without running deferred functions). Mirrors the
-				// signal handling `docker dso agent` already registers in
-				// cli/agent.go.
+				// M0-13 (S401): the fully resolved compose configuration contains
+				// plaintext for dso:// environment secrets. It is piped to
+				// `docker compose -f -` over STDIN and never written to disk
+				// (it used to go to a temp file in /tmp). SIGINT/SIGTERM
+				// cancel the compose child gracefully.
 				sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 				defer stopSignals()
-
-				var tmpFile *os.File
-				cleanupTmpFile := func() {
-					if tmpFile != nil {
-						_ = tmpFile.Close()
-						_ = os.Remove(tmpFile.Name())
-					}
-				}
-				defer cleanupTmpFile()
-
-				go func() {
-					<-sigCtx.Done()
-					cleanupTmpFile()
-				}()
-
-				// fail cleans up the temp compose file (if it was created)
-				// before exiting. Previously every error path below called
-				// os.Exit(1) directly, which bypasses this function's own
-				// defer entirely -- including the ordinary "docker compose
-				// up failed" path, not just crash/signal cases.
-				//
-				// msg is a plain label, never a format string: a generic
-				// `func(format string, args ...interface{}) error` wrapper
-				// around fmt.Errorf defeats go vet's printf/%w checking,
-				// since vet cannot verify format/verb pairs through an
-				// unnamed local closure. Taking a fixed (string, error) pair
-				// and building the one "%s: %w" format internally removes
-				// the ambiguity instead of relying on vet to see through it.
-				fail := func(msg string, err error) error {
-					cleanupTmpFile()
-					return fmt.Errorf("%s: %w", msg, err)
-				}
 
 				v, err := vault.LoadDefault()
 				if err != nil {
@@ -375,36 +341,35 @@ func NewUpCmd() *cobra.Command {
 					fmt.Fprintln(os.Stderr, "Warning: Agent startup timed out, proceeding anyway...")
 				}
 
-				tmpFile, err = os.CreateTemp("", "docker-compose-dso-*.yaml")
-				if err != nil {
-					return fmt.Errorf("creating temp file: %w", err)
-				}
-				// cleanupTmpFile (deferred above and wired into the signal
-				// goroutine) now owns closing and removing this file; no
-				// separate defer is registered here.
-
-				enc := yaml.NewEncoder(tmpFile)
+				var resolved bytes.Buffer
+				enc := yaml.NewEncoder(&resolved)
 				enc.SetIndent(2)
 				if err := enc.Encode(mutatedRoot); err != nil {
-					return fail("writing AST mutation", err)
+					return fmt.Errorf("encoding resolved compose configuration: %w", err)
 				}
 				if err := enc.Close(); err != nil {
-					return fail("finalizing AST mutation", err)
+					return fmt.Errorf("finalizing resolved compose configuration: %w", err)
+				}
+
+				absCompose, err := filepath.Abs(composeFile)
+				if err != nil {
+					return fmt.Errorf("resolving compose file path: %w", err)
 				}
 
 				fmt.Println("🐳 Running docker compose...")
 
-				// Reconstruct docker-compose command with the mutated AST file.
-				// We MUST explicitly pass the project name because using a temp file
-				// in /tmp would otherwise cause Docker to derive the wrong project name.
-				execArgs := append([]string{"compose", "-p", projectName, "-f", tmpFile.Name(), "up"}, dockerArgs...)
-				execCmd := exec.Command("docker", execArgs...) // #nosec G204 -- docker arguments are intentionally forwarded without shell expansion.
-				execCmd.Stdout = os.Stdout
-				execCmd.Stderr = os.Stderr
-				execCmd.Stdin = os.Stdin
-
-				if err := execCmd.Run(); err != nil {
-					return fail("docker compose failed", err)
+				// The project name and --project-directory are passed explicitly:
+				// with `-f -` compose cannot derive them from a file path, and
+				// relative bind mounts, build contexts, .env and env_file must
+				// resolve against the directory of the ORIGINAL compose file.
+				if err := core.RunComposeUpStdin(sigCtx, resolved.Bytes(), core.ComposeStdinOptions{
+					ProjectName: projectName,
+					ProjectDir:  filepath.Dir(absCompose),
+					Args:        dockerArgs,
+					Stdout:      os.Stdout,
+					Stderr:      os.Stderr,
+				}); err != nil {
+					return fmt.Errorf("docker compose failed: %w", err)
 				}
 			}
 			return nil

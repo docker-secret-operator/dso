@@ -1,13 +1,19 @@
 package core
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -678,4 +684,50 @@ func PrintRedactedCompose(p *ComposeFile) {
 		return
 	}
 	fmt.Println(string(d))
+}
+
+// ComposeStdinOptions configures RunComposeUpStdin.
+type ComposeStdinOptions struct {
+	ProjectName string
+	ProjectDir  string   // directory relative paths, .env and env_file resolve against
+	Args        []string // forwarded after `up`
+	Env         []string // nil = inherit the current environment
+	Stdout      io.Writer
+	Stderr      io.Writer
+	DockerBin   string // "" = "docker" resolved via PATH (tests substitute a fake)
+}
+
+// RunComposeUpStdin runs `docker compose -p NAME --project-directory DIR -f - up ARGS`
+// feeding yamlData (which may contain resolved plaintext secrets) on STDIN. The
+// resolved configuration therefore never touches the filesystem and never
+// appears in a process argument. Cancelling ctx sends SIGTERM to compose (and
+// SIGKILL after 30s) instead of orphaning it.
+//
+// Not covered, and documented in the CLI docs: the YAML exists in this process's
+// memory and in the pipe; environment-variable secrets become container
+// environment, which any principal with Docker daemon access can read via
+// `docker inspect`; a compose validation error may echo parts of the config on
+// stderr (passed through unchanged, never logged by DSO itself).
+func RunComposeUpStdin(ctx context.Context, yamlData []byte, o ComposeStdinOptions) error {
+	if o.ProjectName == "" {
+		return errors.New("compose: project name is required")
+	}
+	if o.ProjectDir == "" || !filepath.IsAbs(o.ProjectDir) {
+		return errors.New("compose: an absolute project directory is required")
+	}
+	bin := o.DockerBin
+	if bin == "" {
+		bin = "docker"
+	}
+	args := append([]string{"compose", "-p", o.ProjectName, "--project-directory", o.ProjectDir, "-f", "-", "up"}, o.Args...)
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- docker arguments are intentionally forwarded without shell expansion.
+	cmd.Stdin = bytes.NewReader(yamlData)
+	cmd.Stdout, cmd.Stderr = o.Stdout, o.Stderr
+	cmd.Dir = o.ProjectDir
+	if o.Env != nil {
+		cmd.Env = o.Env
+	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 30 * time.Second
+	return cmd.Run()
 }
