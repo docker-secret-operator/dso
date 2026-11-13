@@ -47,6 +47,53 @@ var (
 	ErrSignalBadSignal = errors.New("unsupported reload signal")
 )
 
+// SignalState is the precise condition a signal rotation ended in. It exists so an
+// operator is never told "unrecoverable" when the truth is "uncertain", nor "rolled
+// back" when nothing was rolled back.
+type SignalState string
+
+const (
+	// SignalNothingPublished: delivery failed before any secret file was replaced;
+	// the previous value is intact. No signal was sent.
+	SignalNothingPublished SignalState = "nothing_published"
+	// SignalPartiallyPublished: some, but not all, secret files were replaced. The
+	// secret SET is inconsistent. No signal was sent.
+	SignalPartiallyPublished SignalState = "partially_published"
+	// SignalPublishedUnverified: every file was delivered but verification failed;
+	// no signal was sent.
+	SignalPublishedUnverified SignalState = "published_verification_failed"
+	// SignalPublishedNotSignalled: files delivered and verified, the reload signal
+	// could not be delivered.
+	SignalPublishedNotSignalled SignalState = "published_signal_not_sent"
+	// SignalSentOutcomeUnknown: the signal was delivered but readiness afterwards
+	// failed or could not be established; whether the application reloaded is unknown.
+	SignalSentOutcomeUnknown SignalState = "signal_sent_outcome_unknown"
+	// SignalReloadRequested: delivered, verified, signal sent, readiness evidence
+	// obtained. Adoption is still NOT verified.
+	SignalReloadRequested SignalState = "reload_requested_adoption_unverified"
+)
+
+// SignalRotationError carries the precise end state. A state other than
+// SignalNothingPublished means secret files may differ from what the running
+// application holds; DSO does NOT restore the previous value (no plaintext backup is
+// kept, and the previous version may have been revoked at its provider). No
+// rollback occurred; manual recovery is the supported path: re-deliver or restart.
+type SignalRotationError struct {
+	State SignalState
+	Stage string
+	Cause error
+}
+
+func (e *SignalRotationError) Error() string {
+	msg := fmt.Sprintf("signal rotation failed at %s [%s]: %v", e.Stage, e.State, e.Cause)
+	if e.State != SignalNothingPublished {
+		msg += "; no rollback was performed and the previous value was NOT restored; the application's state is uncertain, manual recovery (reload or restart) is required"
+	}
+	return msg
+}
+
+func (e *SignalRotationError) Unwrap() error { return e.Cause }
+
 // SignalOutcome states exactly which lifecycle steps are evidenced.
 type SignalOutcome struct {
 	DeliveredFiles   []string // file names delivered and probed
@@ -55,6 +102,7 @@ type SignalOutcome struct {
 	Readiness        rotation.Readiness
 	AdoptionVerified bool // always false: no application acknowledgement mechanism exists
 	Limitation       string
+	State            SignalState
 }
 
 const signalLimitation = "the application's adoption of the new secret is NOT verified: DSO cannot observe whether the process reopened the file (a process holding the old file open keeps reading the old inode)"
@@ -230,38 +278,38 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 		return out, err
 	}
 
-	published := false
-	fail := func(stage string, cause error) (SignalOutcome, error) {
-		msg := fmt.Sprintf("signal rotation failed at %s: %v", stage, cause)
-		if published {
-			// New files may be on disk while the application still holds the old
-			// value; the previous file is not restorable (no plaintext backup).
-			msg += "; new secret file(s) were already published and the previous value was NOT restored; the application's state is unknown, manual recovery (reload or restart) is required"
-			if serviceName != "" {
-				r.markDegraded(serviceName, msg)
-			}
+	fail := func(state SignalState, stage string, cause error) (SignalOutcome, error) {
+		out.State = state
+		serr := &SignalRotationError{State: state, Stage: stage, Cause: cause}
+		if state != SignalNothingPublished && serviceName != "" {
+			r.markDegraded(serviceName, serr.Error())
 		}
-		return out, errors.New(msg)
+		return out, serr
 	}
 
+	filesBefore := 0
 	for _, spec := range specs {
 		if err := ops.deliver(ctx, target.ID, spec); err != nil {
-			// A failed delivery leaves the previous file untouched (atomic
-			// publish), but earlier specs in this run may already be published.
-			return fail("secret delivery", err)
+			// Delivery is atomic PER FILE. If any file could already have been
+			// replaced (an earlier spec, or an earlier file of a multi-file spec),
+			// the set is partially published; otherwise the previous value is intact.
+			if filesBefore == 0 && len(spec.Data) <= 1 {
+				return fail(SignalNothingPublished, "secret delivery", err)
+			}
+			return fail(SignalPartiallyPublished, "secret delivery", err)
 		}
-		published = true
+		filesBefore += len(spec.Data)
 	}
 	for _, spec := range specs {
 		if err := ops.probe(ctx, target.ID, spec); err != nil {
-			return fail("delivery verification", err)
+			return fail(SignalPublishedUnverified, "delivery verification", err)
 		}
 		out.DeliveredFiles = append(out.DeliveredFiles, fileNames(spec.Data)...)
 	}
 	out.Delivered = true
 
 	if err := ops.signal(ctx, target.ID, sig); err != nil {
-		return fail("reload signal delivery", err)
+		return fail(SignalPublishedNotSignalled, "reload signal delivery", err)
 	}
 	out.ReloadRequested = true
 
@@ -273,9 +321,10 @@ func (r *ReloaderController) signalRotation(ctx context.Context, ops signalOps, 
 	}
 	ev, err := ops.ready(ctx, target.ID, readyTimeout)
 	if err != nil {
-		return fail("post-reload readiness", err)
+		return fail(SignalSentOutcomeUnknown, "post-reload readiness", err)
 	}
 	out.Readiness = ev
+	out.State = SignalReloadRequested
 	return out, nil
 }
 

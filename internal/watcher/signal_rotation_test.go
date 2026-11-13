@@ -147,10 +147,17 @@ func TestSignalRotation_FailureBeforePublishNeverSignals(t *testing.T) {
 		l.add("deliver:" + spec.Path)
 		return errors.New("secret write command exited 69 (integrity check failed)")
 	}
-	_, err := r.signalRotation(context.Background(), ops, &TargetContainer{ID: "c1", Secrets: []string{"db"}}, "svc", "db")
+	out, err := r.signalRotation(context.Background(), ops, &TargetContainer{ID: "c1", Secrets: []string{"db"}}, "svc", "db")
 	noLeak(t, err)
 	if err == nil {
 		t.Fatal("failed delivery must fail the rotation")
+	}
+	var serr *SignalRotationError
+	if !errors.As(err, &serr) || serr.State != SignalNothingPublished || out.State != SignalNothingPublished {
+		t.Fatalf("a first-file failure publishes nothing: %v / %q", err, out.State)
+	}
+	if strings.Contains(err.Error(), "NOT restored") {
+		t.Fatalf("nothing was published, so there is nothing to restore: %v", err)
 	}
 	if l.has("signal:") || l.has("probe:") || l.has("ready") {
 		t.Fatalf("nothing may follow a failed delivery: %v", l.get())
@@ -202,6 +209,19 @@ func TestSignalRotation_FailureAfterPublishIsReportedAsUnrecoverable(t *testing.
 			noLeak(t, err)
 			if err == nil {
 				t.Fatal("must not be reported as a successful rotation")
+			}
+			wantState := map[string]SignalState{
+				"second secret fails after first was published": SignalPartiallyPublished,
+				"probe fails":     SignalPublishedUnverified,
+				"signal fails":    SignalPublishedNotSignalled,
+				"readiness fails": SignalSentOutcomeUnknown,
+			}[name]
+			var serr *SignalRotationError
+			if !errors.As(err, &serr) || serr.State != wantState || out.State != wantState {
+				t.Fatalf("want state %q, got %v / outcome %q", wantState, err, out.State)
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "irrecoverable") || strings.Contains(strings.ToLower(err.Error()), "unrecoverable") {
+				t.Fatalf("the state is uncertain, not unrecoverable: %v", err)
 			}
 			if !strings.Contains(err.Error(), "NOT restored") || !strings.Contains(err.Error(), "manual recovery") {
 				t.Fatalf("error must say the previous value was not restored and recovery is manual: %v", err)
@@ -396,5 +416,40 @@ func TestNormalizeSignal(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("%q => %q, %v", in, got, err)
 		}
+	}
+}
+
+// A single secret mapped to several files: a failure part-way leaves a mixed set.
+func TestSignalRotation_MultiFileSecretFailureIsPartialAndNeverSignals(t *testing.T) {
+	sec := fileSecret("db", "/run/secrets/dso")
+	r := newSignalController(t, sec)
+	r.Cache = mapCache{"vault:db": map[string]string{"user": sigSentinel + "-u", "password": sigSentinel + "-p"}}
+	l := &opLog{}
+	ops := okOps(l)
+	ops.deliver = func(ctx context.Context, id string, spec rotation.FileSecretSpec) error {
+		l.add("deliver:" + spec.Path)
+		return errors.New("write failed after the first file")
+	}
+	out, err := r.signalRotation(context.Background(), ops, &TargetContainer{ID: "c", Secrets: []string{"db"}}, "svc", "db")
+	var serr *SignalRotationError
+	if !errors.As(err, &serr) || serr.State != SignalPartiallyPublished || out.State != SignalPartiallyPublished {
+		t.Fatalf("a multi-file failure may have published some files: %v / %q", err, out.State)
+	}
+	if l.has("signal:") || l.has("probe:") {
+		t.Fatalf("no probe or signal after incomplete delivery: %v", l.get())
+	}
+	if out.Delivered {
+		t.Fatal("the secret set must not be reported as delivered/applied")
+	}
+	if _, bad := r.IsDegraded("svc"); !bad {
+		t.Fatal("a possibly inconsistent secret set must be flagged")
+	}
+}
+
+func TestSignalRotation_SuccessStateAndLimitationDocumentDegradedStateIsInMemory(t *testing.T) {
+	r := newSignalController(t, fileSecret("db", "/run/secrets/dso"))
+	out, err := r.signalRotation(context.Background(), okOps(&opLog{}), &TargetContainer{ID: "c", Secrets: []string{"db"}}, "svc", "db")
+	if err != nil || out.State != SignalReloadRequested {
+		t.Fatalf("%v %q", err, out.State)
 	}
 }
