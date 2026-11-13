@@ -9,7 +9,6 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
@@ -96,6 +95,9 @@ type AutomaticRecovery struct {
 	// reachable from a real `dso agent` process, which always has an
 	// OwnerID from EnsureOwnerID).
 	OwnerID string
+
+	// Timings overrides the default health/stability waits (tests).
+	Timings *recoveryTimings
 }
 
 // SetOwnerID wires this agent's dso.owner identity into the recovery/cleanup
@@ -120,10 +122,7 @@ func (ar *AutomaticRecovery) emitRecoveryEvent(t notify.EventType, rotation *Rot
 	if ar.Dispatcher == nil {
 		return
 	}
-	var containers []string
-	if rotation.OriginalContainerID != "" {
-		containers = strings.Split(rotation.OriginalContainerID, ",")
-	}
+	containers := rotation.OriginalIDs()
 	ar.Dispatcher.Dispatch(notify.NewEvent(t, rotation.ProviderName, rotation.SecretName, containers, 0, err))
 }
 
@@ -136,242 +135,285 @@ func NewAutomaticRecovery(cli *client.Client, logger *zap.Logger, st *StateTrack
 	}
 }
 
-// RecoverFromCrash automatically recovers from agent crashes by cleaning up
-// orphaned containers and restoring original containers to active state.
+// recoveryTimings are injectable so tests do not wait.
+type recoveryTimings struct {
+	// healthWait bounds how long recovery waits for a holder whose HEALTHCHECK is
+	// still "starting" to become healthy before deciding it is NOT proven healthy.
+	healthWait time.Duration
+	// minStableRunning is how long a holder WITHOUT a HEALTHCHECK must have been
+	// running before "running" is accepted as evidence it is serving.
+	minStableRunning time.Duration
+}
+
+var defaultRecoveryTimings = recoveryTimings{healthWait: 20 * time.Second, minStableRunning: 30 * time.Second}
+
+// RecoverFromCrash is called once at agent startup. It inspects Docker (the
+// authority) rather than trusting the rotation journal, because a crash can
+// land between a Docker action and its acknowledgement.
 //
-// This is called on agent startup before normal operations begin.
+// INVARIANT: recovery never deletes the last known healthy workload. A rotation
+// artifact ("<name>_dso_backup_*", "<name>_dso_new_*", "<name>_old_<ts>") is
+// removed only when a container that is owned by this agent, holds the real
+// "<name>", and is verified healthy (HEALTHCHECK healthy, or running and stable
+// when the image has none) exists and is a different container. Anything
+// ambiguous (state unreadable, original missing with no healthy holder, ownership
+// mismatch, holder unhealthy) is PRESERVED and reported for manual recovery.
+//
+// Recovery cannot see which backend the (now dead) proxy was pointing at; that is
+// safe because the proxy is rebuilt from running labelled containers on restart
+// and a healthy real-name holder always remains.
 func (ar *AutomaticRecovery) RecoverFromCrash(ctx context.Context) error {
 	if ar.st == nil {
 		ar.logger.Info("State tracker not available, skipping automatic recovery")
 		return nil
 	}
+	if corrupt, where := ar.st.Corrupt(); corrupt {
+		ar.logger.Error("Persisted rotation state is unreadable: automatic recovery is DISABLED and no container will be touched; manual recovery required",
+			zap.String("preserved_state_file", where))
+		return nil
+	}
 
-	pending := ar.st.GetPendingRotations()
+	pending := ar.st.GetUnfinishedRotationsAtStartup()
 	if len(pending) == 0 {
-		ar.logger.Debug("No pending rotations detected, recovery not needed")
+		ar.logger.Debug("No unfinished rotations detected, recovery not needed")
 		return nil
 	}
+	ar.logger.Warn("Detected unfinished rotations, performing safe recovery", zap.Int("count", len(pending)))
 
-	ar.logger.Warn("Detected pending rotations, performing automatic recovery",
-		zap.Int("count", len(pending)))
-
-	// List only DSO-managed containers to avoid acting on unowned containers on shared hosts.
-	containers, err := ar.cli.ContainerList(ctx, container.ListOptions{
-		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", "dso.reloader=true")),
-	})
-	if err != nil {
-		ar.logger.Error("Failed to list containers for recovery",
-			zap.Error(err))
-		// Don't fail startup if Docker is slow; just skip recovery
-		return nil
-	}
-
-	// Index containers by name for O(1) lookup. SEC-P0: only containers this
-	// agent owns are eligible for recovery actions below -- a dso.reloader
-	// container without a matching dso.owner label (or none at all) must
-	// never be touched by crash recovery, exactly as normal discovery
-	// refuses to register it.
-	containersByName := make(map[string]string)
-	skippedUnowned := 0
-	for _, c := range containers {
-		if !ar.ownedByMe(c.Labels) {
-			skippedUnowned++
-			continue
-		}
-		for _, name := range c.Names {
-			// Remove leading slash from Docker's name format
-			cleanName := strings.TrimPrefix(name, "/")
-			containersByName[cleanName] = c.ID
-		}
-	}
-	if skippedUnowned > 0 {
-		ar.logger.Warn("Crash recovery: skipped dso.reloader containers not owned by this agent",
-			zap.Int("count", skippedUnowned))
-	}
-
-	// Perform recovery for each pending rotation
 	for _, rotation := range pending {
-		ar.recoverSingleRotation(ctx, containersByName, rotation)
+		ar.recoverSingleRotation(ctx, rotation)
 	}
-
-	ar.logger.Info("Automatic recovery completed",
-		zap.Int("rotations_processed", len(pending)))
+	ar.logger.Info("Automatic recovery completed", zap.Int("rotations_processed", len(pending)))
 	return nil
 }
 
-// recoverSingleRotation performs recovery for a single pending rotation.
-//
-// It detects orphaned containers using DSO's naming conventions and cleans them up:
-//   - Containers named "*_dso_backup_*" (rolling strategy's old container) are removed
-//   - Containers named "*_dso_new_*" (rolling strategy's shadow container) are removed
-//   - Containers named "*_old_<unix timestamp>" (restart strategy's renamed-away
-//     original) are removed -- see isDSORestartOldContainerName's doc comment
-//   - The original container should remain running with its original name
-//
-// If the original container is missing, this is a critical error and the operator
-// must manually intervene.
-func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context,
-	containersByName map[string]string,
-	rotation *RotationState) {
+func (ar *AutomaticRecovery) timings() recoveryTimings {
+	if ar.Timings != nil {
+		return *ar.Timings
+	}
+	return defaultRecoveryTimings
+}
 
+// recoverSingleRotation resolves one interrupted rotation. Each original
+// container is inspected individually (structured IDs; no comma-joined lookups),
+// ownership is verified, a stopped original that still has its own name is
+// started (rollback), and only then are provably redundant artifacts retired.
+func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation *RotationState) {
 	logger := ar.logger.With(
+		zap.String("rotation_id", rotation.RotationID),
 		zap.String("secret", rotation.SecretName),
-		zap.String("provider", rotation.ProviderName),
-		zap.String("original_id", shortID(rotation.OriginalContainerID)),
-	)
+		zap.String("provider", rotation.ProviderName))
 
-	// Detect orphaned containers by searching for DSO naming patterns
-	var backupContainers []string
-	var newContainers []string
-	var oldContainers []string
-
-	for name, containerID := range containersByName {
-		switch {
-		case isDSOBackupContainerName(name):
-			backupContainers = append(backupContainers, containerID)
-		case isDSONewContainerName(name):
-			newContainers = append(newContainers, containerID)
-		case isDSORestartOldContainerName(name):
-			oldContainers = append(oldContainers, containerID)
+	manual := func(reason string, preserved []string) {
+		msg := reason
+		if len(preserved) > 0 {
+			msg += " (preserved: " + strings.Join(preserved, ", ") + ")"
 		}
+		logger.Error("Recovery cannot establish a safe state; all workloads preserved, manual recovery required", zap.String("reason", msg))
+		if err := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID, msg); err != nil {
+			logger.Error("Failed to mark rotation for manual intervention", zap.Error(err))
+		}
+		ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New(msg))
 	}
 
-	// Clean up backup containers (old containers that failed to get removed)
-	for _, containerID := range backupContainers {
-		logger.Info("Removing orphaned backup container",
-			zap.String("backup_id", shortID(containerID)))
-
-		// Best-effort stop and remove
-		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
-		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-			logger.Warn("Failed to remove backup container",
-				zap.String("backup_id", shortID(containerID)),
-				zap.Error(err))
-		}
-	}
-
-	// Clean up new/temp containers (new containers that failed to get activated)
-	for _, containerID := range newContainers {
-		logger.Info("Removing orphaned new container",
-			zap.String("new_id", shortID(containerID)))
-
-		// Best-effort stop and remove
-		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
-		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-			logger.Warn("Failed to remove new container",
-				zap.String("new_id", shortID(containerID)),
-				zap.Error(err))
-		}
-	}
-
-	// Clean up restart-strategy containers left under their "_old_<ts>"
-	// rename after a crash interrupted that rotation before cleanup ran.
-	for _, containerID := range oldContainers {
-		logger.Info("Removing orphaned restart-strategy container",
-			zap.String("old_id", shortID(containerID)))
-
-		// Best-effort stop and remove
-		_ = ar.cli.ContainerStop(ctx, containerID, container.StopOptions{})
-		if err := ar.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-			logger.Warn("Failed to remove restart-strategy old container",
-				zap.String("old_id", shortID(containerID)),
-				zap.Error(err))
-		}
-	}
-
-	// Verify original container is still running
-	// The original container should be running with its original name
-	originalInspect, err := ar.cli.ContainerInspect(ctx, rotation.OriginalContainerID)
-	if err != nil {
-		logger.Error("CRITICAL: Original container is missing after crash",
-			zap.String("original_id", shortID(rotation.OriginalContainerID)),
-			zap.Error(err))
-
-		// Mark rotation state for manual operator intervention
-		if err := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName,
-			rotation.OriginalContainerID,
-			"Original container missing after crash"); err != nil {
-			logger.Error("Failed to mark rotation for manual intervention",
-				zap.Error(err))
-		}
-		ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New("original container missing after crash; manual intervention required"))
+	ids := rotation.OriginalIDs()
+	if len(ids) == 0 {
+		// Nothing identifies the workload: we cannot tell artifacts of this
+		// rotation from anything else. Preserve everything.
+		manual("rotation record has no container identity", nil)
 		return
 	}
 
-	// Check if original container is in a healthy state
-	if originalInspect.State == nil {
-		logger.Warn("Original container state is nil, cannot validate recovery",
-			zap.String("original_id", shortID(rotation.OriginalContainerID)))
-		// Mark rotation as recovered anyway since cleanup is done
-		_ = ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName,
-			rotation.OriginalContainerID)
+	var preserved []string
+	allResolved := true
+	for _, id := range ids {
+		insp, err := ar.cli.ContainerInspect(ctx, id)
+		if err != nil {
+			// Original gone. If its service still has a verified healthy holder the
+			// rotation completed; otherwise this is the dangerous case.
+			logger.Warn("Original container not found", zap.String("original_id", shortID(id)), zap.Error(err))
+			allResolved = false
+			preserved = append(preserved, shortID(id)+"(missing)")
+			continue
+		}
+		name := strings.TrimPrefix(insp.Name, "/")
+		var labels map[string]string
+		if insp.Config != nil {
+			labels = insp.Config.Labels
+		}
+		if !ar.ownedByMe(labels) {
+			manual("original container "+shortID(id)+" is not owned by this agent (ownership mismatch)", []string{shortID(id)})
+			return
+		}
+		base, _, isArtifact := artifactBase(name)
+		if !isArtifact {
+			base = name
+		}
+
+		ok, why := ar.ensureHolder(ctx, logger, base, id, insp.State != nil && !insp.State.Running && !isArtifact)
+		if !ok {
+			allResolved = false
+			preserved = append(preserved, base+"("+why+")")
+			continue
+		}
+	}
+
+	// Retire redundant artifacts (only those with a verified healthy holder).
+	removed, kept := ar.retireSafeArtifacts(ctx, logger)
+	preserved = append(preserved, kept...)
+
+	if !allResolved {
+		manual("no verified healthy workload could be established for every original container", preserved)
 		return
 	}
-
-	// AUTOMATIC ROLLBACK (OPS-M3): if the original container survived the crash but
-	// is not running — e.g. it was stopped mid-rotation before the new container
-	// became healthy — start it so the service is actually restored. This is the
-	// concrete rollback action that makes the "automatic recovery" contract true
-	// rather than merely logging that intervention is required.
-	//
-	// SAFETY: only auto-start when the original still owns its normal name. If a
-	// rotation strategy already renamed it (e.g. "<name>_old_<ts>", "_dso_backup_",
-	// "_dso_shadow"), a replacement container is likely holding the real name and
-	// host ports. Starting the stale backup in that case would create a duplicate
-	// instance and a port conflict — corrupting container state. We refuse to do
-	// that and flag the rotation for operator review instead.
-	if !originalInspect.State.Running {
-		originalName := strings.TrimPrefix(originalInspect.Name, "/")
-		rotatedAway := strings.Contains(originalName, "_old_") ||
-			strings.Contains(originalName, "_dso_backup_") ||
-			strings.Contains(originalName, "_dso_new_") ||
-			strings.Contains(originalName, "_dso_shadow")
-
-		if rotatedAway {
-			logger.Warn("Original container was renamed during rotation and is stopped; "+
-				"refusing to auto-start to avoid a duplicate instance — flagging for review",
-				zap.String("original_id", shortID(rotation.OriginalContainerID)),
-				zap.String("current_name", originalName))
-			if merr := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName,
-				rotation.OriginalContainerID,
-				"original container renamed and stopped after crash; manual review required to avoid a duplicate"); merr != nil {
-				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
-			}
-			ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New("original container renamed and stopped after crash; manual review required"))
-			return
-		}
-
-		logger.Warn("Original container is stopped; starting it to complete rollback",
-			zap.String("original_id", shortID(rotation.OriginalContainerID)),
-			zap.String("state", originalInspect.State.Status))
-		if startErr := ar.cli.ContainerStart(ctx, rotation.OriginalContainerID, container.StartOptions{}); startErr != nil {
-			logger.Error("Failed to restart original container during automatic rollback",
-				zap.String("original_id", shortID(rotation.OriginalContainerID)),
-				zap.Error(startErr))
-			if merr := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName,
-				rotation.OriginalContainerID,
-				"failed to restart original container during automatic rollback"); merr != nil {
-				logger.Error("Failed to mark rotation for manual intervention", zap.Error(merr))
-			}
-			ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, startErr)
-			return
-		}
-		logger.Info("Original container restarted; rollback complete",
-			zap.String("original_id", shortID(rotation.OriginalContainerID)))
-	}
-
-	logger.Info("Automatic recovery completed",
-		zap.String("container_state", originalInspect.State.Status),
-		zap.Bool("running", originalInspect.State.Running))
-
-	// Mark rotation as recovered (cleanup is complete)
-	if err := ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName,
-		rotation.OriginalContainerID); err != nil {
-		logger.Error("Failed to mark rotation as recovered",
-			zap.Error(err))
+	logger.Info("Recovery complete: a verified healthy workload exists for every service", zap.Int("artifacts_removed", removed))
+	if err := ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID); err != nil {
+		logger.Error("Failed to mark rotation as recovered", zap.Error(err))
 	}
 	ar.emitRecoveryEvent(notify.RecoverySucceeded, rotation, nil)
+}
+
+// ensureHolder makes sure a verified healthy container holds the real name
+// `base`. If the original is stopped AND still carries its real name, it is
+// started (automatic rollback); a stopped original that was renamed away is never
+// auto-started (a replacement likely holds the name and ports: that would create
+// a duplicate). Returns false with a short reason when no healthy holder exists.
+func (ar *AutomaticRecovery) ensureHolder(ctx context.Context, logger *zap.Logger, base, originalID string, originalStoppedUnderRealName bool) (bool, string) {
+	if originalStoppedUnderRealName {
+		logger.Warn("Original container is stopped under its real name; starting it (rollback)", zap.String("original_id", shortID(originalID)))
+		if err := ar.cli.ContainerStart(ctx, originalID, container.StartOptions{}); err != nil {
+			return false, "restart failed"
+		}
+	}
+	ok, why := ar.holderHealthy(ctx, base, "")
+	return ok, why
+}
+
+// holderHealthy reports whether an owned container named exactly `base` is
+// running and healthy. excludeID, if set, must not be the holder.
+func (ar *AutomaticRecovery) holderHealthy(ctx context.Context, base, excludeID string) (bool, string) {
+	t := ar.timings()
+	deadline := time.Now().Add(t.healthWait)
+	for {
+		insp, err := ar.cli.ContainerInspect(ctx, base)
+		if err != nil {
+			return false, "no container holds the real name"
+		}
+		if excludeID != "" && insp.ID == excludeID {
+			return false, "the artifact itself holds the name"
+		}
+		var labels map[string]string
+		if insp.Config != nil {
+			labels = insp.Config.Labels
+		}
+		if !ar.ownedByMe(labels) {
+			return false, "name holder is not owned by this agent"
+		}
+		st := insp.State
+		if st == nil || !st.Running || st.Restarting {
+			return false, "name holder is not running"
+		}
+		if st.Health != nil {
+			switch st.Health.Status {
+			case "healthy":
+				return true, ""
+			case "unhealthy":
+				return false, "name holder is unhealthy"
+			default: // "starting": wait, then give up (not proven healthy)
+				if time.Now().Before(deadline) {
+					select {
+					case <-ctx.Done():
+						return false, "cancelled"
+					case <-time.After(250 * time.Millisecond):
+					}
+					continue
+				}
+				return false, "name holder health check never became healthy"
+			}
+		}
+		// No HEALTHCHECK: "running" is weak evidence; require it to have been
+		// stable for a while so a crash-looping container is not trusted.
+		if started, perr := time.Parse(time.RFC3339Nano, st.StartedAt); perr == nil && time.Since(started) >= t.minStableRunning {
+			return true, ""
+		}
+		if time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return false, "cancelled"
+			case <-time.After(250 * time.Millisecond):
+			}
+			continue
+		}
+		return false, "name holder has no health check and has not been running long enough to trust"
+	}
+}
+
+// artifactBase splits a rotation-artifact name into the real service name and the
+// artifact kind. ok is false for any other name (never removed).
+func artifactBase(cleanName string) (base, kind string, ok bool) {
+	if i := strings.Index(cleanName, "_dso_backup_"); i > 0 {
+		return cleanName[:i], "backup", true
+	}
+	if i := strings.Index(cleanName, "_dso_new_"); i > 0 {
+		return cleanName[:i], "new", true
+	}
+	if loc := oldContainerSuffixPattern.FindStringIndex(cleanName); loc != nil && loc[0] > 0 {
+		return cleanName[:loc[0]], "old", true
+	}
+	return "", "", false
+}
+
+// retireSafeArtifacts removes owned rotation artifacts whose service has a
+// verified healthy real-name holder, and ONLY those. Each candidate is
+// re-inspected immediately before removal (identity, ownership, name) and the
+// holder is re-verified. Everything else is preserved and returned for reporting.
+func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *zap.Logger) (removed int, preserved []string) {
+	list, err := ar.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		logger.Error("Failed to list containers for artifact retirement; nothing removed", zap.Error(err))
+		return 0, nil
+	}
+	for _, c := range list {
+		for _, n := range c.Names {
+			cleanName := strings.TrimPrefix(n, "/")
+			base, _, isArtifact := artifactBase(cleanName)
+			if !isArtifact {
+				continue
+			}
+			if !ar.ownedByMe(c.Labels) {
+				logger.Warn("Skipping rotation-artifact-named container not owned by this agent",
+					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName))
+				break
+			}
+			if ok, why := ar.holderHealthy(ctx, base, c.ID); !ok {
+				logger.Warn("Preserving rotation artifact: no verified healthy workload holds the real name",
+					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName), zap.String("reason", why))
+				preserved = append(preserved, cleanName+"("+why+")")
+				break
+			}
+			// Re-verify identity right before the destructive step.
+			insp, ierr := ar.cli.ContainerInspect(ctx, c.ID)
+			if ierr != nil || strings.TrimPrefix(insp.Name, "/") != cleanName || insp.Config == nil || !ar.ownedByMe(insp.Config.Labels) {
+				preserved = append(preserved, cleanName+"(identity changed)")
+				break
+			}
+			if again, why := ar.holderHealthy(ctx, base, c.ID); !again {
+				preserved = append(preserved, cleanName+"("+why+")")
+				break
+			}
+			logger.Info("Retiring redundant rotation artifact (a verified healthy workload holds the real name)",
+				zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName))
+			_ = ar.cli.ContainerStop(ctx, c.ID, container.StopOptions{})
+			if rerr := ar.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); rerr != nil {
+				logger.Warn("Failed to remove artifact", zap.String("container_id", shortID(c.ID)), zap.Error(rerr))
+				preserved = append(preserved, cleanName+"(removal failed)")
+			} else {
+				removed++
+			}
+			break
+		}
+	}
+	return removed, preserved
 }
 
 // ValidateStateOnStartup validates the state file and detects corruption.
@@ -420,59 +462,19 @@ func (ar *AutomaticRecovery) ValidateStateOnStartup(ctx context.Context) bool {
 	return true
 }
 
-// CleanupOrphanedContainers performs a broad scan for any orphaned DSO containers
-// and removes them. This is a best-effort cleanup operation.
+// CleanupOrphanedContainers sweeps rotation artifacts at startup. It is no longer
+// a blind delete-by-name: it uses the same safety rule as recovery, so an artifact
+// is removed only when an owned, verified-healthy container holds the real name.
+// With unreadable persisted state it does nothing.
 func (ar *AutomaticRecovery) CleanupOrphanedContainers(ctx context.Context) error {
-	containers, err := ar.cli.ContainerList(ctx, container.ListOptions{All: true})
-	if err != nil {
-		ar.logger.Error("Failed to list containers for orphan cleanup",
-			zap.Error(err))
-		return err
-	}
-
-	var cleanedUp int
-	for _, c := range containers {
-		// SEC-P0: a rotation-artifact-shaped NAME alone is not proof this
-		// agent created the container -- an independent DSO agent on the
-		// same host can produce identically-shaped names
-		// ("*_dso_backup_*", "*_dso_new_*", "*_old_<ts>"). Require this
-		// agent's own dso.owner label before touching it; default-deny
-		// (skip + warn) an unowned or foreign-owned match instead of
-		// silently sweeping it up.
-		if !ar.ownedByMe(c.Labels) {
-			for _, name := range c.Names {
-				cleanName := strings.TrimPrefix(name, "/")
-				if isDSOBackupContainerName(cleanName) || isDSONewContainerName(cleanName) || isDSORestartOldContainerName(cleanName) {
-					ar.logger.Warn("Orphan cleanup: skipping rotation-artifact-named container not owned by this agent",
-						zap.String("container_id", shortID(c.ID)),
-						zap.String("container_name", cleanName))
-					break
-				}
-			}
-			continue
-		}
-		for _, name := range c.Names {
-			cleanName := strings.TrimPrefix(name, "/")
-
-			// Check for DSO naming patterns
-			if isDSOBackupContainerName(cleanName) || isDSONewContainerName(cleanName) || isDSORestartOldContainerName(cleanName) {
-				ar.logger.Info("Cleaning up orphaned DSO container",
-					zap.String("container_id", shortID(c.ID)),
-					zap.String("container_name", cleanName))
-
-				_ = ar.cli.ContainerStop(ctx, c.ID, container.StopOptions{})
-				if err := ar.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
-					ar.logger.Warn("Failed to remove orphaned container",
-						zap.String("container_id", shortID(c.ID)),
-						zap.Error(err))
-				} else {
-					cleanedUp++
-				}
-			}
+	if ar.st != nil {
+		if corrupt, _ := ar.st.Corrupt(); corrupt {
+			ar.logger.Error("Orphan cleanup skipped: persisted rotation state is unreadable")
+			return nil
 		}
 	}
-
+	removed, preserved := ar.retireSafeArtifacts(ctx, ar.logger)
 	ar.logger.Info("Orphan cleanup completed",
-		zap.Int("containers_removed", cleanedUp))
+		zap.Int("containers_removed", removed), zap.Int("containers_preserved", len(preserved)))
 	return nil
 }

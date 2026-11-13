@@ -8,7 +8,6 @@ package agent
 // identically-shaped names for containers it owns.
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -32,61 +31,6 @@ func newOwnershipTestClient(t *testing.T, handler http.Handler) *client.Client {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 	return cli
-}
-
-// TestCleanupOrphanedContainers_SkipsForeignOwner proves that a container
-// whose name matches a DSO rotation-artifact pattern, but whose dso.owner
-// label belongs to a different agent (or is absent -- a legacy container),
-// is left alone. Only a container that both matches the naming pattern AND
-// carries this agent's own dso.owner label is stopped/removed.
-func TestCleanupOrphanedContainers_SkipsForeignOwner(t *testing.T) {
-	var removedIDs []string
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/containers/json"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-				{
-					"Id":     "mine",
-					"Names":  []string{"/svc_dso_backup_123"},
-					"Labels": map[string]string{"dso.owner": "owner-A"},
-				},
-				{
-					"Id":     "foreign",
-					"Names":  []string{"/svc_dso_backup_456"},
-					"Labels": map[string]string{"dso.owner": "owner-B"},
-				},
-				{
-					"Id":     "legacy",
-					"Names":  []string{"/svc_dso_new_789"},
-					"Labels": map[string]string{}, // no dso.owner at all
-				},
-			})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/stop"):
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodDelete:
-			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-			// path shape: /<version?>/containers/<id>
-			id := parts[len(parts)-1]
-			removedIDs = append(removedIDs, id)
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusNoContent)
-		}
-	})
-
-	cli := newOwnershipTestClient(t, handler)
-	ar := NewAutomaticRecovery(cli, zaptest.NewLogger(t), nil)
-	ar.OwnerID = "owner-A"
-
-	if err := ar.CleanupOrphanedContainers(context.Background()); err != nil {
-		t.Fatalf("CleanupOrphanedContainers failed: %v", err)
-	}
-
-	if len(removedIDs) != 1 || removedIDs[0] != "mine" {
-		t.Errorf("expected only the owned container 'mine' to be removed, got %v", removedIDs)
-	}
 }
 
 // TestRecoverFromCrash_IndexesOnlyOwnedContainers proves the container index

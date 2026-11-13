@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,14 +16,44 @@ import (
 
 // RotationState tracks in-flight rotations to enable recovery after crashes
 type RotationState struct {
-	ProviderName        string    `json:"provider_name"`
-	SecretName          string    `json:"secret_name"`
-	OriginalContainerID string    `json:"original_container_id"`
-	NewContainerID      string    `json:"new_container_id"`
-	Status              string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
-	StartTime           time.Time `json:"start_time"`
-	LastUpdate          time.Time `json:"last_update"`
-	ErrorMessage        string    `json:"error_message,omitempty"` // For critical_error status
+	ProviderName string `json:"provider_name"`
+	SecretName   string `json:"secret_name"`
+	// OriginalContainerID is the legacy comma-joined form, still written so older
+	// readers keep working. OriginalContainerIDs is the structured source of truth
+	// (empty in state files written by older releases; OriginalIDs() handles both).
+	OriginalContainerID  string   `json:"original_container_id"`
+	OriginalContainerIDs []string `json:"original_container_ids,omitempty"`
+	NewContainerID       string   `json:"new_container_id"`
+	// RotationID uniquely identifies this rotation attempt; Phase is the last
+	// phase DSO acknowledged ("rotation_requested", "completed", ...). Recovery
+	// never trusts Phase over what Docker actually shows: a crash between a Docker
+	// action and its acknowledgement leaves Phase behind reality.
+	RotationID   string    `json:"rotation_id,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	Status       string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
+	StartTime    time.Time `json:"start_time"`
+	LastUpdate   time.Time `json:"last_update"`
+	ErrorMessage string    `json:"error_message,omitempty"` // For critical_error status
+}
+
+// OriginalIDs returns the container IDs of this rotation as a slice, from the
+// structured field when present, otherwise by splitting the legacy comma-joined
+// string (blank entries dropped).
+func (r *RotationState) OriginalIDs() []string {
+	if len(r.OriginalContainerIDs) > 0 {
+		return append([]string(nil), r.OriginalContainerIDs...)
+	}
+	return splitContainerIDs(r.OriginalContainerID)
+}
+
+func splitContainerIDs(joined string) []string {
+	var out []string
+	for _, p := range strings.Split(joined, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // StateTracker persists rotation state to enable recovery from crashes
@@ -29,6 +62,21 @@ type StateTracker struct {
 	logger   *zap.Logger
 	mu       sync.RWMutex
 	states   map[string]*RotationState
+
+	// corrupt is set when the persisted state file existed but could not be
+	// parsed. The unreadable file is preserved (renamed) as evidence and recovery
+	// performs NO mutations while this is set: with unknown state the only safe
+	// action is to leave every workload alone and report.
+	corrupt     bool
+	corruptPath string
+}
+
+// Corrupt reports whether the persisted state could not be read at startup, and
+// where the unreadable file was preserved.
+func (st *StateTracker) Corrupt() (bool, string) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.corrupt, st.corruptPath
 }
 
 // NewStateTracker creates a state tracker with persistent storage
@@ -58,13 +106,16 @@ func (st *StateTracker) StartRotation(providerName, secretName, originalContaine
 
 	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
 	state := &RotationState{
-		ProviderName:        providerName,
-		SecretName:          secretName,
-		OriginalContainerID: originalContainerID,
-		NewContainerID:      newContainerID,
-		Status:              "in_progress",
-		StartTime:           time.Now(),
-		LastUpdate:          time.Now(),
+		ProviderName:         providerName,
+		SecretName:           secretName,
+		OriginalContainerID:  originalContainerID,
+		OriginalContainerIDs: splitContainerIDs(originalContainerID),
+		NewContainerID:       newContainerID,
+		RotationID:           newRotationID(),
+		Phase:                "rotation_requested",
+		Status:               "in_progress",
+		StartTime:            time.Now(),
+		LastUpdate:           time.Now(),
 	}
 
 	st.states[key] = state
@@ -79,6 +130,7 @@ func (st *StateTracker) CompleteRotation(providerName, secretName, originalConta
 	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
 	if state, ok := st.states[key]; ok {
 		state.Status = "completed"
+		state.Phase = "completed"
 		state.LastUpdate = time.Now()
 		return st.persistState()
 	}
@@ -117,6 +169,24 @@ func (st *StateTracker) GetPendingRotations() []*RotationState {
 		}
 	}
 	return pending
+}
+
+// GetUnfinishedRotationsAtStartup returns every rotation that never reached a
+// terminal state. It must only be used right after the agent started: no rotation
+// can be in flight in a process that has just begun, so an "in_progress" record
+// (of any age) is by definition an interrupted one. GetPendingRotations keeps its
+// five-minute heuristic for the running agent.
+func (st *StateTracker) GetUnfinishedRotationsAtStartup() []*RotationState {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	var out []*RotationState
+	for _, state := range st.states {
+		switch state.Status {
+		case "in_progress", "rollback_required", "critical_error":
+			out = append(out, state)
+		}
+	}
+	return out
 }
 
 // CleanupOldStates removes completed and recovered rotations older than retentionPeriod.
@@ -193,17 +263,44 @@ func (st *StateTracker) persistState() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	// Write atomically with temp file
+	// Crash-safe replace: write a temp file, fsync it, rename over the state
+	// file, then fsync the directory so the rename itself is durable. This
+	// protects against a process crash at any point (the state file is always
+	// the old or the new complete version) and, with the fsyncs, against power
+	// loss on filesystems that honour them. It does not make the Docker action
+	// and its acknowledgement one atomic transaction.
 	tmpFile := stateFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 -- fixed name under the agent state dir
+	if err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
-
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to write state file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to sync state file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close state file: %w", err)
+	}
 	if err := os.Rename(tmpFile, stateFile); err != nil {
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
-
+	if d, err := os.Open(st.stateDir); err == nil { // #nosec G304 -- agent state dir
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
+}
+
+func newRotationID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("rot-%d", time.Now().UnixNano())
+	}
+	return "rot-" + hex.EncodeToString(b)
 }
 
 func (st *StateTracker) loadStates() error {
@@ -220,7 +317,14 @@ func (st *StateTracker) loadStates() error {
 
 	states := make(map[string]*RotationState)
 	if err := json.Unmarshal(data, &states); err != nil {
-		return fmt.Errorf("failed to unmarshal state: %w", err)
+		// Keep the unreadable file as evidence and fail safe: recovery will do
+		// nothing automatic while the persisted state is unknown.
+		quarantined := fmt.Sprintf("%s.corrupt-%d", stateFile, time.Now().Unix())
+		if rerr := os.Rename(stateFile, quarantined); rerr != nil {
+			quarantined = stateFile
+		}
+		st.corrupt, st.corruptPath = true, quarantined
+		return fmt.Errorf("failed to unmarshal state (preserved at %s; automatic recovery disabled): %w", quarantined, err)
 	}
 
 	st.states = states
