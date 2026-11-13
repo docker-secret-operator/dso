@@ -4,6 +4,9 @@ package agent
 
 import (
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -45,13 +48,17 @@ const restrictiveBits = 0o077
 // Supported umask contract: the temporary mask is MONOTONIC. It can only add
 // restrictive bits to whatever the process already had (a previous 0o277 stays
 // 0o277 under mask 0o077, it is never loosened to 0o077), so an operator or
-// service-manager that runs the agent with a stricter umask keeps it. The previous
-// value is read with the same Umask call that installs the temporary one: Umask has
-// no read-only form, so the probe installs 0o777 (the most restrictive mask, so the
-// instant before the real value is applied can never be LESS restrictive than the
-// previous one) and the previous value OR-ed with `mask` is applied before fn runs.
-// Under umaskMu this read-modify-
-// write is atomic with respect to every other change THIS package makes.
+// service-manager that runs the agent with a stricter umask keeps it.
+//
+// The previous value is read from /proc/self/status ("Umask:", Linux >= 4.7), which
+// changes nothing. Do NOT read it by probing with Umask(0o777): that installs a
+// process-wide mask of 000-permission for an instant and any unrelated goroutine
+// that creates a directory in that instant gets a directory it cannot write to
+// (observed as "bind: permission denied" in concurrent StartSocketServer calls).
+// If /proc is unreadable, fall back to the single atomic Umask(mask) call, which
+// returns the previous value; owner bits that the previous mask cleared are then
+// re-applied immediately (a transient that is looser only in owner bits).
+// Under umaskMu this is atomic with respect to every other change THIS package makes.
 //
 // Remaining process-wide limitation (not fixable from user space): umask is shared
 // by every thread, so for the few microseconds fn runs, an UNRELATED goroutine that
@@ -61,10 +68,36 @@ const restrictiveBits = 0o077
 func withUmask(mask int, fn func()) {
 	umaskMu.Lock()
 	defer umaskMu.Unlock()
-	previous := unix.Umask(0o777)
-	unix.Umask(previous | mask)
+	var previous int
+	if p, ok := procUmask(); ok {
+		previous = p
+		unix.Umask(previous | mask)
+	} else {
+		previous = unix.Umask(mask)
+		if extra := previous &^ mask; extra != 0 {
+			unix.Umask(previous | mask)
+		}
+	}
 	defer unix.Umask(previous)
 	fn()
+}
+
+// procUmask reads the process umask without changing it.
+func procUmask() (int, bool) {
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "Umask:"); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 8, 32)
+			if err != nil || n > 0o777 {
+				return 0, false
+			}
+			return int(n), true
+		}
+	}
+	return 0, false
 }
 
 // listenUnixRestricted creates a Unix socket whose file is born with no group or
