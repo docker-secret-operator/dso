@@ -187,3 +187,58 @@ func TestConcurrentSocketCreationNeverExposesWiderMode(t *testing.T) {
 		t.Fatalf("process umask was left at %#o, want 022", got)
 	}
 }
+
+// The temporary mask is monotonic: previousMask | requested. A previous mask that
+// is stricter than the request (here 0o277, owner-write also denied) must keep its
+// extra bits inside the scope instead of being loosened to 0o077, and is restored
+// exactly afterwards.
+func TestWithUmaskIsMonotonicAndPreservesPreviousBits(t *testing.T) {
+	orig := unix.Umask(0o022)
+	t.Cleanup(func() { unix.Umask(orig) })
+
+	cases := []struct{ previous, request, inside int }{
+		{0o022, 0o077, 0o077},
+		{0o000, 0o077, 0o077},
+		{0o277, 0o077, 0o277}, // owner-restrictive bits preserved
+		{0o027, 0o077, 0o077},
+		{0o207, 0o070, 0o277}, // union, not replacement
+		{0o077, 0o077, 0o077},
+	}
+	for _, c := range cases {
+		unix.Umask(c.previous)
+		withUmask(c.request, func() {
+			cur := unix.Umask(0o777)
+			unix.Umask(cur) // put it back; we only wanted to read it
+			if cur != c.inside {
+				t.Errorf("previous %#o request %#o: mask inside scope = %#o, want %#o", c.previous, c.request, cur, c.inside)
+			}
+		})
+		if got := unix.Umask(c.previous); got != c.previous {
+			t.Errorf("previous %#o: umask after scope = %#o, want it restored", c.previous, got)
+		}
+	}
+}
+
+// A socket created while the process umask is 0o277 is still born with no
+// group/other bits (monotonic mask), and the 0o277 mask is back afterwards.
+func TestListenUnixRestrictedKeepsStricterPreviousMask(t *testing.T) {
+	dir := t.TempDir() // created before the strict mask, which would deny owner write
+	orig := unix.Umask(0o277)
+	t.Cleanup(func() { unix.Umask(orig) })
+	p := filepath.Join(dir, "s.sock")
+	l, err := listenUnixRestricted(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("socket born with group/other bits under a 0o277 process umask: %v", fi.Mode().Perm())
+	}
+	if got := unix.Umask(0o277); got != 0o277 {
+		t.Fatalf("umask after listen = %#o, want 0277 restored", got)
+	}
+}

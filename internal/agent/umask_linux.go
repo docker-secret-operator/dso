@@ -29,15 +29,41 @@ import (
 // must stay as small as one system call.
 var umaskMu sync.Mutex
 
-// withUmask runs fn with the process umask set to mask and restores the previous
-// umask and releases the lock on every exit path, including a panic in fn. It is
-// the ONLY way this package changes the umask; callers cannot forget to restore.
-// fn must be short and must not call withUmask (the lock is not reentrant).
+// restrictiveBits are the permission bits the temporary mask always adds: nothing
+// created under it grants any group or other access.
+const restrictiveBits = 0o077
+
+// withUmask runs fn with the process umask temporarily set to
+//
+//	tempMask = previousMask | mask
+//
+// and restores the previous umask and releases the lock on every exit path,
+// including a panic in fn. It is the ONLY way this package changes the umask;
+// callers cannot forget to restore. fn must be short and must not call withUmask
+// (the lock is not reentrant).
+//
+// Supported umask contract: the temporary mask is MONOTONIC. It can only add
+// restrictive bits to whatever the process already had (a previous 0o277 stays
+// 0o277 under mask 0o077, it is never loosened to 0o077), so an operator or
+// service-manager that runs the agent with a stricter umask keeps it. The previous
+// value is read with the same Umask call that installs the temporary one: Umask has
+// no read-only form, so the probe installs 0o777 (the most restrictive mask, so the
+// instant before the real value is applied can never be LESS restrictive than the
+// previous one) and the previous value OR-ed with `mask` is applied before fn runs.
+// Under umaskMu this read-modify-
+// write is atomic with respect to every other change THIS package makes.
+//
+// Remaining process-wide limitation (not fixable from user space): umask is shared
+// by every thread, so for the few microseconds fn runs, an UNRELATED goroutine that
+// creates a file gets the (only ever more restrictive) temporary mask, and code
+// outside this package that itself calls Umask concurrently is not serialised by
+// umaskMu. Files whose mode matters are chmod'ed explicitly by their creators.
 func withUmask(mask int, fn func()) {
 	umaskMu.Lock()
 	defer umaskMu.Unlock()
-	old := unix.Umask(mask)
-	defer unix.Umask(old)
+	previous := unix.Umask(0o777)
+	unix.Umask(previous | mask)
+	defer unix.Umask(previous)
 	fn()
 }
 
@@ -49,6 +75,6 @@ func listenUnixRestricted(path string) (net.Listener, error) {
 		l   net.Listener
 		err error
 	)
-	withUmask(0o077, func() { l, err = net.Listen("unix", path) })
+	withUmask(restrictiveBits, func() { l, err = net.Listen("unix", path) })
 	return l, err
 }
