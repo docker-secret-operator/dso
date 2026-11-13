@@ -92,7 +92,7 @@ func TestCheckRecovery_DetectsEachViolation(t *testing.T) {
 			snap(rec("candidate_ready", "recovered"), []string{"cand"}, c("cand", "app", true)), "original-not-retired"},
 		{"removal after handoff", handoff,
 			snap(rec("intent_swap", "in_progress", func(r *RotationRecord) { r.ExpectedProxyTarget = "cand" }), nil, both...),
-			snap(rec("intent_swap", "critical_error", func(r *RotationRecord) { r.ExpectedProxyTarget = "cand" }), []string{"cand"}, c("cand", "app", true)), "no-removal-after-handoff"},
+			snap(rec("intent_swap", "critical_error", func(r *RotationRecord) { r.ExpectedProxyTarget = "cand" }), nil, c("cand", "app", true)), "no-removal-after-handoff"},
 		{"non-artifact removed", ready,
 			snap(rec("candidate_ready", "in_progress"), nil, c("orig", "app", true), c("other", "app2", true)),
 			snap(rec("candidate_ready", "recovered"), []string{"orig"}, c("orig", "app", true)), "only-artifacts-removed"},
@@ -139,6 +139,29 @@ func TestCheckRecovery_HandoffPreservedBothIsAccepted(t *testing.T) {
 	final := snap(r("critical_error"), []string{"orig", "cand"}, both...)
 	if vs := CheckRecovery(w, p, crash, final); len(vs) != 0 {
 		t.Fatalf("preserving both after a handoff must pass:\n%s", FormatViolations(vs))
+	}
+}
+
+// With the agent's embedded-proxy RoutingVerifier (M0-04 3.1) recovery MAY retire the
+// unverified candidate after a handoff, but only when the surviving real-name holder
+// is observed receiving the traffic; without that evidence the removal is a violation.
+func TestCheckRecovery_RemovalAfterHandoffRequiresObservedHolderRouting(t *testing.T) {
+	w := world()
+	p := pt("rolling:after_handoff_before_ack")
+	both := []CView{c("orig", "app", true), c("cand", "app_dso_new_1", true)}
+	r := func(status string) RotationRecord {
+		return rec("handoff_done", status, func(r *RotationRecord) {
+			r.ExpectedProxyTarget, r.CandidateContainerIDs = "cand", []string{"cand"}
+		})
+	}
+	crash := snap(r("in_progress"), nil, both...)
+	ok := snap(r("recovered"), []string{"orig"}, c("orig", "app", true))
+	if vs := CheckRecovery(w, p, crash, ok); len(vs) != 0 {
+		t.Fatalf("retiring the candidate with the holder observed routed must pass:\n%s", FormatViolations(vs))
+	}
+	noEvidence := snap(r("recovered"), nil, c("orig", "app", true))
+	if got := rules(CheckRecovery(w, p, crash, noEvidence)); !strings.Contains(got, "no-removal-after-handoff") {
+		t.Fatalf("removal without observed routing must be flagged, got [%s]", got)
 	}
 }
 

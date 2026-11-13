@@ -97,6 +97,11 @@ type ReloaderController struct {
 	Journal        rotation.Journal
 	RequireJournal bool
 
+	// Guard, when set, is consulted for every target before its service lock is
+	// taken; see operation_guard.go. Nil means no durable guard (bare test
+	// controllers); the agent always wires one.
+	Guard OperationGuard
+
 	// FaultHook is a TEST-ONLY hook called at named transition points of the signal
 	// and restart strategies; tests panic from it to model the process dying there.
 	FaultHook func(point string)
@@ -457,7 +462,9 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 
 			// Also re-register with the proxy if this container has host-port mappings.
 			// If the start event was missed the proxy has no backend for this container.
-			if r.ProxyManager != nil {
+			// A candidate the startup scan HELD (unsettled rotation operation) must
+			// not be registered behind the gate's back by this reconciliation.
+			if r.ProxyManager != nil && !r.ProxyManager.IsHeld(c.ID) {
 				if portsLabel := c.Labels["dso.host_ports"]; portsLabel != "" {
 					inspect, ierr := r.cli.ContainerInspect(ctx, c.ID)
 					if ierr == nil {
@@ -619,7 +626,11 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 		// make the router select an application that is not listening yet and
 		// drop real client requests. The rotation path registers it itself,
 		// after readiness, via the proxy handoff (see markProxyPending).
-		if r.ProxyManager != nil && !r.isProxyPending(msg.Actor.ID) &&
+		//
+		// A container the startup scan HELD (candidate of an operation recovery
+		// has not settled) is excluded the same way: a restart of a held candidate
+		// must not bypass the traffic-eligibility gate.
+		if r.ProxyManager != nil && !r.isProxyPending(msg.Actor.ID) && !r.ProxyManager.IsHeld(msg.Actor.ID) &&
 			!r.ownedByOtherAgent(msg.Actor.ID, strings.TrimPrefix(msg.Actor.Attributes["name"], "/"), msg.Actor.Attributes) {
 			if portsLabel := msg.Actor.Attributes["dso.host_ports"]; portsLabel != "" {
 				inspect, ierr := r.cli.ContainerInspect(ctx, msg.Actor.ID)
@@ -930,6 +941,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 	// targets deferred because their service lock was held.
 	dispatched := 0
 	skippedBusy := 0
+	skippedBlocked := 0
 	var asyncWG sync.WaitGroup
 	var asyncMu sync.Mutex
 	var asyncFirstErr error
@@ -1848,6 +1860,32 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				projectName = inspect.Config.Labels["com.docker.compose.project"]
 			}
 		}
+		// A service with an unresolved (interrupted, uncertain or manual-recovery)
+		// operation, or one started before startup recovery settled, must not be
+		// mutated again by ANY dispatch path. The in-memory service lock below
+		// cannot know about an operation a previous process left behind. The check
+		// runs AFTER the lock is taken (see below), so "check, then start" cannot
+		// interleave with another dispatcher that journals an unresolved state in
+		// between.
+		blockedByGuard := func() bool {
+			if r.Guard == nil {
+				return false
+			}
+			keys := []string{serviceName, target.ID}
+			if err == nil {
+				keys = append(keys, strings.TrimPrefix(inspect.Name, "/"))
+			}
+			reason, blocked := r.Guard.RotationBlocked(keys...)
+			if !blocked {
+				return false
+			}
+			r.Logger.Warn("Rotation refused: the service has an unresolved operation; it is not mutated until that is reconciled",
+				zap.String("service", serviceName), zap.String("secret", secretName), zap.String("reason", reason))
+			skippedBusy++
+			skippedBlocked++
+			return true
+		}
+
 		// PE-30: the lock is scoped to the Compose project as well as the
 		// service, so `db` in project A never blocks `db` in project B.
 		lockKey := serviceLockKey(projectName, serviceName)
@@ -1858,6 +1896,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 		// deferred. Deferring it would re-dispatch the whole secret on every
 		// poll and never reach the sibling (PE-01 interim fix).
 		if shared, ok := heldByThisReload[lockKey]; ok && shared.retain() {
+			if blockedByGuard() {
+				shared.release()
+				return true
+			}
 			return rotateTarget(target, inspect, serviceName, lockKey, shared.release)
 		}
 
@@ -1880,6 +1922,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 
 		shared := newReloadLock(func() { r.rotationLocks.CompareAndDelete(lockKey, newLock) })
 		shared.info = newLock
+		if blockedByGuard() {
+			shared.release() // frees the service lock just taken
+			return true
+		}
 		heldByThisReload[lockKey] = shared
 		return rotateTarget(target, inspect, serviceName, lockKey, shared.release)
 	})
@@ -1991,7 +2037,12 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			asyncMu.Lock()
 			err := asyncFirstErr
 			asyncMu.Unlock()
-			onComplete(reloadOutcome(err, dispatched, skippedBusy, matchedCount))
+			out := reloadOutcome(err, dispatched, skippedBusy, matchedCount)
+			if skippedBlocked > 0 && err == nil {
+				// Blocked is also "deferred": nothing was applied, retry later.
+				out = fmt.Errorf("%w (%d of %d targets): %w", ErrRotationBlocked, skippedBlocked, matchedCount, ErrRotationDeferred)
+			}
+			onComplete(out)
 		}()
 	}
 

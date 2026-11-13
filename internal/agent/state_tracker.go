@@ -93,6 +93,12 @@ type StateTracker struct {
 	// action is to leave every workload alone and report.
 	corrupt     bool
 	corruptPath string
+
+	// inherited holds the keys (in states) of records that were loaded from disk
+	// still in_progress: they belong to a PREVIOUS process, so no goroutine of this
+	// one is working on them. The operation guard treats such a record as an
+	// unresolved operation until recovery resolves it.
+	inherited map[string]bool
 }
 
 // Corrupt reports whether the persisted state could not be read at startup, and
@@ -509,6 +515,12 @@ func (st *StateTracker) loadStates() error {
 	}
 
 	st.states = states
+	st.inherited = make(map[string]bool)
+	for k, r := range states {
+		if r.Status == "in_progress" {
+			st.inherited[k] = true
+		}
+	}
 	st.logger.Info("Loaded rotation states", zap.Int("count", len(states)))
 	return nil
 }

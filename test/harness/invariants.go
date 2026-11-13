@@ -192,9 +192,22 @@ func CheckRecovery(w World, p Point, crash, final Snapshot) []Violation {
 		}
 	}
 
-	// 4. Removals by recovery: only artifact-named containers, and none at all once
-	//    the proxy handoff started (the production agent wires no RoutingVerifier, so
-	//    live routing is unknowable and recovery must preserve everything).
+	// 4. Removals by recovery: only artifact-named containers. After the proxy handoff
+	//    started recovery may remove one ONLY with live-routing evidence: the agent now
+	//    wires a RoutingVerifier over its own proxy table (M0-04 3.1), so a removal is
+	//    legitimate exactly when the surviving real-name holder is the container that
+	//    answers traffic afterwards. The measured routing of the final snapshot is the
+	//    independent evidence; a persisted handoff acknowledgement alone is not.
+	holderRouted := false
+	routedSet := map[string]bool{}
+	for _, id := range final.RoutedTo {
+		routedSet[id] = true
+	}
+	for _, c := range svc {
+		if c.Running && c.Name == w.Service && routedSet[c.ID] {
+			holderRouted = true
+		}
+	}
 	for _, c := range crash.Containers {
 		if _, still := fin[c.ID]; still {
 			continue
@@ -205,8 +218,8 @@ func CheckRecovery(w World, p Point, crash, final Snapshot) []Violation {
 		if _, isArt := ArtifactBase(c.Name); !isArt {
 			add("only-artifacts-removed", "recovery removed %s (%q), which is not a rotation artifact", short(c.ID), c.Name)
 		}
-		if p.HandoffStarted && w.Proxied {
-			add("no-removal-after-handoff", "recovery removed %s (%q) after the proxy handoff had started with no live-routing evidence", short(c.ID), c.Name)
+		if p.HandoffStarted && w.Proxied && !holderRouted {
+			add("no-removal-after-handoff", "recovery removed %s (%q) after the proxy handoff had started but the surviving name holder is not observed receiving traffic (no live-routing evidence)", short(c.ID), c.Name)
 		}
 	}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/providers"
+	"github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/api"
@@ -39,6 +40,14 @@ type TriggerEngine struct {
 	LockManager       *rotation.LockManager
 	TimeoutController *TimeoutController
 	DockerClient      *client.Client // For crash recovery
+
+	// Routing lets startup recovery verify LIVE proxy routing (M0-04 3.1). It is
+	// set by AttachProxy to a verifier over this process's own embedded proxy.
+	// Nil means routing is unknown and recovery fails closed.
+	Routing RoutingVerifier
+
+	proxyMgr *proxy.Manager // embedded proxy (AttachProxy); nil when none
+	guard    *journalGuard  // durable competing-mutation guard (M0-04 3.3)
 
 	// Dispatcher is the optional notification sink for rotation/recovery
 	// outcome events (internal/notify). Nil when notifications are not
@@ -179,7 +188,13 @@ func NewTriggerEngineWithDirs(cache *SecretCache, storeManager *providers.Secret
 		}
 	}
 
+	guard := newJournalGuard(stateTracker)
+	if rw != nil {
+		rw.Guard = guard
+	}
+
 	return &TriggerEngine{
+		guard:             guard,
 		Cache:             cache,
 		Store:             storeManager,
 		Reloader:          rw,
@@ -200,6 +215,11 @@ func NewTriggerEngineWithDirs(cache *SecretCache, storeManager *providers.Secret
 // This is CRITICAL for preventing orphaned containers and ensuring deterministic
 // recovery from agent failures without operator intervention.
 func (t *TriggerEngine) performAutomaticRecovery() {
+	// Held proxy candidates are re-evaluated whatever the outcome, and rotation
+	// dispatch is released (the guard still refuses any service that recovery left
+	// unresolved).
+	defer t.settleStartup()
+
 	if t.DockerClient == nil {
 		t.Logger.Warn("Docker client not available, skipping automatic recovery")
 		return
@@ -208,6 +228,7 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	// Create a recovery handler
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
 	ar.Dispatcher = t.Dispatcher
+	ar.Routing = t.Routing
 	if t.Config != nil {
 		ar.OwnerID = t.Config.Agent.OwnerID
 	}
@@ -238,6 +259,26 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 		t.Logger.Warn("Failed to cleanup orphaned containers",
 			zap.Error(err))
 		// Don't fail startup; cleanup is best-effort
+	}
+}
+
+// BeginStartup arms startup gating: until StartAll has finished automatic recovery,
+// NO dispatch path (first poll, scheduled poll, webhook, IPC reconcile, REST manual
+// rotate, watcher) may mutate a workload. The agent calls it right after
+// constructing the engine, before any server that can trigger a rotation starts.
+// Without it (unit tests that never call StartAll) nothing is gated by startup.
+func (t *TriggerEngine) BeginStartup() {
+	if t.guard != nil {
+		t.guard.armed.Store(true)
+	}
+}
+
+// settleStartup marks startup recovery as finished and admits settled proxy
+// candidates.
+func (t *TriggerEngine) settleStartup() {
+	t.settleProxy()
+	if t.guard != nil {
+		t.guard.settled.Store(true)
 	}
 }
 
@@ -530,7 +571,11 @@ type rotationOutcome struct {
 func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 	switch {
 	case errors.Is(asyncErr, watcher.ErrRotationDeferred):
-		t.Logger.Warn("Rotation not applied to every target (service busy); will retry on next poll",
+		msg := "Rotation not applied to every target (service busy); will retry on next poll"
+		if errors.Is(asyncErr, watcher.ErrRotationBlocked) {
+			msg = "Rotation not applied: a target has an unresolved operation (or startup recovery has not settled); it is retried on the next poll once reconciled"
+		}
+		t.Logger.Warn(msg,
 			zap.String("secret", o.secretName), zap.Error(asyncErr))
 		t.rollbackHash(o.cacheKey, o.newHash)
 		if t.StateTracker != nil {

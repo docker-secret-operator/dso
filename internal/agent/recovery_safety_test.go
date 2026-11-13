@@ -34,6 +34,7 @@ type fakeCtr struct {
 	// startHealth is the health the container reports after a successful start.
 	startHealth string
 	labels      map[string]string // extra labels (e.g. dso.rotation.id, dso.host_ports)
+	status      string            // Docker's human status in listings, e.g. "Up 1 hour (healthy)"
 }
 
 type fakeDaemon struct {
@@ -90,9 +91,17 @@ func (d *fakeDaemon) handler() http.Handler {
 				_ = json.NewEncoder(w).Encode(map[string]string{"message": "daemon unreachable"})
 				return
 			}
+			onlyRunning := strings.Contains(r.URL.Query().Get("filters"), "running")
 			var out []map[string]interface{}
 			for _, c := range d.ctrs {
-				out = append(out, map[string]interface{}{"Id": c.id, "Names": []string{"/" + c.name}, "Labels": d.labels(c)})
+				if onlyRunning && !c.running {
+					continue
+				}
+				out = append(out, map[string]interface{}{
+					"Id": c.id, "Names": []string{"/" + c.name}, "Labels": d.labels(c), "Status": c.status,
+					"NetworkSettings": map[string]interface{}{"Networks": map[string]interface{}{
+						"bridge": map[string]string{"IPAddress": "10.9.0." + fmt.Sprint(1+len(c.id)%200)}}},
+				})
 			}
 			_ = json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodGet && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json"):

@@ -137,17 +137,26 @@ func NewAgentCmd() *cobra.Command {
 					return fail("invalid proxy.allowed_host_ports configuration", err)
 				}
 			}
-			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
-			proxyManager.ScanAndRegister(scanCtx, dockerCli)
-			scanCancel()
 			reloader.ProxyManager = proxyManager
 			onFail = append(onFail, func() { _ = proxyManager.Stop(10 * time.Second) })
 
-			// Initialize Trigger Engine
+			// Initialize Trigger Engine (owns the rotation journal).
 			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 			if err != nil {
 				return fail("failed to initialize trigger engine", err)
 			}
+			// No rotation may be dispatched, by any path, until startup recovery
+			// has settled (released by trigger.StartAll).
+			trigger.BeginStartup()
+
+			// Rebuild the proxy routing table from running containers. The scan is
+			// journal-gated (a candidate of an unsettled rotation is HELD, not
+			// routed) and runs before recovery, whose RoutingVerifier reads this
+			// same in-process table; held candidates are re-evaluated once
+			// recovery settled them (see agent/proxy_reconstruction.go).
+			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
+			trigger.AttachProxy(scanCtx, proxyManager)
+			scanCancel()
 
 			// Initialize rotation-event notifications (optional; disabled
 			// unless explicitly configured). Invalid destination config is

@@ -15,6 +15,7 @@ Files:
 | `internal/faultinject/` | the test-only hook (two build-tagged files) |
 | `test/harness/` | Docker-free helper package, ordinary unit tests (`go test -short ./...`) |
 | `test/docker/crash_recovery_test.go`, `crash_support_test.go` | the `dockerint` harness |
+| `test/docker/startup_recovery_test.go` | `dockerint` scenarios for startup traffic eligibility and competing-rotation dispatch (section 11) |
 
 ## 1. Production process topology (investigated first)
 
@@ -33,9 +34,10 @@ Evidence:
 * The only supervisor is the systemd unit written by `internal/bootstrap/systemd.go`:
   `ExecStart=dso ... agent`, `Restart=on-failure`, `RestartSec=10`. It restarts the
   whole agent; there is no second unit for a proxy.
-* `ScanAndRegister` (agent start) rebuilds the proxy's routing table from running
-  containers labelled `dso.host_ports`: the routing table is in-memory state of the
-  agent and is lost when it dies.
+* The proxy's routing table is rebuilt at agent start from running containers labelled
+  `dso.host_ports` (`TriggerEngine.AttachProxy` -> `Manager.ScanAndRegisterGated`): the
+  routing table is in-memory state of the agent and is lost when it dies. Candidates of an
+  unsettled rotation are HELD out of that scan and admitted after recovery (section 7).
 
 Consequences, stated plainly:
 
@@ -258,7 +260,9 @@ for the passing case and for every violation.
   `completed`; signal: never) the original must still exist.
 * **only-artifacts-removed / no-removal-after-handoff**: recovery may remove only
   rotation artifacts (`_dso_backup_`, `_dso_new_`, `_old_<ts>`), never a name holder, and
-  after the proxy handoff intent it may remove nothing (see finding 1).
+  after the proxy handoff intent it may remove one ONLY if the measured routing after
+  recovery shows the surviving real-name holder receiving the traffic (the agent now wires
+  a `RoutingVerifier`, finding 1; a persisted handoff ack alone is never evidence).
 * **interrupted-not-successful / no-adoption-claim / recovered-needs-holder /
   no-holder-must-be-manual**: an interrupted operation is never `completed`; `recovered`
   requires a running name holder; where nothing holds the real name (`between_renames`,
@@ -284,31 +288,145 @@ for the passing case and for every violation.
   in the container's environment; Docker inspect output is not scanned here (it is by
   `traffic`/`scenarios` tests).
 
-## 7. Findings from the investigation (for the maintainers; not changed here)
+## 7. Findings from the investigation and their resolution (M0-04 release blocker)
 
-1. **The production agent wires no `RoutingVerifier`.** `agent.AutomaticRecovery.Routing`
-   is read by `liveRouting`, but `TriggerEngine.performAutomaticRecovery` never sets it.
-   After a restart, any proxied rotation whose journal shows the handoff intent therefore
-   preserves everything and is flagged for manual recovery (`routing cannot be
-   established`). That is conservative and safe, but it means automatic recovery of a
-   proxied rotation after the handoff began is **not possible in production today**. The
-   harness encodes this as the expectation (`no-removal-after-handoff`); if a verifier is
-   wired later the expectation must be revisited.
-2. **`ScanAndRegister` runs before recovery and registers every running owned container
-   that carries `dso.host_ports`**, including an unready rotation candidate (cloned
-   labels). Between the scan and the retirement of that candidate, new connections may be
-   routed to a candidate that was never verified. The `routing-consistent` rule measures
-   exactly this after recovery has settled; the death/recovery window in the report shows
-   what clients saw meanwhile.
-3. **The first poll of a freshly started agent dispatches a rotation** (no baseline hash),
-   so a restarted agent with the new secret already visible immediately starts a *new*
-   rotation after recovery. The harness disarms the trigger before the restart so recovery
-   can be observed in isolation; the convergence behaviour after re-arming is **not**
-   covered here.
-4. A rotation attempt that fails before reaching a strategy (for example the signal
-   strategy before the second secret is cached) leaves a state record with no
-   `service_id`; the harness therefore selects the interrupted record by `service_id` and
-   falls back to anonymous records only when none names the service.
+The first three were reported by this harness work as production findings. They are now
+fixed or explicitly documented. **None of the fixes has been run against a real daemon**;
+the Docker-free regression tests are listed per finding and the real-Docker scenarios are
+prepared in section 11 (compiled, not executed).
+
+### 1. No `RoutingVerifier` wired in production (3.1)
+
+*Trace.* `proxy.NewManager` is created once, in `dso agent`. Its backend table (`Registry`)
+is in memory and dies with the agent, so previous routing never survives. The only routing
+evidence a freshly started agent can have is the table it rebuilds itself (and any swap it
+performs afterwards); the journal records only that a dead process once switched routing.
+`TriggerEngine.performAutomaticRecovery` never set `AutomaticRecovery.Routing`, so every
+proxied rotation past the handoff intent ended in preserve + manual recovery.
+
+*Fix.* `agent.ProxyRoutingVerifier` (`internal/agent/proxy_reconstruction.go`) answers from
+`proxy.Manager.RoutingSnapshot()` (`internal/proxy/routing.go`): the non-draining backends of
+THIS process's table, `known` only when a startup scan listed Docker successfully. It is wired
+by `TriggerEngine.AttachProxy`. Recovery's existing rule is unchanged and still decides: an
+artifact is retired only when the journal authorises it AND the snapshot positively shows
+the healthy real-name holder routed and the artifact not. Unknown routing, a failed Docker
+listing, a holder that is not routed, or an artifact that still is, all preserve both
+workloads and flag manual recovery.
+
+*Consistency required before any retirement* (all already enforced by `journalPermits` /
+`holderState`, now fed real routing): the journal names the artifact and holder (identity),
+the swap/handoff evidence matches the artifact's role (committed state), the holder is
+owned by this agent (ownership), the holder is verified healthy (readiness), and the
+reconstructed routing agrees.
+
+*Tests.* `internal/agent/startup_reconstruction_test.go`:
+`TestStartup_HandoffThenCrash_...` (candidate never routed, retired, rotation recovered),
+`TestStartup_SwapCommittedThenCrash_...`, `TestStartup_SwapIntentOnlyThenCrash_Preserves...`
+(preserve + manual, nothing routed, held stay held), `TestRecovery_HandoffAckAloneIsNeverEnough...`,
+`TestProxyRoutingVerifier_UnknownUnlessPositivelyEstablished`, `TestStartup_ScanListFailure_...`;
+`internal/proxy/eligibility_test.go` (draining excluded).
+
+*Limitations (documented, not hidden).* (a) Automatic recovery of a proxied rotation works
+for the cases where Docker + journal identify an unambiguous holder (crash before the swap:
+original keeps serving; crash after `swap_committed`: promoted candidate serves). A crash
+INSIDE the swap (`intent_swap` without commit; `between_renames`) is still manual: the
+holder is ambiguous and nothing is routed until an operator acts. (b) If recovery itself
+starts a stopped original (rollback), that container is not in the scan-time table, so the
+rotation is conservatively left manual until the next restart. (c) Traffic through the
+embedded proxy is still interrupted for the whole death/restart window (topology, section 1).
+(d) Unproxied services have no routing signal at all (design doc 3a).
+
+### 2. `ScanAndRegister` ran before recovery and routed unready candidates (3.2)
+
+*Trace.* `Manager.ScanAndRegister` bound the host port and registered EVERY running owned
+container with `dso.host_ports` immediately: registration makes a container eligible for the
+very next accepted connection. Rotation candidates clone the original's labels, so a
+candidate that was newly created, partially injected, not health-verified, awaiting handoff,
+left by an interrupted restart, or tied to an unresolved/corrupt journal was routed to
+before recovery (which runs later in `StartAll`) had decided anything. Two other paths could
+also register such a container behind a gate: the watcher's `start` event handler and its
+runtime reconciliation.
+
+*Fix.* Discovery is separated from traffic eligibility. `Manager.ScanAndRegisterGated` takes an
+`Eligibility` gate; a container the gate refuses is HELD (recorded, not bound, not registered,
+logged). The agent's gate (`StateTracker.ProxyEligibility`) holds: rotation artifacts by name
+(`_dso_new_`, `_dso_backup_`, `_old_<ts>`); candidates named by an unsettled journal record
+(by ID or by `dso.rotation.id` label, which exists before the ID is journalled) unless the
+journal shows the swap committed, the container holds the real name and Docker does not
+report it unhealthy/starting; and rotation-labelled containers when the journal is
+unreadable or unavailable. After recovery `settleProxy` calls `RescanHeld`, admitting held
+containers whose operation recovery settled. The watcher's start-event and reconciliation
+paths skip held containers (`Manager.IsHeld`). Foreign-owned containers are still refused by
+the existing ownership gate (neither routed nor held). There is no deadlock: the gate never
+waits for recovery, recovery never waits for the proxy, and the sequence is
+`AttachProxy` -> `StartAll` (recovery -> `settleProxy`).
+
+Containers with no `dso.owner` label stay routable (unchanged backward compatibility).
+
+*Tests.* `TestProxyEligibility_CandidateKinds` (18 candidate kinds: plain, newly created,
+partially injected, not ready, awaiting handoff, failed leftover, leftover old/backup,
+promoted healthy / no healthcheck / unhealthy / starting / wrong name, completed, aged out,
+corrupt-journal variants, no journal), the five `TestStartup_*` sequence tests,
+`TestStartup_ForeignOwnedContainerNeverRegisteredOrHeld`,
+`TestStartup_CorruptJournal_NoCandidateRoutedNothingTouched...`, and
+`internal/proxy/eligibility_test.go`.
+
+*Limitation.* With an unreadable/unavailable journal a rotation-labelled container (including
+a legitimately promoted one, which keeps its label) is held until the operator verifies the
+service and restarts; it is not routed meanwhile. That is the conservative choice and costs
+availability of that service in that rare state.
+
+### 3. First poll of a fresh agent dispatched a rotation (3.3)
+
+*Trace.* `StartPolling` fires a timer(0) poll; the engine keeps no persisted baseline hash
+(the hash is in memory, and no secret-derived value is persisted), so the first observation
+always dispatches. This is **intentional** (it also catches rotations that happened while the
+agent was down) and is **kept**: a clean start and a restart after a successful rotation still
+perform their initialisation rotation. What was missing: nothing consulted the journal or
+service locks (`rotationLocks` are in memory, empty after a restart) before dispatching.
+`StartAll` already ran recovery synchronously BEFORE the pollers, but the IPC socket, the REST
+API and the watcher were live earlier, and a service recovery left `critical_error` (for
+example a partially published signal rotation) was rotated again by the first poll.
+
+*Fix.* Every dispatch path (first/scheduled poll, webhook, IPC `dso sync`/`apply`, REST manual
+rotate, watcher) reaches `ReloaderController.TriggerReload`. A durable `OperationGuard`
+(`internal/watcher/operation_guard.go`, implemented by `internal/agent/operation_guard.go`) is
+consulted per target AFTER its service lock is taken (so check-then-start cannot interleave
+with another dispatcher journalling an unresolved state) and refuses the target. It blocks when
+(1) startup gating is armed (`TriggerEngine.BeginStartup`, called by `dso agent` right after
+constructing the engine) and startup recovery has not settled; (2) the journal was unreadable;
+(3) the journal holds a `critical_error` record for the service, or an `in_progress` record
+inherited from a previous process, matched by service name, compose service name or
+original/candidate container ID. An ordinary failed attempt of the running process
+(`rollback_required`) does not block the retry. A refused target yields
+`ErrRotationBlocked` wrapped with `ErrRotationDeferred`: nothing was applied and the existing
+retry-on-next-poll behaviour applies.
+
+*Releasing a block.* Automatic recovery re-evaluates every unresolved record at each start.
+Otherwise the operator repairs the service and marks the record `recovered` (or removes it)
+in `rotations.json` while the agent is stopped, then restarts. For an unreadable journal the
+file is already preserved aside, so a restart after verifying the workloads starts clean.
+There is no in-agent "force" path and no CLI to acknowledge a record yet: **that is a known
+operational gap** (a `dso` subcommand for it is a follow-up).
+
+*Tests.* `internal/agent/operation_guard_test.go`: clean startup, restart after a successful
+rotation (initialisation rotation allowed), unresolved rolling operation (resolved and
+unresolvable), partially published signal operation (also across restarts), interrupted
+restart operation, corrupted journal (and release after the operator's restart), ordinary
+failed attempt does not block, engine wires the guard into the reloader, concurrent readers
+during recovery and journal writes (`-race`). `internal/watcher/operation_guard_test.go`:
+`TriggerReload` refuses a blocked service but rotates an unrelated one, matches by container ID,
+leaks no lock, unchanged without a guard, and 24 concurrent dispatchers (watcher + scheduled +
+API) start exactly one rotation over a service whose first rotation journals an unresolved
+state (`-race`).
+
+### 4. Unfinished state record without a `service_id`
+
+A rotation attempt that fails before reaching a strategy (for example the signal strategy
+before the second secret is cached) leaves a state record with no `service_id`; the harness
+therefore selects the interrupted record by `service_id` and falls back to anonymous records
+only when none names the service. (Unchanged. The guard also matches such a record when it
+names the container ID.)
 
 ## 8. What the harness itself needs from the environment
 
@@ -328,11 +446,20 @@ it pointed at is real: agent sockets are created under a process-global `umask(0
 then `chmod`'d. `tightenUmask`/`restoreUmask` were an unsynchronised read-modify-write, so
 concurrent socket creators could restore a *wider* umask under another creator's
 `net.Listen` (the socket exists 0755 until its `chmod`). A lock held across the
-tighten/restore pair (`internal/agent/umask_linux.go`) fixes it;
+tighten/restore pair (`internal/agent/umask_linux.go`) fixes it. The temporary mask is also
+**monotonic** (`previous | 0o077`, so a stricter previous mask such as `0o277` keeps its bits;
+the probe installs `0o777` first so no instant is less restrictive than the previous mask) and
+the previous mask is restored on every exit path. The remaining process-wide limitation (an
+unrelated goroutine creating a file during the microseconds of `net.Listen` gets the same,
+only more restrictive, mask; code outside this package calling `Umask` is not serialised) is
+documented in the function comment;
 `internal/agent/socket_permission_race_test.go` (Docker-free, `-race`) fails against the
 old code and passes now. See `LEGACY-DOCKER-TESTS.md`.
 
 ## 10. Verification status
+
+(Updated for the M0-04 release-blocker fixes: Docker-free only. No Docker daemon, container,
+`dockerint` test or `dsofault` real-process run was executed for them.)
 
 | item | status |
 |---|---|
@@ -345,3 +472,22 @@ old code and passes now. See `LEGACY-DOCKER-TESTS.md`.
 | the matrix, `Control_OrdinaryRotation`, `Topology_AgentDeathKillsProxyListener`, `CorruptJournal_Conservative` against a real daemon | **NOT EXECUTED** |
 | availability numbers (a), (b), (c) | **NOT MEASURED** |
 | expectations in section 6 against real recovery behaviour | **unverified**: they come from reading the code and the in-process crash tests; the first real run may legitimately fail on any of them and that is the point of the run |
+| M0-04 fixes (3.1 routing verifier, 3.2 traffic eligibility, 3.3 competing-dispatch guard, umask monotonic): `go build`, `go vet` (plain, `dockerint`, `dsofault`), `go test -short ./...`, `-race` on `internal/agent`, `internal/watcher`, `internal/proxy`, `internal/rotation`, `test/harness` | pass |
+| `test/docker/startup_recovery_test.go` scenarios | **compiled only (`go vet -tags dockerint`); NOT EXECUTED** |
+| the same fixes against a real daemon, real events and the real embedded proxy | **UNVERIFIED** |
+
+## 11. Startup-recovery scenarios (real Docker, prepared, NOT executed)
+
+`test/docker/startup_recovery_test.go`, `TestStartupRecovery` (build tag `dockerint`; needs
+the disposable VM; reuses `crashCase`, the fault points and the Vault stub above):
+
+| scenario | finding | what is asserted |
+|---|---|---|
+| `CandidateNeverRoutedBeforeRecovery/after_start_before_verify` and `/after_candidate_verified` | 3.2 | agent SIGKILLed with a running candidate (cloned `dso.host_ports`); traffic starts BEFORE the new agent; across restart + recovery no client connection is answered by the candidate's identity, the original serves, and the agent logs that it held the candidate |
+| `SignalPartialPublication_NoCompetingRotationAfterRestart` | 3.3 | killed after the first of two secret files was replaced; the new secrets stay visible so the first poll would dispatch; it is refused (`Rotation refused: ...` in the log), files unchanged, reload counter unchanged, journal stays `critical_error` |
+| `CorruptJournal_BlocksRotationAfterRestart` | 3.3 + 3.2 | unreadable journal, secret visible: no container created/removed/stopped (`CheckCorruptJournal`), dispatch refused |
+| `CleanRestart_InitialisationRotationStillRuns` | 3.3 control | after a completed rotation and a graceful restart the first poll still rotates (second `completed` record) and is never refused |
+
+The existing matrix's `no-removal-after-handoff` expectation was relaxed accordingly (section
+6): a removal after the handoff is now accepted only with observed routing to the surviving
+holder.

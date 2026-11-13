@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 
 	"github.com/docker-secret-operator/dso/internal/util"
@@ -78,6 +76,12 @@ type Manager struct {
 	// that read container labels (ScanAndRegister) skip a container whose
 	// dso.owner names a DIFFERENT agent. "" disables the check.
 	ownerID string
+
+	// Startup reconstruction bookkeeping (see routing.go and eligibility.go).
+	// Guarded by rmu, never by mu, so the scan path can still call OwnerAllowed.
+	rmu         sync.Mutex
+	reconstruct reconstructionState
+	heldByScan  map[string]string // container ID -> why it is not eligible for traffic
 }
 
 // SetOwnerID sets this agent's dso.owner identity for ScanAndRegister's
@@ -392,57 +396,4 @@ func (al *portAllowList) allows(port int) bool {
 		}
 	}
 	return false
-}
-
-// ScanAndRegister scans running Docker containers for the dso.host_ports label
-// and registers them with the proxy. Called once at agent startup.
-func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
-	containers, err := cli.ContainerList(ctx, containerListOptions())
-	if err != nil {
-		m.log.Warn("proxy: failed to list containers for scan", zap.Error(err))
-		return
-	}
-
-	m.registerScanned(containers)
-}
-
-// registerScanned registers the listed containers' dso.host_ports. It never
-// writes labels, so repeated scans cannot claim or change another agent's
-// ownership.
-func (m *Manager) registerScanned(containers []container.Summary) {
-	for _, c := range containers {
-		portsLabel := c.Labels["dso.host_ports"]
-		if portsLabel == "" {
-			continue
-		}
-		if !m.OwnerAllowed(c.Labels) {
-			m.log.Warn("proxy: container is owned by a different DSO agent instance; not registering",
-				zap.String("id", util.ShortID(c.ID)))
-			continue
-		}
-		portMaps := ParseHostPorts(portsLabel)
-		if len(portMaps) == 0 {
-			continue
-		}
-		containerIP := extractContainerIP(c.NetworkSettings)
-		if containerIP == "" {
-			m.log.Warn("proxy: container has no IP, skipping",
-				zap.String("id", util.ShortID(c.ID)))
-			continue
-		}
-		for _, pm := range portMaps {
-			if err := m.EnsurePortOn(pm.HostIP, pm.HostPort, pm.ContainerPort); err != nil {
-				m.log.Warn("proxy: failed to bind port",
-					zap.Int("port", pm.HostPort), zap.Error(err))
-				continue
-			}
-			if err := m.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
-				m.log.Warn("proxy: failed to register container",
-					zap.String("id", util.ShortID(c.ID)), zap.Error(err))
-			}
-		}
-		m.log.Info("proxy: registered existing container",
-			zap.String("id", util.ShortID(c.ID)),
-			zap.String("ports", portsLabel))
-	}
 }
