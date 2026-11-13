@@ -2377,6 +2377,30 @@ func instAfterInstall(d *displacer, f func()) {
 	}
 }
 
+// instFlipBytes XORs n bytes at off with 0xFF, so every byte is GUARANTEED to
+// change. (The original tests wrote constant bytes such as 0xAB over crypto-random
+// candidate content: with probability 1/256 the byte already held that value, the
+// "mutation" was a no-op, and the production check correctly reported nothing —
+// the N6 intermittent failure. See TestDisplace_NoOpMutationIsNotAChange.)
+func instFlipBytes(t *testing.T, path string, off int64, n int) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	buf := make([]byte, n)
+	if _, err := f.ReadAt(buf, off); err != nil {
+		t.Fatal(err)
+	}
+	for i := range buf {
+		buf[i] ^= 0xFF
+	}
+	if _, err := f.WriteAt(buf, off); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func instAppend(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
@@ -2459,12 +2483,17 @@ func TestDisplace_PostInstallVerification_EveryFailureIsTypedAndNeverRolledBack(
 	}{
 		{"byte flipped in place (same size)", InstalledContentChanged, true, func(t *testing.T, e *dsEnv, d *displacer) {
 			instAfterInstall(d, func() {
-				f, err := os.OpenFile(e.db, os.O_WRONLY, 0)
+				instFlipBytes(t, e.db, 100, 1)
+			})
+		}},
+		{"byte flipped in place (same size) with the mtime restored", InstalledContentChanged, true, func(t *testing.T, e *dsEnv, d *displacer) {
+			instAfterInstall(d, func() {
+				before, err := os.Stat(e.db)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer f.Close()
-				if _, err := f.WriteAt([]byte{0xAB}, 100); err != nil {
+				instFlipBytes(t, e.db, 100, 1)
+				if err := os.Chtimes(e.db, before.ModTime(), before.ModTime()); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -2874,14 +2903,7 @@ func TestDisplace_PreparedReplacementBad_IsRefusedBeforeAnythingIsMoved(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			f, err := os.OpenFile(repl.path, os.O_WRONLY, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.WriteAt([]byte{0xAB, 0xCD}, 100); err != nil {
-				t.Fatal(err)
-			}
-			_ = f.Close()
+			instFlipBytes(t, repl.path, 100, 2)
 			if err := os.Chtimes(repl.path, before.ModTime(), before.ModTime()); err != nil {
 				t.Fatal(err)
 			}
@@ -3071,5 +3093,53 @@ func TestDisplace_PostInstallVerification_StillCatchesCorruptionAfterThePrepared
 	var ice *InstalledFileChangedError
 	if !errors.As(err, &ice) || ice.Kind != InstalledContentChanged || !res.Installed || res.Verified {
 		t.Fatalf("res %+v err %T %v", res, err, err)
+	}
+}
+
+// N6 root cause, deterministically. The candidate content is random; when byte 100
+// already equals the constant the old test wrote, rewriting it changes nothing and
+// the installed-file verification (which hashes the content through an open
+// descriptor) correctly finds no change. This test pins that behaviour so the
+// flake can never again be mistaken for a missed detection: an unchanged file must
+// verify clean, and a file with even one flipped byte must not.
+func TestDisplace_NoOpMutationIsNotAChange(t *testing.T) {
+	for _, mutate := range []struct {
+		name         string
+		fn           func(t *testing.T, db string)
+		wantMismatch bool
+	}{
+		{"constant byte equal to the existing byte (no-op)", func(t *testing.T, db string) {
+			f, err := os.OpenFile(db, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			if _, err := f.WriteAt([]byte{0xAB}, 100); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"guaranteed flip", func(t *testing.T, db string) { instFlipBytes(t, db, 100, 1) }, true},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			e := newDS(t, true, true, true)
+			// Force byte 100 of the candidate to the constant the old test used.
+			b := e.candBytes()
+			b[100] = 0xAB
+			pvWrite(t, e.cand, b)
+			d := newDisplacer()
+			var calls dsCalls
+			d.rename = calls.renamer(nil)
+			instAfterInstall(d, func() { mutate.fn(t, e.db) })
+			repl := e.prep(d)
+			_, err := d.replace(e.db, repl, e.base())
+			var ice *InstalledFileChangedError
+			got := errors.As(err, &ice)
+			if got != mutate.wantMismatch {
+				t.Fatalf("detected=%v want %v (err=%v)", got, mutate.wantMismatch, err)
+			}
+			if got && ice.Kind != InstalledContentChanged {
+				t.Fatalf("kind %q", ice.Kind)
+			}
+		})
 	}
 }
