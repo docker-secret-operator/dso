@@ -670,3 +670,13 @@ docker dso doctor --level full
 - **[Providers Guide](providers.md)** — AWS, Azure, Vault, Huawei auth details
 - **[Operational Guide](operational-guide.md)** — Day-2 operations, monitoring, backup
 - **[Quick Reference](QUICKREF.md)** — one-page cheat sheet
+
+## Verified installation
+
+`scripts/install.sh` verifies the release signature before installing anything:
+
+1. Install **cosign** from a source you trust (your package manager, or the official sigstore release with its published checksum verified). The installer never downloads a verifier itself.
+2. (Recommended) pin the release: `DSO_VERSION=3.6.0 bash install.sh`.
+3. The installer downloads the archive, `dso-<version>-checksums.txt`, its `.sig` and `.pem`, verifies the manifest signature for the identity `https://github.com/docker-secret-operator/dso/.github/workflows/release.yml@refs/tags/v<version>` issued by `https://token.actions.githubusercontent.com`, and only then compares the archive's SHA-256 with the signed manifest. Any failure aborts and leaves an existing installation untouched.
+
+Releases published without a signature cannot be installed with this script. For a private mirror or air-gapped build signed with your own key, set `DSO_COSIGN_PUBKEY=/path/to/cosign.pub` and publish a cosign bundle as `dso-<version>-checksums.txt.sigstore.json`; there is no option to skip verification. `DSO_RELEASE_BASE` changes only where files are fetched from; authenticity always comes from the signature. Note: with a keyless release, the release workflow's cosign version determines the signature format; the workflow does not currently pin it (see the M0 report).
