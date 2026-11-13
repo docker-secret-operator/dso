@@ -63,10 +63,35 @@ stateDiagram-v2
 | Docker unreachable | nothing removed |
 | Startup orphan sweep | same rule as recovery (no blind delete) |
 
-## 3. What is NOT done (honest limits)
+## 3. Transition journal (added after review)
 
-* **No transition journal inside the strategies.** Phases such as `candidate_created`, `handoff_started`, `handoff_committed`, `cleanup_pending` are not persisted by `internal/rotation`/`watcher`; the record only says `rotation_requested`/`completed`. Recovery therefore cannot tell a *planned* from a *completed* handoff except by inspecting Docker, and it cannot know which backend the dead proxy pointed at (safe here because a healthy real-name holder always remains and the proxy is rebuilt from running labelled containers).
-* **No fault-injection points / real process-kill tests.** The Docker tests in `test/docker/recovery_test.go` construct post-crash layouts and run the real recovery; they have not been run (no isolated daemon). Recovery after a real mid-rotation kill, with continuous traffic, is UNVERIFIED.
-* **Durability** is process-crash safe and, with fsync, intended to be power-loss safe on honouring filesystems; it is not a transaction spanning Docker and the file.
-* Rollback and cleanup *during* recovery are not themselves journalled; they are idempotent by construction (observe → act).
-* The rolling strategy's own rollback paths (outside recovery) were not changed in this task.
+Docker is authoritative for *what exists*; the journal is authoritative for *what was intended and how far it got*. Recovery reconciles both and preserves whatever it cannot account for.
+
+**Mechanism (extends the existing `StateTracker`, no second controller; `internal/ledger` is not used).** `rotation.Journal` is implemented by `StateTracker.Record`, which upserts a record keyed by `rotation_id` and persists it durably (fsync file + directory) before returning. The trigger engine creates the record and passes the same ID to the strategies through the context; a manual rotation creates its own. Recorded: rotation ID, service ID, owner ID, strategy, original IDs, candidate IDs, opaque secret-version id (never a value), current transition, pending (unacknowledged) intent, expected and observed proxy target, committed flag, cleanup status, sequence number.
+
+**Intent before action, acknowledgement after.** The rolling strategy records `intent_create_candidate`, then creates the candidate, then `candidate_created`; `candidate_ready` (started, delivered, verified); `intent_handoff` → handoff → `handoff_done`; `intent_swap` → renames → `swap_committed`; `intent_cleanup` → retire old → `completed`; `intent_rollback`/`rolled_back` on failure. **A failed INTENT write aborts before the guarded action** (fail closed; the agent also refuses rolling rotation outright when no journal is available). A failed acknowledgement is only logged: the intent is already durable and recovery treats an unacknowledged intent as "may have happened". Intent, Docker action, observation and acknowledgement are not one atomic transaction; the design never assumes they are.
+
+**Candidate identity before its ID is known.** The candidate is created with the label `dso.rotation.id=<id>`, so a candidate whose container ID was never journalled (crash right after create) is still identified by an operation identity, not by its name.
+
+**Journal-aware retirement** (on top of the name-holder + health rule):
+
+| Artifact is | May be retired only if |
+|---|---|
+| the journalled ORIGINAL (previously active) | the healthy name holder is the journalled candidate (ID or rotation label) **and**, for a proxied rotation, there is durable evidence the handoff was committed (observed proxy target = holder, swap committed, or a swap/cleanup intent, which is written only after the handoff returned) |
+| the journalled CANDIDATE | the healthy name holder is one of the journalled originals |
+| no journal record, not proxy-managed | the name-holder rule alone |
+| no journal record, proxy-managed (`dso.host_ports`) | **never** (routing evidence unavailable) |
+| a missing original | it is explained only by a committed swap whose journalled candidate now holds the name healthy; otherwise critical |
+
+**The reviewer's scenario** (candidate promoted to the real name while the proxy still points at the original) cannot arise in the rolling strategy as written, because the proxy handoff (`OnReady`) happens *before* the renames, and the proxy is in-process and rebuilt from running labelled containers after a restart. It is nevertheless covered by `TestRecoveryJournal_ProxiedRotationNeedsHandoffEvidenceBeforeRetiringTheOriginal` (handoff intent without evidence ⇒ both workloads preserved).
+
+**Fault injection.** `RollingStrategy.FaultHook` (nil in production; set only by tests, it is a Go field, not an API) is called at named points; tests panic from it to model the process dying there. `internal/agent/crash_injection_test.go` runs the real strategy against a stateful fake daemon with the real tracker as journal, "restarts" by loading the journal from disk in a new tracker, runs the real recovery, and asserts per point: a healthy workload survives, unmanaged and foreign containers are untouched, exactly the permitted containers are removed, the rotation ends recovered or critical as expected, and repeated recovery changes nothing. Points: after_intent_create_candidate, after_candidate_create_before_ack, after_secret_delivery, after_start_before_verify, after_candidate_verified, after_intent_handoff, after_handoff_before_ack, after_intent_swap, between_renames, after_swap_before_commit_ack, after_swap_committed, after_intent_cleanup, after_cleanup_before_ack (the two handoff points exist only on the proxied path).
+
+## 4. What is NOT done (honest limits)
+
+* **Real process kill, real Docker, continuous traffic: UNVERIFIED.** The crash tests use a fake daemon in-process. The guarded real-daemon tests in `test/docker/recovery_test.go` build post-crash layouts but do not kill a DSO process mid-rotation, and no traffic is generated across a rotation. Prepared for the disposable VM, not run.
+* **Restart strategy and signal rotation are not journalled yet** (only the rolling strategy is). Signal rotation's degraded state is in memory; restart-strategy recovery relies on the name-holder rule only.
+* **No journalling of the proxy itself**: recovery cannot read the proxy's routing table (it is in-process and dies with the agent); it relies on the handoff evidence recorded in the journal.
+* **Partial multi-file secret delivery** is reported precisely in-process (`SignalState`), but the persisted journal does not yet record per-file progress for signal rotation.
+* Durability is process-crash safe, and intended power-loss safe where fsync is honoured; not a Docker+file transaction.
+* The journal records no secret versions yet because providers do not expose a version identifier through the cache; the field exists for when they do.

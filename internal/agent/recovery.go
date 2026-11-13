@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker-secret-operator/dso/internal/notify"
+	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
@@ -210,7 +211,7 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 			msg += " (preserved: " + strings.Join(preserved, ", ") + ")"
 		}
 		logger.Error("Recovery cannot establish a safe state; all workloads preserved, manual recovery required", zap.String("reason", msg))
-		if err := ar.st.MarkCriticalError(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID, msg); err != nil {
+		if err := ar.st.MarkCriticalRecord(rotation, msg); err != nil {
 			logger.Error("Failed to mark rotation for manual intervention", zap.Error(err))
 		}
 		ar.emitRecoveryEvent(notify.RecoveryFailed, rotation, errors.New(msg))
@@ -229,8 +230,15 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 	for _, id := range ids {
 		insp, err := ar.cli.ContainerInspect(ctx, id)
 		if err != nil {
-			// Original gone. If its service still has a verified healthy holder the
-			// rotation completed; otherwise this is the dangerous case.
+			// Original gone. With a journal this is only "completed" when the swap was
+			// committed AND the journalled candidate now holds the real name healthy:
+			// the original was retired on purpose.
+			if ar.originalRetiredByCommittedRotation(ctx, rotation, id) {
+				logger.Info("Original container was retired by a committed rotation; the journalled candidate serves",
+					zap.String("original_id", shortID(id)), zap.String("service", rotation.ServiceID))
+				continue
+			}
+			// Otherwise this is the dangerous case.
 			logger.Warn("Original container not found", zap.String("original_id", shortID(id)), zap.Error(err))
 			allResolved = false
 			preserved = append(preserved, shortID(id)+"(missing)")
@@ -267,10 +275,29 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 		return
 	}
 	logger.Info("Recovery complete: a verified healthy workload exists for every service", zap.Int("artifacts_removed", removed))
-	if err := ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName, rotation.OriginalContainerID); err != nil {
+	if err := ar.st.MarkRecoveredRecord(rotation); err != nil {
 		logger.Error("Failed to mark rotation as recovered", zap.Error(err))
 	}
 	ar.emitRecoveryEvent(notify.RecoverySucceeded, rotation, nil)
+}
+
+// originalRetiredByCommittedRotation reports whether a missing original is
+// explained by a rotation whose swap the journal shows as committed and whose
+// journalled candidate currently holds the real name, verified healthy.
+func (ar *AutomaticRecovery) originalRetiredByCommittedRotation(ctx context.Context, rec *RotationState, missingID string) bool {
+	if rec.Seq == 0 || rec.ServiceID == "" || !idIn(rec.OriginalIDs(), missingID) {
+		return false
+	}
+	committed := rec.Committed
+	switch rec.Transition {
+	case rotation.TrSwapCommitted, rotation.TrIntentCleanup, rotation.TrCompleted:
+		committed = true
+	}
+	if !committed {
+		return false
+	}
+	holderID, ok, _ := ar.holderState(ctx, rec.ServiceID, "")
+	return ok && idIn(rec.CandidateContainerIDs, holderID)
 }
 
 // ensureHolder makes sure a verified healthy container holds the real name
@@ -292,60 +319,149 @@ func (ar *AutomaticRecovery) ensureHolder(ctx context.Context, logger *zap.Logge
 // holderHealthy reports whether an owned container named exactly `base` is
 // running and healthy. excludeID, if set, must not be the holder.
 func (ar *AutomaticRecovery) holderHealthy(ctx context.Context, base, excludeID string) (bool, string) {
+	_, ok, why := ar.holderState(ctx, base, excludeID)
+	return ok, why
+}
+
+// holderState is holderHealthy that also returns the holder's container ID, which
+// the journal-aware retirement rules need to establish the holder's IDENTITY.
+func (ar *AutomaticRecovery) holderState(ctx context.Context, base, excludeID string) (id string, ok bool, why string) {
 	t := ar.timings()
 	deadline := time.Now().Add(t.healthWait)
 	for {
 		insp, err := ar.cli.ContainerInspect(ctx, base)
 		if err != nil {
-			return false, "no container holds the real name"
+			return "", false, "no container holds the real name"
 		}
 		if excludeID != "" && insp.ID == excludeID {
-			return false, "the artifact itself holds the name"
+			return "", false, "the artifact itself holds the name"
 		}
 		var labels map[string]string
 		if insp.Config != nil {
 			labels = insp.Config.Labels
 		}
 		if !ar.ownedByMe(labels) {
-			return false, "name holder is not owned by this agent"
+			return "", false, "name holder is not owned by this agent"
 		}
 		st := insp.State
 		if st == nil || !st.Running || st.Restarting {
-			return false, "name holder is not running"
+			return "", false, "name holder is not running"
 		}
 		if st.Health != nil {
 			switch st.Health.Status {
 			case "healthy":
-				return true, ""
+				return insp.ID, true, ""
 			case "unhealthy":
-				return false, "name holder is unhealthy"
+				return "", false, "name holder is unhealthy"
 			default: // "starting": wait, then give up (not proven healthy)
 				if time.Now().Before(deadline) {
 					select {
 					case <-ctx.Done():
-						return false, "cancelled"
+						return "", false, "cancelled"
 					case <-time.After(250 * time.Millisecond):
 					}
 					continue
 				}
-				return false, "name holder health check never became healthy"
+				return "", false, "name holder health check never became healthy"
 			}
 		}
 		// No HEALTHCHECK: "running" is weak evidence; require it to have been
 		// stable for a while so a crash-looping container is not trusted.
 		if started, perr := time.Parse(time.RFC3339Nano, st.StartedAt); perr == nil && time.Since(started) >= t.minStableRunning {
-			return true, ""
+			return insp.ID, true, ""
 		}
 		if time.Now().Before(deadline) {
 			select {
 			case <-ctx.Done():
-				return false, "cancelled"
+				return "", false, "cancelled"
 			case <-time.After(250 * time.Millisecond):
 			}
 			continue
 		}
-		return false, "name holder has no health check and has not been running long enough to trust"
+		return "", false, "name holder has no health check and has not been running long enough to trust"
 	}
+}
+
+func idIn(ids []string, id string) bool {
+	for _, i := range ids {
+		if i == id {
+			return true
+		}
+	}
+	return false
+}
+
+// journalRecordFor finds the journal record an artifact belongs to: by container
+// identity first (original or candidate ID), then by the rotation label stamped on
+// candidates, which exists even if the crash preceded the ID being journalled.
+func (ar *AutomaticRecovery) journalRecordFor(id string, labels map[string]string) *RotationState {
+	if ar.st == nil {
+		return nil
+	}
+	recs := ar.st.snapshotRecords()
+	for _, r := range recs {
+		if idIn(r.OriginalIDs(), id) || idIn(r.CandidateContainerIDs, id) {
+			return r
+		}
+	}
+	if rid := labels[rotation.LabelRotationID]; rid != "" {
+		for _, r := range recs {
+			if r.RotationID == rid {
+				return r
+			}
+		}
+	}
+	return nil
+}
+
+// journalPermits applies the transition-journal rules to retiring `artifact` while
+// `holder` (verified healthy, holding the real name) exists. Docker alone cannot say
+// whether the holder is the journalled candidate or whether traffic was handed to it.
+//
+//   - No journal at all: allowed for an unproxied service (the name-holder rule is
+//     all there is); a proxy-managed artifact (dso.host_ports) is PRESERVED because
+//     routing evidence is unavailable.
+//   - Retiring an ORIGINAL (the previously active workload): the holder must be the
+//     journalled candidate (by ID or rotation label) AND, for a proxied rotation,
+//     there must be durable evidence the handoff was committed (observed target,
+//     swap committed, or a swap/cleanup intent, which is only written after the
+//     handoff returned).
+//   - Retiring a CANDIDATE: the holder must be one of the journalled originals (the
+//     previously active workload is still serving).
+func (ar *AutomaticRecovery) journalPermits(artifactID string, artifactLabels map[string]string, holderID string, holderLabels map[string]string) (string, bool) {
+	rec := ar.journalRecordFor(artifactID, artifactLabels)
+	if rec == nil || rec.Seq == 0 {
+		if artifactLabels["dso.host_ports"] != "" && (rec == nil || rec.Seq == 0) {
+			return "proxy-managed workload with no transition journal: routing evidence unavailable", false
+		}
+		return "", true
+	}
+	isOriginal := idIn(rec.OriginalIDs(), artifactID)
+	isCandidate := !isOriginal && (idIn(rec.CandidateContainerIDs, artifactID) || artifactLabels[rotation.LabelRotationID] == rec.RotationID)
+	holderIsCandidate := idIn(rec.CandidateContainerIDs, holderID) || (holderLabels[rotation.LabelRotationID] == rec.RotationID && !idIn(rec.OriginalIDs(), holderID))
+	switch {
+	case isOriginal:
+		if !holderIsCandidate {
+			return "the healthy name holder is not the journalled candidate", false
+		}
+		if rec.ExpectedProxyTarget != "" {
+			evidence := rec.ObservedProxyTarget == holderID || rec.Committed
+			switch rec.Transition {
+			case rotation.TrIntentSwap, rotation.TrSwapCommitted, rotation.TrIntentCleanup, rotation.TrCompleted:
+				evidence = true
+			}
+			if !evidence {
+				return "no durable evidence that traffic was handed to the healthy holder", false
+			}
+		}
+		return "", true
+	case isCandidate:
+		if !idIn(rec.OriginalIDs(), holderID) {
+			return "the healthy name holder is not the journalled original", false
+		}
+		return "", true
+	}
+	return "artifact is not part of its journal record", false
 }
 
 // artifactBase splits a rotation-artifact name into the real service name and the
@@ -373,6 +489,10 @@ func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *za
 		logger.Error("Failed to list containers for artifact retirement; nothing removed", zap.Error(err))
 		return 0, nil
 	}
+	byID := map[string]container.Summary{}
+	for _, c := range list {
+		byID[c.ID] = c
+	}
 	for _, c := range list {
 		for _, n := range c.Names {
 			cleanName := strings.TrimPrefix(n, "/")
@@ -385,8 +505,15 @@ func (ar *AutomaticRecovery) retireSafeArtifacts(ctx context.Context, logger *za
 					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName))
 				break
 			}
-			if ok, why := ar.holderHealthy(ctx, base, c.ID); !ok {
+			holderID, ok, why := ar.holderState(ctx, base, c.ID)
+			if !ok {
 				logger.Warn("Preserving rotation artifact: no verified healthy workload holds the real name",
+					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName), zap.String("reason", why))
+				preserved = append(preserved, cleanName+"("+why+")")
+				break
+			}
+			if why, permitted := ar.journalPermits(c.ID, c.Labels, holderID, byID[holderID].Labels); !permitted {
+				logger.Warn("Preserving rotation artifact: the transition journal does not establish that retiring it is safe",
 					zap.String("container_id", shortID(c.ID)), zap.String("container_name", cleanName), zap.String("reason", why))
 				preserved = append(preserved, cleanName+"("+why+")")
 				break

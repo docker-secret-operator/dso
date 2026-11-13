@@ -1,0 +1,98 @@
+package rotation
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"time"
+)
+
+// Rotation transition journal.
+//
+// Docker tells recovery what EXISTS (containers, names, labels, health). It cannot
+// tell recovery what DSO INTENDED or how far an operation got: which container was
+// the candidate, whether the proxy handoff was started or committed, whether the
+// old workload was due to be retired. The journal records that intent durably
+// BEFORE each destructive step and the acknowledgement AFTER it, so that after a
+// crash recovery can reconcile "what was planned" with "what is observed" and
+// preserve anything it cannot account for.
+//
+// No plaintext secret values are ever journalled; only an opaque secret version
+// identifier when one is available.
+
+// Transition names. "intent_*" entries are written before the action; the matching
+// past-tense entry after it. A crash can land between the two: recovery must treat
+// an intent without its acknowledgement as "may or may not have happened".
+const (
+	TrIntentCreateCandidate = "intent_create_candidate"
+	TrCandidateCreated      = "candidate_created"
+	TrCandidateReady        = "candidate_ready" // started, delivered, health/probe verified
+	TrIntentHandoff         = "intent_handoff"
+	TrHandoffDone           = "handoff_done"
+	TrIntentSwap            = "intent_swap" // rename original -> backup, candidate -> real name
+	TrSwapCommitted         = "swap_committed"
+	TrIntentCleanup         = "intent_cleanup"
+	TrCompleted             = "completed"
+	TrIntentRollback        = "intent_rollback"
+	TrRolledBack            = "rolled_back"
+	TrFailed                = "failed"
+)
+
+// JournalEvent is one durable record. Zero-value fields mean "unchanged".
+type JournalEvent struct {
+	RotationID string
+	ServiceID  string // the real container name
+	OwnerID    string
+	Strategy   string
+	Transition string
+
+	OriginalIDs  []string
+	CandidateIDs []string
+
+	// SecretVersion is an opaque identifier of the desired secret version (never a
+	// value). Empty when the provider exposes none.
+	SecretVersion string
+
+	// ExpectedProxyTarget / ObservedProxyTarget are container IDs the proxy was
+	// expected to / was observed to route to; empty when the service is not proxied.
+	ExpectedProxyTarget string
+	ObservedProxyTarget string
+
+	Detail string
+}
+
+// Journal persists JournalEvents. Record must be durable when it returns nil. When
+// it returns an error the caller MUST NOT perform the guarded action (fail closed).
+type Journal interface {
+	Record(ctx context.Context, e JournalEvent) error
+}
+
+type rotationIDKey struct{}
+
+// WithRotationID returns a context carrying the rotation's identity, so the
+// journal record created by the trigger engine and the transitions recorded deep in
+// a strategy are the same record.
+func WithRotationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, rotationIDKey{}, id)
+}
+
+// RotationIDFrom returns the rotation ID in ctx or "".
+func RotationIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(rotationIDKey{}).(string)
+	return id
+}
+
+// NewRotationID returns a fresh unique rotation identifier.
+func NewRotationID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("rot-%d", time.Now().UnixNano())
+	}
+	return "rot-" + hex.EncodeToString(b)
+}
+
+// LabelRotationID marks a candidate container with the rotation that created it,
+// so recovery can identify it by an operation identity that exists even when the
+// crash happened before the candidate's container ID was journalled.
+const LabelRotationID = "dso.rotation.id"

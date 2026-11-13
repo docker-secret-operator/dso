@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap/zaptest"
 )
@@ -31,11 +33,13 @@ type fakeCtr struct {
 	upFor    time.Duration // how long it has been running
 	// startHealth is the health the container reports after a successful start.
 	startHealth string
+	labels      map[string]string // extra labels (e.g. dso.rotation.id, dso.host_ports)
 }
 
 type fakeDaemon struct {
 	mu        sync.Mutex
 	ctrs      map[string]*fakeCtr // by id
+	nextID    int
 	removed   []string
 	started   []string
 	stopped   []string
@@ -64,6 +68,9 @@ func (d *fakeDaemon) find(ref string) *fakeCtr {
 
 func (d *fakeDaemon) labels(c *fakeCtr) map[string]string {
 	l := map[string]string{"dso.reloader": "true"}
+	for k, v := range c.labels {
+		l[k] = v
+	}
 	if c.owner != "" {
 		l["dso.owner"] = c.owner
 	}
@@ -104,9 +111,47 @@ func (d *fakeDaemon) handler() http.Handler {
 				st.Health = &container.Health{Status: c.health}
 			}
 			_ = json.NewEncoder(w).Encode(container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{ID: c.id, Name: "/" + c.name, State: st},
-				Config:            &container.Config{Labels: d.labels(c)},
+				ContainerJSONBase: &container.ContainerJSONBase{ID: c.id, Name: "/" + c.name, State: st, HostConfig: &container.HostConfig{}},
+				NetworkSettings:   &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{"bridge": {}}},
+				Config:            &container.Config{Image: "busybox", Labels: d.labels(c)},
 			})
+		case r.Method == http.MethodPost && path == "/containers/create":
+			var body struct {
+				Labels map[string]string
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			name := r.URL.Query().Get("name")
+			if d.find(name) != nil {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": "name already in use"})
+				return
+			}
+			d.nextID++
+			id := fmt.Sprintf("created-%d", d.nextID)
+			c := &fakeCtr{id: id, name: name, owner: body.Labels["dso.owner"], startHealth: "healthy", labels: map[string]string{}}
+			for k, v := range body.Labels {
+				if k != "dso.owner" && k != "dso.reloader" {
+					c.labels[k] = v
+				}
+			}
+			d.ctrs[id] = c
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": id})
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/rename"):
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/rename")
+			c := d.find(id)
+			newName := r.URL.Query().Get("name")
+			if c == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if other := d.find(newName); other != nil && other.id != c.id {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": "name already in use"})
+				return
+			}
+			c.name = newName
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/stop"):
 			id := strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/stop")
 			if c := d.find(id); c != nil {

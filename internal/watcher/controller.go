@@ -90,6 +90,12 @@ type ReloaderController struct {
 	// whatever is actually running, and recovery removes orphaned shadows.
 	pendingProxy sync.Map // map[string]struct{} (key: container ID)
 
+	// Journal receives the durable rotation transition journal (the agent wires
+	// its StateTracker here). RequireJournal makes rolling rotation refuse to start
+	// without one (fail closed); it is set by the agent, not by bare test harnesses.
+	Journal        rotation.Journal
+	RequireJournal bool
+
 	// signalRunHook, when set (tests only), replaces runSignalRotation.
 	signalRunHook func(ctx context.Context, target *TargetContainer, serviceName, secretName string) error
 }
@@ -1038,6 +1044,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// its candidate (Docker-published ports, host networking). The old path
 			// created the candidate, saw the start fail on the port conflict and then
 			// fell back to stopping the healthy container.
+			if r.RequireJournal && r.Journal == nil {
+				jerr := fmt.Errorf("rolling rotation refused: the rotation journal is unavailable, so a crash mid-rotation could not be recovered safely (nothing was changed)")
+				r.Logger.Error("Rolling rotation rejected before any change", zap.String("id", util.ShortID(target.ID)), zap.Error(jerr))
+				audit.Log(ctx, "rotate", "system", r.resolveSecretProvider(secretName), secretName, target.ID, "failed")
+				recordAsyncErr(jerr)
+				releaseLock()
+				return true
+			}
 			if eerr := rollingEligibility(inspect); eerr != nil {
 				r.Logger.Error("Rolling rotation rejected before any change",
 					zap.String("id", util.ShortID(target.ID)), zap.Error(eerr))
@@ -1134,6 +1148,10 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}
 
 			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
+			if r.Journal != nil {
+				rs.Journal = r.Journal
+				rs.OwnerID = r.ownerID()
+			}
 			auditProvider := r.resolveSecretProvider(secretName)
 
 			// Zero-downtime proxy handoff. The shadow is kept out of the proxy

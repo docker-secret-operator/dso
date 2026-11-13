@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/rotation"
 )
 
 // RotationState tracks in-flight rotations to enable recovery after crashes
@@ -28,12 +32,29 @@ type RotationState struct {
 	// phase DSO acknowledged ("rotation_requested", "completed", ...). Recovery
 	// never trusts Phase over what Docker actually shows: a crash between a Docker
 	// action and its acknowledgement leaves Phase behind reality.
-	RotationID   string    `json:"rotation_id,omitempty"`
-	Phase        string    `json:"phase,omitempty"`
-	Status       string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
-	StartTime    time.Time `json:"start_time"`
-	LastUpdate   time.Time `json:"last_update"`
-	ErrorMessage string    `json:"error_message,omitempty"` // For critical_error status
+	RotationID string `json:"rotation_id,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+
+	// Transition journal (see internal/rotation/journal.go). Written BEFORE each
+	// destructive step (intent_*) and after it; no plaintext secret value is ever
+	// stored, only an opaque version identifier.
+	ServiceID             string    `json:"service_id,omitempty"`
+	OwnerID               string    `json:"owner_id,omitempty"`
+	Strategy              string    `json:"strategy,omitempty"`
+	CandidateContainerIDs []string  `json:"candidate_container_ids,omitempty"`
+	SecretVersion         string    `json:"secret_version,omitempty"`
+	Transition            string    `json:"transition,omitempty"`
+	PendingIntent         string    `json:"pending_intent,omitempty"` // an intent_* with no acknowledgement yet
+	ExpectedProxyTarget   string    `json:"expected_proxy_target,omitempty"`
+	ObservedProxyTarget   string    `json:"observed_proxy_target,omitempty"`
+	Committed             bool      `json:"committed,omitempty"` // swap_committed acknowledged
+	CleanupStatus         string    `json:"cleanup_status,omitempty"`
+	Seq                   int       `json:"seq,omitempty"`
+	Detail                string    `json:"detail,omitempty"`
+	Status                string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
+	StartTime             time.Time `json:"start_time"`
+	LastUpdate            time.Time `json:"last_update"`
+	ErrorMessage          string    `json:"error_message,omitempty"` // For critical_error status
 }
 
 // OriginalIDs returns the container IDs of this rotation as a slice, from the
@@ -101,8 +122,18 @@ func NewStateTracker(stateDir string, logger *zap.Logger) (*StateTracker, error)
 
 // StartRotation marks a rotation as in progress
 func (st *StateTracker) StartRotation(providerName, secretName, originalContainerID, newContainerID string) error {
+	return st.StartRotationWithID("", providerName, secretName, originalContainerID, newContainerID)
+}
+
+// StartRotationWithID is StartRotation with a caller-chosen rotation ID (""
+// generates one), so the trigger engine can hand the same ID to the strategies via
+// the context and the journal records land on this record.
+func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName, originalContainerID, newContainerID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if rotationID == "" {
+		rotationID = newRotationID()
+	}
 
 	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
 	state := &RotationState{
@@ -111,7 +142,7 @@ func (st *StateTracker) StartRotation(providerName, secretName, originalContaine
 		OriginalContainerID:  originalContainerID,
 		OriginalContainerIDs: splitContainerIDs(originalContainerID),
 		NewContainerID:       newContainerID,
-		RotationID:           newRotationID(),
+		RotationID:           rotationID,
 		Phase:                "rotation_requested",
 		Status:               "in_progress",
 		StartTime:            time.Now(),
@@ -217,6 +248,34 @@ func (st *StateTracker) CleanupOldStates(retentionPeriod time.Duration) error {
 	return nil
 }
 
+// MarkRecoveredRecord / MarkCriticalRecord update a record by identity rather than
+// by its provider:secret:ids key, which journal-only records (rotations not
+// started by the trigger engine) do not share.
+func (st *StateTracker) MarkRecoveredRecord(rec *RotationState) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	rec.Status, rec.LastUpdate = "recovered", time.Now()
+	return st.persistState()
+}
+
+func (st *StateTracker) MarkCriticalRecord(rec *RotationState, msg string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	rec.Status, rec.ErrorMessage, rec.LastUpdate = "critical_error", msg, time.Now()
+	return st.persistState()
+}
+
+// snapshotRecords returns the current records (read-only use by recovery).
+func (st *StateTracker) snapshotRecords() []*RotationState {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	out := make([]*RotationState, 0, len(st.states))
+	for _, s := range st.states {
+		out = append(out, s)
+	}
+	return out
+}
+
 // MarkRecovered marks a rotation as recovered after automatic recovery completed
 func (st *StateTracker) MarkRecovered(providerName, secretName, originalContainerID string) error {
 	st.mu.Lock()
@@ -293,6 +352,94 @@ func (st *StateTracker) persistState() error {
 		_ = d.Close()
 	}
 	return nil
+}
+
+// Record implements rotation.Journal. It upserts the record for e.RotationID
+// (creating a journal-only record when the rotation was not started by the trigger
+// engine, e.g. a manual rotation), merges the event, and persists durably before
+// returning: a nil return means the event survives a process crash. An error means
+// the caller must NOT perform the action the event announces.
+func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) error {
+	if e.RotationID == "" {
+		return errors.New("journal event without a rotation ID")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var state *RotationState
+	for _, s := range st.states {
+		if s.RotationID == e.RotationID {
+			state = s
+			break
+		}
+	}
+	if state == nil {
+		state = &RotationState{
+			RotationID: e.RotationID, Status: "in_progress", StartTime: time.Now(),
+		}
+		st.states["journal:"+e.RotationID] = state
+	}
+	if e.ServiceID != "" {
+		state.ServiceID = e.ServiceID
+	}
+	if e.OwnerID != "" {
+		state.OwnerID = e.OwnerID
+	}
+	if e.Strategy != "" {
+		state.Strategy = e.Strategy
+	}
+	if e.SecretVersion != "" {
+		state.SecretVersion = e.SecretVersion
+	}
+	if e.ExpectedProxyTarget != "" {
+		state.ExpectedProxyTarget = e.ExpectedProxyTarget
+	}
+	if e.ObservedProxyTarget != "" {
+		state.ObservedProxyTarget = e.ObservedProxyTarget
+	}
+	state.OriginalContainerIDs = unionIDs(state.OriginalContainerIDs, e.OriginalIDs)
+	if len(state.OriginalContainerIDs) > 0 && state.OriginalContainerID == "" {
+		state.OriginalContainerID = strings.Join(state.OriginalContainerIDs, ",")
+	}
+	state.CandidateContainerIDs = unionIDs(state.CandidateContainerIDs, e.CandidateIDs)
+	if e.Detail != "" {
+		state.Detail = e.Detail
+	}
+	state.Seq++
+	state.Transition, state.Phase = e.Transition, e.Transition
+	state.LastUpdate = time.Now()
+	if strings.HasPrefix(e.Transition, "intent_") {
+		state.PendingIntent = e.Transition
+	} else {
+		state.PendingIntent = ""
+	}
+	switch e.Transition {
+	case rotation.TrSwapCommitted:
+		state.Committed = true
+	case rotation.TrIntentCleanup:
+		state.CleanupStatus = "intent"
+	case rotation.TrCompleted:
+		state.CleanupStatus = "done"
+		state.Status = "completed"
+	case rotation.TrRolledBack:
+		// The candidate was discarded and the original never touched: terminal.
+		state.Status = "recovered"
+	}
+	return st.persistState()
+}
+
+func unionIDs(have, add []string) []string {
+	seen := map[string]bool{}
+	for _, h := range have {
+		seen[h] = true
+	}
+	out := append([]string(nil), have...)
+	for _, a := range add {
+		if a != "" && !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func newRotationID() string {

@@ -145,6 +145,16 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	timeoutController := NewTimeoutController(logger)
 
+	// The rotation transition journal is the StateTracker. Without it a crash in
+	// the middle of a rolling rotation cannot be reconciled safely, so rolling
+	// rotation is refused (RequireJournal) rather than run unjournalled.
+	if rw != nil {
+		rw.RequireJournal = true
+		if stateTracker != nil {
+			rw.Journal = stateTracker
+		}
+	}
+
 	return &TriggerEngine{
 		Cache:             cache,
 		Store:             storeManager,
@@ -418,9 +428,14 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		// containers rotating the same secret simultaneously.
 		originalContainerIDs := t.collectContainerIDsForSecret(secretName)
 
+		// One identity for this rotation: the state record created below and the
+		// transition journal written by the strategies are the same record.
+		rotationID := rotation.NewRotationID()
+		ctx = rotation.WithRotationID(ctx, rotationID)
+
 		// Record rotation start for crash recovery
 		if t.StateTracker != nil {
-			if err := t.StateTracker.StartRotation(providerName, secretName, originalContainerIDs, ""); err != nil {
+			if err := t.StateTracker.StartRotationWithID(rotationID, providerName, secretName, originalContainerIDs, ""); err != nil {
 				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
 			}
 		}

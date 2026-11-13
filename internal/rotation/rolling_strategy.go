@@ -18,6 +18,21 @@ type RollingStrategy struct {
 	logger        *zap.Logger
 	renameTimeout time.Duration
 
+	// Journal, when set, receives the durable transition journal (see journal.go):
+	// intent before every destructive step, acknowledgement after. A failure to
+	// persist an INTENT aborts the rotation before the guarded action (fail
+	// closed); a failure to persist an acknowledgement is logged only, because the
+	// recovery rule treats an unacknowledged intent as "may have happened".
+	Journal Journal
+	// OwnerID is recorded in the journal (this agent's dso.owner identity).
+	OwnerID string
+	// FaultHook is a TEST-ONLY hook called at every named transition point; tests
+	// panic from it to model the process dying at exactly that point (no deferred
+	// cleanup runs, no later step executes). It is nil in production.
+	FaultHook func(point string)
+
+	rid string // rotation ID of the current Execute (one RollingStrategy per rotation)
+
 	// OnShadowCreated, if set, is called synchronously immediately after the
 	// shadow container is created and BEFORE it is started. It exists so the
 	// caller can suppress the proxy registration that would otherwise happen
@@ -64,6 +79,38 @@ func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *Rolli
 	}
 }
 
+func (rs *RollingStrategy) fault(point string) {
+	if rs.FaultHook != nil {
+		rs.FaultHook(point)
+	}
+}
+
+// intent persists a transition INTENT; an error means the caller must not perform
+// the guarded action.
+func (rs *RollingStrategy) intent(ctx context.Context, e JournalEvent) error {
+	if rs.Journal == nil {
+		return nil
+	}
+	e.RotationID, e.OwnerID, e.Strategy = rs.rid, rs.OwnerID, "rolling"
+	if err := rs.Journal.Record(ctx, e); err != nil {
+		return fmt.Errorf("rotation journal could not record %q, refusing the next step: %w", e.Transition, err)
+	}
+	return nil
+}
+
+// ack persists an acknowledgement or informational transition; failure is logged
+// only (the matching intent is already durable).
+func (rs *RollingStrategy) ack(ctx context.Context, e JournalEvent) {
+	if rs.Journal == nil {
+		return
+	}
+	e.RotationID, e.OwnerID, e.Strategy = rs.rid, rs.OwnerID, "rolling"
+	if err := rs.Journal.Record(ctx, e); err != nil {
+		rs.logger.Warn("rotation journal could not record an acknowledgement; the intent remains durable",
+			zap.String("transition", e.Transition), zap.Error(err))
+	}
+}
+
 // renameWithTimeout executes a container rename with a timeout to prevent indefinite hangs
 func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, newName string) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, rs.renameTimeout)
@@ -81,6 +128,8 @@ func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, n
 func (rs *RollingStrategy) discardShadow(ctx context.Context, shadowID, shadowName string, stop bool) {
 	cctx, cancel := CleanupContext(ctx)
 	defer cancel()
+	rs.ack(cctx, JournalEvent{Transition: TrIntentRollback, CandidateIDs: []string{shadowID}, Detail: "discarding the not-yet-promoted candidate; the original is untouched"})
+	defer rs.ack(cctx, JournalEvent{Transition: TrRolledBack, CandidateIDs: []string{shadowID}})
 	if stop {
 		if err := rs.cli.ContainerStop(cctx, shadowID, container.StopOptions{}); err != nil {
 			rs.logger.Warn("Could not stop shadow container during rollback (removal is forced)",
@@ -205,6 +254,11 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		return fmt.Errorf("container %s returned empty name, refusing rotation", containerID)
 	}
 
+	rs.rid = RotationIDFrom(ctx)
+	if rs.rid == "" {
+		rs.rid = NewRotationID()
+	}
+
 	originalName := strings.TrimPrefix(inspect.Name, "/")
 	tempNewName := originalName + "_dso_new_" + fmt.Sprintf("%d", time.Now().Unix())
 	backupName := originalName + "_dso_backup_" + fmt.Sprintf("%d", time.Now().Unix())
@@ -224,15 +278,33 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 
 	// Step 3: Create new container with temporary name
+	// Operation identity that exists even if we crash before the candidate's
+	// container ID is journalled: recovery finds the candidate by this label.
+	if config.Labels == nil {
+		config.Labels = map[string]string{}
+	}
+	config.Labels[LabelRotationID] = rs.rid
+
+	if err := rs.intent(ctx, JournalEvent{
+		Transition: TrIntentCreateCandidate, ServiceID: originalName,
+		OriginalIDs: []string{containerID}, Detail: "candidate " + tempNewName,
+	}); err != nil {
+		return err
+	}
+	rs.fault("after_intent_create_candidate")
+
 	rs.logger.Info("Creating new container", zap.String("temp_name", tempNewName))
 	createResp, err := rs.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, tempNewName)
 	if err != nil {
 		rs.logger.Error("Failed to create new container",
 			zap.String("temp_name", tempNewName),
 			zap.Error(err))
+		rs.ack(ctx, JournalEvent{Transition: TrFailed, Detail: "candidate creation failed: nothing was created"})
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 	newContainerID := createResp.ID
+	rs.fault("after_candidate_create_before_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrCandidateCreated, CandidateIDs: []string{newContainerID}})
 
 	// Suppress proxy registration for this shadow before it is ever started.
 	// Docker emits "start" the moment ContainerStart returns, and the
@@ -260,6 +332,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 
 	// Step 4: Start new container
+	rs.fault("after_secret_delivery")
 	rs.logger.Info("Starting new container", zap.String("new_container_id", newContainerID))
 	if err := rs.cli.ContainerStart(ctx, newContainerID, container.StartOptions{}); err != nil {
 		// Rollback: remove the new container
@@ -271,6 +344,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 
 	// Step 5: Verify health
+	rs.fault("after_start_before_verify")
 	rs.logger.Info("Waiting for health verification",
 		zap.String("new_container_id", newContainerID),
 		zap.Duration("timeout", timeout))
@@ -311,7 +385,18 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	// BEFORE the renames and before the old container is touched, so a failed
 	// handoff costs nothing: we tear down the shadow and the old container is
 	// still named correctly, still running, and still the only active backend.
+	rs.fault("after_candidate_verified")
+	rs.ack(ctx, JournalEvent{Transition: TrCandidateReady, CandidateIDs: []string{newContainerID}})
+
 	if rs.OnReady != nil {
+		if err := rs.intent(ctx, JournalEvent{
+			Transition: TrIntentHandoff, CandidateIDs: []string{newContainerID},
+			ExpectedProxyTarget: newContainerID,
+		}); err != nil {
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return err
+		}
+		rs.fault("after_intent_handoff")
 		if err := rs.OnReady(ctx, newContainerID); err != nil {
 			rs.logger.Error("Proxy handoff failed, rolling back (old container keeps serving)",
 				zap.String("new_container_id", newContainerID),
@@ -319,6 +404,8 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			rs.discardShadow(ctx, newContainerID, tempNewName, true)
 			return fmt.Errorf("proxy handoff failed: %w", err)
 		}
+		rs.fault("after_handoff_before_ack")
+		rs.ack(ctx, JournalEvent{Transition: TrHandoffDone, ObservedProxyTarget: newContainerID, CandidateIDs: []string{newContainerID}})
 	}
 
 	// ATOMIC SWAP POINT: All previous steps are reversible. After this point,
@@ -329,6 +416,15 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	swapCtx := context.Background()
 
 	// Step 6: Rename original container to backup
+	if err := rs.intent(ctx, JournalEvent{
+		Transition: TrIntentSwap, OriginalIDs: []string{containerID}, CandidateIDs: []string{newContainerID},
+		Detail: "rename " + originalName + " -> " + backupName + ", candidate -> " + originalName,
+	}); err != nil {
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
+		return err
+	}
+	rs.fault("after_intent_swap")
+
 	rs.logger.Info("Renaming original container to backup",
 		zap.String("original_id", containerID),
 		zap.String("backup_name", backupName))
@@ -346,6 +442,8 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 
 	// Step 7: Rename new container to original name
+	rs.fault("between_renames")
+
 	rs.logger.Info("Renaming new container to original name",
 		zap.String("new_container_id", newContainerID),
 		zap.String("original_name", originalName))
@@ -414,6 +512,10 @@ verifySwap:
 	}
 
 	// Success! The new container is now the active one
+	rs.fault("after_swap_before_commit_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrSwapCommitted, OriginalIDs: []string{containerID}, CandidateIDs: []string{newContainerID}})
+	rs.fault("after_swap_committed")
+
 	rs.logger.Info("Rotation complete, new container is active",
 		zap.String("original_name", originalName),
 		zap.String("backup_name", backupName))
@@ -435,12 +537,22 @@ verifySwap:
 	}
 
 	// Step 8: Cleanup backup container with retry
+	if err := rs.intent(ctx, JournalEvent{Transition: TrIntentCleanup, OriginalIDs: []string{containerID}, Detail: "retiring " + backupName}); err != nil {
+		// The swap is already committed and the new container serves. Leave the
+		// backup in place for recovery rather than delete without a durable intent.
+		rs.logger.Warn("Not removing the old container: the cleanup intent could not be journalled", zap.Error(err))
+		return nil
+	}
+	rs.fault("after_intent_cleanup")
+
 	rs.logger.Info("Cleaning up backup container with retry",
 		zap.String("backup_name", backupName),
 		zap.String("original_id", containerID))
 
 	stopTimeout := int(timeout.Seconds())
 	rs.cleanupContainerWithRetry(ctx, containerID, backupName, stopTimeout)
+	rs.fault("after_cleanup_before_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrCompleted})
 
 	rs.logger.Info("Rotation finished successfully",
 		zap.String("original_name", originalName))
