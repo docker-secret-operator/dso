@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/docker-secret-operator/dso/internal/securefs/securefstest"
 )
 
 // TestHelperProcess is not a real test. Its body only runs when
@@ -159,7 +161,10 @@ func (h *lockHelper) kill(t *testing.T) {
 
 func lockTestDBPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "central.db")
+	// securefstest.TempDir tightens the directory to 0700. A bare t.TempDir()
+	// inherits the umask (0775 under umask 0002) and production securefs
+	// validation correctly rejects a group-writable database directory.
+	return filepath.Join(securefstest.TempDir(t), "central.db")
 }
 
 // --- Two concurrent read-only operations (shared vs shared) ---
