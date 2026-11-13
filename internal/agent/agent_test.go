@@ -11,7 +11,7 @@ import (
 
 // TestNewAgent verifies agent initialization
 func TestNewAgent(t *testing.T) {
-	mockDocker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	mockDocker, err := client.NewClientWithOpts(client.WithHost(unreachableDockerHost), client.WithAPIVersionNegotiation())
 	if err != nil {
 		// Use nil for testing if Docker not available
 		mockDocker = nil
@@ -673,3 +673,6 @@ func TestAgent_RunMainLoop_RepeatedShutdownDoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// unreachableDockerHost: see internal/events — unit tests never use the ambient daemon.
+const unreachableDockerHost = "tcp://127.0.0.1:1"

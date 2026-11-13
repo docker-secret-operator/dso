@@ -212,3 +212,32 @@ func CleanupFromEnv(ctx context.Context) error {
 	}
 	return CleanupRun(ctx, cfg, api)
 }
+
+// ClientFor returns a client for the designated test daemon for tests OUTSIDE a
+// package that installs Main (e.g. a unit-test package with a few read-only
+// daemon tests). Not opted in: the test is skipped and no client is built.
+// Opted in: the daemon is verified (read-only) on every call; failure FAILS the
+// test. The returned client must only be used for the purpose the test needs;
+// anything it creates must carry Config.Labels (use Docker/LabelArgs via Current
+// in packages that can install Main for mutating tests).
+func ClientFor(t testing.TB) *client.Client {
+	t.Helper()
+	cfg, err := LoadConfig(os.Getenv)
+	if err != nil {
+		if errors.Is(err, ErrNotOptedIn) {
+			t.Skip(err.Error())
+		}
+		t.Fatalf("integration isolation guard: %v", err)
+	}
+	cli, err := client.NewClientWithOpts(client.WithHost(cfg.Host), client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("integration isolation guard: docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := Verify(ctx, cfg, &realAPI{cli: cli}); err != nil {
+		t.Fatalf("integration isolation guard: %v", err)
+	}
+	return cli
+}

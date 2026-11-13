@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"github.com/docker-secret-operator/dso/test/dockerguard"
 	"sync"
 	"testing"
 	"time"
@@ -293,7 +294,7 @@ func TestDetectLabelChanges_DSO_Removed(t *testing.T) {
 // Test 3: NewContainerListener tests
 func TestNewContainerListener(t *testing.T) {
 	// Create a mock Docker client (will skip if Docker not available)
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(client.WithHost(unreachableDockerHost), client.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
@@ -319,7 +320,7 @@ func TestNewContainerListener(t *testing.T) {
 }
 
 func TestContainerListener_Events_ReturnsReadOnlyChannel(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(client.WithHost(unreachableDockerHost), client.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
@@ -342,17 +343,15 @@ func TestContainerListener_Events_ReturnsReadOnlyChannel(t *testing.T) {
 }
 
 func TestContainerListener_Start_Success(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err = listener.Start(ctx)
+	err := listener.Start(ctx)
 	if err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -370,17 +369,15 @@ func TestContainerListener_Start_Success(t *testing.T) {
 }
 
 func TestContainerListener_Start_AlreadyStarted(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel1()
 
-	err = listener.Start(ctx1)
+	err := listener.Start(ctx1)
 	if err != nil {
 		t.Fatalf("First Start() failed: %v", err)
 	}
@@ -398,17 +395,15 @@ func TestContainerListener_Start_AlreadyStarted(t *testing.T) {
 }
 
 func TestContainerListener_Stop(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err = listener.Start(ctx)
+	err := listener.Start(ctx)
 	if err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -487,11 +482,9 @@ func TestResolveLabelAction_MatchesStatusField(t *testing.T) {
 // (which only checks cl.ctx != nil) permanently rejected any Start() call
 // after the first Stop(), even though the listener was fully stopped.
 func TestContainerListener_RestartAfterStop(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 
@@ -524,7 +517,7 @@ func TestContainerListener_RestartAfterStop(t *testing.T) {
 }
 
 func TestContainerListener_StopWithoutStart(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(client.WithHost(unreachableDockerHost), client.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Skip("Docker not available, skipping container listener tests")
 	}
@@ -540,17 +533,15 @@ func TestContainerListener_StopWithoutStart(t *testing.T) {
 }
 
 func TestContainerListener_ConcurrentOperations(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	err = listener.Start(ctx)
+	err := listener.Start(ctx)
 	if err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -605,11 +596,9 @@ func TestContainerListener_ConcurrentOperations(t *testing.T) {
 }
 
 func TestContainerListener_InitializeContainers(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 
@@ -617,7 +606,7 @@ func TestContainerListener_InitializeContainers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	err = listener.Start(ctx)
+	err := listener.Start(ctx)
 	if err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -768,17 +757,15 @@ func TestNewContainerListener_NilClient(t *testing.T) {
 
 // CRITICAL ISSUE 2: Test for Docker API error handling
 func TestContainerListener_DockerAPIError(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker not available, skipping container listener tests")
-	}
-	defer func() { _ = cli.Close() }()
+	// Needs a real daemon (read-only). Runs only against the guarded, designated test
+	// daemon; skipped in ordinary `go test`.
+	cli := dockerguard.ClientFor(t)
 
 	listener := NewContainerListener(cli)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err = listener.Start(ctx)
+	err := listener.Start(ctx)
 	if err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -800,3 +787,9 @@ func TestContainerListener_DockerAPIError(t *testing.T) {
 		// Timeout is fine
 	}
 }
+
+// unreachableDockerHost is an explicit endpoint nothing listens on. Unit tests
+// must never depend on, or contact, whatever Docker daemon the developer's
+// environment or default socket points at (M0-11); tests that need a real daemon
+// belong in the guarded test/docker suite.
+const unreachableDockerHost = "tcp://127.0.0.1:1"
