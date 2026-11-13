@@ -20,10 +20,11 @@ import (
 // reachable with a wider mode than intended, even when several are created
 // concurrently, because the process umask they are created under is global state.
 
-// While tightenUmask..restoreUmask is held, the umask observed by ANY goroutine
-// must be 077 and the process umask must be restored to its true original value
-// afterwards. Run with -race.
-func TestUmaskTightenRestorePairsAreSerialised(t *testing.T) {
+// While withUmask is active, the umask observed inside the scope must be exactly
+// the requested one for every concurrent caller, and the process umask must be
+// the true original afterwards. Run with -race (the race detector alone does not
+// prove umask safety; the assertions below do).
+func TestWithUmaskScopesAreSerialised(t *testing.T) {
 	orig := unix.Umask(0o022)
 	t.Cleanup(func() { unix.Umask(orig) })
 
@@ -34,23 +35,77 @@ func TestUmaskTightenRestorePairsAreSerialised(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 300; i++ {
-				old := tightenUmask()
-				if old != 0o022 { // a previous holder's 077 leaked into "the original"
-					violations.Add(1)
-				}
-				if cur := unix.Umask(0o077); cur != 0o077 { // someone restored under us
-					violations.Add(1)
-				}
-				restoreUmask(old)
+				withUmask(0o077, func() {
+					if cur := unix.Umask(0o077); cur != 0o077 { // someone else's scope leaked or restored under us
+						violations.Add(1)
+					}
+				})
 			}
 		}()
 	}
 	wg.Wait()
 	if v := violations.Load(); v != 0 {
-		t.Fatalf("%d umask violations: concurrent socket creation could run under a wider umask", v)
+		t.Fatalf("%d umask violations: concurrent socket creation could run under a wrong umask", v)
 	}
 	if got := unix.Umask(0o022); got != 0o022 {
 		t.Fatalf("process umask was left at %#o, want the original 022", got)
+	}
+}
+
+// A panic inside the scope must still restore the umask and release the lock:
+// afterwards a normal scope must not deadlock and the original mask is back.
+func TestWithUmaskRestoresAndUnlocksOnPanic(t *testing.T) {
+	orig := unix.Umask(0o022)
+	t.Cleanup(func() { unix.Umask(orig) })
+
+	func() {
+		defer func() { _ = recover() }()
+		withUmask(0o077, func() { panic("boom") })
+	}()
+	done := make(chan struct{})
+	go func() { withUmask(0o077, func() {}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("umask lock was not released after a panic in the scope (deadlock)")
+	}
+	if got := unix.Umask(0o022); got != 0o022 {
+		t.Fatalf("umask after panic = %#o, want the original 022", got)
+	}
+}
+
+// The socket file must be BORN restricted: with a deliberately wide process umask
+// (000) the raw mode right after Listen, before any chmod, has no group/other bits.
+func TestListenUnixRestrictedCreatesRestrictedFile(t *testing.T) {
+	orig := unix.Umask(0o000)
+	t.Cleanup(func() { unix.Umask(orig) })
+
+	dir := t.TempDir()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p := filepath.Join(dir, "s"+string(rune('a'+i))+".sock")
+			l, err := listenUnixRestricted(p)
+			if err != nil {
+				t.Errorf("listen: %v", err)
+				return
+			}
+			defer func() { _ = l.Close() }()
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Errorf("stat: %v", err)
+				return
+			}
+			if fi.Mode().Perm()&0o077 != 0 {
+				t.Errorf("socket born with group/other bits: %v", fi.Mode().Perm())
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := unix.Umask(0o000); got != 0o000 {
+		t.Fatalf("umask after listens = %#o, want original 000", got)
 	}
 }
 
