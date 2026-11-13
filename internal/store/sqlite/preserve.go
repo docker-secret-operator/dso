@@ -426,7 +426,7 @@ func (pv *preserver) attempt(abs, dir string, expect FileIdentity, n int) (*Pres
 			removePartial(partial, dir)
 		}
 	}()
-	if err := os.Chmod(partial, 0o700); err != nil {
+	if err := os.Chmod(partial, 0o700); err != nil { // #nosec G302 -- directory, not a file: 0700 is the owner-only mode (needs x to be traversable); re-asserts the mkdir mode against umask
 		return nil, final(err)
 	}
 

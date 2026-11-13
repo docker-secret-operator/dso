@@ -1245,7 +1245,7 @@ func (d *displacer) replace(dbPath string, repl *Replacement, b *Baseline) (*Dis
 			return fail("aside-directory", fmt.Errorf("creating %s: %w", name, err)) // aside stays empty: nothing of ours to remove
 		}
 		aside = name
-		if err := os.Chmod(aside, 0o700); err != nil {
+		if err := os.Chmod(aside, 0o700); err != nil { // #nosec G302 -- directory, not a file: 0700 is the owner-only mode (needs x to be traversable); re-asserts the mkdir mode against umask
 			return fail("aside-directory", err)
 		}
 		d.step("aside-created")

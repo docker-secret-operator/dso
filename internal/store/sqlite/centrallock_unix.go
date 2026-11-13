@@ -5,6 +5,7 @@ package sqlite
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"syscall"
 	"time"
@@ -48,9 +49,18 @@ func acquireCentralLock(dbPath string, mode LockMode, timeout time.Duration) (*c
 		op = unix.LOCK_EX
 	}
 
+	// A real descriptor always fits an int32; bounds-check rather than
+	// blindly narrowing uintptr -> int.
+	rawFd := f.Fd()
+	if rawFd > math.MaxInt32 {
+		_ = f.Close()
+		return nil, fmt.Errorf("sqlite: central lock file %s: descriptor %d out of range", path, rawFd)
+	}
+	fd := int(rawFd)
+
 	deadline := time.Now().Add(timeout)
 	for {
-		flockErr := unix.Flock(int(f.Fd()), op|unix.LOCK_NB)
+		flockErr := unix.Flock(fd, op|unix.LOCK_NB)
 		if flockErr == nil {
 			break
 		}
@@ -66,7 +76,7 @@ func acquireCentralLock(dbPath string, mode LockMode, timeout time.Duration) (*c
 	}
 
 	return &centralLock{release: func() error {
-		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = unix.Flock(fd, unix.LOCK_UN)
 		return f.Close()
 	}}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/docker-secret-operator/dso/internal/store"
@@ -53,8 +54,16 @@ func auditEventTimestamp(ev store.AuditEvent) int64 {
 }
 
 func appendAuditField(buf *bytes.Buffer, f []byte) {
+	// The 4-byte length prefix cannot represent a field above MaxUint32 bytes.
+	// Truncating it would make distinct events encode (and hash) identically,
+	// silently breaking the length-prefix injectivity guarantee, so fail closed.
+	// Unreachable in practice: every hashed field is a short identifier/label.
+	n := uint64(len(f))
+	if n > math.MaxUint32 {
+		panic("sqlite: audit field exceeds the 4-byte length prefix")
+	}
 	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(f)))
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(n))
 	buf.Write(lenBuf[:])
 	buf.Write(f)
 }
