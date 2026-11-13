@@ -8,11 +8,21 @@
 #
 # Step statuses (the ONLY values): passed | failed | skipped | incomplete
 # Step kinds: step | external_prerequisite
-# Verdict: PASS | FAIL | INCOMPLETE
-#   FAIL        any step failed
-#   INCOMPLETE  nothing failed, but a step was skipped/incomplete/not run, a
-#               required step is missing, or an external prerequisite is open
-#   PASS        every required step passed, none skipped, no external prerequisite
+#
+# Independent verdicts (never collapsed into one; see m0_compute_verdicts):
+#   automated_integration   PASS | FAIL | INCOMPLETE   executable steps only
+#       FAIL        any executable step failed
+#       INCOMPLETE  nothing failed, but a required executable step was skipped,
+#                   did not run, or is missing (a zero-test scenario is "failed")
+#       PASS        every required executable step passed, none skipped
+#       External prerequisites NEVER influence it.
+#   environment_attestation VERIFIED | UNVERIFIED      identity/endpoint/daemon/foreign-resource gates + marker
+#   security_review         OPEN | CLOSED              operator-owned; default OPEN; read from a file, never decided here
+#   cleanup                 PASS | FAIL                ownership-scoped cleanup step
+#   vm_teardown             PENDING | DONE             always PENDING in runner output (external)
+#   release_readiness       PASS | FAIL | INCOMPLETE   INCOMPLETE unless every one of the above is
+#                                                      green/closed/done; the runner can never reach PASS
+#   verdict                 alias of release_readiness (compatibility only; not an approval)
 
 # ---- globals set by the caller (run-all.sh / selftest.sh) ----------------------
 #   M0_STEPS_FILE  TSV: name start end exit_code status kind note
@@ -72,8 +82,8 @@ m0_external() {
   m0_record "$1" incomplete 0 "$t" "$t" external_prerequisite "EXTERNAL_PREREQUISITE: $2"
 }
 
-# m0_verdict FILE REQUIRED_NAME... -> PASS|FAIL|INCOMPLETE on stdout.
-# Statuses of rows whose kind is external_prerequisite are included.
+# m0_verdict FILE REQUIRED_NAME... -> PASS|FAIL|INCOMPLETE on stdout (generic engine).
+# Every row counts, whatever its kind.
 m0_verdict() {
   local file=$1 name start end rc status kind note failed=0 open=0 rows=0 r
   shift
@@ -96,15 +106,94 @@ m0_verdict() {
   else echo PASS; fi
 }
 
-# m0_verdict_automated FILE REQUIRED... -- same, ignoring external_prerequisite rows.
-m0_verdict_automated() {
-  local file=$1 tmp v
+# m0_automated_integration FILE REQUIRED... -> PASS|FAIL|INCOMPLETE
+# Only executable steps count: rows of kind external_prerequisite are ignored and a
+# REQUIRED name that is recorded as an external prerequisite is not required here.
+m0_automated_integration() {
+  local file=$1 tmp v r
+  local -a req=()
   shift
   tmp=$(mktemp)
   awk -F'\t' '$6 != "external_prerequisite"' "$file" >"$tmp" 2>/dev/null || true
-  v=$(m0_verdict "$tmp" "$@")
+  for r in "$@"; do
+    if awk -F'\t' -v n="$r" '$1==n && $6=="external_prerequisite" {f=1} END {exit !f}' "$file" 2>/dev/null; then continue; fi
+    req+=("$r")
+  done
+  v=$(m0_verdict "$tmp" "${req[@]}")
   rm -f "$tmp"
   echo "$v"
+}
+
+# Steps whose success (with the marker) attests that the run happened on the
+# designated, dedicated, unshared test daemon.
+M0_ATTEST_STEPS=(environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post)
+
+# m0_step_all_passed FILE NAME -- true iff NAME has >=1 row and every row is passed.
+m0_step_all_passed() {
+  awk -F'\t' -v n="$2" '$1==n {t++; if ($5=="passed") p++} END {exit !(t>0 && t==p)}' "$1" 2>/dev/null
+}
+
+# m0_environment_attestation FILE MARKER_OK(ok|anything) -> VERIFIED|UNVERIFIED
+m0_environment_attestation() {
+  local file=$1 marker=${2:-} s
+  [[ $marker == ok ]] || { echo UNVERIFIED; return 0; }
+  for s in "${M0_ATTEST_STEPS[@]}"; do
+    m0_step_all_passed "$file" "$s" || { echo UNVERIFIED; return 0; }
+  done
+  echo VERIFIED
+}
+
+# m0_security_review [FILE] -> OPEN|CLOSED. The runner never decides this: OPEN
+# unless an operator-provided file says so explicitly. Accepted file: regular, not a
+# symlink, <= 4 KiB, owned by root or the current user, not group/other writable,
+# containing EXACTLY ONE line  DSO_SECURITY_REVIEW_STATUS=CLOSED  (or =OPEN) and no
+# other DSO_SECURITY_REVIEW_STATUS line. Anything else (absent, malformed, ambiguous) is OPEN.
+m0_security_review() {
+  local f=${1:-} owner n v size
+  [[ -n $f && -f $f && ! -L $f ]] || { echo OPEN; return 0; }
+  owner=$(stat -c '%U' "$f" 2>/dev/null) || { echo OPEN; return 0; }
+  [[ $owner == root || $owner == "$(id -un)" ]] || { echo OPEN; return 0; }
+  m0_mode_not_group_other_writable "$f" || { echo OPEN; return 0; }
+  size=$(stat -c '%s' "$f" 2>/dev/null || echo 99999)
+  ((size <= 4096)) || { echo OPEN; return 0; }
+  n=$(grep -c '^DSO_SECURITY_REVIEW_STATUS=' "$f" || true)
+  [[ $n == 1 ]] || { echo OPEN; return 0; }
+  v=$(sed -n 's/^DSO_SECURITY_REVIEW_STATUS=//p' "$f" | tr -d '\r')
+  if [[ $v == CLOSED ]]; then echo CLOSED; else echo OPEN; fi
+}
+
+# m0_cleanup_status FILE -> PASS|FAIL  (the ownership-scoped cleanup step; missing/not passed => FAIL)
+m0_cleanup_status() {
+  if m0_step_all_passed "$1" cleanup; then echo PASS; else echo FAIL; fi
+}
+
+# m0_release_readiness AUTOMATED ATTESTATION SECURITY_REVIEW CLEANUP TEARDOWN -> PASS|FAIL|INCOMPLETE
+m0_release_readiness() {
+  local auto=$1 att=$2 sec=$3 cln=$4 td=$5
+  if [[ $auto == FAIL || $cln == FAIL ]]; then echo FAIL
+  elif [[ $auto == PASS && $att == VERIFIED && $sec == CLOSED && $cln == PASS && $td == DONE ]]; then echo PASS
+  else echo INCOMPLETE; fi
+}
+
+# m0_compute_verdicts STEPS_FILE MARKER_OK SECURITY_REVIEW_FILE TEARDOWN -- REQUIRED_AUTOMATED_STEP...
+# -> JSON object with every independent verdict on stdout. TEARDOWN is "DONE" only
+# for an operator-confirmed teardown (the runner always passes PENDING).
+m0_compute_verdicts() {
+  local steps=$1 marker=$2 secfile=$3 td=$4 auto att sec cln rel secsha=""
+  shift 4
+  if [[ ${1:-} == -- ]]; then shift; fi
+  [[ $td == DONE ]] || td=PENDING
+  auto=$(m0_automated_integration "$steps" "$@")
+  att=$(m0_environment_attestation "$steps" "$marker")
+  sec=$(m0_security_review "$secfile")
+  cln=$(m0_cleanup_status "$steps")
+  rel=$(m0_release_readiness "$auto" "$att" "$sec" "$cln" "$td")
+  if [[ -n $secfile && -f $secfile && ! -L $secfile ]]; then secsha=$(sha256sum "$secfile" | cut -d' ' -f1); fi
+  jq -n --arg auto "$auto" --arg att "$att" --arg sec "$sec" --arg cln "$cln" --arg td "$td" --arg rel "$rel" \
+    --arg secfile "$secfile" --arg secsha "$secsha" '
+    {automated_integration: $auto, environment_attestation: $att, security_review: $sec, cleanup: $cln,
+     vm_teardown: $td, release_readiness: $rel,
+     security_review_source: (if $secfile == "" then null else {file: $secfile, sha256: (if $secsha == "" then null else $secsha end)} end)}'
 }
 
 # m0_fill_missing REQUIRED... -- record every required step that never ran.
@@ -301,22 +390,26 @@ m0_steps_json() {
        exit_code: (.[3] | tonumber? // null), status: .[4], kind: .[5], note: (.[6] // "")}]' "$M0_STEPS_FILE"
 }
 
-# m0_write_summary_json OUT META_JSON TRAFFIC_JSON RECOVERY_JSON FINDINGS_FILE CLEANUP_JSON VERDICT AUTO_VERDICT
+# m0_write_summary_json OUT META_JSON TRAFFIC_JSON RECOVERY_JSON FINDINGS_FILE CLEANUP_DETAIL_JSON VERDICTS_JSON
+# VERDICTS_JSON is the output of m0_compute_verdicts. `verdict` and `automated_verdict`
+# are compatibility aliases (of release_readiness and automated_integration).
 m0_write_summary_json() {
-  local out=$1 meta=$2 traffic=$3 recovery=$4 findings=$5 cleanup=$6 verdict=$7 auto=$8
+  local out=$1 meta=$2 traffic=$3 recovery=$4 findings=$5 cleanup=$6 verdicts=$7
   local steps
   steps=$(m0_steps_json)
   jq -n \
     --slurpfile meta "$meta" --slurpfile traffic "$traffic" --slurpfile recovery "$recovery" \
-    --slurpfile cleanup "$cleanup" --argjson steps "$steps" \
-    --rawfile findings "$findings" --arg verdict "$verdict" --arg auto "$auto" '
-    ($meta[0]) + {
-      verdict: $verdict,
-      automated_verdict: $auto,
+    --slurpfile cleanup "$cleanup" --slurpfile verdicts "$verdicts" --argjson steps "$steps" \
+    --rawfile findings "$findings" '
+    ($meta[0]) + ($verdicts[0]) + {
+      verdict: $verdicts[0].release_readiness,
+      verdict_alias_of: "release_readiness",
+      automated_verdict: $verdicts[0].automated_integration,
+      exit_code_basis: "automated_integration (0 PASS, 1 FAIL, 2 INCOMPLETE; 3 = refused before any run)",
       scenarios: $steps,
       traffic: $traffic[0],
       recovery: $recovery[0],
-      cleanup: $cleanup[0],
+      cleanup_detail: $cleanup[0],
       findings: ($findings | split("\n") | map(select(length>0))),
       external_prerequisites: ($steps | map(select(.kind=="external_prerequisite") | {name, reason: .note})),
       counts: {
@@ -332,7 +425,7 @@ m0_write_summary_json() {
 m0_write_summary_txt() {
   local out=$1 js=$2
   {
-    jq -r '"DSO M0 runtime verification\nverdict:           \(.verdict)\nautomated verdict: \(.automated_verdict)  (ignores external prerequisites)\nsource sha:        \(.source.sha)\ntree clean:        \(.source.tree_clean)\nrun id:            \(.run_id)\nstarted/finished:  \(.started) / \(.finished)\nvm:                \(.vm.hostname) (\(.vm.os), kernel \(.vm.kernel), \(.vm.cpus) cpu, \(.vm.mem_mb) MB, machine-id#\(.vm.machine_id_sha256_12))\nenvironment id:    \(.docker.environment_id)\ndaemon id:         \(.docker.daemon_id)\ndocker:            client \(.docker.client) / server \(.docker.server)\ncompose:           \(.docker.compose)\ngo:                \(.go.version)\ncounts:            passed=\(.counts.passed) failed=\(.counts.failed) skipped=\(.counts.skipped) incomplete=\(.counts.incomplete)\n"' "$js"
+    jq -r '"DSO M0 runtime verification\n\nautomated_integration:   \(.automated_integration)   (executable steps only; external prerequisites do not affect it)\nenvironment_attestation: \(.environment_attestation)   (identity, endpoint, daemon, foreign-resource gates + marker)\nsecurity_review:         \(.security_review)   (operator-owned; the runner never decides it)\ncleanup:                 \(.cleanup)   (ownership-scoped)\nvm_teardown:             \(.vm_teardown)   (external; destroy the VM after the evidence is copied off)\nrelease_readiness:       \(.release_readiness)   (needs automated PASS + attestation VERIFIED + security review CLOSED + cleanup PASS + teardown DONE)\n\nsource sha:        \(.source.sha)\nsource mode:       \(.source.mode)   tree \(.source.tree_sha)   tree clean: \(.source.tree_clean)\nrun id:            \(.run_id)\nstarted/finished:  \(.started) / \(.finished)\nvm:                \(.vm.hostname) (\(.vm.os), kernel \(.vm.kernel), \(.vm.cpus) cpu, \(.vm.mem_mb) MB, machine-id#\(.vm.machine_id_sha256_12))\nenvironment id:    \(.docker.environment_id)\ndaemon id:         \(.docker.daemon_id)\ndocker:            client \(.docker.client) / server \(.docker.server)\ncompose:           \(.docker.compose)\ngo:                \(.go.version)\ncounts:            passed=\(.counts.passed) failed=\(.counts.failed) skipped=\(.counts.skipped) incomplete=\(.counts.incomplete)\n"' "$js"
     printf '%-36s %-10s %-5s %-21s %s\n' STEP STATUS EXIT STARTED NOTE
     jq -r '.scenarios[] | [.name, .status, (.exit_code // "-" | tostring), .started, (.finished + "  " + .note)] | @tsv' "$js" |
       awk -F'\t' '{printf "%-36s %-10s %-5s %-21s %s\n", $1, $2, $3, $4, $5}'
@@ -349,14 +442,96 @@ m0_write_summary_txt() {
     echo "recovery measurements:"
     jq -r '(.recovery | if length==0 then ["  (none recorded)"] else map("  " + .line) end)[]' "$js"
     echo
-    echo "cleanup: $(jq -r '.cleanup.status + " - " + .cleanup.detail' "$js")"
+    echo "cleanup detail: $(jq -r '.cleanup_detail.status + " - " + .cleanup_detail.detail' "$js")"
     echo
     echo "findings:"
     jq -r '(.findings | if length==0 then ["  (none)"] else map("  - " + .) end)[]' "$js"
     echo
-    echo "external prerequisites (verdict stays INCOMPLETE while any is open):"
+    echo "external prerequisites (they never change automated_integration; they keep release_readiness INCOMPLETE):"
     jq -r '(.external_prerequisites | if length==0 then ["  (none)"] else map("  - " + .name + ": " + .reason) end)[]' "$js"
     echo
-    echo "VERDICT: $(jq -r '.verdict' "$js")"
+    echo "AUTOMATED_INTEGRATION: $(jq -r '.automated_integration' "$js")"
+    echo "RELEASE_READINESS: $(jq -r '.release_readiness' "$js")"
+    echo "VERDICT: $(jq -r '.verdict' "$js")   (compatibility alias of release_readiness; a passing automated run is NOT a release approval)"
   } >"$out"
+}
+
+# ---- source provenance (archive without .git) -------------------------------------
+# m0_tree_hash DIR -> prints the git tree object id of DIR's contents (names, modes,
+# bytes; top-level artifacts/ excluded). Host/global git config is ignored; ignore
+# rules and attributes are neutralised so the result depends on the files only.
+m0_tree_hash() {
+  local dir=$1 g t="" rc=0
+  g=$(mktemp -d) || return 1
+  if git init -q --object-format=sha1 "$g/w" >/dev/null 2>&1; then
+    t=$(
+      export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_DIR="$g/w/.git" GIT_WORK_TREE="$dir"
+      git -c core.autocrlf=false -c core.safecrlf=false -c core.fileMode=true -c core.symlinks=true \
+        -c core.attributesFile=/dev/null -c core.excludesFile=/dev/null \
+        add -A -f -- . ':(exclude)artifacts' >/dev/null 2>&1 && git write-tree
+    ) || rc=1
+  else
+    rc=1
+  fi
+  rm -rf "$g"
+  [[ $rc -eq 0 && $t =~ ^[0-9a-f]{40}$ ]] || return 1
+  echo "$t"
+}
+
+# m0_check_source_provenance PROVENANCE_JSON DIR [EXPECTED_SHA]
+# Accepts only when DIR has no .git and the tree hash recomputed from DIR's files equals
+# the tree_sha recorded in the provenance. Sets M0_SHA, M0_TREE, M0_PROV_SHA256.
+# NOTE: the provenance file is self-asserted; its integrity comes from the SHA256SUMS
+# check done at transfer time and from the out-of-band EXPECTED_SHA.
+m0_check_source_provenance() {
+  local prov=$1 dir=$2 expect=${3:-} sha tree actual
+  [[ -f $prov && ! -L $prov ]] || { echo "refused: provenance file '$prov' missing or not a regular file" >&2; return 1; }
+  [[ ! -e $dir/.git ]] || { echo "refused: $dir contains .git; provenance mode is only for history-free archives" >&2; return 1; }
+  jq -e 'type=="object"' "$prov" >/dev/null 2>&1 || { echo "refused: provenance is not a JSON object" >&2; return 1; }
+  [[ "$(jq -r '.schema // empty' "$prov")" == 1 ]] || { echo "refused: unsupported provenance schema" >&2; return 1; }
+  sha=$(jq -r '.sha | if type=="string" then . else "" end' "$prov")
+  tree=$(jq -r '.tree_sha | if type=="string" then . else "" end' "$prov")
+  m0_check_sha "$sha" "$expect" || return 1
+  [[ $tree =~ ^[0-9a-f]{40}$ ]] || { echo "refused: provenance has no valid tree_sha" >&2; return 1; }
+  actual=$(m0_tree_hash "$dir") || { echo "refused: could not compute the tree hash of $dir" >&2; return 1; }
+  [[ $actual == "$tree" ]] || { echo "refused: the extracted files do not match the archive's recorded tree (recomputed $actual, recorded $tree)" >&2; return 1; }
+  M0_SHA=$sha
+  M0_TREE=$tree
+  M0_PROV_SHA256=$(sha256sum "$prov" | cut -d' ' -f1)
+}
+
+# m0_resolve_source ROOT -- decide the source mode and record the exact revision.
+#   .git present      -> mode git: clean work tree, SHA = HEAD (old behaviour)
+#   .git absent       -> mode provenance: DSO_IT_SOURCE_PROVENANCE required AND DSO_IT_EXPECT_SHA
+#                        required (the SHA is pinned out-of-band); tree hash verified
+# Sets M0_SOURCE_MODE, M0_SHA, M0_TREE, M0_PROV_SHA256.
+m0_resolve_source() {
+  local root=$1
+  M0_PROV_SHA256=""
+  if [[ -e $root/.git ]]; then
+    [[ -z ${DSO_IT_SOURCE_PROVENANCE:-} ]] || { echo "refused: both a .git and DSO_IT_SOURCE_PROVENANCE are present; use exactly one source mode" >&2; return 1; }
+    m0_check_clean_tree "$root" || return 1
+    M0_SOURCE_MODE=git
+    M0_SHA=$(git -C "$root" rev-parse HEAD) || return 1
+    M0_TREE=$(git -C "$root" rev-parse 'HEAD^{tree}') || return 1
+    m0_check_sha "$M0_SHA" "${DSO_IT_EXPECT_SHA:-}" || return 1
+  else
+    [[ -n ${DSO_IT_SOURCE_PROVENANCE:-} ]] || { echo "refused: no .git in $root and no DSO_IT_SOURCE_PROVENANCE: the source revision cannot be established" >&2; return 1; }
+    [[ -n ${DSO_IT_EXPECT_SHA:-} ]] || { echo "refused: provenance mode requires DSO_IT_EXPECT_SHA (pin the commit out-of-band; the provenance file is self-asserted)" >&2; return 1; }
+    m0_check_source_provenance "$DSO_IT_SOURCE_PROVENANCE" "$root" "$DSO_IT_EXPECT_SHA" || return 1
+    M0_SOURCE_MODE=provenance
+  fi
+}
+
+# m0_source_tree_unchanged ROOT -- the source tree must equal what was verified at start.
+m0_source_tree_unchanged() {
+  local root=$1 now
+  case "${M0_SOURCE_MODE:-}" in
+    git) m0_check_clean_tree "$root" ;;
+    provenance)
+      now=$(m0_tree_hash "$root") || { echo "could not recompute the source tree hash" >&2; return 1; }
+      [[ $now == "${M0_TREE:-}" ]] || { echo "source tree changed during the run: $now != ${M0_TREE:-unset}" >&2; return 1; }
+      ;;
+    *) echo "unknown source mode '${M0_SOURCE_MODE:-}'" >&2; return 1 ;;
+  esac
 }

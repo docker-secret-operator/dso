@@ -19,6 +19,11 @@ echo "docker invoked: \$*" >>"$T/docker-was-invoked"
 exit 99
 EOF
 chmod +x "$T/bin/docker"
+cat >"$T/bin/go" <<'EOF'
+#!/bin/sh
+echo "go version go0.0.0-selftest linux/amd64"
+EOF
+chmod +x "$T/bin/go"
 export PATH="$T/bin:$PATH"
 unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION \
   COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES COMPOSE_PATH_SEPARATOR
@@ -41,6 +46,8 @@ eq() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3')";
 
 # shellcheck source=scripts/integration/m0-lib.sh
 source "$HERE/m0-lib.sh"
+# shellcheck source=scripts/integration/m0-finalize.sh
+source "$HERE/m0-finalize.sh"
 command -v jq >/dev/null || { echo "selftest needs jq"; exit 1; }
 
 new_run() {
@@ -65,7 +72,7 @@ expect "sentinel redacted from recorded notes" bash -c "! grep -q dso-it-sentine
 m0_record weird bogus 0 t1 t2 step "x" >/dev/null
 eq "invalid status coerced to incomplete" "$M0_LAST_STATUS" incomplete
 
-echo "== verdict computation =="
+echo "== step verdict engine =="
 new_run
 m0_record a passed 0 t t step "" >/dev/null
 m0_record b passed 0 t t step "" >/dev/null
@@ -76,15 +83,135 @@ eq "skipped step => INCOMPLETE (never PASS)" "$(m0_verdict "$M0_STEPS_FILE" a b 
 m0_record d failed 1 t t step "" >/dev/null
 eq "any failed step => FAIL" "$(m0_verdict "$M0_STEPS_FILE" a b c d)" FAIL
 new_run
-m0_record a passed 0 t t step "" >/dev/null
-m0_external ext "needs a human" >/dev/null
-eq "external prerequisite => INCOMPLETE" "$(m0_verdict "$M0_STEPS_FILE" a ext)" INCOMPLETE
-eq "automated verdict ignores external prerequisites" "$(m0_verdict_automated "$M0_STEPS_FILE" a)" PASS
-new_run
 eq "no steps at all => INCOMPLETE" "$(m0_verdict "$M0_STEPS_FILE")" INCOMPLETE
 m0_fill_missing x y >/dev/null
 eq "missing required steps are recorded incomplete" "$(awk -F'\t' '$5=="incomplete"' "$M0_STEPS_FILE" | wc -l | tr -d ' ')" 2
-eq "…and keep the verdict INCOMPLETE" "$(m0_verdict "$M0_STEPS_FILE" x y)" INCOMPLETE
+eq "...and keep the verdict INCOMPLETE" "$(m0_verdict "$M0_STEPS_FILE" x y)" INCOMPLETE
+
+echo "== automated_integration (executable steps only) =="
+new_run
+m0_record a passed 0 t t step "" >/dev/null
+m0_record b passed 0 t t step "" >/dev/null
+m0_external ext "needs a human" >/dev/null
+eq "all executable passed + external prerequisite open => automated PASS" "$(m0_automated_integration "$M0_STEPS_FILE" a b)" PASS
+eq "...even when the external step is (wrongly) listed as required" "$(m0_automated_integration "$M0_STEPS_FILE" a b ext)" PASS
+eq "...while the generic engine still says INCOMPLETE for the external row" "$(m0_verdict "$M0_STEPS_FILE" a b ext)" INCOMPLETE
+eq "required executable step never ran => automated INCOMPLETE" "$(m0_automated_integration "$M0_STEPS_FILE" a b c)" INCOMPLETE
+m0_record c skipped 0 t t step "required test skipped" >/dev/null
+eq "required step skipped => automated INCOMPLETE (not PASS)" "$(m0_automated_integration "$M0_STEPS_FILE" a b c)" INCOMPLETE
+m0_record z incomplete "" t t step "not run" >/dev/null
+eq "required step incomplete => automated INCOMPLETE" "$(m0_automated_integration "$M0_STEPS_FILE" a b z)" INCOMPLETE
+m0_record d failed 1 t t step "" >/dev/null
+eq "executable step failed => automated FAIL (beats skipped)" "$(m0_automated_integration "$M0_STEPS_FILE" a b c d)" FAIL
+new_run
+eq "no rows => automated INCOMPLETE" "$(m0_automated_integration "$M0_STEPS_FILE" a)" INCOMPLETE
+new_run
+m0_record zt failed 1 t t step "zero tests ran (the -run pattern matched nothing)" >/dev/null
+eq "zero-test scenario (recorded failed) => automated FAIL" "$(m0_automated_integration "$M0_STEPS_FILE" zt)" FAIL
+{ ev pass; } >"$T/zt.json"
+eq "zero-test classification is never 'passed'" "$(m0_classify_go_json "$T/zt.json" 0 0 1 | cut -f1)" failed
+
+echo "== environment_attestation =="
+new_run
+for st in environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post; do m0_record "$st" passed 0 t t step "" >/dev/null; done
+eq "all gates passed + marker ok => VERIFIED" "$(m0_environment_attestation "$M0_STEPS_FILE" ok)" VERIFIED
+eq "marker not ok => UNVERIFIED" "$(m0_environment_attestation "$M0_STEPS_FILE" "")" UNVERIFIED
+for st in environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post; do
+  grep -v "^$st	" "$M0_STEPS_FILE" >"$T/att.tsv"
+  eq "gate '$st' missing => UNVERIFIED" "$(m0_environment_attestation "$T/att.tsv" ok)" UNVERIFIED
+  awk -F'\t' -v OFS='\t' -v n="$st" '$1==n {$5="failed"} {print}' "$M0_STEPS_FILE" >"$T/att.tsv"
+  eq "gate '$st' failed => UNVERIFIED" "$(m0_environment_attestation "$T/att.tsv" ok)" UNVERIFIED
+done
+awk -F'\t' -v OFS='\t' '$1=="daemon-identity" {$5="skipped"} {print}' "$M0_STEPS_FILE" >"$T/att.tsv"
+eq "gate skipped => UNVERIFIED" "$(m0_environment_attestation "$T/att.tsv" ok)" UNVERIFIED
+
+echo "== security_review (operator-owned, default OPEN) =="
+SR="$T/sr"
+mkdir -p "$SR"
+eq "no file configured => OPEN" "$(m0_security_review "")" OPEN
+eq "missing file => OPEN" "$(m0_security_review "$SR/none")" OPEN
+printf 'DSO_SECURITY_REVIEW_STATUS=CLOSED\n' >"$SR/closed"
+chmod 600 "$SR/closed"
+eq "explicit CLOSED in an acceptable file => CLOSED" "$(m0_security_review "$SR/closed")" CLOSED
+printf 'DSO_SECURITY_REVIEW_STATUS=OPEN\n' >"$SR/open"
+eq "explicit OPEN => OPEN" "$(m0_security_review "$SR/open")" OPEN
+printf 'DSO_SECURITY_REVIEW_STATUS=closed\n' >"$SR/lower"
+eq "lower-case closed => OPEN (exact match only)" "$(m0_security_review "$SR/lower")" OPEN
+printf 'status: done\nreviewed by me\n' >"$SR/junk"
+eq "no explicit status line => OPEN" "$(m0_security_review "$SR/junk")" OPEN
+printf 'DSO_SECURITY_REVIEW_STATUS=CLOSED\nDSO_SECURITY_REVIEW_STATUS=OPEN\n' >"$SR/two"
+eq "ambiguous (two status lines) => OPEN" "$(m0_security_review "$SR/two")" OPEN
+printf '# DSO_SECURITY_REVIEW_STATUS=CLOSED\n' >"$SR/commented"
+eq "commented-out status => OPEN" "$(m0_security_review "$SR/commented")" OPEN
+cp "$SR/closed" "$SR/gw"; chmod 664 "$SR/gw"
+eq "group-writable file => OPEN" "$(m0_security_review "$SR/gw")" OPEN
+ln -sf "$SR/closed" "$SR/link"
+eq "symlinked file => OPEN" "$(m0_security_review "$SR/link")" OPEN
+{ printf 'DSO_SECURITY_REVIEW_STATUS=CLOSED\n'; head -c 6000 /dev/zero | tr '\0' 'x'; } >"$SR/big"
+eq "oversized file => OPEN" "$(m0_security_review "$SR/big")" OPEN
+eq "a directory => OPEN" "$(m0_security_review "$SR")" OPEN
+
+echo "== cleanup verdict =="
+new_run
+eq "no cleanup row => FAIL" "$(m0_cleanup_status "$M0_STEPS_FILE")" FAIL
+m0_record cleanup passed 0 t t step "" >/dev/null
+eq "cleanup passed => PASS" "$(m0_cleanup_status "$M0_STEPS_FILE")" PASS
+new_run; m0_record cleanup failed 1 t t step "remaining resources" >/dev/null
+eq "cleanup failed => FAIL" "$(m0_cleanup_status "$M0_STEPS_FILE")" FAIL
+new_run; m0_record cleanup skipped 0 t t step "" >/dev/null
+eq "cleanup skipped => FAIL (fail closed)" "$(m0_cleanup_status "$M0_STEPS_FILE")" FAIL
+
+echo "== release_readiness: every combination =="
+mismatch=0 combos=0
+for au in PASS FAIL INCOMPLETE; do for at in VERIFIED UNVERIFIED; do for sr in OPEN CLOSED; do for cl in PASS FAIL; do for td in PENDING DONE; do
+  combos=$((combos + 1))
+  if [[ $au == FAIL || $cl == FAIL ]]; then want=FAIL
+  elif [[ $au == PASS && $at == VERIFIED && $sr == CLOSED && $cl == PASS && $td == DONE ]]; then want=PASS
+  else want=INCOMPLETE; fi
+  [[ "$(m0_release_readiness "$au" "$at" "$sr" "$cl" "$td")" == "$want" ]] || { mismatch=$((mismatch + 1)); echo "    mismatch: $au $at $sr $cl $td"; }
+done; done; done; done; done
+eq "all $combos combinations of the five inputs map as specified" "$mismatch" 0
+eq "automated PASS alone (everything else open) => readiness INCOMPLETE" "$(m0_release_readiness PASS UNVERIFIED OPEN PASS PENDING)" INCOMPLETE
+eq "automated PASS + attestation VERIFIED, review OPEN => INCOMPLETE" "$(m0_release_readiness PASS VERIFIED OPEN PASS PENDING)" INCOMPLETE
+eq "...review CLOSED but teardown PENDING => INCOMPLETE" "$(m0_release_readiness PASS VERIFIED CLOSED PASS PENDING)" INCOMPLETE
+eq "...review CLOSED + teardown DONE (operator-confirmed) => PASS" "$(m0_release_readiness PASS VERIFIED CLOSED PASS DONE)" PASS
+eq "automated FAIL beats everything => FAIL" "$(m0_release_readiness FAIL VERIFIED CLOSED PASS DONE)" FAIL
+eq "automated INCOMPLETE never reaches PASS" "$(m0_release_readiness INCOMPLETE VERIFIED CLOSED PASS DONE)" INCOMPLETE
+
+echo "== m0_compute_verdicts (steps -> independent verdict fields) =="
+new_run
+for st in environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post cleanup gobuild; do m0_record "$st" passed 0 t t step "" >/dev/null; done
+m0_external external-vm-teardown "destroy the VM" >/dev/null
+m0_external external-network-perimeter "firewall" >/dev/null
+REQ=(environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post cleanup gobuild)
+cv() { m0_compute_verdicts "$M0_STEPS_FILE" "$1" "$2" "$3" -- "${REQ[@]}"; }
+V="$(cv ok "" PENDING)"
+eq "external prereqs open + all automated passed => automated PASS" "$(jq -r .automated_integration <<<"$V")" PASS
+eq "...attestation VERIFIED" "$(jq -r .environment_attestation <<<"$V")" VERIFIED
+eq "...security_review OPEN by default" "$(jq -r .security_review <<<"$V")" OPEN
+eq "...cleanup PASS" "$(jq -r .cleanup <<<"$V")" PASS
+eq "...vm_teardown PENDING" "$(jq -r .vm_teardown <<<"$V")" PENDING
+eq "...but release_readiness INCOMPLETE" "$(jq -r .release_readiness <<<"$V")" INCOMPLETE
+eq "security_review_source is null without a file" "$(jq -r .security_review_source <<<"$V")" null
+V="$(cv ok "$SR/closed" PENDING)"
+eq "operator CLOSED file: security_review CLOSED" "$(jq -r .security_review <<<"$V")" CLOSED
+eq "...but release_readiness is still INCOMPLETE (teardown pending)" "$(jq -r .release_readiness <<<"$V")" INCOMPLETE
+eq "...file sha256 recorded" "$(jq -r .security_review_source.sha256 <<<"$V")" "$(sha256sum "$SR/closed" | cut -d' ' -f1)"
+V="$(cv ok "$SR/closed" DONE)"
+eq "pure function: CLOSED + operator-confirmed teardown + all green => PASS" "$(jq -r .release_readiness <<<"$V")" PASS
+V="$(cv ok "$SR/closed" garbage)"
+eq "any teardown value other than DONE is PENDING" "$(jq -r .vm_teardown <<<"$V")" PENDING
+V="$(cv "" "$SR/closed" DONE)"
+eq "marker not ok: attestation UNVERIFIED, readiness INCOMPLETE, automated unaffected" "$(jq -r '[.environment_attestation,.release_readiness,.automated_integration]|join(",")' <<<"$V")" "UNVERIFIED,INCOMPLETE,PASS"
+awk -F'\t' -v OFS='\t' '$1=="gobuild" {$5="skipped"} {print}' "$M0_STEPS_FILE" >"$T/sk.tsv"
+V="$(m0_compute_verdicts "$T/sk.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+eq "required test/step skipped => automated INCOMPLETE and readiness INCOMPLETE" "$(jq -r '[.automated_integration,.release_readiness]|join(",")' <<<"$V")" "INCOMPLETE,INCOMPLETE"
+awk -F'\t' -v OFS='\t' '$1=="gobuild" {$5="failed"} {print}' "$M0_STEPS_FILE" >"$T/fl.tsv"
+V="$(m0_compute_verdicts "$T/fl.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+eq "executable step failed => automated FAIL and readiness FAIL" "$(jq -r '[.automated_integration,.release_readiness]|join(",")' <<<"$V")" "FAIL,FAIL"
+awk -F'\t' -v OFS='\t' '$1=="cleanup" {$5="failed"} {print}' "$M0_STEPS_FILE" >"$T/cf.tsv"
+V="$(m0_compute_verdicts "$T/cf.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+eq "cleanup failed => cleanup FAIL, automated FAIL, readiness FAIL" "$(jq -r '[.cleanup,.automated_integration,.release_readiness]|join(",")' <<<"$V")" "FAIL,FAIL,FAIL"
 
 echo "== go test result classification (skip / zero-test detection) =="
 ev() { # ACTION TEST [PKG]
@@ -199,48 +326,299 @@ eq "recovery: key=value metrics parsed" "$(jq '.[0].metrics.recovery_ms' <<<"$RC
 
 echo "== summary.json / summary.txt generation =="
 new_run
+m0_record environment-identity passed 0 t t step "" >/dev/null
+m0_record docker-endpoint passed 0 t t step "" >/dev/null
+m0_record daemon-identity passed 0 t t step "" >/dev/null
+m0_record foreign-resources-pre passed 0 t t step "" >/dev/null
+m0_record foreign-resources-post passed 0 t t step "" >/dev/null
+m0_record cleanup passed 0 t t step "" >/dev/null
 m0_record go-build passed 0 2026-01-01T00:00:00Z 2026-01-01T00:00:05Z step "" >/dev/null
 m0_record scenario-crash-recovery skipped 0 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z step "zero tests ran" >/dev/null
 m0_external external-vm-teardown "destroy the VM" >/dev/null
-printf '{"schema":1,"source":{"sha":"%s","tree_clean":true},"run_id":"dso-it-0123456789ab","run_dir":"m0-x","started":"s","finished":"f","vm":{"hostname":"h","os":"Ubuntu","kernel":"6","cpus":4,"mem_mb":8000,"machine_id_sha256_12":"abc"},"docker":{"client":"27","server":"27","compose":"2.29","environment_id":"env-x","daemon_id":"d"},"go":{"version":"go1.26"}}\n' "$SHA" >"$T/meta.json"
+printf '{"schema":1,"source":{"sha":"%s","mode":"git","tree_sha":"%s","tree_clean":true},"run_id":"dso-it-0123456789ab","run_dir":"m0-x","started":"s","finished":"f","vm":{"hostname":"h","os":"Ubuntu","kernel":"6","cpus":4,"mem_mb":8000,"machine_id_sha256_12":"abc"},"docker":{"client":"27","server":"27","compose":"2.29","environment_id":"env-x","daemon_id":"d"},"go":{"version":"go1.26"}}\n' "$SHA" "$(git -C "$T/repo" rev-parse 'HEAD^{tree}')" >"$T/meta.json"
 echo "$TR" >"$T/traffic.json"
 echo "$RC" >"$T/recovery.json"
 echo "a finding" >"$T/findings.txt"
 echo '{"status":"passed","detail":"all removed"}' >"$T/cleanup.json"
-V="$(m0_verdict "$M0_STEPS_FILE" go-build scenario-crash-recovery external-vm-teardown)"
-m0_write_summary_json "$T/summary.json" "$T/meta.json" "$T/traffic.json" "$T/recovery.json" "$T/findings.txt" "$T/cleanup.json" "$V" "$(m0_verdict_automated "$M0_STEPS_FILE" go-build scenario-crash-recovery)"
+m0_compute_verdicts "$M0_STEPS_FILE" ok "" PENDING -- environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post cleanup go-build scenario-crash-recovery >"$T/verdicts.json"
+m0_write_summary_json "$T/summary.json" "$T/meta.json" "$T/traffic.json" "$T/recovery.json" "$T/findings.txt" "$T/cleanup.json" "$T/verdicts.json"
 expect "summary.json is valid JSON" jq -e . "$T/summary.json"
-eq "summary.json: verdict INCOMPLETE (skipped scenario + external)" "$(jq -r .verdict "$T/summary.json")" INCOMPLETE
+eq "summary.json: automated_integration INCOMPLETE (skipped scenario)" "$(jq -r .automated_integration "$T/summary.json")" INCOMPLETE
+eq "summary.json: release_readiness INCOMPLETE" "$(jq -r .release_readiness "$T/summary.json")" INCOMPLETE
+eq "summary.json: verdict is an alias of release_readiness" "$(jq -r '.verdict == .release_readiness' "$T/summary.json")" true
+eq "summary.json: automated_verdict alias" "$(jq -r '.automated_verdict == .automated_integration' "$T/summary.json")" true
+eq "summary.json: independent fields present" "$(jq -r '[.automated_integration,.environment_attestation,.security_review,.cleanup,.vm_teardown,.release_readiness]|join(",")' "$T/summary.json")" "INCOMPLETE,VERIFIED,OPEN,PASS,PENDING,INCOMPLETE"
 eq "summary.json: exact source sha" "$(jq -r .source.sha "$T/summary.json")" "$SHA"
 eq "summary.json: scenario status skipped" "$(jq -r '.scenarios[] | select(.name=="scenario-crash-recovery") | .status' "$T/summary.json")" skipped
-eq "summary.json: scenario has start/finish/exit code" "$(jq -r '.scenarios[0] | [.started,.finished,(.exit_code|tostring)] | join(",")' "$T/summary.json")" "2026-01-01T00:00:00Z,2026-01-01T00:00:05Z,0"
+eq "summary.json: scenario has start/finish/exit code" "$(jq -r '.scenarios[] | select(.name=="go-build") | [.started,.finished,(.exit_code|tostring)] | join(",")' "$T/summary.json")" "2026-01-01T00:00:00Z,2026-01-01T00:00:05Z,0"
 eq "summary.json: traffic measurements embedded" "$(jq '.traffic[0].phases.during.requests' "$T/summary.json")" 100
 eq "summary.json: recovery measurements embedded" "$(jq '.recovery[0].metrics.recovery_ms' "$T/summary.json")" 1234
 eq "summary.json: external prerequisite listed" "$(jq -r '.external_prerequisites[0].name' "$T/summary.json")" external-vm-teardown
-eq "summary.json: cleanup result" "$(jq -r .cleanup.status "$T/summary.json")" passed
+eq "summary.json: cleanup_detail" "$(jq -r .cleanup_detail.status "$T/summary.json")" passed
 m0_write_summary_txt "$T/summary.txt" "$T/summary.json"
-expect "summary.txt has the verdict line" grep -q '^VERDICT: INCOMPLETE' "$T/summary.txt"
+expect "summary.txt has automated_integration line" grep -q '^automated_integration: *INCOMPLETE' "$T/summary.txt"
+expect "summary.txt has release_readiness line" grep -q '^release_readiness: *INCOMPLETE' "$T/summary.txt"
+expect "summary.txt has the verdict alias line" grep -q '^VERDICT: INCOMPLETE' "$T/summary.txt"
 expect "summary.txt shows the skipped scenario" grep -q 'scenario-crash-recovery *skipped' "$T/summary.txt"
+
+echo "== finalisation dry-run (real finalize(), stub docker/go, fake artifact dir, no daemon) =="
+FIN_SENT=dso-it-sentinel-0badc0ffee
+FIN_BASE_REQ=(fake-pass-a fake-pass-b fake-gotest environment-identity docker-endpoint daemon-identity foreign-resources-pre
+  evidence-collection cleanup foreign-resources-post source-tree-unchanged evidence-leak-scan)
+OMIT=""
+base_steps() {
+  local st
+  for st in fake-pass-a fake-pass-b fake-gotest environment-identity docker-endpoint daemon-identity foreign-resources-pre; do
+    [[ " $OMIT " == *" $st "* ]] || m0_record "$st" passed 0 2026-01-01T00:00:00Z 2026-01-01T00:00:01Z step "" >/dev/null
+  done
+}
+stub_foreign_post_ok() { s_foreign_post() { echo "stub: foreign resources identical"; }; }
+sc_all_pass() { base_steps; stub_foreign_post_ok; }
+sc_step_failed() { OMIT=fake-gotest; base_steps; stub_foreign_post_ok; m0_record fake-gotest failed 1 t t step "failed tests=1" >/dev/null; }
+sc_step_skipped() { OMIT=fake-gotest; base_steps; stub_foreign_post_ok; m0_record fake-gotest skipped 0 t t step "required test skipped: TestX" >/dev/null; }
+sc_step_missing() { OMIT=fake-gotest; base_steps; stub_foreign_post_ok; }
+sc_daemon_unverified() { OMIT=daemon-identity; base_steps; stub_foreign_post_ok; }
+sc_real_foreign_post() { base_steps; }
+sc_cleanup_fails() { base_steps; stub_foreign_post_ok; s_cleanup() { echo "remaining resources of this run: container:abc"; return 1; }; }
+sc_leak() { base_steps; stub_foreign_post_ok; printf 'log line with %s inside\n' "$FIN_SENT" >"$M0_LOGS/fake-pass-a.log"; printf 'x %s y\n' "$FIN_SENT" >"$M0_ART/evidence/note.txt"; }
+sc_tree_dirty() { base_steps; stub_foreign_post_ok; echo new >"$ROOT/untracked-by-the-run.go"; }
+sc_review_closed() { base_steps; stub_foreign_post_ok; export DSO_IT_SECURITY_REVIEW_FILE="$SR/closed"; }
+sc_review_bad() { base_steps; stub_foreign_post_ok; export DSO_IT_SECURITY_REVIEW_FILE="$SR/two"; }
+
+run_fin() { # NAME SETUP_FN  -> FIN_RC, FIN_ART, FIN_OUT
+  local n=$1 setup=$2 d="$T/fin/$1"
+  FIN_ART="$d/art"
+  FIN_OUT="$d/out.txt"
+  mkdir -p "$d/art/logs" "$d/art/state" "$d/art/evidence" "$d/work"
+  git init -q "$d/repo" && git -C "$d/repo" -c user.email=a@b -c user.name=t commit -q --allow-empty -m init
+  (
+    ROOT="$d/repo"
+    M0_ART="$d/art" M0_LOGS="$d/art/logs" M0_STATE="$d/art/state" M0_STEPS_FILE="$d/art/state/steps.tsv" M0_WORK="$d/work"
+    : >"$M0_STEPS_FILE" && : >"$M0_STATE/findings.txt" && echo '[]' >"$M0_STATE/traffic.json" && echo '[]' >"$M0_STATE/recovery.json"
+    M0_SOURCE_MODE=git M0_SHA="$(git -C "$ROOT" rev-parse HEAD)" M0_TREE="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')" M0_PROV_SHA256=""
+    M0_ENV_ID=env-0123456789abcdef M0_DAEMON_ID=ABCD:EFGH:IJKL:MNOP M0_ENDPOINT=unix:///nonexistent-selftest.sock
+    M0_SENTINEL="$FIN_SENT" M0_STARTED=2026-01-01T00:00:00Z M0_RUN_DIR=m0-selftest M0_MARKER_OK=ok
+    RUN=dso-it-0123456789ab IMAGE=dso-it-image:selftest FINALIZED=0
+    REQUIRED_STEPS=("${FIN_BASE_REQ[@]}")
+    unset DSO_IT_SECURITY_REVIEW_FILE
+    "$setup"
+    true
+    finalize
+  ) >"$FIN_OUT" 2>&1
+  FIN_RC=$?
+  FIN_JS="$FIN_ART/summary.json"
+}
+jf() { jq -r "$1" "$FIN_JS"; }
+fields() { jf '[.automated_integration,.environment_attestation,.security_review,.cleanup,.vm_teardown,.release_readiness]|join(",")'; }
+
+run_fin allpass sc_all_pass
+eq "all automated pass: exit 0 (automated PASS)" "$FIN_RC" 0
+eq "all pass: verdict fields (external prereqs open, review OPEN, teardown PENDING)" "$(fields)" "PASS,VERIFIED,OPEN,PASS,PENDING,INCOMPLETE"
+eq "all pass: verdict alias = release_readiness = INCOMPLETE" "$(jf '.verdict')" INCOMPLETE
+eq "all pass: three external prerequisites listed" "$(jf '[.external_prerequisites[].name]|sort|join(",")')" "external-network-perimeter,external-provisioning-provenance,external-vm-teardown"
+eq "all pass: external prerequisites recorded as incomplete steps of kind external_prerequisite" "$(jf '[.scenarios[]|select(.kind=="external_prerequisite")|.status]|unique|join(",")')" incomplete
+eq "all pass: finalisation steps recorded" "$(jf '[.scenarios[]|select(.name=="evidence-collection" or .name=="cleanup" or .name=="foreign-resources-post" or .name=="source-tree-unchanged" or .name=="evidence-leak-scan")|.status]|unique|join(",")')" passed
+eq "all pass: source info (git mode, tree clean)" "$(jf '[.source.mode,.source.tree_clean]|join(",")')" "git,true"
+expect "all pass: summary.txt written with all fields" grep -q '^environment_attestation: *VERIFIED' "$FIN_ART/summary.txt"
+expect "all pass: summary.txt AUTOMATED_INTEGRATION line" grep -q '^AUTOMATED_INTEGRATION: PASS' "$FIN_ART/summary.txt"
+expect "all pass: summary.txt says it is not a release approval" grep -q 'NOT a release approval' "$FIN_ART/summary.txt"
+expect "all pass: SHA256SUMS lists summary.json and summary.txt" bash -c "grep -q ' ./summary.json\$' '$FIN_ART/SHA256SUMS' && grep -q ' ./summary.txt\$' '$FIN_ART/SHA256SUMS'"
+expect "all pass: SHA256SUMS lists logs/ and state/" bash -c "grep -q ' ./state/steps.tsv\$' '$FIN_ART/SHA256SUMS' && grep -q ' ./evidence/host.txt\$' '$FIN_ART/SHA256SUMS'"
+expect "all pass: SHA256SUMS does not list itself" bash -c "! grep -q 'SHA256SUMS' '$FIN_ART/SHA256SUMS'"
+expect "all pass: sha256sum -c verifies every file" bash -c "cd '$FIN_ART' && sha256sum -c --quiet SHA256SUMS"
+expect "all pass: work dir removed by finalize" test ! -e "$T/fin/allpass/work"
+eq "all pass: cleanup_detail present" "$(jf '.cleanup_detail.status')" passed
+echo tamper >>"$FIN_ART/summary.json"
+refuses "all pass: tampering with summary.json breaks SHA256SUMS" bash -c "cd '$FIN_ART' && sha256sum -c --quiet SHA256SUMS"
+
+run_fin failed sc_step_failed
+eq "executable step failed: exit 1" "$FIN_RC" 1
+eq "failed: fields" "$(fields)" "FAIL,VERIFIED,OPEN,PASS,PENDING,FAIL"
+run_fin skipped sc_step_skipped
+eq "required step skipped: exit 2 (INCOMPLETE, not PASS)" "$FIN_RC" 2
+eq "skipped: fields" "$(fields)" "INCOMPLETE,VERIFIED,OPEN,PASS,PENDING,INCOMPLETE"
+run_fin missing sc_step_missing
+eq "required step never ran: exit 2" "$FIN_RC" 2
+eq "missing: the gap is recorded as incomplete 'not run'" "$(jf '.scenarios[]|select(.name=="fake-gotest")|.status')" incomplete
+run_fin daemon sc_daemon_unverified
+eq "daemon-identity never recorded: attestation UNVERIFIED, automated INCOMPLETE" "$(fields)" "INCOMPLETE,UNVERIFIED,OPEN,PASS,PENDING,INCOMPLETE"
+run_fin realpost sc_real_foreign_post
+eq "real foreign-resources-post without a verified daemon fails (never calls docker): exit 1" "$FIN_RC" 1
+eq "real foreign-post: attestation UNVERIFIED, automated FAIL" "$(fields)" "FAIL,UNVERIFIED,OPEN,PASS,PENDING,FAIL"
+expect "real foreign-post: reason recorded in its log" grep -q 'daemon never verified' "$FIN_ART/logs/foreign-resources-post.log"
+eq "real cleanup path with no verified daemon passes without docker" "$(jf '.scenarios[]|select(.name=="cleanup")|.status')" passed
+run_fin cleanfail sc_cleanup_fails
+eq "cleanup failure: exit 1" "$FIN_RC" 1
+eq "cleanup failure: cleanup FAIL, automated FAIL, readiness FAIL" "$(fields)" "FAIL,VERIFIED,OPEN,FAIL,PENDING,FAIL"
+eq "cleanup failure: detail reports a failed cleanup step" "$(jf '.cleanup_detail.status')" failed
+expect "cleanup failure: remaining resources shown in the step log" grep -q 'remaining resources of this run' "$FIN_ART/logs/cleanup.log"
+expect "cleanup failure: summary.txt reports cleanup FAIL" grep -q '^cleanup: *FAIL' "$FIN_ART/summary.txt"
+run_fin leak sc_leak
+eq "sentinel planted in a log: leak scan fails the run (exit 1)" "$FIN_RC" 1
+eq "leak: evidence-leak-scan step failed, automated FAIL" "$(jf '[.scenarios[]|select(.name=="evidence-leak-scan")|.status]|join(",")'),$(jf .automated_integration)" "failed,FAIL"
+expect "leak: sentinel redacted in place from the log" bash -c "! grep -rqF '$FIN_SENT' '$FIN_ART'"
+expect "leak: redaction marker present where it was" grep -q '<redacted>' "$FIN_ART/logs/fake-pass-a.log"
+expect "leak: SHA256SUMS matches the redacted files" bash -c "cd '$FIN_ART' && sha256sum -c --quiet SHA256SUMS"
+expect "leak: the run output never prints the sentinel" bash -c "! grep -qF '$FIN_SENT' '$FIN_OUT'"
+run_fin dirty sc_tree_dirty
+eq "source tree modified during the run: exit 1" "$FIN_RC" 1
+eq "dirty: tree_clean false, source-tree-unchanged failed" "$(jf '[.source.tree_clean,(.scenarios[]|select(.name=="source-tree-unchanged")|.status)]|map(tostring)|join(",")')" "false,failed"
+run_fin revclosed sc_review_closed
+eq "operator CLOSED review + automated PASS: exit 0, readiness STILL INCOMPLETE (teardown pending)" "$FIN_RC,$(fields)" "0,PASS,VERIFIED,CLOSED,PASS,PENDING,INCOMPLETE"
+eq "...review file sha256 is recorded" "$(jf '.security_review_source.sha256')" "$(sha256sum "$SR/closed" | cut -d' ' -f1)"
+run_fin revbad sc_review_bad
+eq "ambiguous review file stays OPEN and is reported as a finding" "$(jf .security_review),$(jf '[.findings[]|select(test("security_review stays OPEN"))]|length')" "OPEN,1"
+expect "the docker stub was never invoked by any finalisation scenario" test ! -e "$T/docker-was-invoked"
+
+echo "== source archive + provenance (history-free source transfer) =="
+A="$T/arch"
+mkdir -p "$A/repo/scripts/integration" "$A/repo/pkg/sub"
+cp "$HERE"/*.sh "$A/repo/scripts/integration/"
+git init -q "$A/repo"
+printf 'package sub\n' >"$A/repo/pkg/sub/a.go"
+printf '#!/bin/sh\necho hi\n' >"$A/repo/tool.sh" && chmod 755 "$A/repo/tool.sh"
+printf 'module example\n\ngo 1.22\n' >"$A/repo/go.mod"
+ln -s pkg/sub/a.go "$A/repo/link.go"
+git -C "$A/repo" add -A && git -C "$A/repo" -c user.email=a@b -c user.name=t commit -q -m "snapshot"
+ASHA="$(git -C "$A/repo" rev-parse HEAD)"
+ATREE="$(git -C "$A/repo" rev-parse 'HEAD^{tree}')"
+MK="$A/repo/scripts/integration/make-source-archive.sh"
+expect "bash -n make-source-archive.sh" bash -n "$HERE/make-source-archive.sh"
+refuses "archive: short SHA refused" bash "$MK" "${ASHA:0:12}" "$A/o"
+refuses "archive: unknown (well-formed) SHA refused" bash "$MK" "$(printf 'a%.0s' {1..40})" "$A/o"
+refuses "archive: a tree object (not a commit) refused" bash "$MK" "$ATREE" "$A/o"
+refuses "archive: output directory inside the work tree refused" bash "$MK" "$ASHA" "$A/repo/out"
+echo dirty >>"$A/repo/tool.sh"
+refuses "archive: modified tracked file (dirty tree) refused" bash "$MK" "$ASHA" "$A/o"
+git -C "$A/repo" checkout -q -- tool.sh
+echo x >"$A/repo/untracked.txt"
+refuses "archive: untracked file (dirty tree) refused" bash "$MK" "$ASHA" "$A/o"
+rm "$A/repo/untracked.txt"
+expect "archive: clean tree + exact SHA accepted" bash "$MK" "$ASHA" "$A/out1"
+TB="$A/out1/dso-${ASHA:0:12}.tar.gz"
+expect "archive: tarball, provenance.json, SHA256SUMS produced" bash -c "test -s '$TB' && test -s '$A/out1/provenance.json' && test -s '$A/out1/SHA256SUMS'"
+expect "archive: SHA256SUMS verifies" bash -c "cd '$A/out1' && sha256sum -c --quiet SHA256SUMS"
+eq "provenance: sha" "$(jq -r .sha "$A/out1/provenance.json")" "$ASHA"
+eq "provenance: tree_sha = git rev-parse SHA^{tree}" "$(jq -r .tree_sha "$A/out1/provenance.json")" "$ATREE"
+eq "provenance: branch recorded" "$(jq -r '.branch|length>0' "$A/out1/provenance.json")" true
+eq "provenance: tarball sha256 matches the file" "$(jq -r .archive.sha256 "$A/out1/provenance.json")" "$(sha256sum "$TB" | cut -d' ' -f1)"
+eq "provenance: creation time, commit time and tool versions present" "$(jq -r '[.created,.commit_time,.tools.git,.tools.gzip,.tools.tar,.tools.sha256sum]|map(length>0)|all' "$A/out1/provenance.json")" true
+eq "archive: no .git and no history in the tarball" "$(tar -tzf "$TB" | grep -c '/\.git\(/\|$\)' || true)" 0
+sleep 1
+bash "$MK" "$ASHA" "$A/out2" >/dev/null 2>&1
+eq "archive: deterministic (identical tarball sha256 on a second run)" "$(sha256sum <"$A/out2/dso-${ASHA:0:12}.tar.gz")" "$(sha256sum <"$TB")"
+refuses "archive: refuses to overwrite existing output" bash "$MK" "$ASHA" "$A/out1"
+
+mkdir -p "$A/x" && tar -xzf "$TB" -C "$A/x" --no-same-owner
+SRC="$A/x/dso-${ASHA:0:12}"
+PROV="$A/out1/provenance.json"
+expect "extracted archive has no .git" test ! -e "$SRC/.git"
+expect "provenance accepted for the pristine extraction" m0_check_source_provenance "$PROV" "$SRC" "$ASHA"
+eq "recomputed tree hash equals git's tree sha" "$(m0_tree_hash "$SRC")" "$ATREE"
+( m0_check_source_provenance "$PROV" "$SRC" "$ASHA"; echo "$M0_SHA $M0_TREE" >"$T/prov.vars" )
+eq "provenance check records sha and tree" "$(cat "$T/prov.vars")" "$ASHA $ATREE"
+mkdir -p "$SRC/artifacts/m0-x" && echo e >"$SRC/artifacts/m0-x/summary.txt"
+expect "artifacts/ (evidence dir) does not count against the tree hash" m0_check_source_provenance "$PROV" "$SRC" "$ASHA"
+rm -rf "$SRC/artifacts"
+fresh() { rm -rf "$A/t" && mkdir -p "$A/t" && cp -a "$SRC" "$A/t/src" && TS="$A/t/src"; }
+fresh; echo "// tampered" >>"$TS/pkg/sub/a.go"
+refuses "tampered file => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; echo "package x" >"$TS/pkg/extra.go"
+refuses "extra file => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; rm "$TS/go.mod"
+refuses "deleted file => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; chmod 644 "$TS/tool.sh"
+refuses "mode change (exec bit) => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; rm "$TS/link.go"; ln -s /etc/passwd "$TS/link.go"
+refuses "changed symlink target => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; mkdir "$TS/.git"
+refuses ".git present in provenance mode => refused" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh; printf 'pkg/sub/\n' >"$TS/.gitignore"
+refuses "a planted .gitignore cannot hide a change (extra file)" m0_check_source_provenance "$PROV" "$TS" "$ASHA"
+fresh
+refuses "SHA != DSO_IT_EXPECT_SHA => refused" m0_check_source_provenance "$PROV" "$TS" "$(printf '0%.0s' {1..40})"
+jq '.tree_sha = ("0" * 40)' "$PROV" >"$A/p-badtree.json"
+refuses "provenance with a different tree_sha => refused" m0_check_source_provenance "$A/p-badtree.json" "$TS" "$ASHA"
+jq '.schema = 2' "$PROV" >"$A/p-schema.json"
+refuses "unsupported provenance schema => refused" m0_check_source_provenance "$A/p-schema.json" "$TS" "$ASHA"
+jq '.sha = "abc123"' "$PROV" >"$A/p-sha.json"
+refuses "provenance with a short sha => refused" m0_check_source_provenance "$A/p-sha.json" "$TS" "abc123"
+echo 'not json' >"$A/p-junk.json"
+refuses "non-JSON provenance => refused" m0_check_source_provenance "$A/p-junk.json" "$TS" "$ASHA"
+refuses "missing provenance file => refused" m0_check_source_provenance "$A/none.json" "$TS" "$ASHA"
+ln -sf "$PROV" "$A/p-link.json"
+refuses "symlinked provenance file => refused" m0_check_source_provenance "$A/p-link.json" "$TS" "$ASHA"
+
+echo "== m0_resolve_source (git mode vs provenance mode) =="
+refuses "no .git and no provenance => refused" bash -c "source '$HERE/m0-lib.sh'; unset DSO_IT_SOURCE_PROVENANCE DSO_IT_EXPECT_SHA; m0_resolve_source '$TS'"
+refuses "no .git, provenance but no DSO_IT_EXPECT_SHA => refused" env DSO_IT_SOURCE_PROVENANCE="$PROV" bash -c "source '$HERE/m0-lib.sh'; unset DSO_IT_EXPECT_SHA; m0_resolve_source '$TS'"
+expect "no .git + matching provenance + pinned SHA => accepted" env DSO_IT_SOURCE_PROVENANCE="$PROV" DSO_IT_EXPECT_SHA="$ASHA" bash -c "source '$HERE/m0-lib.sh'; m0_resolve_source '$TS'"
+eq "...records the SHA and mode from the provenance" "$(env DSO_IT_SOURCE_PROVENANCE="$PROV" DSO_IT_EXPECT_SHA="$ASHA" bash -c "source '$HERE/m0-lib.sh'; m0_resolve_source '$TS' && echo \"\$M0_SOURCE_MODE \$M0_SHA\"")" "provenance $ASHA"
+fresh; echo "// tampered" >>"$TS/pkg/sub/a.go"
+refuses "no .git + tampered file => refused" env DSO_IT_SOURCE_PROVENANCE="$PROV" DSO_IT_EXPECT_SHA="$ASHA" bash -c "source '$HERE/m0-lib.sh'; m0_resolve_source '$TS'"
+refuses ".git + DSO_IT_SOURCE_PROVENANCE together => refused (ambiguous)" env DSO_IT_SOURCE_PROVENANCE="$PROV" bash -c "source '$HERE/m0-lib.sh'; m0_resolve_source '$A/repo'"
+expect "with .git the old checks apply (clean tree accepted)" bash -c "source '$HERE/m0-lib.sh'; unset DSO_IT_SOURCE_PROVENANCE DSO_IT_EXPECT_SHA; m0_resolve_source '$A/repo' && [[ \$M0_SOURCE_MODE == git && \$M0_SHA == $ASHA && \$M0_TREE == $ATREE ]]"
+echo x >"$A/repo/untracked.txt"
+refuses "with .git a dirty tree is still refused" bash -c "source '$HERE/m0-lib.sh'; unset DSO_IT_SOURCE_PROVENANCE DSO_IT_EXPECT_SHA; m0_resolve_source '$A/repo'"
+rm "$A/repo/untracked.txt"
+refuses "with .git, SHA != DSO_IT_EXPECT_SHA is still refused" env DSO_IT_EXPECT_SHA="$(printf '0%.0s' {1..40})" bash -c "source '$HERE/m0-lib.sh'; m0_resolve_source '$A/repo'"
+fresh
+expect "source-tree-unchanged (provenance mode) accepts the pristine tree" env M0_SOURCE_MODE=provenance M0_TREE="$ATREE" bash -c "source '$HERE/m0-lib.sh'; m0_source_tree_unchanged '$TS'"
+echo x >"$TS/new.file"
+refuses "source-tree-unchanged (provenance mode) detects a change made during the run" env M0_SOURCE_MODE=provenance M0_TREE="$ATREE" bash -c "source '$HERE/m0-lib.sh'; m0_source_tree_unchanged '$TS'"
+refuses "source-tree-unchanged with an unknown mode is refused" env M0_SOURCE_MODE= bash -c "source '$HERE/m0-lib.sh'; m0_source_tree_unchanged '$TS'"
 
 echo "== run-all.sh static + refusal behaviour (docker stub must never be invoked) =="
 RA="$HERE/run-all.sh"
 expect "bash -n run-all.sh" bash -n "$RA"
 expect "bash -n m0-lib.sh" bash -n "$HERE/m0-lib.sh"
-expect "no PENDING placeholders remain" bash -c "! grep -q PENDING '$RA'"
-expect "no docker prune anywhere in the runner or cleanup" bash -c "! grep -hv '^[[:space:]]*#' '$RA' '$HERE/cleanup-integration.sh' '$HERE/m0-lib.sh' | grep -Eq 'prune'"
-expect "runner never calls sudo/systemctl/apt/usermod (host privileged ops)" bash -c "! grep -hv '^[[:space:]]*#' '$RA' '$HERE/m0-lib.sh' | grep -Eq '(^|[;&|(]|then |do )[[:space:]]*(sudo|systemctl|apt-get|apt|usermod)( |$)'"
+expect "bash -n m0-finalize.sh" bash -n "$HERE/m0-finalize.sh"
+expect "bash -n bootstrap-test-vm.sh" bash -n "$HERE/bootstrap-test-vm.sh"
+expect "no TODO/FIXME/placeholder markers remain in the runner" bash -c "! grep -qE 'TODO|FIXME|PLACEHOLDER' '$RA' '$HERE/m0-lib.sh' '$HERE/m0-finalize.sh'"
+expect "no docker prune anywhere in the runner or cleanup" bash -c "! grep -hv '^[[:space:]]*#' '$RA' '$HERE/cleanup-integration.sh' '$HERE/m0-lib.sh' '$HERE/m0-finalize.sh' | grep -Eq 'prune'"
+expect "runner never calls sudo/systemctl/apt/usermod (host privileged ops)" bash -c "! grep -hv '^[[:space:]]*#' '$RA' '$HERE/m0-lib.sh' '$HERE/m0-finalize.sh' | grep -Eq '(^|[;&|(]|then |do )[[:space:]]*(sudo|systemctl|apt-get|apt|usermod)( |$)'"
+expect "external prerequisites are not in the automated step list" bash -c "! sed -n '/^REQUIRED_STEPS=(/,/^)/p' '$RA' | grep -q 'external-'"
+expect "external prerequisites have their own EXTERNAL_STEPS list" bash -c "grep -q '^EXTERNAL_STEPS=(external-provisioning-provenance external-network-perimeter external-vm-teardown)' '$RA'"
+expect "exit codes derive from automated_integration only" bash -c "grep -q 'case \"\$auto\" in PASS) exit 0' '$HERE/m0-finalize.sh'"
 if command -v ss >/dev/null 2>&1; then
   out="$(DOCKER_HOST=tcp://127.0.0.1:1 bash "$RA" 2>&1)"
   rc=$?
   eq "run-all refuses with DOCKER_HOST set (exit 3)" "$rc" 3
-  expect "…and says why" grep -q 'DOCKER_HOST is set' <<<"$out"
+  expect "...and says why" grep -q 'DOCKER_HOST is set' <<<"$out"
+  # Refusals are exercised from COPIES of the scripts (ROOT is derived from the script location).
+  RG="$T/ra-git"
+  mkdir -p "$RG/scripts/integration" && cp "$HERE"/*.sh "$RG/scripts/integration/"
+  git init -q "$RG" && git -C "$RG" add -A && git -C "$RG" -c user.email=a@b -c user.name=t commit -q -m i
   if [[ ! -e /etc/dso-integration/environment ]]; then
-    out="$(bash "$RA" 2>&1)"
+    out="$(env -u DSO_IT_SOURCE_PROVENANCE -u DSO_IT_EXPECT_SHA bash "$RG/scripts/integration/run-all.sh" 2>&1)"
     rc=$?
-    eq "run-all refuses without the provisioning marker (exit 3)" "$rc" 3
-    expect "…and says why" grep -q 'not a provisioned test VM' <<<"$out"
+    eq "run-all (git mode, clean) refuses without the provisioning marker (exit 3)" "$rc" 3
+    expect "...and says why" grep -q 'not a provisioned test VM' <<<"$out"
   else
     echo "  skip marker-missing refusal: /etc/dso-integration/environment exists on this host"
+  fi
+  echo dirty >"$RG/untracked.txt"
+  out="$(env -u DSO_IT_SOURCE_PROVENANCE bash "$RG/scripts/integration/run-all.sh" 2>&1)"; rc=$?
+  eq "run-all (git mode, dirty tree) refuses (exit 3)" "$rc" 3
+  expect "...and says the tree is not clean" grep -q 'not clean' <<<"$out"
+  rm "$RG/untracked.txt"
+  # extracted archive, no .git
+  RX="$A/x/dso-${ASHA:0:12}"
+  out="$(env -u DSO_IT_SOURCE_PROVENANCE -u DSO_IT_EXPECT_SHA bash "$RX/scripts/integration/run-all.sh" 2>&1)"; rc=$?
+  eq "run-all with no .git and no provenance refuses (exit 3)" "$rc" 3
+  expect "...and says why" grep -q 'no .git' <<<"$out"
+  out="$(env -u DSO_IT_EXPECT_SHA DSO_IT_SOURCE_PROVENANCE="$PROV" bash "$RX/scripts/integration/run-all.sh" 2>&1)"; rc=$?
+  eq "run-all with provenance but no DSO_IT_EXPECT_SHA refuses (exit 3)" "$rc" 3
+  expect "...and says the SHA must be pinned" grep -q 'DSO_IT_EXPECT_SHA' <<<"$out"
+  rm -rf "$A/tam" && mkdir -p "$A/tam" && cp -a "$RX" "$A/tam/src" && echo "// tampered" >>"$A/tam/src/pkg/sub/a.go"
+  out="$(env DSO_IT_SOURCE_PROVENANCE="$PROV" DSO_IT_EXPECT_SHA="$ASHA" bash "$A/tam/src/scripts/integration/run-all.sh" 2>&1)"; rc=$?
+  eq "run-all on a tampered extracted archive refuses (exit 3)" "$rc" 3
+  expect "...and reports the tree mismatch" grep -q 'do not match the archive' <<<"$out"
+  if [[ ! -e /etc/dso-integration/environment ]]; then
+    out="$(env DSO_IT_SOURCE_PROVENANCE="$PROV" DSO_IT_EXPECT_SHA="$ASHA" bash "$RX/scripts/integration/run-all.sh" 2>&1)"; rc=$?
+    eq "run-all on the pristine archive passes the source check and stops at the missing marker (exit 3)" "$rc" 3
+    expect "...the refusal is the marker, not the source" grep -q 'not a provisioned test VM' <<<"$out"
+    expect "...and nothing was created in the extracted tree" test ! -e "$RX/artifacts"
   fi
 else
   echo "  skip run-all refusal tests: 'ss' not installed"

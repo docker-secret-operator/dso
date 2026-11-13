@@ -4,9 +4,19 @@
 # It refuses to run anywhere else. NEVER run it on a development machine.
 #
 # Fail closed: nothing that did not run, was skipped, or matched zero tests is ever
-# reported as passed. Verdicts: PASS | FAIL | INCOMPLETE (exit 0 | 1 | 2; refusal = 3).
-# Steps that cannot be automated are recorded as EXTERNAL_PREREQUISITE and keep the
-# verdict INCOMPLETE. Evidence: artifacts/m0-<time>-<sha8>/{summary.txt,summary.json,logs/,evidence/}.
+# reported as passed. The result is NOT one verdict but independent fields (summary.json):
+#   automated_integration PASS|FAIL|INCOMPLETE   (executable steps only)  -> exit 0 | 1 | 2
+#   environment_attestation VERIFIED|UNVERIFIED, security_review OPEN|CLOSED (operator file
+#   DSO_IT_SECURITY_REVIEW_FILE; default OPEN), cleanup PASS|FAIL, vm_teardown PENDING,
+#   release_readiness (INCOMPLETE unless every field is green AND an operator confirmed
+#   teardown; the runner itself can never produce PASS). `verdict` = alias of release_readiness.
+# Exit codes: 0 automated PASS, 1 automated FAIL, 2 automated INCOMPLETE, 3 refused (nothing ran).
+# A passing automated run is NOT a release approval.
+# Evidence: artifacts/m0-<time>-<sha8>/{summary.txt,summary.json,logs/,evidence/,SHA256SUMS}.
+#
+# Source: either a git work tree (clean; SHA = HEAD) or an extracted `git archive` with NO .git
+# plus DSO_IT_SOURCE_PROVENANCE=<provenance.json> and DSO_IT_EXPECT_SHA=<sha> (tree hash is
+# recomputed and must match the provenance). See scripts/integration/make-source-archive.sh.
 #
 # Cleanup is ownership-scoped (test/dockerguard CleanupRun: resources carrying BOTH
 # dso.test.environment and dso.test.run; plus the image this run built, verified by
@@ -17,12 +27,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/integration/m0-lib.sh
 source "$ROOT/scripts/integration/m0-lib.sh"
+# shellcheck source=scripts/integration/m0-finalize.sh
+source "$ROOT/scripts/integration/m0-finalize.sh"
 
 ENV_FILE=/etc/dso-integration/environment
 refuse() { echo "run-all refused: $*" >&2; exit 3; }
 
 # ---------------------------------------------------------------------------
-# Step registry: EVERY name here must end up recorded; unrecorded => INCOMPLETE.
+# Step registry: EVERY executable step name here must end up recorded; unrecorded => INCOMPLETE.
 # ---------------------------------------------------------------------------
 REQUIRED_STEPS=(
   environment-identity docker-endpoint daemon-identity foreign-resources-pre run-identity source-revision
@@ -35,8 +47,9 @@ REQUIRED_STEPS=(
   scenario-recovery-realdaemon scenario-crash-recovery scenario-ownership-concurrency docker-suite-coverage
   host-listeners
   evidence-collection cleanup foreign-resources-post source-tree-unchanged evidence-leak-scan
-  external-provisioning-provenance external-network-perimeter external-vm-teardown
 )
+# Not automatable: recorded as EXTERNAL_PREREQUISITE by finalize; they never affect automated_integration.
+EXTERNAL_STEPS=(external-provisioning-provenance external-network-perimeter external-vm-teardown)
 
 # Exact top-level tests per scenario (the -run patterns AND the coverage check derive from these).
 SIGNAL_TESTS=(TestSignalRotation_FileMode_ApplicationLoadsNewValue TestSignalRotation_FileMode_IgnoredSignalIsNotAdoption)
@@ -62,10 +75,9 @@ for tool in git jq go timeout sha256sum tar awk sed ss; do
 done
 unset DSO_INTEGRATION_TESTS DSO_TEST_RUN_ID DSO_TEST_DAEMON_ID DSO_TEST_ENVIRONMENT_ID || true
 m0_check_no_docker_env || refuse "ambient Docker/Compose configuration"
+m0_resolve_source "$ROOT" || refuse "source revision/provenance"
 m0_check_marker "$ENV_FILE" root || refuse "environment marker check failed"
-m0_check_clean_tree "$ROOT" || refuse "source tree not clean"
-M0_SHA="$(git rev-parse HEAD)"
-m0_check_sha "$M0_SHA" "${DSO_IT_EXPECT_SHA:-}" || refuse "source revision"
+M0_MARKER_OK=ok
 M0_ENDPOINT="${DSO_TEST_DOCKER_HOST:-unix:///var/run/docker.sock}"
 m0_check_endpoint "$M0_ENDPOINT" || refuse "docker endpoint"
 
@@ -103,11 +115,7 @@ M0_LAST_STATUS=""
 
 echo "run: $RUN  artifacts: $M0_ART"
 
-# dk: docker against the explicit, verified endpoint only. Ambient config was refused above.
-dk() { timeout "${DK_TIMEOUT:-300}" env "DOCKER_HOST=$M0_ENDPOINT" docker "$@"; }
-finding() { printf '%s\n' "$*" >>"$M0_STATE/findings.txt"; }
 wait_until() { local t=$1 end; shift; end=$((SECONDS + t)); until "$@"; do ((SECONDS < end)) || return 1; sleep 1; done; }
-daemon_verified() { [[ -f $M0_STATE/daemon_verified ]]; }
 is_running() { [[ "$(dk inspect --format '{{.State.Running}}' "$1")" == true ]]; }
 
 # ---------------------------------------------------------------------------
@@ -144,16 +152,6 @@ s_daemon_identity() {
   echo "daemon identity verified: id=$id label=dso.test.environment=$M0_ENV_ID"
   : >"$M0_STATE/daemon_verified"
 }
-foreign_snapshot() {
-  {
-    dk ps -a --no-trunc --format $'{{.ID}}\t{{.Names}}\t{{.Label "dso.test.environment"}}' |
-      awk -F'\t' -v e="$M0_ENV_ID" '$3 != e {print "container " $2}'
-    dk network ls --format $'{{.ID}}\t{{.Name}}\t{{.Label "dso.test.environment"}}' |
-      awk -F'\t' -v e="$M0_ENV_ID" '$2!="bridge" && $2!="host" && $2!="none" && $3 != e {print "network " $2}'
-    dk volume ls --format $'{{.Name}}\t{{.Label "dso.test.environment"}}' |
-      awk -F'\t' -v e="$M0_ENV_ID" '$2 != e {print "volume " $1}'
-  } | sort
-}
 s_foreign_pre() {
   foreign_snapshot >"$M0_STATE/foreign.pre"
   if [[ -s $M0_STATE/foreign.pre ]]; then echo "foreign (unlabelled) resources exist: not a dedicated daemon"; cat "$M0_STATE/foreign.pre"; return 1; fi
@@ -167,9 +165,20 @@ s_run_identity() {
 }
 s_source_revision() {
   m0_check_sha "$M0_SHA" "${DSO_IT_EXPECT_SHA:-}"
-  [[ "$(git rev-parse HEAD)" == "$M0_SHA" ]]
-  m0_check_clean_tree "$ROOT"
-  git log -1 --format='commit %H%nauthor %an%ndate %cI%nsubject %s'
+  echo "source mode: $M0_SOURCE_MODE  sha: $M0_SHA  tree: $M0_TREE"
+  case "$M0_SOURCE_MODE" in
+    git)
+      [[ "$(git rev-parse HEAD)" == "$M0_SHA" ]]
+      m0_check_clean_tree "$ROOT"
+      git log -1 --format='commit %H%nauthor %an%ndate %cI%nsubject %s'
+      ;;
+    provenance)
+      m0_check_source_provenance "$DSO_IT_SOURCE_PROVENANCE" "$ROOT" "${DSO_IT_EXPECT_SHA:-}"
+      cp -- "$DSO_IT_SOURCE_PROVENANCE" "$M0_ART/evidence/source-provenance.json"
+      echo "no .git: tree hash recomputed from the extracted files matches the archive provenance (provenance sha256 $M0_PROV_SHA256)"
+      ;;
+    *) echo "unknown source mode"; return 1 ;;
+  esac
   echo "tree clean"
 }
 s_cleanup_tool_build() {
@@ -473,139 +482,6 @@ s_coverage() {
   echo "every test in ./test/docker is executed by a step"
 }
 
-# ---- evidence / cleanup ----------------------------------------------------------------
-s_collect_evidence() {
-  local E="$M0_ART/evidence" c
-  {
-    go version; uname -a; cat /etc/os-release 2>/dev/null; nproc; free -m; df -h /var/lib/docker /var/tmp 2>/dev/null
-    ss -tlnp 2>/dev/null
-  } >"$E/host.txt" 2>&1 || true
-  if ! daemon_verified; then echo "daemon never verified: no Docker evidence collected" >"$E/docker-skipped.txt"; return 0; fi
-  {
-    dk version
-    dk compose version
-    dk info --format 'id={{.ID}} labels={{json .Labels}} storage={{.Driver}} cgroup={{.CgroupVersion}}'
-  } >"$E/docker.txt" 2>&1 || true
-  dk ps -a --filter "label=dso.test.run=$RUN" --format $'table {{.Names}}\t{{.Image}}\t{{.Status}}' >"$E/containers.txt" 2>&1 || true
-  dk network ls --filter "label=dso.test.run=$RUN" >"$E/networks.txt" 2>&1 || true
-  dk volume ls --filter "label=dso.test.run=$RUN" >"$E/volumes.txt" 2>&1 || true
-  for c in $(dk ps -a -q --filter "label=dso.test.run=$RUN" 2>/dev/null); do
-    dk logs --tail 300 "$c" 2>&1 | m0_redact >"$E/container-$c.log" || true
-  done
-  journalctl -u docker -n 300 --no-pager 2>/dev/null | m0_redact >"$E/dockerd-journal.txt" || true
-}
-leftovers() { # prints "kind:ids" for each remaining resource of THIS run in THIS environment
-  local f=(--filter "label=dso.test.environment=$M0_ENV_ID" --filter "label=dso.test.run=$RUN") out
-  for out in "container:$(dk ps -aq "${f[@]}")" "network:$(dk network ls -q "${f[@]}")" \
-    "volume:$(dk volume ls -q "${f[@]}")" "image:$(dk image ls -q "${f[@]}")"; do
-    [[ -z ${out#*:} ]] || echo "$out" | tr '\n' ' ' | sed 's/$/\n/'
-  done
-}
-s_cleanup() {
-  local id left
-  if ! daemon_verified; then echo "daemon never verified: this run created no Docker resources"; return 0; fi
-  if [[ -x $M0_WORK/cleanup ]]; then
-    # Only resources labelled with BOTH the environment id and THIS run id (CleanupRun re-verifies the daemon first).
-    DSO_INTEGRATION_TESTS=1 timeout 300 "$M0_WORK/cleanup"
-  else
-    echo "cleanup tool not built: only verifying that this run created nothing"
-  fi
-  for id in $(dk image ls -q --no-trunc --filter "label=dso.test.environment=$M0_ENV_ID" --filter "label=dso.test.run=$RUN"); do
-    dk image rm "$IMAGE" >/dev/null 2>&1 || true
-    dk image rm "$id" >/dev/null 2>&1 || true
-  done
-  left="$(leftovers)"
-  [[ -z $left ]] || { echo "remaining resources of this run: $left"; return 1; }
-  echo "all resources of run $RUN removed (ownership-scoped, label-filtered removal only)"
-}
-s_foreign_post() {
-  daemon_verified || { echo "daemon never verified"; return 1; }
-  foreign_snapshot >"$M0_STATE/foreign.post"
-  diff -u "$M0_STATE/foreign.pre" "$M0_STATE/foreign.post" || { echo "foreign resources changed during the run"; return 1; }
-  echo "foreign/unmanaged resources identical before and after (none existed)"
-}
-s_leak_scan() {
-  local hits f
-  hits="$(grep -rlF -- "$M0_SENTINEL" "$M0_ART" 2>/dev/null || true)"
-  if [[ -n $hits ]]; then
-    echo "the synthetic secret value appears in evidence (redacted in place):"
-    echo "$hits"
-    while IFS= read -r f; do sed -i "s/$M0_SENTINEL/<redacted>/g" "$f"; done <<<"$hits"
-    return 1
-  fi
-  echo "no plaintext synthetic secret in any evidence file"
-}
-
-# ---------------------------------------------------------------------------
-# Finalisation: runs exactly once on every exit path (success, failure, signal).
-# ---------------------------------------------------------------------------
-m0_write_meta() {
-  local dcl dsv dco gov clean=false
-  if daemon_verified; then
-    dcl="$(dk version --format '{{.Client.Version}}' 2>/dev/null || echo unknown)"
-    dsv="$(dk version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
-    dco="$(dk compose version --short 2>/dev/null || echo unknown)"
-  else
-    dcl=unknown dsv=unknown dco=unknown
-  fi
-  gov="$(go version 2>/dev/null || echo unknown)"
-  [[ "$(awk -F'\t' '$1=="source-tree-unchanged" {s=$5} END {print s}' "$M0_STEPS_FILE")" == passed ]] && clean=true
-  jq -n --arg sha "$M0_SHA" --arg clean "$clean" \
-    --arg run "$RUN" --arg dir "$M0_RUN_DIR" --arg st "$M0_STARTED" --arg fin "$(m0_now)" \
-    --arg host "$(hostname)" --arg os "$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}") || echo unknown)" \
-    --arg kern "$(uname -r)" --arg cpus "$(nproc)" \
-    --arg mem "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)" \
-    --arg mid "$(sha256sum /etc/machine-id 2>/dev/null | cut -c1-12)" \
-    --arg envid "$M0_ENV_ID" --arg did "$M0_DAEMON_ID" --arg dcl "$dcl" --arg dsv "$dsv" --arg dco "$dco" --arg gov "$gov" '
-    {schema: 1, source: {sha: $sha, tree_clean: ($clean == "true")}, run_id: $run, run_dir: $dir,
-     started: $st, finished: $fin,
-     vm: {hostname: $host, os: $os, kernel: $kern, cpus: ($cpus | tonumber), mem_mb: ($mem | tonumber), machine_id_sha256_12: $mid},
-     docker: {client: $dcl, server: $dsv, compose: $dco, environment_id: $envid, daemon_id: $did},
-     go: {version: $gov},
-     limitations: ["traffic reports cover NEW-connection clients only; survival of long-lived connections is not measured by any test",
-                   "no claim of zero downtime beyond the measured conditions; no host power-loss testing"]}' >"$M0_STATE/meta.json"
-}
-# fstep: m0_step, then make sure errexit stays off inside the EXIT trap.
-fstep() { m0_step "$@"; set +e; }
-finalize() {
-  local code=$?
-  trap - EXIT INT TERM
-  [[ $FINALIZED -eq 0 ]] || exit "$code"
-  FINALIZED=1
-  set +e
-  [[ $code -eq 0 ]] || echo "run ended early (exit $code); finalising with ownership-scoped cleanup" >&2
-  fstep evidence-collection s_collect_evidence
-  fstep cleanup s_cleanup
-  fstep foreign-resources-post s_foreign_post
-  fstep source-tree-unchanged m0_check_clean_tree "$ROOT"
-  fstep evidence-leak-scan s_leak_scan
-  m0_external external-provisioning-provenance \
-    "Docker apt pin/key fingerprint and Go tarball SHA-256 were verified when the VM was provisioned, before this runner existed; they cannot be re-proven from inside the VM (installed versions are recorded in summary.json)."
-  m0_external external-network-perimeter \
-    "Cloud firewall/SSH source restriction and absence of public ingress are properties of the VM's network, not observable from inside it (local listening sockets are checked by host-listeners)."
-  m0_external external-vm-teardown \
-    "The VM must be destroyed after the evidence is copied off; a runner cannot destroy its own host."
-  m0_fill_missing "${REQUIRED_STEPS[@]}"
-  local verdict auto
-  verdict="$(m0_verdict "$M0_STEPS_FILE" "${REQUIRED_STEPS[@]}")"
-  auto="$(m0_verdict_automated "$M0_STEPS_FILE" "${REQUIRED_STEPS[@]}")"
-  m0_write_meta
-  jq -n --arg s "$(awk -F'\t' '$1=="cleanup" {s=$5} END {print s}' "$M0_STEPS_FILE")" \
-    --arg d "$(awk -F'\t' '$1=="cleanup" {s=$7} END {print s}' "$M0_STEPS_FILE")" '{status: $s, detail: $d}' >"$M0_STATE/cleanup.json"
-  if ! m0_write_summary_json "$M0_ART/summary.json" "$M0_STATE/meta.json" "$M0_STATE/traffic.json" "$M0_STATE/recovery.json" \
-    "$M0_STATE/findings.txt" "$M0_STATE/cleanup.json" "$verdict" "$auto"; then
-    echo "FAILED to write summary.json" >&2
-    verdict=FAIL
-  else
-    m0_write_summary_txt "$M0_ART/summary.txt" "$M0_ART/summary.json" || echo "FAILED to write summary.txt" >&2
-  fi
-  sed -i "s/$M0_SENTINEL/<redacted>/g" "$M0_ART/summary.txt" "$M0_ART/summary.json" 2>/dev/null
-  (cd "$M0_ART" && find . -type f ! -name SHA256SUMS ! -name 'summary.*' -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS) 2>/dev/null
-  rm -rf "$M0_WORK"
-  echo "VERDICT: $verdict   (automated steps only: $auto)"
-  echo "evidence: $M0_ART"
-  case "$verdict" in PASS) exit 0 ;; FAIL) exit 1 ;; *) exit 2 ;; esac
-}
 trap finalize EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

@@ -1,32 +1,76 @@
 # Disposable-VM execution plan (M0 runtime verification)
 
-Status: **runner implemented, not executed.** No isolated rootful Docker environment exists yet; nothing below has been run against Docker. The development machine and its Docker daemon are never used. What *has* been run (without any daemon): `bash -n` on every script and `scripts/integration/selftest.sh` (97 checks of the fail-closed logic, with a failing `docker` stub first in `PATH`).
+Status: **runner implemented, not executed.** No isolated rootful Docker environment exists yet; nothing below has been run against Docker. The development machine and its Docker daemon are never used. What *has* been run (without any daemon): `bash -n` on every script, `go vet ./scripts/integration/...`, and `scripts/integration/selftest.sh` (273 checks, with a failing `docker` stub first in `PATH` that is proven never invoked). ShellCheck was **not** run (not installed and not fetched; see "Static analysis" below).
 
-Single entry point, run inside the VM from a clean checkout of the commit under test:
+## 1. Getting the source onto the VM (the branch is NOT pushed)
+The branch has not been pushed, so `git clone <repo> && git checkout <sha>` on the VM is **not valid**. **Do not push the branch for this purpose, and do not transfer full history (a clone, a bundle, or `.git`) to the VM while the N7/N8 findings are unresolved.** The VM receives one commit's tree only, as a deterministic archive plus a provenance record.
+
+On the **development host** (no Docker needed; the work tree must be clean, including untracked files):
+
+```bash
+SHA=$(git rev-parse HEAD)                       # the exact committed SHA under test; write it down out-of-band
+scripts/integration/make-source-archive.sh "$SHA" /tmp/dso-transfer
+# -> dso-<sha12>.tar.gz   (git archive, tree only, no history, fixed mtime = commit time, gzip -n)
+# -> provenance.json      (sha, tree_sha = git rev-parse SHA^{tree}, branch, commit time, creation time, tool versions, tarball sha256)
+# -> SHA256SUMS           (tarball + provenance.json)
+```
+It refuses a dirty tree, a short/unknown/non-commit SHA, an output directory inside the work tree, an existing output file, and an archive whose extracted files do not reproduce the commit's tree hash. Running it twice yields a byte-identical tarball.
+
+Transfer (SSH only from the operator's address; never an unauthenticated channel) and verify **before** extracting:
+
+```bash
+scp /tmp/dso-transfer/{dso-*.tar.gz,provenance.json,SHA256SUMS} <vm-user>@<vm>:/home/<vm-user>/transfer/
+# on the VM:
+cd ~/transfer && sha256sum -c SHA256SUMS          # must print OK for both files; stop otherwise
+# compare the SHA256SUMS line of the tarball with the value you noted on the dev host (read over a second channel)
+mkdir -p ~/dso-src && tar -xzf dso-<sha12>.tar.gz -C ~/dso-src --no-same-owner
+cd ~/dso-src/dso-<sha12>                          # no .git here, by design
+```
+
+Run (provenance mode; `DSO_IT_EXPECT_SHA` is **mandatory** without `.git` because the provenance file is self-asserted, so the commit is pinned out-of-band):
+
+```bash
+DSO_IT_SOURCE_PROVENANCE=~/transfer/provenance.json \
+DSO_IT_EXPECT_SHA=<the SHA noted on the dev host> \
+DSO_IT_DISPOSABLE_VM_CONFIRM=<environment id from /etc/dso-integration/environment> \
+./scripts/integration/run-all.sh
+```
+What the runner does without `.git`: refuses (exit 3) if there is neither `.git` nor `DSO_IT_SOURCE_PROVENANCE`, or if both are present, or if `DSO_IT_EXPECT_SHA` is missing/different; recomputes the git tree hash of the extracted files (names, modes, bytes; top-level `artifacts/` excluded; host git config, ignore rules and attributes neutralised) and refuses unless it equals the provenance `tree_sha` (a tampered, added, removed or chmod-ed file, or a planted `.git`, fails); records SHA, tree SHA and the provenance sha256 in `summary.json` (`source`) and copies the provenance into `evidence/`; re-checks the tree hash at the end (`source-tree-unchanged`). With a `.git` present the original checks apply (clean work tree including untracked files, SHA = HEAD).
+
+Single entry point (git work tree variant, if the VM ever has a legitimately obtained checkout):
 
 ```bash
 DSO_IT_DISPOSABLE_VM_CONFIRM=<environment id from /etc/dso-integration/environment> ./scripts/integration/run-all.sh
 ```
 
-Exit codes: `0` PASS, `1` FAIL, `2` INCOMPLETE, `3` refused (nothing was run, no artifacts).
+## 2. Results are independent fields, never one verdict
+`summary.json` / `summary.txt` carry separate fields. A passing automated run is **not** a release approval.
 
-## Verdict rules (fail closed)
-* **FAIL** - any step failed.
-* **INCOMPLETE** - nothing failed, but a step was skipped, did not run, a required step is missing, or an `EXTERNAL_PREREQUISITE` is open.
-* **PASS** - every required step passed, none skipped, no external prerequisite open.
+| Field | Values | Decided by |
+|---|---|---|
+| `automated_integration` | `PASS` / `FAIL` / `INCOMPLETE` | executable steps only. `FAIL`: any failed step (a scenario that matched zero tests is `failed`). `INCOMPLETE`: nothing failed but a required step was skipped, did not run, or is missing. `PASS`: every required executable step passed, none skipped. External prerequisites never change it. |
+| `environment_attestation` | `VERIFIED` / `UNVERIFIED` | marker check passed (pre-flight) **and** `environment-identity`, `docker-endpoint`, `daemon-identity`, `foreign-resources-pre`, `foreign-resources-post` all passed. Covers only facts observable from inside the VM. |
+| `security_review` | `OPEN` / `CLOSED` | **never decided by the runner.** Default `OPEN`. `CLOSED` only if `DSO_IT_SECURITY_REVIEW_FILE` names a regular, non-symlink file (<= 4 KiB, owned by root or the runner's user, not group/other writable) containing exactly one line `DSO_SECURITY_REVIEW_STATUS=CLOSED`. Absent, malformed, ambiguous, lower-case or commented-out status is `OPEN` (and a finding is recorded if the variable was set). The file's sha256 is recorded in `security_review_source`. |
+| `cleanup` | `PASS` / `FAIL` | the ownership-scoped `cleanup` step (labels: environment id AND run id); missing/skipped/failed is `FAIL`. The detail is in `cleanup_detail`. |
+| `vm_teardown` | `PENDING` | always `PENDING` in runner output; destroying the VM is external. |
+| `release_readiness` | `INCOMPLETE` / `FAIL` / `PASS` | `FAIL` if automated `FAIL` or cleanup `FAIL`; `PASS` only if automated `PASS` **and** attestation `VERIFIED` **and** security review `CLOSED` **and** cleanup `PASS` **and** teardown `DONE`; otherwise `INCOMPLETE`. The runner always passes teardown `PENDING`, so its own output is never `PASS`; `DONE` is an operator confirmation recorded outside the runner. |
+| `verdict` | = `release_readiness` | compatibility alias only (`automated_verdict` aliases `automated_integration`). |
+
+Exit codes derive from `automated_integration` only: `0` automated PASS, `1` automated FAIL, `2` automated INCOMPLETE, `3` refused (nothing was run, no artifacts). Because the finalisation steps (`cleanup`, `foreign-resources-post`, `source-tree-unchanged`, `evidence-leak-scan`) are executable steps, a cleanup failure, a changed foreign resource, a modified source tree or a leaked secret also makes the automated result `FAIL` (exit 1).
+
 * A required Docker scenario that matched **zero tests**, or whose tests were **all/any skipped**, or where a named required test did not pass, is never `passed` (classified from `go test -json`; see `m0_classify_go_json`). The package-level failure produced by the isolation guard (wrong daemon) is a failure, not a skip.
-* Three steps are `EXTERNAL_PREREQUISITE` by nature (below), so the overall verdict of a complete automated run is **INCOMPLETE** until they are discharged by a person. `summary.json` therefore also carries `automated_verdict` (the verdict ignoring external prerequisites): `PASS` there means every automatable step passed with no skips.
-* The runner always finalises (EXIT/INT/TERM trap): evidence is collected, only the run's own labelled resources are removed, the summary is written, and the leak scan runs, even on failure or Ctrl-C.
+* Three steps are `EXTERNAL_PREREQUISITE` by nature (E1-E3 below). They are recorded as `incomplete` rows of kind `external_prerequisite`, listed under `external_prerequisites`, and keep `release_readiness` `INCOMPLETE`; they do not affect `automated_integration`.
+* The runner always finalises (EXIT/INT/TERM trap, `m0-finalize.sh`): evidence is collected, only the run's own labelled resources are removed, the summary is written, the leak scan runs, and `SHA256SUMS` (covering every file except itself, summaries included) is produced, even on failure or Ctrl-C.
 
 ## Outputs (`artifacts/m0-<UTC time>-<sha8>/`)
-`summary.txt` (human), `summary.json` (machine: exact source SHA, VM identity, Docker/Compose/Go versions, run ID, per-scenario `name/started/finished/exit_code/status` with status `passed|failed|skipped|incomplete`, traffic and recovery measurements, cleanup result, findings, limitations, external prerequisites, verdict), `logs/<step>.log|.json|.err` (raw `go test -json` per scenario), `evidence/` (host, docker, container logs - redacted, image file list, traffic report lines), `state/`, `SHA256SUMS`. `artifacts/` is not in `.gitignore`; the runner's clean-tree checks exclude it, but add it to `.gitignore` or keep it out of commits.
+`summary.txt` (human), `summary.json` (machine: exact source SHA/tree/mode, VM identity, Docker/Compose/Go versions, run ID, the independent verdict fields above, per-scenario `name/started/finished/exit_code/status/kind` with status `passed|failed|skipped|incomplete`, traffic and recovery measurements, `cleanup_detail`, findings, limitations, external prerequisites), `logs/<step>.log|.json|.err` (raw `go test -json` per scenario), `evidence/` (host, docker, container logs - redacted, image file list, traffic report lines, source provenance), `state/`, `SHA256SUMS`. `artifacts/` is not in `.gitignore`; the runner's clean-tree checks exclude it, but add it to `.gitignore` or keep it out of commits.
 
-Secrets: the runner generates a synthetic sentinel (`DSO_IT_SENTINEL`, shared with the Go tests); it is never printed, is redacted from notes and evidence logs, and the final `evidence-leak-scan` step fails the run (and redacts in place) if it appears anywhere under the artifact directory.
+Secrets: the runner generates a synthetic sentinel (`DSO_IT_SENTINEL`, shared with the Go tests); it is never printed, is redacted from notes and evidence logs, and the final `evidence-leak-scan` step fails the run (and redacts in place) if it appears anywhere under the artifact directory; the summaries are redacted again after they are written.
 
 ## Environment
 Ubuntu 24.04 x86_64, 4 vCPU, 8-16 GB RAM, 80 GB disk, rootful Docker Engine + Compose v2 (apt-pinned version, key fingerprint verified by the bootstrap), Go matching `go.mod`'s `toolchain` line (official tarball, SHA-256 verified; the runner sets `GOTOOLCHAIN=local` and fails on a mismatch), `jq`, `ss` (iproute2), `gcc` (for `-race`), `cosign` (installer tests), outbound network for base-image pulls (`golang`, `alpine`, `busybox`). No production credentials, workloads or public application ports. Rootless Docker may be added later as an extra compatibility run only.
 
-Optional runner variables: `DSO_IT_EXPECT_SHA` (commit must equal it), `DSO_IT_EXPECT_DOCKER_VERSION` (server version pin), `DSO_IT_ARTIFACTS`, `DSO_IT_ALLOWED_PORTS` (default `22`), `DSO_IT_GOTEST_TIMEOUT_S`, `DSO_IT_CRASH_MIN_TESTS` (default 1), `DSO_IT_CRASH_TAGS` (default `dockerint`; the crash harness adds `dsofault` itself when it builds the agent).
+Optional runner variables: `DSO_IT_SOURCE_PROVENANCE` (archive mode, see section 1), `DSO_IT_SECURITY_REVIEW_FILE` (operator review status, default OPEN), `DSO_IT_EXPECT_SHA` (commit must equal it; mandatory without `.git`), `DSO_IT_EXPECT_DOCKER_VERSION` (server version pin), `DSO_IT_ARTIFACTS`, `DSO_IT_ALLOWED_PORTS` (default `22`), `DSO_IT_GOTEST_TIMEOUT_S`, `DSO_IT_CRASH_MIN_TESTS` (default 1), `DSO_IT_CRASH_TAGS` (default `dockerint`; the crash harness adds `dsofault` itself when it builds the agent).
 
 ## Steps and implementation status
 Legend - **implemented**: automated by `run-all.sh`, step name in the third column. **depends on test X**: the step is a guarded `go test -tags dockerint ./test/docker -run ...` scenario and is only as strong as the named tests. **external prerequisite**: not automatable.
@@ -38,7 +82,7 @@ Legend - **implemented**: automated by `run-all.sh`, step name in the third colu
 | 3 | Expected daemon identity | `daemon-identity` | implemented | `docker info` ID must equal the marker, label `dso.test.environment=<env id>` present, ID not in `DSO_TEST_PROHIBITED_DAEMON_IDS`. Gate: failure aborts before any resource is created. The Go suites re-verify through `test/dockerguard` |
 | 4 | Foreign-resource checks | `foreign-resources-pre`, `foreign-resources-post` | implemented | any container/network/volume without the environment label (default `bridge/host/none` excepted) fails the run before; the same snapshot is diffed after cleanup. The guard additionally fails the Go packages on a foreign container |
 | 5 | Unique run identity | `run-identity` | implemented | `dso-it-<12 hex>` from `/dev/urandom`, shape-validated, must own no existing resource; exported as `DSO_TEST_RUN_ID` so tests, the image, compose projects and cleanup share it |
-| 6 | Source revision, clean tree | `source-revision`, `source-tree-unchanged` | implemented | full 40-hex SHA recorded (and compared with `DSO_IT_EXPECT_SHA`); `git status --porcelain --untracked-files=all` (excluding `artifacts/`) must be empty before and after the run |
+| 6 | Source revision, clean tree | `source-revision`, `source-tree-unchanged` | implemented | full 40-hex SHA recorded (and compared with `DSO_IT_EXPECT_SHA`). With `.git`: `git status --porcelain --untracked-files=all` (excluding `artifacts/`) must be empty before and after the run. Without `.git`: the provenance tree hash is recomputed from the files before and after (section 1) |
 | 7 | Go verification | `go-toolchain`, `go-build`, `go-build-dsofault`, `go-vet`, `go-vet-dockerint`, `go-vet-dsofault`, `go-test-short`, `go-test-race-short`, `installer-tests` | implemented | installed Go must match the `go.mod` toolchain; `-short` and `-race -short` via `go test -json` (must run >=1 test, none may fail; skips allowed only here); `installer-tests` must not skip and fails if `cosign` is absent. `go-build-dsofault` proves the fault-tagged binary compiles |
 | 8 | Real DSO image build | `image-build` | implemented | `docker build` of the repo `Dockerfile` with both guard labels, tag `dso-it-image:<run id>` |
 | 9 | Image-content inspection | `image-content-inspection` | implemented | `docker save` + per-layer `tar -t` (non-vacuous: must list the DSO binary) rejects `.git`, `data/`, `*.db*`, `*.rvf*`, keys/`.pem` (base CA bundle allow-listed), `.claude*`/`.swarm`, `.env*`, `local-secrets`, `*.go`; `docker run --rm` (labelled, `--network none`, read-only) checks uid 10001/`dso-user`, root-owned non-writable plugin dir, every `hashes.txt` entry matches its binary and the counts agree; the shipped binary must not carry the `dsofault` tag. Image has no HEALTHCHECK -> recorded as a finding |
@@ -63,7 +107,14 @@ Legend - **implemented**: automated by `run-all.sh`, step name in the third colu
 Bootstrap/provisioning (`bootstrap-test-vm.sh`) is a separate, manually-run root script (not part of `run-all.sh`); its result is what steps 1-3 verify.
 
 ## Self-test (no Docker)
-`./scripts/integration/selftest.sh` sources `m0-lib.sh` (all pure logic: step bookkeeping, verdict computation, `go test -json` skip/zero-test classification, refusal conditions, image-content scan, traffic/recovery parsers, `summary.json`/`summary.txt` generation) with a failing `docker` stub first in `PATH`, and also runs `run-all.sh` itself to prove it refuses (exit 3) with `DOCKER_HOST` set or without the marker, never reaching Docker. It fails if the stub is ever invoked.
+`./scripts/integration/selftest.sh` (273 checks) puts a failing `docker` stub (and a `go` stub) first in `PATH` and fails if the docker stub is ever invoked. It covers:
+* pure logic of `m0-lib.sh`: step bookkeeping, the step verdict engine, `go test -json` skip/zero-test classification, refusal conditions, image-content scan, traffic/recovery parsers;
+* **verdict separation**: `automated_integration` (required skipped/missing/zero-test => not PASS; external prerequisites open + all executable passed => PASS), `environment_attestation` (each gate missing/failed/skipped, marker not ok), `security_review` (default OPEN; CLOSED only from an acceptable explicit file; symlink/group-writable/oversized/ambiguous/commented => OPEN), `cleanup`, every one of the 48 combinations of `release_readiness` inputs, and `m0_compute_verdicts` end to end (including "automated PASS + external prerequisites open => readiness INCOMPLETE");
+* **finalisation dry-run**: the real `finalize()` (from `m0-finalize.sh`) is run in a subshell against a fake artifact directory and a temp git repo, with a fake step set (pass/fail/skip/missing/external) and stubbed `docker`/`go`. It asserts exit codes, `summary.json`/`summary.txt` fields, `SHA256SUMS` content and verification (and that tampering breaks it), cleanup-result reporting (real path without a verified daemon; stubbed failure), the sentinel leak scan (a sentinel planted in a log and an evidence file fails the run, is redacted in place and absent from the summaries, `SHA256SUMS` matches the redacted files), a source tree modified during the run, and the operator security-review file;
+* **source transfer**: `make-source-archive.sh` against a temp repo (refusals: short/unknown/non-commit SHA, dirty tracked/untracked tree, output inside the tree, overwrite; determinism; provenance content; no `.git` in the tarball) and the provenance check (pristine accepted; tampered/extra/deleted/chmod-ed file, changed symlink, planted `.git`/`.gitignore`, wrong SHA, altered tree_sha, bad schema, non-JSON, missing/symlinked provenance refused; `artifacts/` ignored), `m0_resolve_source` (git vs provenance mode, no `.git` + no provenance refused), and `run-all.sh` itself from copies/extractions refusing with exit 3 (dirty git tree, no marker, no provenance, no pinned SHA, tampered archive) without reaching Docker.
+
+## Static analysis
+`bash -n` on all scripts and `go vet ./scripts/integration/...` pass. **ShellCheck has not been run**: it is not installed on the development host and was not downloaded (a download needs explicit operator approval; the upstream release is `koalaman/shellcheck` v0.11.0 `linux.x86_64.tar.xz`, 2,559,196 bytes, sha256 `8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198` per the GitHub release API, which is not an independent checksum source). Run it in CI or after an approved install, then fix findings without blanket disables.
 
 ## Privileged operations in `bootstrap-test-vm.sh` (review)
 The script refuses unless `DSO_BOOTSTRAP_DISPOSABLE_VM=yes`, `EUID=0`, and (for `--ci-ephemeral`) a GitHub-hosted runner. It contains no `sudo` (it must already be root). Complete list of privileged operations:
@@ -75,12 +126,15 @@ The script refuses unless `DSO_BOOTSTRAP_DISPOSABLE_VM=yes`, `EUID=0`, and (for 
 | `gpg --dearmor` -> `/etc/apt/keyrings/docker.gpg`, `chmod a+r` | `--install-docker` | only after the fingerprint check |
 | write `/etc/apt/sources.list.d/docker.list` | `--install-docker` | Ubuntu 24.04 only (`/etc/os-release` checked) |
 | `apt-get update -y`; `apt-get install -y docker-ce=$DOCKER_APT_VERSION docker-ce-cli=... containerd.io docker-compose-plugin` | `--install-docker` | exact pinned version required, no default. `containerd.io` and `docker-compose-plugin` are unpinned (follow the apt repo); `docker-buildx-plugin` is not listed (pulled in only as a recommends) |
-| refuse if `docker ps -aq` is non-empty | always | reads the daemon; prevents repurposing a used host |
+| `docker ps -aq`: refuse if it fails **or** is non-empty | always | reads the daemon; prevents repurposing a used host. Re-review fix: previously an unreachable daemon produced empty output and read as "no containers" (fail-open); the query failure is now fatal |
+| refuse if `/etc/dso-integration/environment` already exists | always | re-review addition: a second bootstrap must not replace the trust anchor of an existing environment (destroy and recreate the VM instead) |
 | refuse if `/etc/docker/daemon.json` exists and is non-empty | always | never merges or overwrites; **does not** detect daemon flags set via a systemd drop-in/`dockerd -H` |
 | write `/etc/docker/daemon.json` (`labels: dso.test.environment=<env-xxxxxxxxxxxxxxxx>`) with umask 022 | always | env id from `/dev/urandom` |
 | `systemctl restart docker` | always | safe only because no containers exist (checked above) |
 | `docker info` ID read-back and label check | always | fails if the label did not apply |
 | `install -d /etc/dso-integration`; write `/etc/dso-integration/environment` (env id + daemon id); `chown root:root`; `chmod 0644` | always | the root-owned, non-world-writable marker is the trust anchor the runner and the guard verify |
+
+Review notes (current): the script needs `curl`, `gpg`, `dpkg`, `systemctl` and root; `--ci-ephemeral` only adds the GitHub-hosted-runner guard and changes nothing else; the pre-existing-container check cannot see containers of a *different* daemon, and volumes/networks that exist without containers are caught later by the runner's `foreign-resources-pre`; the marker is written after the daemon label is verified, so a failed run leaves no marker. This script was **not executed** in this review (static reading plus `bash -n` only).
 
 Not done by the script (and not done by the runner): adding users to the `docker` group (an operator step, equivalent to root on the VM), installing Go/cosign/jq, firewall configuration. Observations: the marker is world-readable by design (IDs are not secrets); `--install-docker` downloads over HTTPS from Docker's site, so the run needs outbound network; nothing in the bootstrap reverts changes - destroy the VM.
 

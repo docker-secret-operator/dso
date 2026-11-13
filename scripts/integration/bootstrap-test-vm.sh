@@ -60,9 +60,15 @@ fi
 
 command -v docker >/dev/null || die "docker is not installed (use --install-docker or install it first)"
 
-# Fail closed: a dedicated test daemon has no pre-existing containers.
-if [[ -n "$(docker ps -aq)" ]]; then
+# Fail closed: a dedicated test daemon has no pre-existing containers. If the daemon cannot
+# be queried at all the host is NOT assumed empty (an unreachable daemon must not read as "no containers").
+existing="$(docker ps -aq)" || die "cannot query the Docker daemon (is it running and reachable?)"
+if [[ -n "$existing" ]]; then
   die "this Docker daemon already hosts containers: not a dedicated test VM"
+fi
+# Never replace an existing provisioning marker (a second bootstrap would orphan the first environment id).
+if [[ -e /etc/dso-integration/environment ]]; then
+  die "/etc/dso-integration/environment already exists: this VM is already provisioned (destroy and recreate it)"
 fi
 # Never merge into or overwrite an existing daemon configuration.
 if [[ -s /etc/docker/daemon.json ]]; then
