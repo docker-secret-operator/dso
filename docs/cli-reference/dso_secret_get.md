@@ -4,7 +4,16 @@ Retrieve a secret from the vault
 
 ### Synopsis
 
-Print a secret's value to stdout, without a trailing newline unless -n is given.
+Print a secret's value to stdout. Because plaintext on a terminal ends up in
+scrollback, screen shares and CI logs, the value is printed ONLY when --reveal
+is given; without it the command prints nothing sensitive and exits non-zero
+(a deliberate break from earlier releases, so existing scripts fail loudly
+instead of capturing a placeholder). Scripts that need the value must add
+--reveal:
+
+    TOKEN=$(docker dso secret get myapp/token --reveal)
+
+No trailing newline is added unless -n is given.
 
 <project>/<path> selects the secret. If no project is given the default
 project "global" is used (the same default as 'secret set', 'secret list' and
@@ -19,6 +28,7 @@ dso secret get <project>/<path> [flags]
 ```
   -h, --help      help for get
   -n, --newline   Append a newline to the output
+      --reveal    Print the plaintext value (required)
 ```
 
 ### Options inherited from parent commands

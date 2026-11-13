@@ -87,7 +87,7 @@ func TestRun_InvalidAndMissingArgsFail(t *testing.T) {
 func TestRun_RuntimeErrorPropagatesOnceWithoutUsage(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no vault here
 	t.Setenv("DSO_MASTER_KEY", "synthetic-test-master-key-not-real")
-	code, out, errOut := runCLI("secret", "get", "proj/missing")
+	code, out, errOut := runCLI("secret", "get", "proj/missing", "--reveal")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}

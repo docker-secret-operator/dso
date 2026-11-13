@@ -196,17 +196,31 @@ Values must be valid UTF-8 and at most 1MB.`,
 }
 
 func newSecretGetCmd() *cobra.Command {
-	var newline bool
+	var newline, reveal bool
 	cmd := &cobra.Command{
 		Use:   "get <project>/<path>",
 		Short: "Retrieve a secret from the vault",
-		Long: `Print a secret's value to stdout, without a trailing newline unless -n is given.
+		Long: `Print a secret's value to stdout. Because plaintext on a terminal ends up in
+scrollback, screen shares and CI logs, the value is printed ONLY when --reveal
+is given; without it the command prints nothing sensitive and exits non-zero
+(a deliberate break from earlier releases, so existing scripts fail loudly
+instead of capturing a placeholder). Scripts that need the value must add
+--reveal:
+
+    TOKEN=$(docker dso secret get myapp/token --reveal)
+
+No trailing newline is added unless -n is given.
 
 <project>/<path> selects the secret. If no project is given the default
 project "global" is used (the same default as 'secret set', 'secret list' and
 'env import'); a note is written to stderr when this happens.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Refuse BEFORE touching the vault: no secret is decrypted or read
+			// unless plaintext was explicitly requested.
+			if !reveal {
+				return errors.New("refusing to print a secret value without --reveal (e.g. `docker dso secret get <project>/<path> --reveal`)")
+			}
 			project, path, err := resolveKey(cmd, args[0])
 			if err != nil {
 				return err
@@ -234,6 +248,7 @@ project "global" is used (the same default as 'secret set', 'secret list' and
 		},
 	}
 	cmd.Flags().BoolVarP(&newline, "newline", "n", false, "Append a newline to the output")
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "Print the plaintext value (required)")
 	return cmd
 }
 

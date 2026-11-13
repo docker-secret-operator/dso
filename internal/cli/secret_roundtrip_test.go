@@ -37,7 +37,7 @@ func runSecretGet(t *testing.T, key string) string {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{key})
+	cmd.SetArgs([]string{key, "--reveal"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("secret get: %v", err)
 	}
@@ -154,5 +154,63 @@ func TestSecretSet_ErrorsDoNotLeakValue(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SYNTHETIC-CANARY-VALUE") {
 		t.Fatal("error leaked secret value")
+	}
+}
+
+// M0-06: `secret get` must never print plaintext unless --reveal is given.
+func TestSecretGet_RefusesWithoutReveal_AndNeverReadsTheVault(t *testing.T) {
+	isolatedVault(t)
+	const synthetic = "SYNTHETIC-PLAINTEXT-SENTINEL-8841"
+	if err := runSecretSet(t, "proj/token", []byte(synthetic)); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"proj/token"},
+		{"proj/token", "-n"},
+		{"proj/token", "--newline"},
+		{"missing-project/missing"}, // refusal must not even reveal existence
+	} {
+		code, out, errOut := runCLI(append([]string{"secret", "get"}, args...)...)
+		if code == 0 {
+			t.Fatalf("%v: must exit non-zero without --reveal", args)
+		}
+		if strings.Contains(out+errOut, synthetic) {
+			t.Fatalf("%v: plaintext leaked: out=%q err=%q", args, out, errOut)
+		}
+		if out != "" {
+			t.Fatalf("%v: stdout must stay empty, got %q", args, out)
+		}
+		if !strings.Contains(errOut, "--reveal") {
+			t.Fatalf("%v: error must tell the user how to proceed: %q", args, errOut)
+		}
+		if strings.Contains(errOut, "not found") {
+			t.Fatalf("%v: refusal must not disclose whether the secret exists: %q", args, errOut)
+		}
+	}
+}
+
+func TestSecretGet_RevealPrintsExactValue_AndErrorsStayRedacted(t *testing.T) {
+	isolatedVault(t)
+	const synthetic = "SYNTHETIC-PLAINTEXT-SENTINEL-1207"
+	if err := runSecretSet(t, "proj/token", []byte(synthetic)); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := runCLI("secret", "get", "proj/token", "--reveal")
+	if code != 0 || out != synthetic {
+		t.Fatalf("reveal: code=%d out=%q", code, out)
+	}
+	code, out, _ = runCLI("secret", "get", "proj/token", "--reveal", "-n")
+	if code != 0 || out != synthetic+"\n" {
+		t.Fatalf("reveal -n: code=%d out=%q", code, out)
+	}
+	// A wrong key must not echo any stored value.
+	_, out, errOut := runCLI("secret", "get", "proj/other", "--reveal")
+	if strings.Contains(out+errOut, synthetic) {
+		t.Fatalf("error path leaked a stored value: %q %q", out, errOut)
+	}
+	// `secret list` must not print values either.
+	_, out, errOut = runCLI("secret", "list", "proj")
+	if strings.Contains(out+errOut, synthetic) {
+		t.Fatalf("secret list leaked a value: %q %q", out, errOut)
 	}
 }

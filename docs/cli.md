@@ -575,7 +575,9 @@ docker dso secret set api_key
 
 **Retrieve a secret from the Local Vault.**
 
-Prints the raw secret value to stdout. No trailing newline by default (for safe piping).
+Prints the raw secret value to stdout **only when `--reveal` is given**. Without it the command exits non-zero and prints nothing sensitive (and does not read the vault), so plaintext cannot end up in terminal scrollback or CI logs by accident. No trailing newline by default (for safe piping).
+
+> **Breaking change:** earlier releases printed the value without any flag. Add `--reveal` to existing scripts: `MY_SECRET=$(docker dso secret get myapp/db_password --reveal)`. Scripts that are not updated now fail with a non-zero exit instead of capturing a value.
 
 #### Usage
 
@@ -587,19 +589,20 @@ docker dso secret get <project>/<path> [flags]
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
+| `--reveal` | | `false` | Print the plaintext value (required) |
 | `--newline` | `-n` | `false` | Append a newline character to the output |
 
 #### Examples
 
 ```bash
 # Print secret (no trailing newline)
-docker dso secret get myapp/db_password
+docker dso secret get myapp/db_password --reveal
 
 # Print with trailing newline
-docker dso secret get myapp/db_password -n
+docker dso secret get myapp/db_password --reveal -n
 
 # Capture in a variable
-MY_SECRET=$(docker dso secret get myapp/db_password)
+MY_SECRET=$(docker dso secret get myapp/db_password --reveal)
 ```
 
 #### Mode Compatibility

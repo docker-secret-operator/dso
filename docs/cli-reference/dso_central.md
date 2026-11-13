@@ -40,6 +40,7 @@ dso central [flags]
 * [dso central environment](dso_central_environment.md)	 - Manage environments
 * [dso central init](dso_central_init.md)	 - Create the root key and an empty, key-bound database
 * [dso central project](dso_central_project.md)	 - Manage projects
+* [dso central recovery-status](dso_central_recovery-status.md)	 - Report recovery-related artifacts left beside the database, without changing anything
 * [dso central restore](dso_central_restore.md)	 - Validate, and optionally perform, a restore of the central database from a backup
 * [dso central secret](dso_central_secret.md)	 - Manage versioned secrets
 

@@ -120,7 +120,7 @@ func TestDown_HelpDescribesActualDestructiveness(t *testing.T) {
 
 func TestSecretGet_NotFoundIsReportedOnceAndGlobalDefaultIsAnnounced(t *testing.T) {
 	isolatedVault(t)
-	code, out, errOut := runCLI("secret", "get", "missing")
+	code, out, errOut := runCLI("secret", "get", "missing", "--reveal")
 	if code != 1 {
 		t.Fatalf("exit %d", code)
 	}
@@ -141,7 +141,7 @@ func TestSecretGet_NotFoundIsReportedOnceAndGlobalDefaultIsAnnounced(t *testing.
 	if got := runSecretGet(t, "global/legacy"); got != "v" {
 		t.Errorf("implicit-set secret not readable as global/legacy: %q", got)
 	}
-	_, _, errOut = runCLI("secret", "get", "global/legacy")
+	_, _, errOut = runCLI("secret", "get", "global/legacy", "--reveal")
 	if strings.Contains(errOut, "default project") {
 		t.Errorf("no note expected when project is explicit: %q", errOut)
 	}

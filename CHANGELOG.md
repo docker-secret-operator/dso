@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 Full rationale, options considered, and verification detail for every entry below live in `docs/audit/DECISION_LOG.md` (Decisions 1–33) and `docs/audit/2026-07-29-fresh-audit.md`.
 
+### Security (Milestone 0 post-audit)
+
+- **[M0-06] BREAKING: `docker dso secret get` requires `--reveal`.** Plaintext is printed only with `--reveal`; without it the command refuses (non-zero exit, nothing read from the vault, nothing sensitive printed, and the refusal does not reveal whether the secret exists). Update scripts: `MY_SECRET=$(docker dso secret get app/key --reveal)`. `central secret get` already behaved this way.
+- **[M0-07] Atomic, owner-correct secret file delivery.** In-container delivery uses `mktemp` under umask 077, verifies a SHA-256 of the decoded bytes, applies ownership and 0400 *before* a single rename, and removes its temp file on failure; a failed delivery leaves the previous secret intact. Multi-file sets are not replaced atomically as a group. The agent now requires `/run/secrets/dso` to be a tmpfs. The tar streamer validates names and target paths.
+- **[M0-08] Health probes wait for completion.** The exec probe previously read the exit code before the command finished and probed a directory with `test -s`. It now waits for the exec, requires exit 0, and verifies delivered files. Readiness evidence is distinguished (Docker HEALTHCHECK vs process-running-only).
+- **[M0-01] Go toolchain 1.26.11** (GO-2026-6859). **[M0-09]** deny-by-default Docker build context; tracked binary and runtime SQLite state removed from the tree. **[M0-10]** umask-independent sqlite lock test. **[M0-11, partial]** Docker integration suites now refuse to run unless they are pointed at a provisioned, labelled test daemon (`test/dockerguard`).
+
 ### Added
 
 - **[M0-3 / M1] Docker integration lane.** `.github/workflows/integration.yml` (pull requests and pushes to `main`, `ubuntu-24.04`, host Docker, no DinD) runs the S1–S3 baseline scenarios in `test/docker` (build tag `dockerint`; excluded from `go test ./...`) against a real Docker Engine, with a leak scan of the test log and failure artifacts for the per-run synthetic secret prefix. Scope: the rotation engine, label discovery, ownership gate and health gate only — secret values are seeded into the engine's cache, so the Vault provider plugin, the root agent binary, the Unix IPC socket and `SO_PEERCRED` are not exercised. Status: passed locally against Docker Desktop; not yet run on GitHub Actions.

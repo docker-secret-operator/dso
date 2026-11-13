@@ -510,7 +510,7 @@ setup, and access instructions.
 |---|---|
 | `docker dso secret set myapp/key` | Store a secret (interactive prompt) |
 | `echo "val" \| docker dso secret set myapp/key` | Store a secret from pipe |
-| `docker dso secret get myapp/key` | Retrieve a secret |
+| `docker dso secret get myapp/key --reveal` | Retrieve a secret (plaintext requires `--reveal`) |
 | `docker dso secret list [project]` | List all secrets in a project |
 | `docker dso env import file.env myapp` | Bulk import from `.env` file |
 
