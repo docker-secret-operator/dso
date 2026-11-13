@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,10 @@ const DrainWindow = 5 * time.Second
 // PortMap is a single host-port → container-port mapping parsed from the
 // dso.host_ports label, e.g. "3306:3306".
 type PortMap struct {
+	// HostIP is the literal address the host port must be bound to; "" means all
+	// interfaces (a mapping that named no address). It is part of the exposure
+	// contract and must be carried through to Bind.
+	HostIP        string
 	HostPort      int
 	ContainerPort int
 }
@@ -117,6 +122,13 @@ func NewManager(log *zap.Logger) *Manager {
 // EnsurePort opens a host-port listener if one is not already open. Rejects
 // hostPort if it falls outside an operator-configured allow-list (SEC-7).
 func (m *Manager) EnsurePort(hostPort, targetPort int) error {
+	return m.EnsurePortOn("", hostPort, targetPort)
+}
+
+// EnsurePortOn is EnsurePort bound to a specific host address ("" = all
+// interfaces). Callers holding a PortMap must use this with pm.HostIP so a
+// loopback-only mapping is never widened to a wildcard listener.
+func (m *Manager) EnsurePortOn(hostIP string, hostPort, targetPort int) error {
 	m.mu.Lock()
 	al := m.allowedHostPorts
 	m.mu.Unlock()
@@ -124,7 +136,7 @@ func (m *Manager) EnsurePort(hostPort, targetPort int) error {
 	if !al.allows(hostPort) {
 		return fmt.Errorf("proxy: host port %d is not permitted by the proxy.allowed_host_ports allow-list", hostPort)
 	}
-	return m.server.Bind(PortBinding{ListenPort: hostPort, TargetPort: targetPort})
+	return m.server.Bind(PortBinding{ListenIP: hostIP, ListenPort: hostPort, TargetPort: targetPort})
 }
 
 // SetAllowedHostPorts configures an optional allow-list of host ports the
@@ -247,35 +259,80 @@ func (m *Manager) Stop(drainTimeout time.Duration) error {
 // application services, so this floor does not restrict the intended use.
 const minUnprivilegedHostPort = 1024
 
-// ParseHostPorts parses a "dso.host_ports" label value like "3306:3306,8080:80"
-// into a slice of PortMap. Entries with a malformed pair, an out-of-range
-// port, or a host port below minUnprivilegedHostPort are silently skipped
-// (SEC-7), consistent with how malformed entries are already skipped here.
+// ParseHostPorts parses a "dso.host_ports" label value into PortMaps. Each
+// comma-separated entry is one of
+//
+//	hostPort:containerPort                 (all interfaces; the historical form)
+//	ip:hostPort:containerPort              (e.g. 127.0.0.1:5432:5432)
+//	[ipv6]:hostPort:containerPort          (e.g. [::1]:8443:443)
+//
+// ip must be a literal IP address (no hostnames, no zones). Entries with a
+// malformed pair or address, an out-of-range port, or a host port below
+// minUnprivilegedHostPort are skipped (SEC-7), as is a repeated host port with
+// a different address (one listener per host port: ambiguity is dropped, never
+// widened). Only TCP is represented: the proxy does not carry UDP.
 func ParseHostPorts(label string) []PortMap {
 	if label == "" {
 		return nil
 	}
 	var out []PortMap
+	seen := map[int]string{}
 	for _, part := range strings.Split(label, ",") {
-		part = strings.TrimSpace(part)
-		sides := strings.SplitN(part, ":", 2)
-		if len(sides) != 2 {
+		pm, ok := parseHostPortEntry(strings.TrimSpace(part))
+		if !ok {
 			continue
 		}
-		hp, e1 := strconv.Atoi(sides[0])
-		cp, e2 := strconv.Atoi(sides[1])
-		if e1 != nil || e2 != nil {
+		if _, dup := seen[pm.HostPort]; dup {
+			// Repeated host port: the first entry wins. A later entry with a
+			// different address is dropped, never merged into a wider one.
 			continue
 		}
-		if hp < minUnprivilegedHostPort || hp > 65535 {
-			continue
-		}
-		if cp < 1 || cp > 65535 {
-			continue
-		}
-		out = append(out, PortMap{HostPort: hp, ContainerPort: cp})
+		seen[pm.HostPort] = pm.HostIP
+		out = append(out, pm)
 	}
 	return out
+}
+
+func parseHostPortEntry(part string) (PortMap, bool) {
+	var ip, rest string
+	switch {
+	case strings.HasPrefix(part, "["):
+		end := strings.Index(part, "]")
+		if end < 0 || len(part) <= end+2 || part[end+1] != ':' {
+			return PortMap{}, false
+		}
+		ip, rest = part[1:end], part[end+2:]
+		a, err := netip.ParseAddr(ip)
+		if err != nil || a.Zone() != "" || !a.Is6() || a.Is4In6() {
+			return PortMap{}, false
+		}
+		ip = a.String()
+	default:
+		fields := strings.Split(part, ":")
+		switch len(fields) {
+		case 2:
+			rest = part
+		case 3:
+			ip, rest = fields[0], fields[1]+":"+fields[2]
+			a, err := netip.ParseAddr(ip)
+			if err != nil || a.Zone() != "" || !a.Is4() {
+				return PortMap{}, false
+			}
+			ip = a.String()
+		default:
+			return PortMap{}, false
+		}
+	}
+	sides := strings.SplitN(rest, ":", 2)
+	if len(sides) != 2 {
+		return PortMap{}, false
+	}
+	hp, e1 := strconv.Atoi(sides[0])
+	cp, e2 := strconv.Atoi(sides[1])
+	if e1 != nil || e2 != nil || hp < minUnprivilegedHostPort || hp > 65535 || cp < 1 || cp > 65535 {
+		return PortMap{}, false
+	}
+	return PortMap{HostIP: ip, HostPort: hp, ContainerPort: cp}, true
 }
 
 // portAllowList is an optional operator-supplied allow-list of host ports
@@ -374,7 +431,7 @@ func (m *Manager) registerScanned(containers []container.Summary) {
 			continue
 		}
 		for _, pm := range portMaps {
-			if err := m.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+			if err := m.EnsurePortOn(pm.HostIP, pm.HostPort, pm.ContainerPort); err != nil {
 				m.log.Warn("proxy: failed to bind port",
 					zap.Int("port", pm.HostPort), zap.Error(err))
 				continue

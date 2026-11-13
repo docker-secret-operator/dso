@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
@@ -68,6 +70,12 @@ func (c *idleTimeoutConn) CloseWrite() error {
 
 // PortBinding describes one host port the proxy should own.
 type PortBinding struct {
+	// ListenIP is the host address to bind. "" keeps the historical wildcard
+	// (all interfaces, dual stack), which is the correct translation of a
+	// Compose mapping WITHOUT a host IP. A mapping that names an address
+	// ("127.0.0.1:5432:5432", "[::1]:8443:443") MUST carry it here: the
+	// listener may never be broader than the operator asked for.
+	ListenIP   string
 	ListenPort int // host-side port
 	TargetPort int // container-side port (used when backend Addr has no explicit port)
 }
@@ -143,14 +151,25 @@ func (s *Server) Bind(b PortBinding) error {
 	defer s.mu.Unlock()
 
 	// Check before net.Listen — the OS would reject a second Listen on the same
-	// port and we'd incorrectly skip RegisterContainer in the caller.
-	if _, exists := s.listeners[b.ListenPort]; exists {
+	// port and we'd incorrectly skip RegisterContainer in the caller. A listener
+	// that already owns the port with a DIFFERENT bind address is an error, never
+	// a silent success: returning nil would leave a broader (or different)
+	// exposure than the caller requested.
+	if existing, exists := s.listeners[b.ListenPort]; exists {
+		if existing.binding.ListenIP != b.ListenIP {
+			return fmt.Errorf("proxy: port %d is already bound on %q, refusing to reuse it for %q",
+				b.ListenPort, bindLabel(existing.binding.ListenIP), bindLabel(b.ListenIP))
+		}
 		return nil
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", b.ListenPort))
+	network, addr, err := listenSpec(b.ListenIP, b.ListenPort)
 	if err != nil {
-		return fmt.Errorf("proxy: listen :%d: %w", b.ListenPort, err)
+		return err
+	}
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return fmt.Errorf("proxy: listen %s: %w", addr, err)
 	}
 
 	realPort := ln.Addr().(*net.TCPAddr).Port
@@ -160,7 +179,7 @@ func (s *Server) Bind(b PortBinding) error {
 	s.listeners[realPort] = pl
 	go s.acceptLoop(pl)
 
-	s.log.Info("proxy: port bound", zap.Int("port", realPort))
+	s.log.Info("proxy: port bound", zap.Int("port", realPort), zap.String("bind", bindLabel(b.ListenIP)))
 	return nil
 }
 
@@ -348,4 +367,28 @@ func closeWrite(conn net.Conn) {
 	} else {
 		_ = conn.Close()
 	}
+}
+
+func bindLabel(ip string) string {
+	if ip == "" {
+		return "all interfaces"
+	}
+	return ip
+}
+
+// listenSpec maps a bind IP to a net.Listen network and address. "" is the
+// historical dual-stack wildcard; "0.0.0.0" is IPv4-any only; "::" is IPv6-any
+// only; anything else must be a literal IP address (no hostnames, no zones).
+func listenSpec(ip string, port int) (network, addr string, err error) {
+	if ip == "" {
+		return "tcp", fmt.Sprintf(":%d", port), nil
+	}
+	a, perr := netip.ParseAddr(ip)
+	if perr != nil || a.Zone() != "" {
+		return "", "", fmt.Errorf("proxy: invalid bind address %q", ip)
+	}
+	if a.Is4() || a.Is4In6() {
+		return "tcp4", net.JoinHostPort(a.Unmap().String(), strconv.Itoa(port)), nil
+	}
+	return "tcp6", net.JoinHostPort(a.String(), strconv.Itoa(port)), nil
 }

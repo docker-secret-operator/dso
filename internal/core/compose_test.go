@@ -63,39 +63,17 @@ func TestPrintRedactedCompose_HappyPath(t *testing.T) {
 	}
 }
 
-func TestParsePortEntry(t *testing.T) {
-	tests := []struct {
-		input        string
-		expectedHost string
-		expectedCont string
-	}{
-		{"3306", "", "3306"},
-		{"3306/tcp", "", "3306"},
-		{"8080:80", "8080", "80"},
-		{"8080:80/udp", "8080", "80"},
-		{"0.0.0.0:8080:80", "8080", "80"},
-		{"127.0.0.1:5432:5432/tcp", "5432", "5432"},
-	}
-
-	for _, tc := range tests {
-		h, c := parsePortEntry(tc.input)
-		if h != tc.expectedHost || c != tc.expectedCont {
-			t.Errorf("parsePortEntry(%q) = (%q, %q), expected (%q, %q)", tc.input, h, c, tc.expectedHost, tc.expectedCont)
-		}
-	}
-}
-
 func TestStripAndLabelHostPorts(t *testing.T) {
 	svc := map[string]interface{}{
 		"ports": []interface{}{
 			"8080:80",
 			"3306",
-			"0.0.0.0:443:443/tcp",
+			"0.0.0.0:8443:443/tcp",
 		},
 		"image": "nginx:latest",
 	}
 
-	result := stripAndLabelHostPorts(svc)
+	result, _ := stripAndLabelHostPorts(svc)
 
 	// Ports key should be removed
 	if _, ok := result["ports"]; ok {
@@ -138,7 +116,7 @@ func TestStripAndLabelHostPorts(t *testing.T) {
 		t.Fatalf("'labels' key is not a map")
 	}
 
-	if labels["dso.host_ports"] != "8080:80,443:443" {
+	if labels["dso.host_ports"] != "8080:80,0.0.0.0:8443:443" {
 		t.Errorf("Unexpected dso.host_ports label: %v", labels["dso.host_ports"])
 	}
 }

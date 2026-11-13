@@ -448,7 +448,7 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 						}
 						if containerIP != "" {
 							for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
-								if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+								if err := r.ProxyManager.EnsurePortOn(pm.HostIP, pm.HostPort, pm.ContainerPort); err != nil {
 									r.Logger.Warn("Reconciliation: failed to bind proxy port",
 										zap.Int("port", pm.HostPort), zap.Error(err))
 									continue
@@ -611,7 +611,7 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 					}
 					if containerIP != "" {
 						for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
-							if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+							if err := r.ProxyManager.EnsurePortOn(pm.HostIP, pm.HostPort, pm.ContainerPort); err != nil {
 								r.Logger.Warn("proxy: failed to bind port on container start",
 									zap.Int("port", pm.HostPort), zap.Error(err))
 								continue
@@ -1171,7 +1171,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 				// Every declared host port needs a bound listener.
 				for _, pm := range portMaps {
-					if err := r.ProxyManager.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
+					if err := r.ProxyManager.EnsurePortOn(pm.HostIP, pm.HostPort, pm.ContainerPort); err != nil {
 						return fmt.Errorf("proxy handoff: ensure port %d: %w", pm.HostPort, err)
 					}
 				}
