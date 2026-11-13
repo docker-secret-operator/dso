@@ -92,15 +92,20 @@ func LoadJournal(stateDir string) ([]RotationRecord, error) {
 // CorruptJournal damages rotations.json beyond JSON parsing (truncated mid-object)
 // and returns the original bytes, so a test can compare what recovery preserved.
 func CorruptJournal(stateDir string) ([]byte, error) {
-	p := filepath.Join(stateDir, "rotations.json")
-	b, err := os.ReadFile(p) // #nosec G304 -- harness-owned dir
+	// Root-scoped access: the journal name cannot escape stateDir via a symlink.
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	b, err := root.ReadFile("rotations.json")
 	if err != nil {
 		return nil, err
 	}
 	if len(b) < 20 {
 		return nil, fmt.Errorf("journal too small to corrupt meaningfully (%d bytes)", len(b))
 	}
-	return b, os.WriteFile(p, b[:len(b)/2], 0o600)
+	return b, root.WriteFile("rotations.json", b[:len(b)/2], 0o600)
 }
 
 // QuarantinedJournals lists the preserved unreadable journal files.

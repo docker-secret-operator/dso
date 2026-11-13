@@ -72,14 +72,25 @@ func ScanReader(r io.Reader, sentinel, name string) ([]Finding, error) {
 // an unscanned file is not evidence of absence.
 func ScanTree(root, sentinel string, skip func(path string) bool) ([]Finding, error) {
 	var all []Finding
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	// Files are opened THROUGH a root handle so a symlink swapped in after the
+	// directory walk cannot make the scan read (or skip) anything outside root.
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rootFS.Close() }()
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !d.Type().IsRegular() || (skip != nil && skip(path)) {
 			return nil
 		}
-		f, err := os.Open(path) // #nosec G304 -- harness-owned directory
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		f, err := rootFS.Open(rel)
 		if err != nil {
 			return err
 		}
