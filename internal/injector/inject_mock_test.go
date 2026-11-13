@@ -21,27 +21,6 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return m.reqFunc(req)
 }
 
-// TestInjectOneFile_Success is an integration test — ContainerExecAttach uses
-// TCP hijacking that cannot be intercepted by a mock HTTP transport. It is
-// skipped automatically when Docker is not reachable, and runs in CI where
-// a real daemon is available.
-func TestInjectOneFile_Success(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skipf("skipping integration test: cannot create docker client: %v", err)
-	}
-	defer func() { _ = cli.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Skipf("skipping integration test: docker daemon not reachable: %v", err)
-	}
-
-	t.Log("Docker daemon reachable — running full inject integration test requires a running container; skipping container-specific assertion in unit suite")
-	t.Skip("full inject path requires a live container — covered by e2e tests")
-}
-
 func TestInjectOneFile_Timeout(t *testing.T) {
 	execCreateResponse := container.ExecCreateResponse{ID: "mock-exec-id"}
 	b1, _ := json.Marshal(execCreateResponse)

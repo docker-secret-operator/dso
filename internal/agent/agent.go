@@ -224,7 +224,10 @@ func (a *Agent) inject(ctx context.Context, containerID string, serviceSecrets r
 		filesToInject[filePath] = val
 	}
 
-	return injector.InjectFiles(ctx, a.docker, containerID, filesToInject, serviceSecrets.UID, serviceSecrets.GID)
+	// The agent contract is tmpfs-only delivery (the compose rewrite mounts a tmpfs
+	// at /run/secrets/dso): refuse to write plaintext to a container's writable
+	// layer, which lives on the host disk.
+	return injector.InjectFilesWithOptions(ctx, a.docker, containerID, filesToInject, serviceSecrets.UID, serviceSecrets.GID, injector.Options{RequireTmpfs: true})
 }
 
 // runMainLoop watches container label changes and feeds them to the event
