@@ -7,7 +7,7 @@ import (
 
 // quoteUntrusted renders a database-derived value (for example an audit event
 // id) for human-readable output: it is double-quoted with every control and
-// otherwise non-printable character escaped (\n, \r, \x1b, ‮, ...), so
+// otherwise non-printable character escaped (\n, \r, \x1b, \u202e, ...), so
 // it can neither start a new output line nor inject terminal control
 // sequences, and stays unambiguous and useful for identifying the event.
 func quoteUntrusted(s string) string { return strconv.Quote(s) }

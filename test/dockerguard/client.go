@@ -93,6 +93,10 @@ func Main(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "integration isolation guard:", err)
 		os.Exit(1)
 	}
+	// The code UNDER TEST (watcher, agent, testcontainers) builds its own Docker
+	// clients from the environment. Point them at the VERIFIED endpoint so they can
+	// never fall back to the default socket or another context.
+	exportEndpoint(cfg, os.Setenv, os.Unsetenv)
 	mu.Lock()
 	current = &Session{Client: cli, Config: cfg, api: api}
 	mu.Unlock()
@@ -239,5 +243,16 @@ func ClientFor(t testing.TB) *client.Client {
 	if err := Verify(ctx, cfg, &realAPI{cli: cli}); err != nil {
 		t.Fatalf("integration isolation guard: %v", err)
 	}
+	exportEndpoint(cfg, os.Setenv, os.Unsetenv)
 	return cli
+}
+
+// exportEndpoint makes the verified endpoint the ONLY one visible through the
+// environment: DOCKER_HOST is set to it and context/TLS variables that could select
+// something else are removed. Called only after Verify succeeded.
+func exportEndpoint(cfg Config, setenv func(k, v string) error, unsetenv func(k string) error) {
+	_ = setenv("DOCKER_HOST", cfg.Host)
+	for _, k := range []string{"DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "TESTCONTAINERS_HOST_OVERRIDE"} {
+		_ = unsetenv(k)
+	}
 }

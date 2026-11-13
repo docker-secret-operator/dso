@@ -249,3 +249,22 @@ func TestSanitizedEnvDropsAllDockerVariables(t *testing.T) {
 		t.Fatalf("unexpected env %v", out)
 	}
 }
+
+func TestExportEndpoint_PointsEverythingAtTheVerifiedEndpointOnly(t *testing.T) {
+	env := map[string]string{"DOCKER_CONTEXT": "prod", "DOCKER_CONFIG": "/home/x/.docker", "DOCKER_TLS_VERIFY": "1", "DOCKER_CERT_PATH": "/c", "TESTCONTAINERS_HOST_OVERRIDE": "10.0.0.5", "PATH": "/bin"}
+	cfg := Config{Host: "unix:///run/dso-test/docker.sock"}
+	exportEndpoint(cfg,
+		func(k, v string) error { env[k] = v; return nil },
+		func(k string) error { delete(env, k); return nil })
+	if env["DOCKER_HOST"] != cfg.Host {
+		t.Fatalf("DOCKER_HOST = %q", env["DOCKER_HOST"])
+	}
+	for _, k := range []string{"DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "TESTCONTAINERS_HOST_OVERRIDE"} {
+		if _, ok := env[k]; ok {
+			t.Fatalf("%s must be removed", k)
+		}
+	}
+	if env["PATH"] != "/bin" {
+		t.Fatal("unrelated variables must be untouched")
+	}
+}
