@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -78,11 +79,11 @@ func TestRecoverFromCrash_NilStateTracker(t *testing.T) {
 	}
 }
 
-// TestValidateStateOnStartup_DiscardsStaleState verifies that a pending
-// rotation older than 24 hours is discarded (marked recovered) rather than
-// left to accumulate indefinitely, and that a fresh pending rotation is left
-// untouched.
-func TestValidateStateOnStartup_DiscardsStaleState(t *testing.T) {
+// TestValidateStateOnStartup_KeepsStaleRollbackRequired pins the invariant that age
+// never retires a rollback_required record: it stays unfinished (so RecoverFromCrash
+// examines it and the guard sees the outcome), however old it is. It replaces the
+// former 24h discard, which skipped recovery for the oldest records.
+func TestValidateStateOnStartup_KeepsStaleRollbackRequired(t *testing.T) {
 	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
 		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/json" {
 			return &http.Response{StatusCode: 200, Body: jsonBody([]container.Summary{})}, nil
@@ -91,39 +92,33 @@ func TestValidateStateOnStartup_DiscardsStaleState(t *testing.T) {
 	})
 
 	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
+	dir := t.TempDir()
+	st, err := NewStateTracker(dir, logger)
 	if err != nil {
 		t.Fatalf("NewStateTracker: %v", err)
 	}
 	if err := st.StartRotation("aws", "stale_secret", "stale-id", ""); err != nil {
 		t.Fatalf("StartRotation: %v", err)
 	}
-	// Force this entry into the pending set via rollback_required, then
-	// backdate it past the 24h staleness threshold used by
-	// ValidateStateOnStartup.
 	if err := st.MarkRollback("aws", "stale_secret", "stale-id"); err != nil {
 		t.Fatalf("MarkRollback: %v", err)
 	}
-	pendingBefore := st.GetPendingRotations()
-	if len(pendingBefore) != 1 {
-		t.Fatalf("expected 1 pending rotation before backdating, got %d", len(pendingBefore))
-	}
-	// The tracker returns copies, so backdate the live record under its own lock.
 	st.mu.Lock()
 	for _, live := range st.states {
 		live.StartTime = live.StartTime.Add(-25 * time.Hour)
+		live.LastUpdate = live.LastUpdate.Add(-25 * time.Hour)
 	}
 	st.mu.Unlock()
 
 	ar := NewAutomaticRecovery(cli, logger, st)
-	ok := ar.ValidateStateOnStartup(context.Background())
-	if !ok {
-		t.Error("expected ValidateStateOnStartup to return true (stale state is discarded, not treated as corruption)")
+	if !ar.ValidateStateOnStartup(context.Background()) {
+		t.Error("expected ValidateStateOnStartup to return true")
 	}
-
-	pendingAfter := st.GetPendingRotations()
-	if len(pendingAfter) != 0 {
-		t.Fatalf("expected stale rotation to be discarded (marked recovered), still pending=%+v", pendingAfter)
+	if got := st.GetUnfinishedRotationsAtStartup(); len(got) != 1 || got[0].Status != "rollback_required" {
+		t.Fatalf("a >24h rollback_required record was expired by age; it must stay for recovery to examine: %+v", got)
+	}
+	if len(st.GetPendingRotations()) != 1 {
+		t.Fatal("stale rollback_required must still be reported as pending")
 	}
 }
 
@@ -185,5 +180,36 @@ func TestIsDSORestartOldContainerName_MatchesRealNamingConvention(t *testing.T) 
 		if got := isDSORestartOldContainerName(c.name); got != c.matches {
 			t.Errorf("isDSORestartOldContainerName(%q) = %v, want %v", c.name, got, c.matches)
 		}
+	}
+}
+
+// An inherited, stale rollback_required whose original workload cannot be found must
+// end up critical_error (blocking the guard) after the startup sequence, not silently
+// expired: this is the path that used to be skipped by the 24h discard.
+func TestStartupSequence_StaleRollbackRequiredWithMissingOriginalBlocks(t *testing.T) {
+	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/json" {
+			return &http.Response{StatusCode: 200, Body: jsonBody([]container.Summary{})}, nil
+		}
+		return &http.Response{StatusCode: 404, Body: jsonBody(map[string]string{"message": "No such container"})}, nil
+	})
+	dir := t.TempDir()
+	prev, _ := NewStateTracker(dir, zap.NewNop())
+	_ = prev.StartRotationWithID("rot-9", "aws", "db", "gone-id", "")
+	_ = prev.MarkRollback("aws", "db", "gone-id")
+	prev.mu.Lock()
+	for _, l := range prev.states {
+		l.ServiceID = "svc"
+		l.StartTime = l.StartTime.Add(-72 * time.Hour)
+	}
+	_ = prev.persistState()
+	prev.mu.Unlock()
+
+	st, _ := NewStateTracker(dir, zap.NewNop()) // the next process
+	ar := NewAutomaticRecovery(cli, zap.NewNop(), st)
+	ar.ValidateStateOnStartup(context.Background())
+	_ = ar.RecoverFromCrash(context.Background())
+	if _, blocked := newJournalGuard(st).RotationBlocked("svc"); !blocked {
+		t.Fatal("a stale rollback_required with no verifiable workload must become an unresolved (blocking) record")
 	}
 }

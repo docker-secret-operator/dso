@@ -210,6 +210,13 @@ func (st *StateTracker) MarkRollback(providerName, secretName, originalContainer
 
 	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
 	if state, ok := st.states[key]; ok {
+		// The engine calls this for ANY dispatch error, after the strategy has already
+		// journalled its own verdict. A critical_error (an operator is required, e.g. a
+		// partially published signal rotation) must never be downgraded to an
+		// ordinary, non-blocking failed attempt: that would silently lift the guard.
+		if state.Status == "critical_error" {
+			return nil
+		}
 		state.Status = "rollback_required"
 		state.LastUpdate = time.Now()
 		return st.persistState()

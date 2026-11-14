@@ -182,8 +182,9 @@ func TestConcurrentRecordAndMarkRecord_PersistedFileStaysValid(t *testing.T) {
 // older than 24h "recovered" by key, including critical_error (an operator-required
 // operation) and an inherited in_progress record (an interrupted operation recovery
 // has not yet examined). That silently released the dispatch guard and, for the
-// in_progress case, skipped recovery altogether. Only an ordinary failed attempt
-// (rollback_required: the strategy already restored the previous workload) may age out.
+// in_progress case, skipped recovery altogether. Nothing ages out at startup any more:
+// rollback_required is examined by recovery too (see
+// TestValidateStateOnStartup_KeepsStaleRollbackRequired).
 func TestValidateStateOnStartup_NeverDiscardsUnresolvedOperations(t *testing.T) {
 	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
 		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/json" {
@@ -223,5 +224,27 @@ func TestValidateStateOnStartup_NeverDiscardsUnresolvedOperations(t *testing.T) 
 	NewAutomaticRecovery(cli, zap.NewNop(), b).ValidateStateOnStartup(context.Background())
 	if len(b.GetUnfinishedRotationsAtStartup()) != 1 {
 		t.Fatal("an inherited in_progress record >24h old was discarded before recovery could examine it")
+	}
+}
+
+// MarkRollback is called by the engine for any dispatch error, after the strategy
+// journalled its own verdict. It must not downgrade a critical_error (operator
+// required) to rollback_required, which neither blocks the guard nor survives
+// the 24h-free recovery path as an operator-required record.
+func TestMarkRollback_DoesNotDowngradeCriticalError(t *testing.T) {
+	st, _ := NewStateTracker(t.TempDir(), zap.NewNop())
+	_ = st.StartRotationWithID("rot-1", "vault", "db", "orig", "")
+	_ = st.Record(context.Background(), rotation.JournalEvent{
+		RotationID: "rot-1", ServiceID: "svc", Strategy: "signal", OriginalIDs: []string{"orig"},
+		Transition: rotation.TrSignalFailed, State: "partially_published", ManualRecovery: true,
+	})
+	if _, b := newJournalGuard(st).RotationBlocked("svc"); !b {
+		t.Fatal("precondition: critical_error must block")
+	}
+	if err := st.MarkRollback("vault", "db", "orig"); err != nil {
+		t.Fatal(err)
+	}
+	if _, b := newJournalGuard(st).RotationBlocked("svc"); !b {
+		t.Fatal("MarkRollback downgraded critical_error to rollback_required and lifted the guard")
 	}
 }

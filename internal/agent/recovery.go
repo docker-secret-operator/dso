@@ -663,30 +663,16 @@ func (ar *AutomaticRecovery) ValidateStateOnStartup(ctx context.Context) bool {
 		return true
 	}
 
-	// Additional validation: check for stale state (>24 hours old)
-	now := time.Now()
-	for _, rotation := range pending {
-		// Only an ordinary failed attempt may age out. critical_error (an operator is
-		// required) and in_progress (interrupted; recovery has not examined it yet)
-		// are unresolved operations: discarding them would silently lift the
-		// dispatch guard and skip recovery.
-		if rotation.Status != "rollback_required" {
-			continue
-		}
-		age := now.Sub(rotation.StartTime)
-		if age > 24*time.Hour {
-			ar.logger.Warn("Detected stale rotation state (>24 hours old), discarding",
-				zap.String("secret", rotation.SecretName),
-				zap.Duration("age", age))
-
-			// Discard stale state
-			if err := ar.st.MarkRecovered(rotation.ProviderName, rotation.SecretName,
-				rotation.OriginalContainerID); err != nil {
-				ar.logger.Error("Failed to discard stale state",
-					zap.Error(err))
-			}
-		}
-	}
+	// Nothing is discarded here, whatever its age. Age never establishes that a
+	// rollback succeeded: a rollback_required record is written by the trigger engine
+	// when a dispatch returned an error, and it knows only that (not whether the
+	// strategy's rollback completed, whether a candidate or a partly delivered secret
+	// remains, or whether the failed rollback was interrupted by a restart). The only
+	// thing that may retire the record is RecoverFromCrash, which runs right after
+	// this and moves it to recovered when Docker proves a verified healthy workload
+	// and no unexamined artifact, or to critical_error (which blocks the guard)
+	// otherwise. Expiring old records here used to skip exactly that examination for
+	// the oldest, most likely forgotten, operations.
 
 	return true
 }
