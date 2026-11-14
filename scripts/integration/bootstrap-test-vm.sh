@@ -99,4 +99,4 @@ chown root:root /etc/dso-integration/environment
 chmod 0644 /etc/dso-integration/environment
 
 echo "Test environment ${env_id} provisioned. Daemon ID recorded in /etc/dso-integration/environment."
-echo "Add the test user to the docker group, then run scripts/integration/run-integration.sh as that user."
+echo "Add the test user to the docker group, then run scripts/integration/run-all.sh (the single entry point; see docs/testing/DISPOSABLE-VM-EXECUTION-PLAN.md) as that user."
