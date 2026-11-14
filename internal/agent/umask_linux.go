@@ -82,9 +82,13 @@ func withUmask(mask int, fn func()) {
 	fn()
 }
 
+// procStatusPath is a test seam only: tests point it at fixture files to exercise
+// every procfs failure mode. Production never changes it.
+var procStatusPath = "/proc/self/status"
+
 // procUmask reads the process umask without changing it.
 func procUmask() (int, bool) {
-	b, err := os.ReadFile("/proc/self/status")
+	b, err := os.ReadFile(procStatusPath)
 	if err != nil {
 		return 0, false
 	}
