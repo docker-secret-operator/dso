@@ -14,7 +14,15 @@
 # this same script and fails the build if the regenerated output differs
 # from what's committed, so the two directories cannot silently drift apart.
 #
+# The output is independent of the directory the repository is checked out in
+# (see the CheckoutPathNeutralModuleIds plugin in web/next.config.js and
+# docs/audit/35), so a developer machine, CI and a release build produce the
+# same bytes from the same source + lockfile + Node major.
+#
 # Usage: ./scripts/build-webui.sh
+#   DSO_WEBUI_OUT_DIR=<dir>  publish into <dir> instead of internal/webui/assets
+#                            (used by scripts/check-webui-assets.sh). <dir> must
+#                            not exist or must be empty; it is never deleted.
 # ==============================================================================
 
 set -euo pipefail
@@ -23,6 +31,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 WEB_DIR="${PROJECT_ROOT}/web"
 ASSETS_DIR="${PROJECT_ROOT}/internal/webui/assets"
+CUSTOM_OUT=0
+if [ -n "${DSO_WEBUI_OUT_DIR:-}" ]; then
+    CUSTOM_OUT=1
+    ASSETS_DIR="$DSO_WEBUI_OUT_DIR"
+    if [ -L "$ASSETS_DIR" ]; then
+        echo "Error: DSO_WEBUI_OUT_DIR (${ASSETS_DIR}) is a symlink; refusing." >&2
+        exit 1
+    fi
+    if [ -e "$ASSETS_DIR" ] && { [ ! -d "$ASSETS_DIR" ] || [ -n "$(ls -A "$ASSETS_DIR")" ]; }; then
+        echo "Error: DSO_WEBUI_OUT_DIR (${ASSETS_DIR}) exists and is not an empty directory; refusing." >&2
+        exit 1
+    fi
+fi
 
 if [ ! -d "$WEB_DIR" ]; then
     echo "Error: web/ directory not found at ${WEB_DIR}" >&2
@@ -66,6 +87,9 @@ echo "✓ Dependencies installed"
 # `next export` step is needed (removed in Next.js 14+).
 echo ""
 echo "Building static export (npm run build)..."
+# Start from a clean build state so a stale incremental cache can never leak
+# into the committed assets.
+rm -rf "${WEB_DIR}/.next" "${WEB_DIR}/out"
 ( cd "$WEB_DIR" && npm run build )
 
 if [ ! -d "${WEB_DIR}/out" ]; then
@@ -79,7 +103,9 @@ echo "✓ Static export built"
 # exported site's files directly (not nested under an extra "out/" level).
 echo ""
 echo "Copying export output into internal/webui/assets/..."
-rm -rf "$ASSETS_DIR"
+if [ "$CUSTOM_OUT" = "0" ]; then
+    rm -rf "$ASSETS_DIR"
+fi
 mkdir -p "$ASSETS_DIR"
 cp -r "${WEB_DIR}/out/." "$ASSETS_DIR/"
 echo "✓ Assets copied to ${ASSETS_DIR}"
