@@ -579,6 +579,8 @@ expect "no docker prune anywhere in the runner or cleanup" bash -c "! grep -hv '
 expect "runner never calls sudo/systemctl/apt/usermod (host privileged ops)" bash -c "! grep -hv '^[[:space:]]*#' '$RA' '$HERE/m0-lib.sh' '$HERE/m0-finalize.sh' | grep -Eq '(^|[;&|(]|then |do )[[:space:]]*(sudo|systemctl|apt-get|apt|usermod)( |$)'"
 expect "external prerequisites are not in the automated step list" bash -c "! sed -n '/^REQUIRED_STEPS=(/,/^)/p' '$RA' | grep -q 'external-'"
 expect "external prerequisites have their own EXTERNAL_STEPS list" bash -c "grep -q '^EXTERNAL_STEPS=(external-provisioning-provenance external-network-perimeter external-vm-teardown)' '$RA'"
+expect "scenario-inject is a required step and requires all 18 named inject tests" bash -c "sed -n '/^REQUIRED_STEPS=(/,/^)/p' '$RA' | grep -q 'scenario-inject' && grep -q 'gotest_step scenario-inject 0 \"\${#INJECT_TESTS\[@\]}\"' '$RA' && [ \"\$(sed -n '/^INJECT_TESTS=(/,/)/p' '$RA' | grep -o 'TestInjectSecurity_[0-9]*_[A-Za-z]*' | sort -u | wc -l)\" = 18 ]"
+expect "every required inject test name is defined in test/docker" bash -c "for t in \$(sed -n '/^INJECT_TESTS=(/,/)/p' '$RA' | grep -o 'TestInjectSecurity_[0-9]*_[A-Za-z]*' | sort -u); do grep -q \"^func \$t(t \*testing.T)\" '$HERE/../../test/docker/inject_security_test.go' || { echo missing \$t; exit 1; }; done"
 expect "exit codes derive from automated_integration only" bash -c "grep -q 'case \"\$auto\" in PASS) exit 0' '$HERE/m0-finalize.sh'"
 if command -v ss >/dev/null 2>&1; then
   out="$(DOCKER_HOST=tcp://127.0.0.1:1 bash "$RA" 2>&1)"

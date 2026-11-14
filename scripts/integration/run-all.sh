@@ -44,7 +44,7 @@ REQUIRED_STEPS=(
   secret-tmpfs-injection secret-nonroot-access health-probe-behaviour network-bind-protocol
   compose-stdin-deploy compose-profiles compose-failure compose-cancellation
   scenario-signal scenario-restart scenario-rolling scenario-traffic
-  scenario-recovery-realdaemon scenario-crash-recovery scenario-ownership-concurrency docker-suite-coverage
+  scenario-recovery-realdaemon scenario-crash-recovery scenario-ownership-concurrency scenario-inject docker-suite-coverage
   host-listeners
   evidence-collection cleanup foreign-resources-post source-tree-unchanged evidence-leak-scan
 )
@@ -60,6 +60,16 @@ TRAFFIC_TESTS=(TestTraffic_SteadyStateControl TestTraffic_RollingRotation TestTr
 RECOVERY_TESTS=(TestRecovery_RealDaemon_SwapNotYetCommitted_KeepsOriginalRemovesCandidate TestRecovery_RealDaemon_SwapCompleted_KeepsPromotedRemovesBackup TestRecovery_RealDaemon_BetweenRenames_RemovesNothing)
 OWNERSHIP_TESTS=(TestS1_ComposeServiceAdoption TestShadowClone_DoesNotDuplicateNetworkIdentity TestRace_ContainerClone_ConcurrentMutations
   TestRace_ContainerRename_AtomicSwap TestRace_SocketPermission_Concurrent TestNotificationIntegration_RealRotationDeliversWebhook TestStress_ConcurrentRotations)
+# `dso inject` security scenarios (test/docker/inject_security_test.go; audit 38): all 18 must run and pass.
+INJECT_TESTS=(TestInjectSecurity_01_ManagedContainerVerifiedTmpfs TestInjectSecurity_02_UnmanagedContainerExplicitTarget
+  TestInjectSecurity_03_MissingDestination TestInjectSecurity_04_WritableLayerDestinationRefused
+  TestInjectSecurity_05_BindMountDestinationRefused TestInjectSecurity_06_NamedVolumeDestinationRefused
+  TestInjectSecurity_07_StoppedContainerRefused TestInjectSecurity_08_WrongContainerIdentity
+  TestInjectSecurity_09_UnrelatedWorkload TestInjectSecurity_10_SymlinkDestination
+  TestInjectSecurity_11_UnsafeDestinationPath TestInjectSecurity_12_NonRootFileAccess
+  TestInjectSecurity_13_RestrictivePermissions TestInjectSecurity_14_PartialInjectionFailure
+  TestInjectSecurity_15_RepeatedInjection TestInjectSecurity_16_NoPlaintextInPersistentLocations
+  TestInjectSecurity_17_NoSecretInLogsOrMetadata TestInjectSecurity_18_PatchedEngineNormalBehaviour)
 CRASH_PATTERN='^TestCrash'
 CRASH_TAGS="${DSO_IT_CRASH_TAGS:-dockerint}"
 CRASH_MIN_TESTS="${DSO_IT_CRASH_MIN_TESTS:-1}"
@@ -474,7 +484,7 @@ s_listeners() {
 s_coverage() {
   local list="$M0_WORK/test-list.txt" covered=() t
   env -u DSO_INTEGRATION_TESTS go test -tags "$CRASH_TAGS" -list '^Test' ./test/docker >"$list"
-  for t in "${SIGNAL_TESTS[@]}" "${RESTART_TESTS[@]}" "${ROLLING_TESTS[@]}" "${OWNERSHIP_TESTS[@]}" "$S3_TEST"; do covered+=("^${t}\$"); done
+  for t in "${SIGNAL_TESTS[@]}" "${RESTART_TESTS[@]}" "${ROLLING_TESTS[@]}" "${OWNERSHIP_TESTS[@]}" "${INJECT_TESTS[@]}" "$S3_TEST"; do covered+=("^${t}\$"); done
   covered+=('^TestTraffic_' '^TestRecovery_RealDaemon_' '^TestCrash')
   echo "tests listed in ./test/docker: $(grep -c '^Test' "$list")"
   t="$(m0_uncovered "$list" "${covered[@]}")"
@@ -542,6 +552,7 @@ gotest_step scenario-recovery-realdaemon 0 3 "${RECOVERY_TESTS[*]}" -tags docker
 # Zero matched tests, or all skipped, FAILS/INCOMPLETEs this step: it can never pass vacuously.
 GOTEST_POST=post_crash gotest_step scenario-crash-recovery 0 "$CRASH_MIN_TESTS" "" -tags "$CRASH_TAGS" -run "$CRASH_PATTERN" ./test/docker
 gotest_step scenario-ownership-concurrency 0 "${#OWNERSHIP_TESTS[@]}" "${OWNERSHIP_TESTS[*]}" -tags dockerint -run "$(alt "${OWNERSHIP_TESTS[@]}")" ./test/docker
+gotest_step scenario-inject 0 "${#INJECT_TESTS[@]}" "${INJECT_TESTS[*]}" -tags dockerint -run "$(alt "${INJECT_TESTS[@]}")" ./test/docker
 unset DSO_INTEGRATION_TESTS
 m0_step docker-suite-coverage s_coverage
 m0_step host-listeners s_listeners
