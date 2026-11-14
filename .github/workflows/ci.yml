@@ -233,15 +233,14 @@ jobs:
         run: ./scripts/build-webui.sh
 
       - name: Verify committed assets match the regenerated build
+        # Not `git status`: that cannot see git-ignored files. The script
+        # builds a fresh tree into a scratch dir and compares file-by-file
+        # (sha256) against the committed set, the files actually on disk
+        # (ignored ones included), and every /_next/static reference.
+        # The selftest proves the hidden-file case is detected.
         run: |
-          if [ -n "$(git status --porcelain internal/webui/assets)" ]; then
-            echo "❌ internal/webui/assets/ is out of date with web/ source."
-            echo "   Run 'make webui-build' locally, then commit the diff in internal/webui/assets/."
-            git status --porcelain internal/webui/assets
-            git diff internal/webui/assets || true
-            exit 1
-          fi
-          echo "✅ internal/webui/assets/ matches web/ source"
+          ./scripts/check-webui-assets.selftest.sh
+          ./scripts/check-webui-assets.sh
 
   dco:
     name: DCO Sign-off
