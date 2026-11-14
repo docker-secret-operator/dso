@@ -29,7 +29,30 @@ if [ ! -d "$WEB_DIR" ]; then
     exit 1
 fi
 
-echo "Building DSO Web UI (web/ -> internal/webui/assets/)..."
+# ── Node toolchain check ────────────────────────────────────────────────────
+# The supported Node major lives in web/.nvmrc (also enforced by `engines` in
+# web/package.json and used by the CI `webui` job). Committed assets are diffed
+# against a CI rebuild, so building with an unverified Node major risks drift;
+# fail clearly rather than warn. Override (at your own risk) with
+# DSO_ALLOW_UNSUPPORTED_NODE=1.
+if ! command -v node >/dev/null 2>&1; then
+    echo "Error: node not found on PATH (need Node $(tr -d '[:space:]v' < "${WEB_DIR}/.nvmrc").x; see web/.nvmrc)" >&2
+    exit 1
+fi
+WANT_NODE_MAJOR="$(tr -d '[:space:]v' < "${WEB_DIR}/.nvmrc")"
+HAVE_NODE_VERSION="$(node --version)"
+HAVE_NODE_MAJOR="${HAVE_NODE_VERSION#v}"; HAVE_NODE_MAJOR="${HAVE_NODE_MAJOR%%.*}"
+if [ "$HAVE_NODE_MAJOR" != "$WANT_NODE_MAJOR" ]; then
+    if [ "${DSO_ALLOW_UNSUPPORTED_NODE:-}" = "1" ]; then
+        echo "Warning: Node ${HAVE_NODE_VERSION} is not the supported major ${WANT_NODE_MAJOR} (DSO_ALLOW_UNSUPPORTED_NODE=1 set); continuing." >&2
+    else
+        echo "Error: Node ${HAVE_NODE_VERSION} found, but the Web UI build requires Node ${WANT_NODE_MAJOR}.x (web/.nvmrc)." >&2
+        echo "       Use 'nvm use' in web/ or install Node ${WANT_NODE_MAJOR} LTS. Set DSO_ALLOW_UNSUPPORTED_NODE=1 to override." >&2
+        exit 1
+    fi
+fi
+
+echo "Building DSO Web UI (web/ -> internal/webui/assets/) with Node ${HAVE_NODE_VERSION}..."
 
 # ── Install dependencies deterministically ─────────────────────────────────
 echo ""

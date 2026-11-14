@@ -195,7 +195,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Single source of truth for the supported Node major (see web/package.json engines).
+          node-version-file: web/.nvmrc
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
@@ -214,9 +215,10 @@ jobs:
         run: npm run lint
 
       - name: Dependency audit (critical blocks)
-        # Ratchet: the tree currently has 0 critical advisories; remaining
-        # high-severity findings are build-time-only (see docs/reviews). Raise
-        # to --audit-level=high once Tailwind 4 removes the braces/fast-glob chain.
+        # Ratchet: the tree currently has 0 advisories at any severity
+        # (npm audit, prod and dev). The gate stays at critical so a newly
+        # published advisory against a pinned dependency does not red-light
+        # unrelated PRs; tighten to --audit-level=high if desired.
         working-directory: web
         run: npm audit --audit-level=critical
 
