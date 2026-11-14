@@ -1302,6 +1302,13 @@ func StartRESTServer(ctx context.Context, addr string, cache *agent.SecretCache,
 // failures and listeners that die after startup.
 var listenFunc = net.Listen
 
+// restShutdownTimeout is the grace period shutdown() gives active requests.
+var restShutdownTimeout = 5 * time.Second
+
+// serveFunc runs the accept loop. A variable so tests can hold Serve back and so
+// force the ordering "shutdown() ran before Serve registered the listener".
+var serveFunc = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
+
 // StartRESTServerSupervised starts the REST API and reports its health to the
 // caller:
 //
@@ -1314,7 +1321,9 @@ var listenFunc = net.Listen
 //     it) and shuts down when it fires. The channel is never closed and never
 //     receives a value after an intentional shutdown.
 //   - The returned shutdown function is idempotent and also runs when ctx is
-//     cancelled.
+//     cancelled. Active requests are given up to 5 seconds to finish (graceful
+//     Shutdown, never an immediate Close); the listening socket is closed before
+//     shutdown() returns, even when the grace period expires.
 func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.SecretCache, triggerEngine *agent.TriggerEngine, cfg *config.Config, logger *zap.Logger, reloader *watcher.ReloaderController) (func(), <-chan error, error) {
 	// One Authenticator is the single source of truth for "is a bearer token
 	// configured": the startup guards below, the legacy-open-mode decision in
@@ -1445,20 +1454,34 @@ func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.Se
 
 	failed := make(chan error, 1)
 	done := make(chan struct{})
+	grace := restShutdownTimeout // read once, synchronously (test seam)
 	var stopOnce sync.Once
 	shutdown := func() {
 		stopOnce.Do(func() {
 			close(done)
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
+				// Typically the grace period ended with requests still running. The
+				// listener is closed regardless (below), so no new connection is
+				// accepted; the stragglers are not force-closed.
 				logger.Error("REST API server shutdown error", zap.Error(err))
 			}
+			// The listener is owned by this function (it was created above), and
+			// http.Server.Shutdown only closes listeners Serve has already
+			// registered. Serve runs in its own goroutine, so when shutdown() wins
+			// that race Shutdown closes nothing and Serve would close the socket a
+			// moment AFTER we return. Close it here so the port is released before
+			// shutdown() returns, in every ordering. Closing an already-closed
+			// listener only returns an error, which is deliberately ignored: it is
+			// neither a failure of the shutdown nor of the server.
+			_ = ln.Close()
 		})
 	}
 
+	serve := serveFunc // read once, synchronously: the goroutine must not touch the seam
 	go func() {
-		err := server.Serve(ln)
+		err := serve(server, ln)
 		select {
 		case <-done:
 			return // intentional shutdown

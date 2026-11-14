@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,20 +72,10 @@ func TestRESTSupervised_StartsAndShutsDownGracefully(t *testing.T) {
 
 	shutdown()
 	shutdown() // idempotent: must not panic or block
-	// Do not re-dial the address to prove the port is released. Measured cause of
-	// the old intermittent failure (about 1 in 300 runs): StartRESTServerSupervised
-	// runs Serve in a goroutine, so if shutdown() runs before Serve has registered
-	// the listener, http.Server.Shutdown closes nothing and Serve closes it a moment
-	// later through its deferred close. The listener is therefore released shortly
-	// AFTER shutdown() returns; assert on the captured listener, with a deadline.
-	// (Known low-severity product behaviour: shutdown() does not itself guarantee
-	// the port is free the instant it returns; see docs/audit/31.)
-	deadline := time.Now().Add(2 * time.Second)
-	for !(*lnp).closed.Load() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	// Contract: the listening socket is closed BEFORE shutdown() returns, in every
+	// ordering of shutdown() and the Serve goroutine. Asserted synchronously.
 	if !(*lnp).closed.Load() {
-		t.Error("listener still open after shutdown")
+		t.Error("listener still open after shutdown() returned")
 	}
 	select {
 	case e := <-failed:
@@ -196,4 +188,219 @@ func TestRESTSupervised_PrecheckErrorsStillReturnedAndLeaveNothingBound(t *testi
 	if bound {
 		t.Error("the listener must not be created when pre-checks fail")
 	}
+}
+
+// holdServe makes Serve wait on gate before it starts (so shutdown() can be made to
+// run before Serve registers the listener) and optionally wraps the handler.
+func holdServe(t *testing.T, gate <-chan struct{}, wrap func(http.Handler) http.Handler) <-chan error {
+	t.Helper()
+	old := serveFunc
+	served := make(chan error, 1)
+	serveFunc = func(srv *http.Server, ln net.Listener) error {
+		if gate != nil {
+			<-gate
+		}
+		if wrap != nil {
+			srv.Handler = wrap(srv.Handler)
+		}
+		err := srv.Serve(ln)
+		served <- err
+		return err
+	}
+	t.Cleanup(func() { serveFunc = old })
+	return served
+}
+
+func noFailure(t *testing.T, failed <-chan error) {
+	t.Helper()
+	select {
+	case e := <-failed:
+		t.Fatalf("unexpected failure reported: %v", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// 1 + 4: shutdown immediately after startup; listener closed when it returns.
+func TestRESTSupervised_ImmediateShutdownClosesListenerBeforeReturn(t *testing.T) {
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown()
+	if !(*lnp).closed.Load() {
+		t.Fatal("listener not closed when shutdown() returned")
+	}
+	noFailure(t, failed)
+}
+
+// 2: shutdown() runs strictly before Serve registers the listener. Without the
+// listener close in shutdown() the socket stays open until Serve eventually runs.
+func TestRESTSupervised_ShutdownBeforeServeRegistersListener(t *testing.T) {
+	gate := make(chan struct{})
+	served := holdServe(t, gate, nil)
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown() // Serve has not started: Shutdown alone has nothing to close
+	if !(*lnp).closed.Load() {
+		close(gate)
+		t.Fatal("listener still open when shutdown() returned (Serve had not registered it yet)")
+	}
+	close(gate) // Serve now starts against a shut-down server and a closed listener
+	select {
+	case e := <-served:
+		if !errors.Is(e, http.ErrServerClosed) {
+			t.Fatalf("Serve after shutdown: %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after shutdown")
+	}
+	noFailure(t, failed)
+}
+
+// 3: normal shutdown after Serve is accepting.
+func TestRESTSupervised_ShutdownAfterServeBegan(t *testing.T) {
+	served := holdServe(t, nil, nil)
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := net.DialTimeout("tcp", (*lnp).Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	shutdown()
+	if !(*lnp).closed.Load() {
+		t.Fatal("listener not closed when shutdown() returned")
+	}
+	if e := <-served; !errors.Is(e, http.ErrServerClosed) {
+		t.Fatalf("Serve: %v", e)
+	}
+	noFailure(t, failed)
+}
+
+// 5 + 8: repeated shutdown, concurrent shutdown, and an already-closed listener
+// (closed by Serve's own path / by the first shutdown) produce no panic, no block
+// and nothing on the failure channel.
+func TestRESTSupervised_RepeatedAndConcurrentShutdownIsQuiet(t *testing.T) {
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); shutdown() }()
+	}
+	wg.Wait()
+	shutdown()
+	if !(*lnp).closed.Load() {
+		t.Fatal("listener not closed")
+	}
+	if err := (*lnp).Listener.Close(); err == nil {
+		t.Error("precondition: a second close of the socket is expected to return an error (which shutdown must swallow)")
+	}
+	noFailure(t, failed)
+}
+
+// 6: a request in flight when shutdown starts completes with 200; shutdown waits
+// for it (graceful), and the listener is closed when shutdown() returns.
+func TestRESTSupervised_ShutdownLetsInFlightRequestFinish(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	holdServe(t, nil, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			<-release
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := make(chan int, 1)
+	go func() {
+		resp, err := http.Get("http://" + (*lnp).Addr().String() + "/")
+		if err != nil {
+			status <- -1
+			return
+		}
+		_ = resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request never reached the handler")
+	}
+	returned := make(chan struct{})
+	go func() { shutdown(); close(returned) }()
+	select {
+	case <-returned:
+		t.Fatal("shutdown() returned while a request was still running (not graceful)")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown() did not return after the request finished")
+	}
+	if got := <-status; got != http.StatusOK {
+		t.Fatalf("in-flight request: status %d, want 200", got)
+	}
+	if !(*lnp).closed.Load() {
+		t.Fatal("listener not closed when shutdown() returned")
+	}
+	noFailure(t, failed)
+}
+
+// 7: when the grace period ends with a request still running, shutdown() returns
+// promptly after the timeout, the listener is closed anyway (no new connection is
+// accepted) and the straggling request is NOT force-closed by shutdown.
+func TestRESTSupervised_ShutdownTimeoutStillClosesListener(t *testing.T) {
+	old := restShutdownTimeout
+	restShutdownTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { restShutdownTimeout = old })
+	started := make(chan struct{})
+	release := make(chan struct{})
+	holdServe(t, nil, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			<-release
+		})
+	})
+	lnp := injectListener(t, func(l net.Listener) *captureListener { return &captureListener{Listener: l} })
+	shutdown, failed, err := startForTest(t, context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if resp, err := http.Get("http://" + (*lnp).Addr().String() + "/"); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request never reached the handler")
+	}
+	t0 := time.Now()
+	shutdown()
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Fatalf("shutdown() took %v with a 150ms grace period", d)
+	}
+	if !(*lnp).closed.Load() {
+		t.Fatal("listener not closed after the shutdown timeout")
+	}
+	close(release)
+	noFailure(t, failed)
 }
