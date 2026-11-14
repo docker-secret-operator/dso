@@ -12,8 +12,16 @@ This is a one-time injection useful for:
 - Ad-hoc secret updates
 - Emergency secret rotation
 
-The secret is mounted as a file inside the container. This does NOT
-persist to the vault or configuration - use configuration for persistent changes.
+The secret is written as a file (mode 0400, owner root) into a directory that
+must ALREADY be a tmpfs mount of the RUNNING target container; otherwise the
+command refuses and writes nothing, so plaintext never reaches the container's
+writable layer or a volume. Delivery uses 'docker exec' (the image needs sh,
+mktemp, base64 and sha256sum) and an atomic rename. This does NOT persist to the
+vault or configuration - use configuration for persistent changes.
+
+This is an administrative command: it acts on whichever container you name
+through the Docker endpoint in your environment (DOCKER_HOST, default
+/var/run/docker.sock); it does not require the container to be DSO-managed.
 
 Providing the value (safest first):
   - Hidden prompt (default on a terminal).
@@ -38,7 +46,7 @@ dso inject [flags]
 ```
       --container string   Target container ID or name (required)
   -h, --help               help for inject
-      --mount string       Mount path inside container (default "/run/secrets")
+      --mount string       Directory inside the container; must be an existing tmpfs mount (default "/run/secrets/dso")
       --secret string      Secret path/name (required)
       --trim-newline       Remove one trailing newline from stdin input (nothing else is trimmed)
       --value string       UNSAFE for real secrets: visible in shell history, process lists and CI logs. Prefer --value-stdin or the prompt
