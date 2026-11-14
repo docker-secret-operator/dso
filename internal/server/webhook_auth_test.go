@@ -30,7 +30,23 @@ const (
 // passes authentication reaches "Secret not configured" (404) because no
 // secrets are mapped: 404 therefore means "authenticated", while 401/403/409/
 // 413 mean "rejected by webhook authentication". No rotation is ever triggered.
+// newWebhookServer returns a webhook-enabled server whose replay guard is
+// initialized NOW with a restart floor safely in the past. Without this the
+// guard is created lazily on the first request with floor = that instant, so a
+// test that read time.Now().Unix() just before the first request would be
+// rejected ("predates_process_start", 401) whenever a wall-clock second
+// boundary fell between the two. Tests of the floor itself override it
+// (replayGuard().floor / webhookServerAt).
 func newWebhookServer(t *testing.T, mutate func(*config.WebhookConfig)) (*RESTServer, *observer.ObservedLogs) {
+	t.Helper()
+	s, logs := newWebhookServerLazyGuard(t, mutate)
+	s.initWebhookGuard(time.Now().Add(-time.Minute))
+	return s, logs
+}
+
+// newWebhookServerLazyGuard is newWebhookServer without guard initialization,
+// for tests that call initWebhookGuard themselves.
+func newWebhookServerLazyGuard(t *testing.T, mutate func(*config.WebhookConfig)) (*RESTServer, *observer.ObservedLogs) {
 	t.Helper()
 	t.Setenv("DSO_AUTH_TOKEN", "")
 	s := createTestRESTServer()
@@ -745,5 +761,21 @@ func TestValidateWebhookConfig_LegacyDowngradeMessages(t *testing.T) {
 	legacyOnly := config.WebhookConfig{Enabled: true, AuthToken: testLegacyToken}
 	if out := run(legacyOnly); !strings.Contains(out, "DEPRECATED") {
 		t.Errorf("legacy-only config lost its deprecation warning:\n%s", out)
+	}
+}
+
+// Regression for a flaky 401: test fixtures must not let the replay guard's
+// restart floor be set lazily at first request, because a request timestamp
+// read just before it can then predate the floor across a second boundary.
+func TestWebhookFixtures_ReplayGuardFloorIsInitializedAheadOfSigning(t *testing.T) {
+	s, _ := newWebhookServer(t, nil)
+	if s.webhookGuard == nil || s.webhookGuard.floor > time.Now().Unix()-30 {
+		t.Fatalf("newWebhookServer guard floor %+v is not safely in the past", s.webhookGuard)
+	}
+	cfg := &config.Config{}
+	cfg.Agent.Watch.Webhook = config.WebhookConfig{Enabled: true, HMACSecret: testHMACSecret}
+	w, _, _ := wired(t, wiredToken, cfg, "127.0.0.1:8471")
+	if w.webhookGuard == nil || w.webhookGuard.floor > time.Now().Unix()-30 {
+		t.Fatalf("wired() guard floor %+v is not safely in the past", w.webhookGuard)
 	}
 }

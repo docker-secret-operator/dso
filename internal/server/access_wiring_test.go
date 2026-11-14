@@ -40,6 +40,10 @@ func wired(t *testing.T, token string, cfg *config.Config, addr string) (*RESTSe
 	}
 	s.Auth = authn
 	s.applyAccessWiring(w)
+	// Create the webhook replay guard now, floor safely in the past, so a
+	// request timestamp taken after wired() can never precede the lazily-set
+	// first-use floor across a second boundary.
+	s.initWebhookGuard(time.Now().Add(-time.Minute))
 	return s, w, logs
 }
 
@@ -455,7 +459,7 @@ func TestStartRESTServer_RefusesBadSecurityConfigBeforeAllocatingAnything(t *tes
 // same method StartRESTServer uses, with a controllable clock.
 func webhookServerAt(t *testing.T, start time.Time, now *time.Time, mutate func(*config.WebhookConfig)) *RESTServer {
 	t.Helper()
-	s, _ := newWebhookServer(t, mutate)
+	s, _ := newWebhookServerLazyGuard(t, mutate)
 	s.initWebhookGuard(start)
 	s.webhookGuard.now = func() time.Time { return *now }
 	return s
