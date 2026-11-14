@@ -54,6 +54,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A missing static asset must be a real 404, never the SPA shell: serving
+	// index.html (200, text/html) for a missing script/stylesheet hides the
+	// failure and makes the browser report a confusing MIME/syntax error.
+	if isAssetRequest(name) {
+		http.NotFound(w, r)
+		return
+	}
+
 	// `next export`'s app-router output writes each route to "<route>.html"
 	// rather than "<route>/index.html" (e.g. app/dashboard/page.tsx ->
 	// dashboard.html). A request for the clean route path ("/dashboard")
@@ -104,6 +112,33 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, name string)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+}
+
+// generatedPrefix is the namespace of generated Next.js build output
+// (/_next/static/..., and any other /_next/...). Nothing under it is a client
+// route, so a miss there is always a 404.
+const generatedPrefix = "_next/"
+
+// assetExts lists final-segment extensions that identify a static file
+// request. Extensionless paths and unlisted extensions (e.g. ".html") remain
+// navigation requests eligible for the SPA fallback.
+var assetExts = map[string]bool{
+	".js": true, ".mjs": true, ".css": true, ".map": true, ".json": true, ".txt": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".webp": true, ".avif": true, ".ico": true, ".webmanifest": true, ".xml": true,
+	".wasm": true,
+}
+
+// isAssetRequest reports whether the cleaned fs-relative name (see cleanName)
+// denotes a static asset rather than a navigation route: anything under the
+// generated /_next/ namespace, or a path whose final segment has a known
+// asset extension.
+func isAssetRequest(name string) bool {
+	if name == "_next" || strings.HasPrefix(name, generatedPrefix) {
+		return true
+	}
+	return assetExts[strings.ToLower(path.Ext(name))]
 }
 
 // cleanName cleans the requested path and maps it to an fs.FS-relative name

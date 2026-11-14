@@ -106,13 +106,13 @@ func TestHandler_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestHandler_UnknownFileFallsBackToIndex(t *testing.T) {
+func TestHandler_UnknownAssetFileIs404(t *testing.T) {
 	h := testHandler()
 	req := httptest.NewRequest(http.MethodGet, "/does-not-exist.png", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (SPA fallback), got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing asset, got %d", rec.Code)
 	}
 }
