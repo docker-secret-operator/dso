@@ -666,6 +666,13 @@ func (ar *AutomaticRecovery) ValidateStateOnStartup(ctx context.Context) bool {
 	// Additional validation: check for stale state (>24 hours old)
 	now := time.Now()
 	for _, rotation := range pending {
+		// Only an ordinary failed attempt may age out. critical_error (an operator is
+		// required) and in_progress (interrupted; recovery has not examined it yet)
+		// are unresolved operations: discarding them would silently lift the
+		// dispatch guard and skip recovery.
+		if rotation.Status != "rollback_required" {
+			continue
+		}
 		age := now.Sub(rotation.StartTime)
 		if age > 24*time.Hour {
 			ar.logger.Warn("Detected stale rotation state (>24 hours old), discarding",

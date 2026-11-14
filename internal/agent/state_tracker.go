@@ -168,6 +168,22 @@ func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName
 		LastUpdate:           time.Now(),
 	}
 
+	// Never overwrite an UNRESOLVED record (critical_error, or in_progress inherited
+	// from a previous process): it is the durable evidence the operation guard
+	// blocks on and that the operator needs. Re-key it under its own identity so the
+	// new dispatch gets a fresh slot (and the key-based finishRotation of a dispatch
+	// the guard refuses cannot delete it).
+	if old, ok := st.states[key]; ok && (old.Status == "critical_error" || (old.Status == "in_progress" && st.inherited[key])) {
+		keepKey := "journal:" + old.RotationID
+		if old.RotationID == "" {
+			keepKey = fmt.Sprintf("preserved:%s:%d", key, time.Now().UnixNano())
+		}
+		st.states[keepKey] = old
+		if st.inherited[key] {
+			delete(st.inherited, key)
+			st.inherited[keepKey] = true
+		}
+	}
 	st.states[key] = state
 	return st.persistState()
 }
