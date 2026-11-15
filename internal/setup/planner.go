@@ -115,6 +115,12 @@ Requires=docker.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/dso agent
+# /run/dso is root:dso 0750. The agent also enforces this itself on every start;
+# these directives only make systemd create it with the right mode first.
+# Preserve keeps the event log across service restarts (as before).
+RuntimeDirectory=dso
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 Restart=on-failure
 RestartSec=5s
 
