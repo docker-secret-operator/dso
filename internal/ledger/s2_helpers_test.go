@@ -289,7 +289,7 @@ func openT(t *testing.T, dir string, keys KeyProvider, o ...openOpts) (*Store, O
 func seedLedger(t *testing.T, dir, keyID string, entries ...Entry) []byte {
 	t.Helper()
 	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(keyID)))
-	if err := s.Update(func(l *Ledger) error {
+	if err := s.update(func(l *Ledger) error {
 		l.Entries = append(l.Entries, entries...)
 		return nil
 	}); err != nil {

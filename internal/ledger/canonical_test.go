@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // bodyOf is the canonical body of a sealed document: the document with the
@@ -37,8 +36,6 @@ func TestVectors_CanonicalSerialization(t *testing.T) {
 		{"V5 timestamp normalization", buildV5, vecV5Doc, vecV5SHA},
 		{"V6 entries in sorted order", func() *Ledger { return buildV6(false) }, vecV6Doc, vecV6SHA},
 		{"V6 entries reversed", func() *Ledger { return buildV6(true) }, vecV6Doc, vecV6SHA},
-		{"V8 recoveries in sorted order", func() *Ledger { return buildV8(false) }, vecV8Doc, vecV8SHA},
-		{"V8 recoveries reversed", func() *Ledger { return buildV8(true) }, vecV8Doc, vecV8SHA},
 		{"V9 replicas in sorted order", func() *Ledger { return buildV9(t, false) }, vecV9Doc, vecV9SHA},
 		{"V9 replicas reversed", func() *Ledger { return buildV9(t, true) }, vecV9Doc, vecV9SHA},
 	}
@@ -231,35 +228,23 @@ func TestV10_NestedSliceVector(t *testing.T) {
 		t.Fatalf("the parsed reversed file does not re-marshal to the canonical document: %v", err)
 	}
 	if got.Entries[0].Key.Service != "legacy" || got.Entries[1].Key.Service != "api" ||
-		got.Entries[0].Replicas[0].ContainerName != "legacy-1" || got.Entries[0].Rotation.PriorReplicas[0].ContainerName != "legacy-1" ||
-		got.Entries[1].Replicas[2].ContainerName != "shop-api-3" || got.Recoveries[0].RecoveryID != strings.Repeat("1", 32) {
-		t.Error("Unmarshal must return entries, replicas, prior replicas and recoveries in canonical order")
+		got.Entries[0].Replicas[0].ContainerName != "legacy-1" ||
+		got.Entries[1].Replicas[2].ContainerName != "shop-api-3" {
+		t.Error("Unmarshal must return entries and replicas in canonical order")
 	}
 	// Mutating the returned document must not touch the parsed input or the
 	// vector constants (strings are immutable; the check is on a second parse).
 	got.Entries[0].Replicas[0].Reason = "MUTATED"
-	got.Recoveries[0].Planned[0].Op = ActionStart
 	again, err := Unmarshal([]byte(vecV10ReversedFile))
-	if err != nil || again.Entries[0].Replicas[0].Reason != "" || again.Recoveries[0].Planned[0].Op != ActionStop {
+	if err != nil || again.Entries[0].Replicas[0].Reason != "delivery_requested" {
 		t.Error("a returned document must not alias shared state")
 	}
-
-	// e: the two negative controls.
-	planned := buildV10(t, false)
-	p := planned.Recoveries[0].Planned
-	p[0], p[2] = p[2], p[0]
-	if sum, err := ComputeBodySHA256(planned); err != nil || sum != vecV10NegPlannedSHA {
-		t.Errorf("planned reversed: checksum %q, %v; want %s", sum, err, vecV10NegPlannedSHA)
-	}
-	done := buildV10(t, false)
-	d := done.Recoveries[0].Done
-	d[0], d[1] = d[1], d[0]
-	if sum, err := ComputeBodySHA256(done); err != nil || sum != vecV10NegDoneSHA {
-		t.Errorf("done swapped: checksum %q, %v; want %s", sum, err, vecV10NegDoneSHA)
-	}
-	// planned and done are never sorted (design §16.2 rule 15).
-	if body, _ := CanonicalBody(planned); !strings.Contains(string(body), `"planned":[{"op":"start"`) {
-		t.Error("planned actions must keep their (execution) order")
+	// The removed recovery and intent structures are not part of schema 3, and
+	// the positional-slice negative controls of revision 6.3 went with them.
+	for _, retired := range []string{`"recoveries"`, `"rotation"`, `"planned"`, `"prior_replicas"`} {
+		if strings.Contains(vecV10Doc, retired) {
+			t.Errorf("schema 3 vector must not contain %s", retired)
+		}
 	}
 }
 
@@ -271,13 +256,8 @@ func TestNormalization_DeepCopiesAndNeverMutatesTheInput(t *testing.T) {
 	n := normalized(in)
 
 	n.Entries[0].Replicas[0].Reason = "MUTATED-ENTRY-REPLICA"
-	n.Entries[0].Rotation.PriorReplicas[0].Reason = "MUTATED-PRIOR-REPLICA"
 	n.Entries[1].Replicas[0].Reason = "MUTATED-OTHER-REPLICA"
-	n.Recoveries[0].Planned[0].Op = ActionStart
-	n.Recoveries[0].Done[0].Reason = "MUTATED-DONE"
-	n.Recoveries[1].Planned[0].ContainerName = "MUTATED-PLANNED"
 	n.Entries[0], n.Entries[1] = n.Entries[1], n.Entries[0]
-	n.Recoveries[0], n.Recoveries[1] = n.Recoveries[1], n.Recoveries[0]
 	if snapshot(t, in) != before {
 		t.Fatal("normalized() aliases or modifies the caller's slices")
 	}
@@ -325,8 +305,8 @@ func TestCanonicalAPIs_ConcurrentCallsOnSharedInput(t *testing.T) {
 
 // T-U44 (design §39 g, h, i): tie-breaks, the fixpoint, and duplicate keys.
 func TestCanonical_TieBreaksFixpointAndDuplicateKeys(t *testing.T) {
-	// Replicas with the same name and different ids are ordered by id; recoveries
-	// with equal start times by id; entries differing only in project by project.
+	// Replicas with the same name and different ids are ordered by id; entries
+	// differing only in project by project.
 	v := fxVer(t, "aws", "db", 0)
 	l := vecHeader(derivedKeyID(fixtureKey))
 	l.Entries = []Entry{
@@ -334,16 +314,12 @@ func TestCanonical_TieBreaksFixpointAndDuplicateKeys(t *testing.T) {
 			Replicas: []Replica{replicaAt("1", "id-2", "same", v, ReplicaSucceeded), replicaAt("2", "id-1", "same", v, ReplicaSucceeded)}},
 		{Key: Key{Project: "a", Service: "s", Provider: "aws", Secret: "db"}, Desired: v, DesiredSeq: 1, Applied: v, State: EntryIdle},
 	}
-	l.Recoveries = []RecoveryRecord{
-		{RecoveryID: strings.Repeat("2", 32), Scope: RecoveryScope{Project: "p", Service: "x"}, Trigger: TriggerOrphanScan, State: RecoveryPlanned, StartedAt: t0},
-		{RecoveryID: strings.Repeat("1", 32), Scope: RecoveryScope{Project: "p", Service: "y"}, Trigger: TriggerOrphanScan, State: RecoveryPlanned, StartedAt: t0},
-	}
 	out := mustMarshal(t, l)
 	got, err := Unmarshal(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Entries[0].Key.Project != "a" || got.Entries[1].Replicas[0].ContainerID != "id-1" || got.Recoveries[0].RecoveryID != strings.Repeat("1", 32) {
+	if got.Entries[0].Key.Project != "a" || got.Entries[1].Replicas[0].ContainerID != "id-1" {
 		t.Errorf("tie-breaks not applied: %+v", got)
 	}
 	if again := mustMarshal(t, got); !bytes.Equal(again, out) {
@@ -359,14 +335,5 @@ func TestCanonical_TieBreaksFixpointAndDuplicateKeys(t *testing.T) {
 	}
 	if _, err := CanonicalBody(dup); err != nil {
 		t.Errorf("CanonicalBody does not validate: %v", err)
-	}
-	// Times: recoveries are ordered by instant, not by text.
-	r := vecHeader(vecPlaceholderKeyID)
-	r.Recoveries = []RecoveryRecord{
-		{RecoveryID: strings.Repeat("1", 32), Scope: RecoveryScope{Project: "p", Service: "x"}, Trigger: TriggerOrphanScan, State: RecoveryPlanned, StartedAt: t0.Add(time.Hour)},
-		{RecoveryID: strings.Repeat("2", 32), Scope: RecoveryScope{Project: "p", Service: "y"}, Trigger: TriggerOrphanScan, State: RecoveryPlanned, StartedAt: t0},
-	}
-	if n := normalized(r); n.Recoveries[0].RecoveryID != strings.Repeat("2", 32) {
-		t.Error("recoveries must be ordered by start time before id")
 	}
 }

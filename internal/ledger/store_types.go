@@ -19,9 +19,9 @@ const MaxFileSize = 16 << 20
 var fileSizeLimit int64 = MaxFileSize
 
 var (
-	// ErrPersistenceUnavailable is returned by Update, and must be honoured by
-	// every Docker-mutating transition through Gate, while the ledger is in a
-	// memory-only mode or durable persistence is degraded (design §8.3 R5).
+	// ErrPersistenceUnavailable is returned by a durable update in a memory-only
+	// mode and by operations that need healthy durable persistence (Unblock).
+	// It never stops dispatch: the ledger is advisory (owner decision O-3).
 	ErrPersistenceUnavailable = errors.New("ledger: persistence unavailable")
 	// ErrPersistenceFailed wraps the reason a durable write did not complete.
 	ErrPersistenceFailed = errors.New("ledger: durable write failed")
@@ -29,10 +29,10 @@ var (
 	ErrTooLarge = errors.New("ledger: document exceeds the maximum file size")
 	// ErrClosed is returned after Close.
 	ErrClosed = errors.New("ledger: store is closed")
-	// ErrNoChange may be returned by an Update closure to end the update without
+	// ErrNoChange may be returned by an update closure to end the update without
 	// a write, a generation bump or a health change.
 	ErrNoChange = errors.New("ledger: no change")
-	// ErrNotMemoryOnly is returned by UpdateMemoryOnly outside a memory-only mode.
+	// ErrNotMemoryOnly is returned by updateMemoryOnly outside a memory-only mode.
 	ErrNotMemoryOnly = errors.New("ledger: store is not in a memory-only mode")
 	// ErrLocked means another process holds the ledger lock.
 	ErrLocked = errors.New("ledger: the state directory is locked by another process")
@@ -129,7 +129,6 @@ const (
 	EventProbe               EventKind = "probe"
 	EventRequestSuperseded   EventKind = "request_superseded"
 	EventRequestCancelled    EventKind = "request_cancelled"
-	EventRetentionExceeded   EventKind = "retention_exceeded"
 )
 
 // Event is delivered to Config.Events, always outside the store mutex. It
@@ -156,7 +155,7 @@ type Config struct {
 	// recovered and never rolls back an update.
 	Events func(Event)
 	// Flush is the pluggable flush hook run first by the background probe. It
-	// returns flushed=true when it persisted a held record (its own Update then
+	// returns flushed=true when it persisted a held record (its own update then
 	// restored health) and flushed=false when nothing was held, in which case
 	// the probe makes a harmless write.
 	Flush func() (flushed bool, err error)
@@ -188,7 +187,7 @@ type Snapshot struct {
 	// persisted. It does not prove the file currently holds exactly the
 	// published generation: after a failed post-rename directory fsync the file
 	// may hold a newer complete candidate that was never published (see
-	// Store.Update).
+	// Store.update).
 	Durable bool
 	Mode    Mode
 }

@@ -45,7 +45,7 @@ func activeHMACFixtures() []hmacFixture {
 			fresh: func(t *testing.T) *Ledger { return parseFrozen(t, vecV9Doc) },
 		},
 		{
-			name: "V10", identities: 12,
+			name: "V10", identities: 9,
 			forms: func(t *testing.T) map[string]*Ledger {
 				return map[string]*Ledger{
 					"built, forward input":  buildV10(t, false),
@@ -57,7 +57,7 @@ func activeHMACFixtures() []hmacFixture {
 			fresh: func(t *testing.T) *Ledger { return parseFrozen(t, vecV10Doc) },
 		},
 		{
-			name: "section 31 example", identities: 10,
+			name: "section 31 example", identities: 8,
 			forms: func(t *testing.T) map[string]*Ledger {
 				return map[string]*Ledger{"frozen indented document": parseFrozen(t, vecExampleIndented)}
 			},
@@ -86,12 +86,6 @@ func identityVersions(l *Ledger) (out []struct {
 		add(e.Applied, e.Key)
 		for j := range e.Replicas {
 			add(e.Replicas[j].Applied, e.Key)
-		}
-		if e.Rotation != nil {
-			add(&e.Rotation.Desired, e.Key)
-			for j := range e.Rotation.PriorReplicas {
-				add(e.Rotation.PriorReplicas[j].Applied, e.Key)
-			}
 		}
 	}
 	return out

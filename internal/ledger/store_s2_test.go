@@ -20,22 +20,17 @@ func populatedLedger() *Ledger {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	v := func(id string) *Version { return &Version{Kind: KindProvider, ID: id} }
 	rep := func(n string) Replica {
-		return Replica{Number: n, ContainerID: "c" + n, ContainerName: "n" + n, Created: at.Format(time.RFC3339Nano), Applied: v("r" + n), Outcome: ReplicaSucceeded, At: at}
+		return Replica{Number: n, ContainerID: "c" + n, ContainerName: "n" + n, Created: at.Format(time.RFC3339Nano), Applied: v("r" + n), Outcome: ReplicaSucceeded, At: at,
+			RotationID: "rot-1111111111111111", Delivery: DeliveryVerified, Adoption: AdoptionVerified}
 	}
 	return &Ledger{
 		SchemaVersion: SchemaVersion, LedgerID: "0123456789abcdef0123456789abcdef", Generation: 3, HMACKeyID: s2KeyA,
 		CreatedAt: at, UpdatedAt: at,
 		Entries: []Entry{{
 			Key: Key{Project: "p", Service: "s", Provider: "x", Secret: "y"}, Desired: v("d"), DesiredSeq: 2, DesiredObservedAt: at,
-			Applied: v("a"), State: EntryInProgress, Replicas: []Replica{rep("1"), rep("2")},
-			Rotation:    &Intent{RotationID: "11111111111111111111111111111111", StartedAt: at, Desired: *v("d"), Strategy: "rolling", PriorReplicas: []Replica{rep("3")}},
+			Applied: v("a"), State: EntryPending, Replicas: []Replica{rep("1"), rep("2")},
 			Request:     &Redelivery{RequestID: "22222222222222222222222222222222", RequestedAt: at, Actor: "a", Reason: "r", TargetSeq: 1, State: RedeliveryRequested},
 			LastOutcome: &LastOutcome{Kind: "k", Reason: "r", At: at, Strategy: "s"},
-		}},
-		Recoveries: []RecoveryRecord{{
-			RecoveryID: "33333333333333333333333333333333", Scope: RecoveryScope{Service: "s"}, Trigger: TriggerOrphanScan,
-			Planned: []Action{{Op: ActionStop, ContainerID: "c", ContainerName: "n", Created: at.Format(time.RFC3339Nano)}},
-			Done:    []ActionResult{{Outcome: ActionOK}}, State: RecoveryInProgress, StartedAt: at,
 		}},
 	}
 }
@@ -119,10 +114,7 @@ func TestS2_Clone_DeepAndIndependent(t *testing.T) {
 	e := &c.Entries[0]
 	e.Desired.ID, e.Applied.ID = "X", "X"
 	e.Replicas[0].Applied.ID, e.Replicas[1].ContainerID = "X", "X"
-	e.Rotation.PriorReplicas[0].Applied.ID, e.Rotation.Strategy = "X", "X"
-	e.Rotation.Desired.ID = "X"
 	e.Request.State, e.LastOutcome.Kind = RedeliveryFailed, "X"
-	c.Recoveries[0].Planned[0].Op, c.Recoveries[0].Done[0].Outcome = ActionRemove, ActionFailedOp
 	c.Entries = append(c.Entries, Entry{})
 	if !reflect.DeepEqual(orig, before) {
 		t.Fatal("mutating a clone changed the original")
@@ -134,9 +126,9 @@ func TestS2_Clone_NilAndEmptyPreserved(t *testing.T) {
 	if nl.Clone() != nil {
 		t.Fatal("nil clone")
 	}
-	l := &Ledger{Entries: []Entry{}, Recoveries: nil}
+	l := &Ledger{Entries: []Entry{{Replicas: nil}}}
 	c := l.Clone()
-	if c.Entries == nil || c.Recoveries != nil {
+	if c.Entries == nil || c.Entries[0].Replicas != nil {
 		t.Fatal("nil and empty slices must be preserved")
 	}
 }
@@ -155,7 +147,7 @@ func TestS2_FirstRun_PersistsAndReloads(t *testing.T) {
 		t.Fatalf("snapshot after first run: %+v", snap.Ledger)
 	}
 	id := snap.Ledger.LedgerID
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -175,7 +167,7 @@ func TestS2_Update_StoreSetsGenerationAndTime(t *testing.T) {
 	s, _, _, _ := openT(t, stateDir(t), newFakeKeys(validKey(s2KeyA)))
 	g0 := s.Snapshot().Ledger.Generation
 	// The closure tries to set both; the store overrides them.
-	if err := s.Update(func(l *Ledger) error {
+	if err := s.update(func(l *Ledger) error {
 		l.Generation = 999
 		l.UpdatedAt = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
 		return nil
@@ -192,7 +184,7 @@ func TestS2_Update_RetainedPointerCannotMutatePublishedState(t *testing.T) {
 	dir := stateDir(t)
 	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
 	var retained *Ledger
-	if err := s.Update(func(l *Ledger) error {
+	if err := s.update(func(l *Ledger) error {
 		l.Entries = append(l.Entries, s2Entry("web"))
 		retained = l
 		return nil
@@ -213,7 +205,7 @@ func TestS2_Update_RetainedPointerCannotMutatePublishedState(t *testing.T) {
 		t.Fatal("Get observed the retained pointer's mutation")
 	}
 	// A later update starts from the untouched published state and writes it.
-	if err := s.Update(func(l *Ledger) error { return nil }); err != nil {
+	if err := s.update(func(l *Ledger) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Equal(wantFile, readLedgerBytes(t, dir)) {
@@ -226,7 +218,7 @@ func TestS2_Update_RetainedPointerCannotMutatePublishedState(t *testing.T) {
 
 func TestS2_GetAndSnapshot_ReturnIndependentCopies(t *testing.T) {
 	s, _, _, _ := openT(t, stateDir(t), newFakeKeys(validKey(s2KeyA)))
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	k := Key{Service: "web", Provider: "p", Secret: "s"}
@@ -252,7 +244,7 @@ func TestS2_GetAndSnapshot_ReturnIndependentCopies(t *testing.T) {
 func TestS2_Update_ValidationAndClosureErrors_DoNotChangeHealthOrMemory(t *testing.T) {
 	dir := stateDir(t)
 	s, _, log, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	file := readLedgerBytes(t, dir)
@@ -265,7 +257,7 @@ func TestS2_Update_ValidationAndClosureErrors_DoNotChangeHealthOrMemory(t *testi
 		"bad key id":    func(l *Ledger) error { l.HMACKeyID = "nope"; return nil },
 	}
 	for name, fn := range cases {
-		err := s.Update(fn)
+		err := s.update(fn)
 		if err == nil {
 			t.Fatalf("%s: expected an error", name)
 		}
@@ -285,7 +277,7 @@ func TestS2_Update_ValidationAndClosureErrors_DoNotChangeHealthOrMemory(t *testi
 			t.Fatalf("%s: memory or file changed", name)
 		}
 	}
-	if err := s.Update(func(*Ledger) error { return ErrNoChange }); err != nil {
+	if err := s.update(func(*Ledger) error { return ErrNoChange }); err != nil {
 		t.Fatalf("ErrNoChange: %v", err)
 	}
 	if !reflect.DeepEqual(s.Snapshot().Ledger, want) {
@@ -387,13 +379,13 @@ func TestT_U8_AtomicWriteFaultInjection(t *testing.T) {
 				}
 				return nil
 			})})
-			if err := s.Update(addEntries("web")); err != nil {
+			if err := s.update(addEntries("web")); err != nil {
 				t.Fatal(err)
 			}
 			oldFile := readLedgerBytes(t, dir)
 			want := s.Snapshot().Ledger
 			armed.Store(true)
-			err := s.Update(addEntries("db"))
+			err := s.update(addEntries("db"))
 			if !errors.Is(err, ErrPersistenceFailed) || !errors.Is(err, f.err) {
 				t.Fatalf("want ErrPersistenceFailed wrapping the fault, got %v", err)
 			}
@@ -454,7 +446,7 @@ func TestS2_Update_DurableOrdering(t *testing.T) {
 	s = st
 	before := s.Snapshot().Ledger.Generation
 	armed.Store(true)
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"create", "write", "fsync", "close", "rename", "syncdir"}
@@ -483,7 +475,7 @@ func TestS2_Retry_ThreeAttempts_DelaysAndRecovery(t *testing.T) {
 	})})
 	armed.Store(true)
 	calls := 0
-	if err := s.Update(func(l *Ledger) error { calls++; l.Entries = append(l.Entries, s2Entry("web")); return nil }); err != nil {
+	if err := s.update(func(l *Ledger) error { calls++; l.Entries = append(l.Entries, s2Entry("web")); return nil }); err != nil {
 		t.Fatalf("the third attempt should succeed: %v", err)
 	}
 	if calls != 1 {
@@ -511,7 +503,7 @@ func TestS2_Retry_Exhaustion_LeavesPublishedStateUnchanged(t *testing.T) {
 	})})
 	want := s.Snapshot().Ledger
 	armed.Store(true)
-	if err := s.Update(addEntries("web")); !errors.Is(err, ErrPersistenceFailed) {
+	if err := s.update(addEntries("web")); !errors.Is(err, ErrPersistenceFailed) {
 		t.Fatalf("got %v", err)
 	}
 	h := s.Health()
@@ -525,13 +517,6 @@ func TestS2_Retry_Exhaustion_LeavesPublishedStateUnchanged(t *testing.T) {
 
 // The D-3 rules with test-local update closures and a fake dispatcher (owner
 // decision D-S2-2: S4 builds the real transitions on top of Update).
-type fakeDocker struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (d *fakeDocker) mutate(what string) { d.mu.Lock(); d.calls = append(d.calls, what); d.mu.Unlock() }
-func (d *fakeDocker) n() int             { d.mu.Lock(); defer d.mu.Unlock(); return len(d.calls) }
 
 func observeClosure(svc, id string) func(*Ledger) error {
 	return func(l *Ledger) error {
@@ -550,27 +535,24 @@ func observeClosure(svc, id string) func(*Ledger) error {
 	}
 }
 
-func intentClosure(svc string) func(*Ledger) error {
+// hintClosure records a requested delivery (the schema 3 correlation hint) on
+// the entry of svc. Under owner decision O-3 the ledger never gates Docker, so
+// the tests below assert persistence semantics only.
+func hintClosure(svc string) func(*Ledger) error {
 	return func(l *Ledger) error {
 		e := findEntry(l, Key{Service: svc, Provider: "p", Secret: "s"})
-		e.Rotation = &Intent{RotationID: "44444444444444444444444444444444", StartedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Desired: *e.Desired, Strategy: "rolling"}
-		e.State = EntryInProgress
+		if e == nil {
+			return ErrNotFound
+		}
+		e.State = EntryPending
+		e.Replicas = []Replica{{ContainerID: "c-" + svc, ContainerName: svc + "-1", Created: "2026-01-01T00:00:00Z",
+			Outcome: ReplicaPending, Reason: "delivery_requested", At: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+			RotationID: "rot-4444444444444444", Delivery: DeliveryRequested, Adoption: AdoptionUnknown}}
 		return nil
 	}
 }
 
-// beginRotation is the test stand-in for S4's BeginRotation: Gate first, then
-// the durable intent, and only then may Docker be touched.
-func beginRotation(s *Store, d *fakeDocker, svc string) error {
-	if err := s.Gate(); err != nil {
-		return err
-	}
-	if err := s.Update(intentClosure(svc)); err != nil {
-		return err
-	}
-	d.mutate("rotate " + svc)
-	return nil
-}
+func recordHint(s *Store, svc string) error { return s.update(hintClosure(svc)) }
 
 func TestT_U18_DesiredWriteFailure_NoDispatchStateUnchangedRetried(t *testing.T) {
 	dir := stateDir(t)
@@ -582,18 +564,18 @@ func TestT_U18_DesiredWriteFailure_NoDispatchStateUnchangedRetried(t *testing.T)
 		}
 		return nil
 	})})
-	d := &fakeDocker{}
 	want := s.Snapshot().Ledger
-	err := s.Update(observeClosure("web", "v2"))
+	err := s.update(observeClosure("web", "v2"))
 	if !errors.Is(err, ErrPersistenceFailed) {
 		t.Fatalf("got %v", err)
 	}
-	// Failed observe: the caller dispatches nothing.
-	if d.n() != 0 || !reflect.DeepEqual(s.Snapshot().Ledger, want) {
-		t.Fatal("nothing may be dispatched and state must be unchanged")
+	// Failed observe: the published state is unchanged (the engine then
+	// continues per X6; the ledger never decides dispatch).
+	if !reflect.DeepEqual(s.Snapshot().Ledger, want) {
+		t.Fatal("state must be unchanged")
 	}
 	fail.Store(false) // next poll re-observes and retries
-	if err := s.Update(observeClosure("web", "v2")); err != nil {
+	if err := s.update(observeClosure("web", "v2")); err != nil {
 		t.Fatal(err)
 	}
 	if e, _ := s.Get(Key{Service: "web", Provider: "p", Secret: "s"}); e.Desired == nil || e.Desired.ID != "v2" || e.DesiredSeq != 1 {
@@ -601,7 +583,7 @@ func TestT_U18_DesiredWriteFailure_NoDispatchStateUnchangedRetried(t *testing.T)
 	}
 }
 
-func TestT_U19_IntentWriteFailure_ZeroDockerCalls_DesiredStaysPending(t *testing.T) {
+func TestT_U19_HintWriteFailure_NothingRecorded_DesiredStaysPending(t *testing.T) {
 	dir := stateDir(t)
 	var fail atomic.Bool
 	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)), openOpts{ops: faultOps(func(op string) error {
@@ -610,29 +592,25 @@ func TestT_U19_IntentWriteFailure_ZeroDockerCalls_DesiredStaysPending(t *testing
 		}
 		return nil
 	})})
-	d := &fakeDocker{}
-	if err := s.Update(observeClosure("web", "v2")); err != nil {
+	if err := s.update(observeClosure("web", "v2")); err != nil {
 		t.Fatal(err)
 	}
 	fail.Store(true)
-	if err := beginRotation(s, d, "web"); err == nil {
-		t.Fatal("the intent write must fail")
-	}
-	if d.n() != 0 {
-		t.Fatalf("Docker was touched %d times although the intent was not durable", d.n())
+	if err := recordHint(s, "web"); err == nil {
+		t.Fatal("the hint write must fail")
 	}
 	e, _ := s.Get(Key{Service: "web", Provider: "p", Secret: "s"})
-	if e.Desired == nil || e.Applied != nil || e.Rotation != nil || e.State != EntryIdle {
+	if e.Desired == nil || e.Applied != nil || len(e.Replicas) != 0 || e.State != EntryIdle {
 		t.Fatalf("desired must stay pending and durable: %+v", e)
 	}
 	fail.Store(false)
 	// The probe is gated by the test clock; the next explicit attempt succeeds
 	// once the write path works, and the gate reopens with it.
-	if err := s.Update(func(*Ledger) error { return nil }); err != nil {
+	if err := s.update(func(*Ledger) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := beginRotation(s, d, "web"); err != nil || d.n() != 1 {
-		t.Fatalf("retry: err %v, docker calls %d", err, d.n())
+	if err := recordHint(s, "web"); err != nil {
+		t.Fatalf("retry: err %v", err)
 	}
 }
 
@@ -647,20 +625,21 @@ func TestT_U20_TerminalWriteFailure_ThreeAttempts_Degraded_AppliedNotAdvanced(t 
 		}
 		return nil
 	})})
-	d := &fakeDocker{}
-	if err := s.Update(observeClosure("web", "v2")); err != nil {
+	if err := s.update(observeClosure("web", "v2")); err != nil {
 		t.Fatal(err)
 	}
-	if err := beginRotation(s, d, "web"); err != nil {
+	if err := recordHint(s, "web"); err != nil {
 		t.Fatal(err)
 	}
 	fileBefore := readLedgerBytes(t, dir)
 	armed.Store(true)
 	// Delivery succeeded; the terminal write fails.
-	err := s.Update(func(l *Ledger) error {
+	err := s.update(func(l *Ledger) error {
 		e := findEntry(l, Key{Service: "web", Provider: "p", Secret: "s"})
-		v := *e.Rotation.Desired.cloneForTest()
-		e.Applied, e.Rotation, e.State = &v, nil, EntryIdle
+		v := *e.Desired.cloneForTest()
+		e.Applied, e.State = &v, EntryIdle
+		r := &e.Replicas[0]
+		r.Applied, r.Outcome, r.Delivery, r.Adoption, r.Reason = e.Desired.cloneForTest(), ReplicaSucceeded, DeliveryVerified, AdoptionVerified, "delivery_verified"
 		return nil
 	})
 	if !errors.Is(err, ErrPersistenceFailed) || creates.Load() != 3 {
@@ -673,14 +652,17 @@ func TestT_U20_TerminalWriteFailure_ThreeAttempts_Degraded_AppliedNotAdvanced(t 
 		t.Fatal("the file's applied state must not advance")
 	}
 	e, _ := s.Get(Key{Service: "web", Provider: "p", Secret: "s"})
-	if e.Applied != nil || e.Rotation == nil {
+	if e.Applied != nil || e.Replicas[0].Delivery != DeliveryRequested {
 		t.Fatalf("published state must not claim durable applied: %+v", e)
 	}
 }
 
 func (v Version) cloneForTest() *Version { c := v; return &c }
 
-func TestT_U21_Degraded_GateRefusesEveryKey_NoDockerMutation(t *testing.T) {
+// O-3: while degraded Gate reports persistence unavailable (advisory), every
+// write fails without changing the published state, and reads continue. The
+// ledger never refuses or gates a Docker mutation.
+func TestT_U21_Degraded_GateAdvisory_WritesFailWithoutChange(t *testing.T) {
 	dir := stateDir(t)
 	var armed atomic.Bool
 	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)), openOpts{ops: faultOps(func(op string) error {
@@ -689,19 +671,22 @@ func TestT_U21_Degraded_GateRefusesEveryKey_NoDockerMutation(t *testing.T) {
 		}
 		return nil
 	})})
-	d := &fakeDocker{}
-	if err := s.Update(addEntries("a", "b", "c")); err != nil {
+	if err := s.update(addEntries("a", "b", "c")); err != nil {
 		t.Fatal(err)
 	}
 	armed.Store(true)
-	_ = s.Update(observeClosure("a", "v9")) // degrade
+	_ = s.update(observeClosure("a", "v9")) // degrade
+	if !errors.Is(s.Gate(), ErrPersistenceUnavailable) {
+		t.Fatal("Gate must report degraded persistence")
+	}
+	before := s.Snapshot().Ledger
 	for _, svc := range []string{"a", "b", "c", "unrelated"} {
-		if err := beginRotation(s, d, svc); !errors.Is(err, ErrPersistenceUnavailable) {
-			t.Fatalf("%s: want ErrPersistenceUnavailable, got %v", svc, err)
+		if err := recordHint(s, svc); err == nil {
+			t.Fatalf("%s: a write must fail while degraded", svc)
 		}
 	}
-	if d.n() != 0 {
-		t.Fatalf("Docker mutated %d times while degraded", d.n())
+	if !reflect.DeepEqual(s.Snapshot().Ledger, before) {
+		t.Fatal("failed writes changed the published state")
 	}
 	// R6: reads, identity computation and diagnostics continue.
 	if s.Snapshot().Ledger == nil || s.Health().Healthy {
@@ -729,7 +714,7 @@ func TestT_U22_Recovery_HeldRecordFlushed_GateReopens(t *testing.T) {
 				if !held.Load() {
 					return false, nil
 				}
-				if err := sp.Update(func(l *Ledger) error { l.Entries[0].State = EntryIdle; return nil }); err != nil {
+				if err := sp.update(func(l *Ledger) error { l.Entries[0].State = EntryIdle; return nil }); err != nil {
 					return false, err
 				}
 				held.Store(false)
@@ -738,13 +723,12 @@ func TestT_U22_Recovery_HeldRecordFlushed_GateReopens(t *testing.T) {
 		},
 	})
 	sp = s
-	d := &fakeDocker{}
-	if err := s.Update(observeClosure("web", "v2")); err != nil {
+	if err := s.update(observeClosure("web", "v2")); err != nil {
 		t.Fatal(err)
 	}
 	armed.Store(true)
 	held.Store(true) // an unpersisted terminal record is held by the caller
-	_ = s.Update(observeClosure("web", "v3"))
+	_ = s.update(observeClosure("web", "v3"))
 	if s.Gate() == nil {
 		t.Fatal("expected degraded")
 	}
@@ -763,7 +747,7 @@ func TestT_U22_Recovery_HeldRecordFlushed_GateReopens(t *testing.T) {
 	if log.count(EventPersistenceRestored) != 1 {
 		t.Fatalf("events %v", log.kinds())
 	}
-	if err := beginRotation(s, d, "web"); err != nil || d.n() != 1 {
+	if err := recordHint(s, "web"); err != nil {
 		t.Fatalf("pending work must resume through the gate: %v", err)
 	}
 }
@@ -790,7 +774,7 @@ func TestS2_Probe_HarmlessWriteWhenNothingHeld_BackoffCapped(t *testing.T) {
 		return nil
 	})})
 	armed.Store(true)
-	_ = s.Update(addEntries("web"))
+	_ = s.update(addEntries("web"))
 	g := s.Snapshot().Ledger.Generation
 	// Seven failing probes: waits are 5s, 10s, 20s, 40s, 60s, 60s, 60s.
 	for i := 0; i < 7; i++ {
@@ -852,7 +836,7 @@ func TestS2_Probe_SingleFlight(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ { // many degraded failures start at most one probe
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = s.Update(addEntries("x" + fmt.Sprint(i))) }()
+		go func() { defer wg.Done(); _ = s.update(addEntries("x" + fmt.Sprint(i))) }()
 	}
 	wg.Wait()
 	time.Sleep(20 * time.Millisecond)
@@ -905,7 +889,7 @@ func TestS2_Events_DeliveredOutsideMutex_PanicDoesNotRollBack(t *testing.T) {
 				// mutex were still held.
 				_ = sp.Snapshot()
 				_ = sp.PersistenceHealthy()
-				go func() { _ = sp.Update(func(*Ledger) error { return ErrNoChange }); close(done) }()
+				go func() { _ = sp.update(func(*Ledger) error { return ErrNoChange }); close(done) }()
 				<-done
 				panic("callback failure")
 			}
@@ -915,7 +899,7 @@ func TestS2_Events_DeliveredOutsideMutex_PanicDoesNotRollBack(t *testing.T) {
 	armed.Store(true)
 	timeout := time.After(5 * time.Second)
 	res := make(chan error, 1)
-	go func() { res <- s.Update(addEntries("web")) }()
+	go func() { res <- s.update(addEntries("web")) }()
 	select {
 	case err := <-res:
 		if !errors.Is(err, ErrPersistenceFailed) {
@@ -926,7 +910,7 @@ func TestS2_Events_DeliveredOutsideMutex_PanicDoesNotRollBack(t *testing.T) {
 	}
 	armed.Store(false)
 	// A panicking callback after a successful update does not roll it back.
-	if err := s.Update(addEntries("db")); err != nil {
+	if err := s.update(addEntries("db")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := s.Get(Key{Service: "db", Provider: "p", Secret: "s"}); !ok {
@@ -953,11 +937,11 @@ func TestS2_Callback_PanicAfterSuccess_DoesNotRollBack(t *testing.T) {
 		},
 	})
 	armed.Store(true)
-	_ = s.Update(addEntries("web"))
+	_ = s.update(addEntries("web"))
 	armed.Store(false)
 	ia.fireProbe(t)
 	waitFor(t, func() bool { return s.PersistenceHealthy() })
-	if err := s.Update(addEntries("ok")); err != nil {
+	if err := s.update(addEntries("ok")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := s.Get(Key{Service: "ok", Provider: "p", Secret: "s"}); !ok {
@@ -969,7 +953,7 @@ func TestS2_Close_Semantics(t *testing.T) {
 	dir := stateDir(t)
 	fk := newFakeKeys(validKey(s2KeyA))
 	s, _, _, _ := openT(t, dir, fk)
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -978,11 +962,11 @@ func TestS2_Close_Semantics(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close must be idempotent: %v", err)
 	}
-	if err := s.Update(addEntries("db")); !errors.Is(err, ErrClosed) {
+	if err := s.update(addEntries("db")); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Update after Close: %v", err)
 	}
-	if err := s.UpdateMemoryOnly(func(*Ledger) error { return nil }); !errors.Is(err, ErrClosed) {
-		t.Fatalf("UpdateMemoryOnly after Close: %v", err)
+	if err := s.updateMemoryOnly(func(*Ledger) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("updateMemoryOnly after Close: %v", err)
 	}
 	// The lock was released: a new store opens durably.
 	s2, res, _, _ := openT(t, dir, fk)
@@ -1007,7 +991,7 @@ func TestS2_Close_InterruptsRetryWait(t *testing.T) {
 	})
 	armed.Store(true)
 	res := make(chan error, 1)
-	go func() { res <- s.Update(addEntries("web")) }()
+	go func() { res <- s.update(addEntries("web")) }()
 	time.Sleep(20 * time.Millisecond)
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -1026,12 +1010,12 @@ func TestS2_Close_InterruptsRetryWait(t *testing.T) {
 
 func newerSchemaFile(t *testing.T, dir string) []byte {
 	t.Helper()
-	b := []byte(`{"schema_version": 3, "future": {"x": [1,2,3]}}`)
+	b := []byte(`{"schema_version": 4, "future": {"x": [1,2,3]}}`)
 	writeFile(t, filepath.Join(dir, "ledger.json"), b, 0o600)
 	return b
 }
 
-func TestS2_MemoryOnly_UpdateRefused_UpdateMemoryOnlyWorks_NoDisk(t *testing.T) {
+func TestS2_MemoryOnly_UpdateRefused_updateMemoryOnlyWorks_NoDisk(t *testing.T) {
 	dir := stateDir(t)
 	orig := newerSchemaFile(t, dir)
 	fp := dirFingerprint(t, dir)
@@ -1043,7 +1027,7 @@ func TestS2_MemoryOnly_UpdateRefused_UpdateMemoryOnlyWorks_NoDisk(t *testing.T) 
 	if before.Durable || before.Mode != ModeMemoryOnly {
 		t.Fatalf("memory-only snapshot must report Durable=false: %+v", before)
 	}
-	if err := s.Update(addEntries("web")); !errors.Is(err, ErrPersistenceUnavailable) {
+	if err := s.update(addEntries("web")); !errors.Is(err, ErrPersistenceUnavailable) {
 		t.Fatalf("Update: %v", err)
 	}
 	if !reflect.DeepEqual(s.Snapshot().Ledger, before.Ledger) {
@@ -1052,7 +1036,7 @@ func TestS2_MemoryOnly_UpdateRefused_UpdateMemoryOnlyWorks_NoDisk(t *testing.T) 
 	if s.Gate() == nil || s.PersistenceHealthy() {
 		t.Fatal("the gate must be closed in memory-only mode")
 	}
-	if err := s.UpdateMemoryOnly(addEntries("web")); err != nil {
+	if err := s.updateMemoryOnly(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	snap := s.Snapshot()
@@ -1060,14 +1044,14 @@ func TestS2_MemoryOnly_UpdateRefused_UpdateMemoryOnlyWorks_NoDisk(t *testing.T) 
 		t.Fatalf("memory-only state: %+v", snap)
 	}
 	if snap.Ledger.Generation != before.Ledger.Generation {
-		t.Fatal("UpdateMemoryOnly must not bump the generation (no durable write happened)")
+		t.Fatal("updateMemoryOnly must not bump the generation (no durable write happened)")
 	}
 	// Validation still applies in memory.
-	if err := s.UpdateMemoryOnly(func(l *Ledger) error { l.Entries[0].State = "bogus"; return nil }); !errors.Is(err, ErrInvalid) {
+	if err := s.updateMemoryOnly(func(l *Ledger) error { l.Entries[0].State = "bogus"; return nil }); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("got %v", err)
 	}
 	if len(s.Snapshot().Ledger.Entries) != 1 || s.Snapshot().Ledger.Entries[0].State != EntryIdle {
-		t.Fatal("a failed UpdateMemoryOnly changed memory")
+		t.Fatal("a failed updateMemoryOnly changed memory")
 	}
 	if got := dirFingerprint(t, dir); got != fp {
 		t.Fatal("memory-only mode touched the disk")
@@ -1078,9 +1062,9 @@ func TestS2_MemoryOnly_UpdateRefused_UpdateMemoryOnlyWorks_NoDisk(t *testing.T) 
 	}
 }
 
-func TestS2_UpdateMemoryOnly_RefusedInDurableMode(t *testing.T) {
+func TestS2_updateMemoryOnly_RefusedInDurableMode(t *testing.T) {
 	s, _, _, _ := openT(t, stateDir(t), newFakeKeys(validKey(s2KeyA)))
-	if err := s.UpdateMemoryOnly(addEntries("web")); !errors.Is(err, ErrNotMemoryOnly) {
+	if err := s.updateMemoryOnly(addEntries("web")); !errors.Is(err, ErrNotMemoryOnly) {
 		t.Fatalf("got %v", err)
 	}
 	if len(s.Snapshot().Ledger.Entries) != 0 {
@@ -1098,7 +1082,7 @@ func TestT_U17_UpdateClosureRaceStress_NoLostUpdateGenerationMonotonic(t *testin
 	for i := range names {
 		names[i] = fmt.Sprintf("svc%d", i)
 	}
-	if err := s.Update(addEntries(names...)); err != nil {
+	if err := s.update(addEntries(names...)); err != nil {
 		t.Fatal(err)
 	}
 	g0 := s.Snapshot().Ledger.Generation
@@ -1130,7 +1114,7 @@ func TestT_U17_UpdateClosureRaceStress_NoLostUpdateGenerationMonotonic(t *testin
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := s.Update(func(l *Ledger) error {
+				if err := s.update(func(l *Ledger) error {
 					e := findEntry(l, Key{Service: n, Provider: "p", Secret: "s"})
 					e.DesiredSeq++ // a counter: a lost update would lose an increment
 					return nil
@@ -1164,7 +1148,7 @@ func TestT_U17_UpdateClosureRaceStress_NoLostUpdateGenerationMonotonic(t *testin
 func TestS2_Limits_OversizeUpdate_IsPersistenceFailure(t *testing.T) {
 	dir := stateDir(t)
 	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
-	if err := s.Update(addEntries("web")); err != nil {
+	if err := s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	old := fileSizeLimit
@@ -1172,7 +1156,7 @@ func TestS2_Limits_OversizeUpdate_IsPersistenceFailure(t *testing.T) {
 	defer func() { fileSizeLimit = old }()
 	file := readLedgerBytes(t, dir)
 	want := s.Snapshot().Ledger
-	err := s.Update(addEntries("db", "cache"))
+	err := s.update(addEntries("db", "cache"))
 	if !errors.Is(err, ErrPersistenceFailed) || !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("got %v", err)
 	}
@@ -1201,7 +1185,7 @@ func TestS2_Limits_FileSizeBoundary(t *testing.T) {
 		if res.Mode != ModeMemoryOnly || res.Reason != ReasonTooLarge {
 			t.Fatalf("%+v", res)
 		}
-		if err := s.Update(addEntries("web")); !errors.Is(err, ErrPersistenceUnavailable) {
+		if err := s.update(addEntries("web")); !errors.Is(err, ErrPersistenceUnavailable) {
 			t.Fatal(err)
 		}
 		if dirFingerprint(t, dir) != fp || fk.calls() != 0 {
@@ -1221,7 +1205,7 @@ func TestS2_Limits_FileSizeBoundary(t *testing.T) {
 
 func deepDoc(depth int, valid bool) []byte {
 	var b bytes.Buffer
-	b.WriteString(`{"schema_version":2,"x":`)
+	b.WriteString(`{"schema_version":3,"x":`)
 	for i := 0; i < depth; i++ {
 		b.WriteByte('[')
 	}
@@ -1249,7 +1233,7 @@ func TestS2_Limits_JSONDepth(t *testing.T) {
 		t.Fatalf("very deep input: %v", err)
 	}
 	// Phase-1 precedence: a newer schema is reported as such even when deeply nested.
-	deepNewer := bytes.Replace(deepDoc(500, false), []byte(`"schema_version":2`), []byte(`"schema_version":3`), 1)
+	deepNewer := bytes.Replace(deepDoc(500, false), []byte(`"schema_version":3`), []byte(`"schema_version":4`), 1)
 	var sv *SchemaVersionError
 	if _, err := Unmarshal(deepNewer); !errors.As(err, &sv) {
 		t.Fatalf("a newer schema must win over the depth guard: %v", err)

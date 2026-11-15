@@ -29,7 +29,7 @@ func TestMarshal_IsDeterministicAndRoundTrips(t *testing.T) {
 		t.Errorf("body_sha256 not set to 64 hex characters: %q", got.BodySHA256)
 	}
 	// Compact, declaration-order output with the schema version first.
-	if !bytes.HasPrefix(a, []byte(`{"schema_version":2,"ledger_id":"`+idLedger+`","generation":42,"hmac_key_id":"`+testKeyID+`",`)) {
+	if !bytes.HasPrefix(a, []byte(`{"schema_version":3,"ledger_id":"`+idLedger+`","generation":42,"hmac_key_id":"`+testKeyID+`",`)) {
 		t.Errorf("unexpected canonical prefix: %.120s", a)
 	}
 	if bytes.ContainsAny(a, "\n") {
@@ -48,10 +48,9 @@ func TestMarshal_IsDeterministicAndRoundTrips(t *testing.T) {
 		return nil
 	}
 	if !reflect.DeepEqual(find(got, "tls_cert").Replicas, find(l, "tls_cert").Replicas) ||
-		!reflect.DeepEqual(find(got, "kv/batch").Rotation, find(l, "kv/batch").Rotation) ||
-		!reflect.DeepEqual(find(got, "kv/batch").Request, find(l, "kv/batch").Request) ||
-		!reflect.DeepEqual(got.Recoveries, l.Recoveries) {
-		t.Error("replicas, intent, request or recovery records changed across a round trip")
+		!reflect.DeepEqual(find(got, "kv/batch").Replicas, find(l, "kv/batch").Replicas) ||
+		!reflect.DeepEqual(find(got, "kv/batch").Request, find(l, "kv/batch").Request) {
+		t.Error("replicas (including rotation_id, delivery and adoption) or the request changed across a round trip")
 	}
 }
 
@@ -65,13 +64,12 @@ func TestMarshal_DoesNotEscapeHTMLAndIsStableForNilSlices(t *testing.T) {
 	withNil := &Ledger{SchemaVersion: SchemaVersion, LedgerID: idLedger, HMACKeyID: testKeyID, CreatedAt: t0, UpdatedAt: t0}
 	withEmpty := *withNil
 	withEmpty.Entries = []Entry{}
-	withEmpty.Recoveries = []RecoveryRecord{}
 	a, b := mustMarshal(t, withNil), mustMarshal(t, &withEmpty)
 	if !bytes.Equal(a, b) {
 		t.Fatal("nil and empty slices must serialize identically")
 	}
-	if !bytes.Contains(a, []byte(`"entries":[]`)) || !bytes.Contains(a, []byte(`"recoveries":[]`)) {
-		t.Errorf("empty slices must render as []: %s", a)
+	if !bytes.Contains(a, []byte(`"entries":[]`)) || bytes.Contains(a, []byte(`"recoveries"`)) || bytes.Contains(a, []byte(`"rotation"`)) {
+		t.Errorf("empty slices must render as [] and the retired rotation and recoveries fields must be absent: %s", a)
 	}
 	if _, err := Unmarshal(a); err != nil {
 		t.Fatalf("an empty ledger must round-trip: %v", err)
@@ -137,9 +135,11 @@ func TestBodyChecksum_IsTheSHA256OfTheCanonicalBody(t *testing.T) {
 func TestUnmarshal_IsStrict(t *testing.T) {
 	sealed := string(mustMarshal(t, sampleLedger(t)))
 	cases := map[string]string{
-		"unknown top-level field": strings.Replace(sealed, `{"schema_version":2,`, `{"schema_version":2,"surprise":true,`, 1),
+		"unknown top-level field": strings.Replace(sealed, `{"schema_version":3,`, `{"schema_version":3,"surprise":true,`, 1),
 		"unknown nested field":    strings.Replace(sealed, `"project":"shop"`, `"project":"shop","bogus":1`, 1),
-		"unknown in intent":       strings.Replace(sealed, `"strategy":"restart"`, `"strategy":"restart","bogus":1`, 1),
+		"unknown in replica":      strings.Replace(sealed, `"delivery":"verified"`, `"delivery":"verified","bogus":1`, 1),
+		"retired rotation field":  strings.Replace(sealed, `"request":null`, `"rotation":null,"request":null`, 1),
+		"retired recoveries":      strings.Replace(sealed, `"entries":[`, `"recoveries":[],"entries":[`, 1),
 		"trailing object":         sealed + `{}`,
 		"trailing garbage":        sealed + `x`,
 		"wrong field type":        strings.Replace(sealed, `"generation":42`, `"generation":"42"`, 1),
@@ -170,7 +170,7 @@ func TestUnmarshal_SchemaVersions(t *testing.T) {
 	// A newer schema is reported as such, ahead of every other check, even when
 	// the document contains fields this version does not know.
 	for _, doc := range []string{
-		strings.Replace(sealed, `"schema_version":2`, `"schema_version":3`, 1),
+		strings.Replace(sealed, `"schema_version":3`, `"schema_version":4`, 1),
 		`{"schema_version":7,"shiny_new_field":{"x":1}}`,
 		`{"schema_version":2147483647}`,
 	} {
@@ -188,12 +188,13 @@ func TestUnmarshal_SchemaVersions(t *testing.T) {
 	}
 	// Anything else is invalid.
 	for name, doc := range map[string]string{
-		"zero":      strings.Replace(sealed, `"schema_version":2`, `"schema_version":0`, 1),
-		"negative":  strings.Replace(sealed, `"schema_version":2`, `"schema_version":-1`, 1),
-		"version 1": strings.Replace(sealed, `"schema_version":2`, `"schema_version":1`, 1),
-		"missing":   strings.Replace(sealed, `"schema_version":2,`, ``, 1),
-		"as string": strings.Replace(sealed, `"schema_version":2`, `"schema_version":"2"`, 1),
-		"as float":  strings.Replace(sealed, `"schema_version":2`, `"schema_version":2.5`, 1),
+		"zero":      strings.Replace(sealed, `"schema_version":3`, `"schema_version":0`, 1),
+		"negative":  strings.Replace(sealed, `"schema_version":3`, `"schema_version":-1`, 1),
+		"version 1": strings.Replace(sealed, `"schema_version":3`, `"schema_version":1`, 1),
+		"version 2": strings.Replace(sealed, `"schema_version":3`, `"schema_version":2`, 1),
+		"missing":   strings.Replace(sealed, `"schema_version":3,`, ``, 1),
+		"as string": strings.Replace(sealed, `"schema_version":3`, `"schema_version":"2"`, 1),
+		"as float":  strings.Replace(sealed, `"schema_version":3`, `"schema_version":3.5`, 1),
 	} {
 		if _, err := Unmarshal([]byte(doc)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: expected ErrInvalid, got %v", name, err)
@@ -204,11 +205,11 @@ func TestUnmarshal_SchemaVersions(t *testing.T) {
 func TestUnmarshal_DoesNotEchoDocumentContent(t *testing.T) {
 	marker := "S3CR3T-MARKER-IN-INPUT"
 	for _, doc := range []string{
-		`{"schema_version":2,"ledger_id":"` + marker,
-		`{"schema_version":2,"ledger_id":"` + marker + `"}`,
-		`{"schema_version":2,"generation":"` + marker + `"}`,
-		`{"schema_version":2,"` + marker + `":1}`,
-		`{"schema_version":2,"` + marker + `":1,"` + marker + `":2}`,
+		`{"schema_version":3,"ledger_id":"` + marker,
+		`{"schema_version":3,"ledger_id":"` + marker + `"}`,
+		`{"schema_version":3,"generation":"` + marker + `"}`,
+		`{"schema_version":3,"` + marker + `":1}`,
+		`{"schema_version":3,"` + marker + `":1,"` + marker + `":2}`,
 	} {
 		_, err := Unmarshal([]byte(doc))
 		if err == nil {

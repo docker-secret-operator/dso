@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// Fixtures of BL-02 design revision 6.3 (sections 31, 45 and 49). The expected
-// documents and checksums live in vectors_test.go and are copied from the
-// design; the builders below only construct the logical input.
+// Fixtures of BL-02 design revision 6.3 (sections 31, 45 and 49), amended for
+// schema version 3 (S2.2). The expected documents and checksums live in
+// vectors_test.go; the builders below only construct the logical input.
 
 // fixtureKey is the fixture key of design section 49: 32 bytes of 0x42.
 var fixtureKey = bytes.Repeat([]byte{0x42}, HMACKeySize)
@@ -82,12 +82,6 @@ func fixtureIntegrity(l *Ledger) []string {
 		for j := range e.Replicas {
 			check("replica applied", e.Replicas[j].Applied)
 		}
-		if e.Rotation != nil {
-			check("intent desired", &e.Rotation.Desired)
-			for j := range e.Rotation.PriorReplicas {
-				check("prior replica applied", e.Rotation.PriorReplicas[j].Applied)
-			}
-		}
 	}
 	return problems
 }
@@ -124,7 +118,6 @@ func buildV2(emptySlices bool) *Ledger {
 	e := idleEntry("", "svc", "p", "s")
 	if emptySlices {
 		e.Replicas = []Replica{}
-		l.Recoveries = []RecoveryRecord{}
 	}
 	l.Entries = []Entry{e}
 	return l
@@ -153,22 +146,22 @@ func buildV6(reversed bool) *Ledger {
 	return l
 }
 
-func buildV8(reversed bool) *Ledger {
-	l := vecHeader(vecPlaceholderKeyID)
-	mk := func(idc, svc string, off time.Duration) RecoveryRecord {
-		return RecoveryRecord{RecoveryID: strings.Repeat(idc, 32), Scope: RecoveryScope{Project: "p", Service: svc}, Trigger: TriggerOrphanScan,
-			State: RecoveryPlanned, StartedAt: t0.Add(off)}
+// replicaAt builds a schema v3 replica; its delivery fields follow its outcome
+// as in replica (succeeded: verified delivery and adoption).
+func replicaAt(num, cid, name string, applied *Version, out ReplicaOutcome) Replica {
+	r := Replica{Number: num, ContainerID: cid, ContainerName: name, Created: created0, Applied: applied, Outcome: out, At: t0,
+		Delivery: DeliveryNone, Adoption: AdoptionUnknown}
+	if out == ReplicaSucceeded {
+		r.RotationID, r.Delivery, r.Adoption = jrnRot, DeliveryVerified, AdoptionVerified
 	}
-	r1, r2 := mk("1", "s1", time.Second), mk("2", "s2", 2*time.Second)
-	l.Recoveries = []RecoveryRecord{r1, r2}
-	if reversed {
-		l.Recoveries = []RecoveryRecord{r2, r1}
-	}
-	return l
+	return r
 }
 
-func replicaAt(num, cid, name string, applied *Version, out ReplicaOutcome) Replica {
-	return Replica{Number: num, ContainerID: cid, ContainerName: name, Created: created0, Applied: applied, Outcome: out, At: t0}
+// requestedReplicaAt is a replica with a requested (hinted) delivery: outcome
+// pending, still holding the previous applied version.
+func requestedReplicaAt(num, cid, name string, applied *Version) Replica {
+	return Replica{Number: num, ContainerID: cid, ContainerName: name, Created: created0, Applied: applied, Outcome: ReplicaPending,
+		Reason: "delivery_requested", At: t0, RotationID: jrnRot2, Delivery: DeliveryRequested, Adoption: AdoptionVerified}
 }
 
 // buildV9 is the replica-order vector (design §31, corrected in revision 6.3):
@@ -187,42 +180,26 @@ func buildV9(t *testing.T, reversed bool) *Ledger {
 	return l
 }
 
-func vecAction(op ActionOp, cid, name string) Action {
-	return Action{Op: op, ContainerID: cid, ContainerName: name, Created: created0}
-}
-
-// buildV10 is the frozen nested-slice vector of design §45.1. With reversed
-// true every orderable slice is supplied in reverse order, while the planned
-// actions and done results of recovery R1 keep their (positional) order.
+// buildV10 is the frozen nested-slice vector (design §45.1, amended for schema
+// 3: no intent, no prior replicas, no recoveries). With reversed true every
+// orderable slice is supplied in reverse order.
 func buildV10(t *testing.T, reversed bool) *Ledger {
 	v1 := fxVer(t, "aws", "kv/batch", 1)
 	v2 := fxVer(t, "aws", "kv/batch", 0)
 	w1 := fxVer(t, "aws", "db", 1)
 	w2 := fxVer(t, "aws", "db", 0)
-	leg := []Replica{replicaAt("", "c-leg-1", "legacy-1", v1, ReplicaSucceeded), replicaAt("", "c-leg-2", "legacy-2", v1, ReplicaSucceeded)}
-	prior := []Replica{replicaAt("", "c-leg-1", "legacy-1", v1, ReplicaSucceeded), replicaAt("", "c-leg-2", "legacy-2", v1, ReplicaSucceeded)}
+	leg := []Replica{requestedReplicaAt("", "c-leg-1", "legacy-1", v1), requestedReplicaAt("", "c-leg-2", "legacy-2", v1)}
 	api := []Replica{replicaAt("", "c-api-1", "shop-api-1", w2, ReplicaSucceeded), replicaAt("", "c-api-2", "shop-api-2", w2, ReplicaSucceeded),
 		replicaAt("", "c-api-3", "shop-api-3", w1, ReplicaRolledBack)}
-	e1 := Entry{Key: Key{Service: "legacy", Provider: "aws", Secret: "kv/batch"}, Desired: v2, DesiredSeq: 3, Applied: v1, State: EntryInProgress, Replicas: leg,
-		Rotation: &Intent{RotationID: strings.Repeat("a", 32), StartedAt: t0, Desired: *v2, Strategy: "restart", PriorReplicas: prior}}
+	e1 := Entry{Key: Key{Service: "legacy", Provider: "aws", Secret: "kv/batch"}, Desired: v2, DesiredSeq: 3, Applied: v1, State: EntryPending, Replicas: leg}
 	e2 := Entry{Key: Key{Project: "shop", Service: "api", Provider: "aws", Secret: "db"}, Desired: w2, DesiredSeq: 7, Applied: w1, State: EntryPartial, Replicas: api,
 		LastOutcome: &LastOutcome{Kind: "partial", Reason: "1 of 3 replicas rolled back", At: t0, Strategy: "rolling"}}
-	r1 := RecoveryRecord{RecoveryID: strings.Repeat("1", 32), Scope: RecoveryScope{Project: "p", Service: "s1"}, Trigger: TriggerOrphanScan,
-		Planned: []Action{vecAction(ActionStop, "c-x1", "svc_dso_new_"), vecAction(ActionRemove, "c-x1", "svc_dso_new_"), vecAction(ActionStart, "c-x2", "svc")},
-		Done:    []ActionResult{{Outcome: ActionOK}, {Outcome: ActionAlreadyDone}}, State: RecoveryInProgress, StartedAt: t0.Add(time.Second)}
-	r2 := RecoveryRecord{RecoveryID: strings.Repeat("2", 32), Scope: RecoveryScope{Project: "p", Service: "s2"}, Trigger: TriggerLedgerIntent,
-		Planned: []Action{vecAction(ActionRemove, "c-y1", "svc2_dso_backup_")}, State: RecoveryPlanned, StartedAt: t0.Add(2 * time.Second)}
 	l := vecHeader(derivedKeyID(fixtureKey))
 	l.Entries = []Entry{e1, e2}
-	l.Recoveries = []RecoveryRecord{r1, r2}
 	if reversed {
 		e1.Replicas = reversedReplicas(e1.Replicas)
-		rot := *e1.Rotation
-		rot.PriorReplicas = reversedReplicas(rot.PriorReplicas)
-		e1.Rotation = &rot
 		e2.Replicas = reversedReplicas(e2.Replicas)
 		l.Entries = []Entry{e2, e1}
-		l.Recoveries = []RecoveryRecord{r2, r1}
 	}
 	return l
 }

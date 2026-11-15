@@ -13,9 +13,11 @@ import (
 )
 
 // Store is the single writer of ledger.json (design §8.1). Reads are lock-free
-// copies of an immutable published document; every mutation goes through Update
-// (durable) or UpdateMemoryOnly (memory-only modes), on a deep clone, and the
-// published document is replaced only after the new one is durable.
+// copies of an immutable published document; every mutation goes through update
+// (durable) or updateMemoryOnly (memory-only modes), on a deep clone, and the
+// published document is replaced only after the new one is durable. Both are
+// unexported on purpose (design section 9, O-9): they mutate the whole
+// document, so production code gets only the narrow Versions facade.
 type Store struct {
 	dir, path string
 	ops       *fileOps
@@ -45,7 +47,7 @@ type Store struct {
 	release func() error
 }
 
-// Persistence attempts per Update and their delays (design §8.3 R3, D-S2-6).
+// Persistence attempts per update and their delays (design §8.3 R3, D-S2-6).
 var retryDelays = [3]time.Duration{0, 250 * time.Millisecond, time.Second}
 
 const (
@@ -123,8 +125,11 @@ func (s *Store) PersistenceHealthy() bool {
 	return s.mode == ModeDurable && s.healthy
 }
 
-// Gate returns nil only when a Docker mutation may be authorized: the store is
-// durable and not degraded (design §8.3 R5). S4 transitions must call it.
+// Gate returns nil while durable persistence is available. It is ADVISORY
+// (owner decision O-3): it only selects durable versus memory-only handling. It
+// is never a precondition for, and never gates, a Docker mutation: dispatch is
+// decided by the M0 operation guard alone, and a ledger problem never stops a
+// rotation that M0 would permit.
 func (s *Store) Gate() error {
 	if !s.PersistenceHealthy() {
 		return ErrPersistenceUnavailable
@@ -144,17 +149,17 @@ func (s *Store) Health() Health {
 	}
 }
 
-// Update applies fn to a deep clone of the published ledger, validates the
+// update applies fn to a deep clone of the published ledger, validates the
 // result, writes it durably and only then publishes a fresh clone of what was
 // written. fn runs exactly once per call and must be idempotent, because a
-// caller may retry Update after ErrPersistenceFailed. The store, not fn, sets
+// caller may retry update after ErrPersistenceFailed. The store, not fn, sets
 // generation and updated_at. Validation errors and fn's own errors write
 // nothing, leave memory unchanged and do not affect health (M-S2-2); a failed
 // durable write, including a size-cap refusal, does.
 //
 // Durability guarantee. The candidate is published in memory only after the
 // whole write succeeded: temporary file, fsync, rename and directory fsync. A
-// failed Update therefore always leaves the published document unchanged, but it
+// failed update therefore always leaves the published document unchanged, but it
 // does NOT necessarily leave the previous document on disk. If the rename
 // succeeded and the directory fsync then failed, the file may already hold the
 // complete candidate, so memory and disk can temporarily represent different
@@ -167,7 +172,7 @@ func (s *Store) Health() Health {
 // generation number; generation is a diagnostic counter.
 //
 // fn may return ErrNoChange to end the update without any write.
-func (s *Store) Update(fn func(*Ledger) error) error {
+func (s *Store) update(fn func(*Ledger) error) error {
 	if fn == nil {
 		return errors.New("ledger: nil update function")
 	}
@@ -184,7 +189,7 @@ func (s *Store) Update(fn func(*Ledger) error) error {
 	return err
 }
 
-// updateLocked is Update with s.mu held. attempts bounds the durable write.
+// updateLocked is update with s.mu held. attempts bounds the durable write.
 func (s *Store) updateLocked(fn func(*Ledger) error, attempts int) ([]Event, error) {
 	base := s.cur.Load()
 	next := base.Clone()
@@ -250,7 +255,7 @@ func tempName(random io.Reader) (string, error) {
 // fails after the rename the file already holds the complete candidate (its
 // content was fsynced before the rename; only the directory entry is uncertain),
 // but the outcome is reported as a failure and memory is left unchanged, so the
-// caller never claims durability it cannot show. See Update for the guarantee.
+// caller never claims durability it cannot show. See update for the guarantee.
 func (s *Store) writeOnce(data []byte) error {
 	name, err := tempName(s.random)
 	if err != nil {
@@ -377,10 +382,10 @@ func (s *Store) probeOnce() {
 	s.emit(evs)
 }
 
-// UpdateMemoryOnly applies fn to an in-memory working copy in a memory-only
+// updateMemoryOnly applies fn to an in-memory working copy in a memory-only
 // mode. It performs no disk access, does not bump the generation and never
 // claims durability: Snapshot reports Durable=false (owner decision D-S2-7).
-func (s *Store) UpdateMemoryOnly(fn func(*Ledger) error) error {
+func (s *Store) updateMemoryOnly(fn func(*Ledger) error) error {
 	if fn == nil {
 		return errors.New("ledger: nil update function")
 	}
@@ -421,7 +426,7 @@ func (s *Store) Close() error {
 	s.hmu.Unlock()
 	s.wg.Wait()
 	s.mu.Lock()   // wait for an in-flight update to end
-	s.mu.Unlock() //nolint:staticcheck // SA2001: intentional barrier, waits for any in-flight Update to finish
+	s.mu.Unlock() //nolint:staticcheck // SA2001: intentional barrier, waits for any in-flight update to finish
 	if s.release != nil {
 		return s.release()
 	}

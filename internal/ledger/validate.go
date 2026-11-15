@@ -90,10 +90,11 @@ func checkText(path, s string, required bool) error {
 //
 // Beyond field shapes it enforces the structural invariants that follow from
 // the schema: unique entry keys, every HMAC identity bound to the ledger's
-// hmac_key_id, desired/seq consistency, the state/intent/replica relations of
-// the state table, and the recovery-record rules. It does not know a previous
-// document, so "applied advances only when every replica succeeded" is a rule
-// for the later stages that perform transitions, not something checkable here.
+// hmac_key_id, desired/seq consistency, the state/replica relations of the
+// state table and the delivery/adoption/applied relations of every replica. It
+// does not know a previous document, so "applied advances only on journal
+// evidence" is a rule of the transitions (transitions.go), not something
+// checkable here.
 func (l *Ledger) Validate() error {
 	if l == nil {
 		return invalid("ledger", "document is nil")
@@ -130,25 +131,6 @@ func (l *Ledger) Validate() error {
 		}
 	}
 
-	ids := make(map[string]struct{}, len(l.Recoveries))
-	open := make(map[RecoveryScope]int)
-	for i := range l.Recoveries {
-		path := fmt.Sprintf("recoveries[%d]", i)
-		r := &l.Recoveries[i]
-		if err := r.validate(path); err != nil {
-			return err
-		}
-		if _, dup := ids[r.RecoveryID]; dup {
-			return invalid(path+".recovery_id", "duplicate recovery id")
-		}
-		ids[r.RecoveryID] = struct{}{}
-		if r.State == RecoveryPlanned || r.State == RecoveryInProgress {
-			if prev, dup := open[r.Scope]; dup {
-				return invalid(path+".scope", "second non-terminal record for the same scope (recoveries[%d] is already open)", prev)
-			}
-			open[r.Scope] = i
-		}
-	}
 	return nil
 }
 
@@ -167,7 +149,7 @@ func (k Key) validate(path string) error {
 
 func validEntryState(s EntryState) bool {
 	switch s {
-	case EntryAdopted, EntryIdle, EntryPending, EntryInProgress, EntryPartial,
+	case EntryAdopted, EntryIdle, EntryPending, EntryPartial,
 		EntryFailed, EntryRolledBack, EntryBlocked:
 		return true
 	}
@@ -232,13 +214,8 @@ func (e *Entry) validate(path, keyID string) error {
 		}
 	}
 
-	if e.Rotation != nil {
-		if err := e.Rotation.validate(path+".rotation", keyID); err != nil {
-			return err
-		}
-	}
-	if (e.State == EntryInProgress) != (e.Rotation != nil) {
-		return invalid(path+".state", "state in_progress and a rotation intent must be present together")
+	if e.State == EntryAdopted && e.Applied != nil {
+		return invalid(path+".applied", "an adopted entry has an unknown applied version (applied must be null)")
 	}
 	if e.State == EntryPartial && (succeeded == 0 || notDelivered == 0) {
 		return invalid(path+".state", "a partial entry needs at least one succeeded replica and one failed, rolled_back or pending replica")
@@ -293,47 +270,90 @@ func (r *Replica) validate(path, keyID string) error {
 	if !validReplicaOutcome(r.Outcome) {
 		return invalid(path+".outcome", "unknown replica outcome %s", quote(string(r.Outcome)))
 	}
-	if (r.Outcome == ReplicaSucceeded || r.Outcome == ReplicaAdopted) && r.Applied == nil {
-		return invalid(path+".applied", "a %s replica must record the version it holds", r.Outcome)
-	}
 	if err := checkText(path+".reason", r.Reason, false); err != nil {
 		return err
 	}
-	return checkTime(path+".at", r.At, true)
+	if err := checkTime(path+".at", r.At, true); err != nil {
+		return err
+	}
+	return r.validateDelivery(path)
 }
 
-func (in *Intent) validate(path, keyID string) error {
-	if !isID(in.RotationID) {
-		return invalid(path+".rotation_id", "must be 32 lowercase hex characters")
+// validRotationID reports whether s is a journal operation id: 1 to 64
+// characters of [A-Za-z0-9_-] (the 32-hex rule of the retired ledger intent does
+// not apply, journal ids are rot-<16 hex>).
+func validRotationID(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
 	}
-	if err := checkTime(path+".started_at", in.StartedAt, true); err != nil {
-		return err
-	}
-	if err := in.Desired.validate(path+".desired", keyID); err != nil {
-		return err
-	}
-	if err := checkText(path+".strategy", in.Strategy, true); err != nil {
-		return err
-	}
-	ids := make(map[string]struct{}, len(in.PriorReplicas))
-	for i := range in.PriorReplicas {
-		rp := fmt.Sprintf("%s.prior_replicas[%d]", path, i)
-		r := &in.PriorReplicas[i]
-		if err := r.validate(rp, keyID); err != nil {
-			return err
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
 		}
-		if _, dup := ids[r.ContainerID]; dup {
-			return invalid(rp+".container_id", "duplicate container id within the intent")
-		}
-		ids[r.ContainerID] = struct{}{}
 	}
-	if in.Supersedes != "" {
-		if !isID(in.Supersedes) {
-			return invalid(path+".supersedes", "must be empty or 32 lowercase hex characters")
+	return true
+}
+
+func validDelivery(d DeliveryState) bool {
+	return d == DeliveryNone || d == DeliveryRequested || d == DeliveryVerified
+}
+
+func validAdoption(a AdoptionState) bool {
+	return a == AdoptionUnknown || a == AdoptionUnverified || a == AdoptionVerified
+}
+
+// validateDelivery enforces the schema v3 relations between rotation_id,
+// delivery, adoption, applied and outcome (design section 1.3):
+//
+//   - delivery verified is the only state that claims delivery; it needs the
+//     operation id, an applied version, an adoption verdict (unverified or
+//     verified) and outcome succeeded, and outcome succeeded needs it;
+//   - delivery requested is a hint: it needs the operation id and outcome
+//     pending;
+//   - adoption verified or unverified needs an applied version (a replica never
+//     claims adoption of nothing); adoption never implies delivery;
+//   - an adopted replica (observed, applied unknown) holds no applied version,
+//     no delivery and no adoption.
+func (r *Replica) validateDelivery(path string) error {
+	if r.RotationID != "" && !validRotationID(r.RotationID) {
+		return invalid(path+".rotation_id", "must be empty or 1 to 64 characters of [A-Za-z0-9_-]")
+	}
+	if !validDelivery(r.Delivery) {
+		return invalid(path+".delivery", "unknown delivery state %s", quote(string(r.Delivery)))
+	}
+	if !validAdoption(r.Adoption) {
+		return invalid(path+".adoption", "unknown adoption state %s", quote(string(r.Adoption)))
+	}
+	if r.Adoption != AdoptionUnknown && r.Applied == nil {
+		return invalid(path+".adoption", "adoption %s needs an applied version", r.Adoption)
+	}
+	switch r.Delivery {
+	case DeliveryRequested:
+		if r.RotationID == "" {
+			return invalid(path+".rotation_id", "delivery requested must name the rotation")
 		}
-		if in.Supersedes == in.RotationID {
-			return invalid(path+".supersedes", "an intent cannot supersede itself")
+		if r.Outcome != ReplicaPending {
+			return invalid(path+".outcome", "a replica with delivery requested must have outcome pending")
 		}
+	case DeliveryVerified:
+		if r.RotationID == "" {
+			return invalid(path+".rotation_id", "delivery verified must name the rotation")
+		}
+		if r.Applied == nil {
+			return invalid(path+".applied", "delivery verified must record the delivered version")
+		}
+		if r.Adoption == AdoptionUnknown {
+			return invalid(path+".adoption", "delivery verified needs an adoption verdict of unverified or verified")
+		}
+	}
+	if (r.Delivery == DeliveryVerified) != (r.Outcome == ReplicaSucceeded) {
+		return invalid(path+".outcome", "outcome succeeded and delivery verified must go together")
+	}
+	if r.Outcome == ReplicaAdopted && (r.Applied != nil || r.Delivery != DeliveryNone || r.Adoption != AdoptionUnknown) {
+		return invalid(path+".outcome", "an adopted replica has no applied version, no delivery and unknown adoption")
 	}
 	return nil
 }
@@ -392,128 +412,4 @@ func (o *LastOutcome) validate(path string) error {
 		return err
 	}
 	return checkText(path+".strategy", o.Strategy, false)
-}
-
-func validRecoveryState(s RecoveryState) bool {
-	switch s {
-	case RecoveryPlanned, RecoveryInProgress, RecoveryDone, RecoveryFailed, RecoveryBlockedPersistence:
-		return true
-	}
-	return false
-}
-
-func validTrigger(t RecoveryTrigger) bool {
-	switch t {
-	case TriggerStateTracker, TriggerLedgerIntent, TriggerOrphanScan:
-		return true
-	}
-	return false
-}
-
-func validOp(o ActionOp) bool {
-	switch o {
-	case ActionStop, ActionRemove, ActionStart:
-		return true
-	}
-	return false
-}
-
-func validActionOutcome(o ActionOutcome) bool {
-	switch o {
-	case ActionOK, ActionAlreadyDone, ActionFailedOp, ActionSkippedMismatch:
-		return true
-	}
-	return false
-}
-
-func (r *RecoveryRecord) validate(path string) error {
-	if !isID(r.RecoveryID) {
-		return invalid(path+".recovery_id", "must be 32 lowercase hex characters")
-	}
-	if err := r.Scope.validate(path + ".scope"); err != nil {
-		return err
-	}
-	if !validTrigger(r.Trigger) {
-		return invalid(path+".trigger", "unknown recovery trigger %s", quote(string(r.Trigger)))
-	}
-	if !validRecoveryState(r.State) {
-		return invalid(path+".state", "unknown recovery state %s", quote(string(r.State)))
-	}
-	for i := range r.Planned {
-		ap := fmt.Sprintf("%s.planned[%d]", path, i)
-		a := &r.Planned[i]
-		if !validOp(a.Op) {
-			return invalid(ap+".op", "unknown action %s", quote(string(a.Op)))
-		}
-		if err := checkText(ap+".container_id", a.ContainerID, true); err != nil {
-			return err
-		}
-		if err := checkText(ap+".container_name", a.ContainerName, true); err != nil {
-			return err
-		}
-		if _, err := time.Parse(time.RFC3339Nano, a.Created); err != nil {
-			return invalid(ap+".created", "must be an RFC 3339 timestamp")
-		}
-	}
-	if len(r.Done) > len(r.Planned) {
-		return invalid(path+".done", "more results than planned actions")
-	}
-	allOK := true
-	for i := range r.Done {
-		dp := fmt.Sprintf("%s.done[%d]", path, i)
-		d := &r.Done[i]
-		if !validActionOutcome(d.Outcome) {
-			return invalid(dp+".outcome", "unknown action outcome %s", quote(string(d.Outcome)))
-		}
-		// skipped_mismatch names the mismatching attribute: the reason is
-		// required (design §18.1).
-		if err := checkText(dp+".reason", d.Reason, d.Outcome == ActionSkippedMismatch); err != nil {
-			return err
-		}
-		if d.Outcome == ActionFailedOp {
-			allOK = false
-			// Execution is sequential and halts at the first failed action, so
-			// a failed result can only be the last element of the prefix and a
-			// retry overwrites it in place (design §18.4 rule 3, §18.5).
-			if i != len(r.Done)-1 {
-				return invalid(dp+".outcome", "a failed result may only be the last result of a recovery record")
-			}
-		}
-	}
-	if r.State == RecoveryPlanned && len(r.Done) != 0 {
-		return invalid(path+".done", "a planned record has no results yet")
-	}
-	if r.State == RecoveryDone && (len(r.Done) != len(r.Planned) || !allOK) {
-		return invalid(path+".state", "a done record needs a successful result for every planned action")
-	}
-	if err := checkTime(path+".started_at", r.StartedAt, true); err != nil {
-		return err
-	}
-	terminal := r.State == RecoveryDone || r.State == RecoveryFailed
-	if err := checkTime(path+".finished_at", r.FinishedAt, terminal); err != nil {
-		return err
-	}
-	if !terminal && !r.FinishedAt.IsZero() {
-		return invalid(path+".finished_at", "only a done or failed record has a finish time")
-	}
-	return nil
-}
-
-func (s RecoveryScope) validate(path string) error {
-	group := s.Service != ""
-	artifact := s.ContainerName != ""
-	switch {
-	case group == artifact:
-		return invalid(path, "a scope names either a service group or an artifact container, not both and not neither")
-	case group:
-		if err := checkText(path+".project", s.Project, false); err != nil {
-			return err
-		}
-		return checkText(path+".service", s.Service, true)
-	default:
-		if s.Project != "" {
-			return invalid(path+".project", "an artifact scope has no project")
-		}
-		return checkText(path+".container_name", s.ContainerName, true)
-	}
 }

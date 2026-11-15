@@ -11,7 +11,7 @@ import (
 )
 
 func setVersion(doc, v string) string {
-	return strings.Replace(doc, `"schema_version":2`, `"schema_version":`+v, 1)
+	return strings.Replace(doc, `"schema_version":3`, `"schema_version":`+v, 1)
 }
 
 func replaceNth(s, old, repl string, n int) string {
@@ -90,14 +90,14 @@ func expectAccepted(t *testing.T, name, doc, wantCanonical string) {
 
 // T-U50 (design §28, §36.2 P1-5 to P1-8): schema versions.
 func TestSchemaVersion_Boundary(t *testing.T) {
-	if SchemaVersion != 2 {
-		t.Fatalf("SchemaVersion = %d, the approved format is version 2 (design D5-4, §28)", SchemaVersion)
+	if SchemaVersion != 3 {
+		t.Fatalf("SchemaVersion = %d, the approved format is version 3 (docs/design/m1-ledger-reconciliation.md §1.3)", SchemaVersion)
 	}
-	expectAccepted(t, "version 2", vecV1Doc, vecV1Doc)
-	for name, v := range map[string]string{"zero": "0", "version 1": "1", "negative": "-1", "negative zero": "-0"} {
+	expectAccepted(t, "version 3", vecV1Doc, vecV1Doc)
+	for name, v := range map[string]string{"zero": "0", "version 1": "1", "version 2 (schema v2 is rejected, no migration)": "2", "negative": "-1", "negative zero": "-0"} {
 		expectInvalid(t, name, setVersion(vecV1Doc, v), "schema_version", "unsupported")
 	}
-	for _, v := range []string{"3", "4", "100", "2147483647", "9223372036854775807"} {
+	for _, v := range []string{"4", "5", "100", "2147483647", "9223372036854775807"} {
 		_ = expectNewer(t, "version "+v, setVersion(vecV1Doc, v))
 	}
 	// An integer beyond 64 bits is greater than any supported version when
@@ -109,7 +109,7 @@ func TestSchemaVersion_Boundary(t *testing.T) {
 	}
 	expectInvalid(t, "huge negative", setVersion(vecV1Doc, "-99999999999999999999"), "schema_version")
 	// Marshal writes only the supported version.
-	for _, v := range []int{0, 1, 3} {
+	for _, v := range []int{0, 1, 2, 4} {
 		l := buildV1()
 		l.SchemaVersion = v
 		if _, err := Marshal(l); !errors.Is(err, ErrInvalid) {
@@ -121,18 +121,18 @@ func TestSchemaVersion_Boundary(t *testing.T) {
 // T-U37 (design §36.4): the two-phase decoder.
 func TestStrictDecoder_TwoPhases(t *testing.T) {
 	sealed := string(mustMarshal(t, sampleLedger(t)))
-	newerV2 := setVersion(vecV2Doc, "3")
+	newerV2 := setVersion(vecV2Doc, "4")
 
 	t.Run("a-e newer schema is recognised before any structural check", func(t *testing.T) {
 		for name, doc := range map[string]string{
-			"a unknown top-level field": strings.Replace(newerV2, `{"schema_version":3,`, `{"schema_version":3,"surprise":true,`, 1),
+			"a unknown top-level field": strings.Replace(newerV2, `{"schema_version":4,`, `{"schema_version":4,"surprise":true,`, 1),
 			"b unknown nested field":    mustChange(t, newerV2, strings.Replace(newerV2, `"project":""`, `"project":"","bogus":1`, 1)),
 			"c nested duplicate key":    mustChange(t, newerV2, strings.Replace(newerV2, `"service":"svc"`, `"service":"x","service":"svc"`, 1)),
 			"d case-variant names": mustChange(t, newerV2, strings.Replace(strings.Replace(newerV2, `"entries":`, `"Entries":`, 1),
 				`"key":{`, `"Key":{`, 1)),
-			"e all of them": strings.Replace(strings.Replace(strings.Replace(strings.Replace(newerV2, `{"schema_version":3,`, `{"schema_version":3,"surprise":true,`, 1),
+			"e all of them": strings.Replace(strings.Replace(strings.Replace(strings.Replace(newerV2, `{"schema_version":4,`, `{"schema_version":4,"surprise":true,`, 1),
 				`"project":""`, `"project":"","bogus":1`, 1), `"service":"svc"`, `"service":"x","service":"svc"`, 1), `"entries":`, `"Entries":`, 1),
-			"entirely different structure": `{"schema_version":3,"records":[1,2,{"x":null}],"schema":"v3"}`,
+			"entirely different structure": `{"schema_version":4,"records":[1,2,{"x":null}],"schema":"v3"}`,
 		} {
 			_ = expectNewer(t, name, doc)
 		}
@@ -140,19 +140,19 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 
 	t.Run("f duplicate top-level schema_version is corruption", func(t *testing.T) {
 		for name, ins := range map[string]string{
-			"2 then 1":        `"schema_version":2,"schema_version":1,`,
-			"1 then 2":        `"schema_version":1,"schema_version":2,`,
+			"2 then 1":        `"schema_version":3,"schema_version":1,`,
+			"1 then 2":        `"schema_version":1,"schema_version":3,`,
 			"1 then 1":        `"schema_version":1,"schema_version":1,`,
-			"2 then 2":        `"schema_version":2,"schema_version":2,`,
-			"3 then 3":        `"schema_version":3,"schema_version":3,`,
-			"escaped spelled": `"schema_version":2,"schema_version":2,`,
+			"2 then 2":        `"schema_version":3,"schema_version":3,`,
+			"3 then 3":        `"schema_version":4,"schema_version":4,`,
+			"escaped spelled": `"schema_version":3,"schema_version":3,`,
 		} {
-			expectInvalid(t, name, strings.Replace(vecV1Doc, `"schema_version":2,`, ins, 1), "schema_version", "duplicate key")
+			expectInvalid(t, name, strings.Replace(vecV1Doc, `"schema_version":3,`, ins, 1), "schema_version", "duplicate key")
 		}
 	})
 
 	t.Run("g missing schema_version", func(t *testing.T) {
-		expectInvalid(t, "absent", strings.Replace(vecV1Doc, `"schema_version":2,`, ``, 1), "schema_version", "missing field")
+		expectInvalid(t, "absent", strings.Replace(vecV1Doc, `"schema_version":3,`, ``, 1), "schema_version", "missing field")
 		expectInvalid(t, "only a case variant", strings.Replace(vecV1Doc, `"schema_version"`, `"Schema_Version"`, 1), "schema_version", "missing field")
 	})
 
@@ -165,9 +165,9 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 	t.Run("k supported schema with nested duplicate keys", func(t *testing.T) {
 		for name, doc := range map[string]string{
 			"entries[0].key.service": mustChange(t, sealed, strings.Replace(sealed, `"service":"legacy-batch"`, `"service":"x","service":"legacy-batch"`, 1)),
-			"entries[0].state":       mustChange(t, sealed, strings.Replace(sealed, `"state":"in_progress"`, `"state":"failed","state":"in_progress"`, 1)),
+			"entries[0].state":       mustChange(t, sealed, strings.Replace(sealed, `"state":"pending"`, `"state":"failed","state":"pending"`, 1)),
 			"replicas[0].applied":    mustChange(t, sealed, replaceNth(sealed, `"applied":{"kind":"hmac"`, `"applied":{"kind":"hmac","kind":"hmac"`, 2)),
-			"rotation.strategy":      mustChange(t, sealed, strings.Replace(sealed, `"strategy":"restart"`, `"strategy":"a","strategy":"restart"`, 1)),
+			"replicas[0].delivery":   mustChange(t, sealed, strings.Replace(sealed, `"delivery":"verified"`, `"delivery":"none","delivery":"verified"`, 1)),
 			"top-level first bogus":  mustChange(t, sealed, strings.Replace(sealed, `"generation":42`, `"generation":7,"generation":42`, 1)),
 			"top-level last bogus":   mustChange(t, sealed, strings.Replace(sealed, `"generation":42`, `"generation":42,"generation":7`, 1)),
 			"top-level ledger_id":    mustChange(t, sealed, strings.Replace(sealed, `"ledger_id"`, `"ledger_id":"`+strings.Repeat("b", 32)+`","ledger_id"`, 1)),
@@ -178,12 +178,12 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 
 	t.Run("l supported schema with unknown fields", func(t *testing.T) {
 		for name, doc := range map[string]string{
-			"top level":       mustChange(t, sealed, strings.Replace(sealed, `"generation"`, `"surprise":1,"generation"`, 1)),
-			"entry key":       mustChange(t, sealed, strings.Replace(sealed, `"project":""`, `"project":"","bogus":1`, 1)),
-			"intent":          mustChange(t, sealed, strings.Replace(sealed, `"strategy":"restart"`, `"strategy":"restart","bogus":1`, 1)),
-			"replica version": mustChange(t, sealed, replaceNth(sealed, `"applied":{"kind":"hmac"`, `"applied":{"bogus":1,"kind":"hmac"`, 2)),
-			"recovery action": mustChange(t, sealed, strings.Replace(sealed, `"op":"stop"`, `"op":"stop","bogus":1`, 1)),
-			"unknown object":  mustChange(t, sealed, strings.Replace(sealed, `"generation":42`, `"generation":42,"extra":{"a":1}`, 1)),
+			"top level":        mustChange(t, sealed, strings.Replace(sealed, `"generation"`, `"surprise":1,"generation"`, 1)),
+			"entry key":        mustChange(t, sealed, strings.Replace(sealed, `"project":""`, `"project":"","bogus":1`, 1)),
+			"replica":          mustChange(t, sealed, strings.Replace(sealed, `"adoption":"verified"`, `"adoption":"verified","bogus":1`, 1)),
+			"replica version":  mustChange(t, sealed, replaceNth(sealed, `"applied":{"kind":"hmac"`, `"applied":{"bogus":1,"kind":"hmac"`, 2)),
+			"retired rotation": mustChange(t, sealed, strings.Replace(sealed, `"request":null`, `"rotation":null,"request":null`, 1)),
+			"unknown object":   mustChange(t, sealed, strings.Replace(sealed, `"generation":42`, `"generation":42,"extra":{"a":1}`, 1)),
 		} {
 			expectInvalid(t, name, doc, "unknown field")
 		}
@@ -224,13 +224,13 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 	})
 
 	t.Run("r truncated newer-schema document cannot be classified", func(t *testing.T) {
-		for _, doc := range []string{`{"schema_version":3,"surprise":`, `{"schema_version":3`, `{"schema_version":3,"records":[1,2`} {
+		for _, doc := range []string{`{"schema_version":4,"surprise":`, `{"schema_version":4`, `{"schema_version":4,"records":[1,2`} {
 			expectInvalid(t, doc, doc, "syntax error")
 		}
 	})
 
 	t.Run("s not an object", func(t *testing.T) {
-		for _, doc := range []string{`[]`, ``, "  \n\t ", `"x"`, `123`, `null`, `true`, `[{"schema_version":2}]`} {
+		for _, doc := range []string{`[]`, ``, "  \n\t ", `"x"`, `123`, `null`, `true`, `[{"schema_version":3}]`} {
 			expectInvalid(t, fmt.Sprintf("%q", doc), doc)
 		}
 	})
@@ -249,8 +249,8 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 		expectAccepted(t, "leading and trailing blank lines", "\n\n \t"+vecV10Doc+"\r\n\r\n\n", vecV10Doc)
 		expectAccepted(t, "trailing newline", vecV1Doc+"\n", vecV1Doc)
 		// Key order inside an object is irrelevant.
-		reordered := `{"recoveries":[],"entries":[],"body_sha256":"` + vecV1SHA + `","updated_at":"2026-11-12T08:00:00Z","created_at":"2026-11-12T08:00:00Z",` +
-			`"hmac_key_id":"k-0123456789abcdef","generation":1,"ledger_id":"` + strings.Repeat("a", 32) + `","schema_version":2}`
+		reordered := `{"entries":[],"body_sha256":"` + vecV1SHA + `","updated_at":"2026-11-12T08:00:00Z","created_at":"2026-11-12T08:00:00Z",` +
+			`"hmac_key_id":"k-0123456789abcdef","generation":1,"ledger_id":"` + strings.Repeat("a", 32) + `","schema_version":3}`
 		expectAccepted(t, "reordered keys", reordered, vecV1Doc)
 		// A different order of entries and replicas is accepted and canonicalized.
 		expectAccepted(t, "reversed order file", vecV10ReversedFile, vecV10Doc)
@@ -262,7 +262,7 @@ func TestStrictDecoder_TwoPhases(t *testing.T) {
 		keep := append([]byte(nil), doc...)
 		_, err := Unmarshal(doc)
 		var sv *SchemaVersionError
-		if !errors.As(err, &sv) || *sv != (SchemaVersionError{Found: 3, Supported: SchemaVersion}) {
+		if !errors.As(err, &sv) || *sv != (SchemaVersionError{Found: 4, Supported: SchemaVersion}) {
 			t.Fatalf("expected exactly the two integers, got %v", err)
 		}
 		if !bytes.Equal(doc, keep) {
@@ -399,18 +399,13 @@ func TestPresencePolicy(t *testing.T) {
 
 	// Lists may be null and read as empty; the checksum is of the same content.
 	expectAccepted(t, "entries null", strings.Replace(vecV1Doc, `"entries":[]`, `"entries":null`, 1), vecV1Doc)
-	expectAccepted(t, "recoveries null", strings.Replace(vecV1Doc, `"recoveries":[]`, `"recoveries":null`, 1), vecV1Doc)
 	expectAccepted(t, "replicas null", strings.Replace(vecV2Doc, `"replicas":[]`, `"replicas":null`, 1), vecV2Doc)
-	expectAccepted(t, "planned and done null", strings.Replace(strings.Replace(vecV8Doc, `"planned":[]`, `"planned":null`, 2), `"done":[]`, `"done":null`, 2), vecV8Doc)
 	// Optional objects are present and may be null; the optional times are
 	// absent when unset, and null is read as absent.
 	expectAccepted(t, "optional time null", strings.Replace(vecV2Doc, `"applied":null`, `"desired_observed_at":null,"applied":null`, 1), vecV2Doc)
 	expectAccepted(t, "optional time absent", vecV2Doc, vecV2Doc)
-	expectAccepted(t, "finished_at null", strings.Replace(vecV8Doc, `"started_at":"2026-11-12T08:00:01Z"`, `"started_at":"2026-11-12T08:00:01Z","finished_at":null`, 1), vecV8Doc)
 	// The empty string is invalid for an optional time.
 	expectInvalid(t, "desired_observed_at empty", strings.Replace(vecV2Doc, `"applied":null`, `"desired_observed_at":"","applied":null`, 1), "desired_observed_at", "invalid value")
-	expectInvalid(t, "finished_at empty", strings.Replace(vecV8Doc, `"started_at":"2026-11-12T08:00:01Z"`, `"started_at":"2026-11-12T08:00:01Z","finished_at":""`, 1), "finished_at", "invalid value")
-	expectInvalid(t, "finished_at not a time", strings.Replace(vecV8Doc, `"started_at":"2026-11-12T08:00:01Z"`, `"started_at":"2026-11-12T08:00:01Z","finished_at":"soon"`, 1), "finished_at", "invalid value")
 	// Required empty strings are allowed where the validator allows them (the
 	// vectors contain project "", number "", reason "", source "").
 	expectAccepted(t, "empty strings where allowed", vecV10Doc, vecV10Doc)
@@ -426,9 +421,8 @@ func TestPresencePolicy(t *testing.T) {
 		{"case variant", strings.Replace(vecV2Doc, `"service":"svc"`, `"Service":"`+marker+`"`, 1), []string{"entries[0].key", "case variant"}},
 		{"missing field", strings.Replace(vecV2Doc, `"replicas":[],`, ``, 1), []string{"entries[0].replicas", "missing field"}},
 		{"wrong type", strings.Replace(vecV2Doc, `"generation":1`, `"generation":"`+marker+`"`, 1), []string{"generation", "type error"}},
-		{"invalid value", strings.Replace(vecV8Doc, `"started_at":"2026-11-12T08:00:01Z"`, `"started_at":"`+marker+`"`, 1), []string{"recoveries[0].started_at", "invalid value"}},
 		{"negative sequence", strings.Replace(vecV10Doc, `"desired_seq":3`, `"desired_seq":-3`, 1), []string{"entries[0].desired_seq", "non-negative"}},
-		{"syntax", `{"schema_version":2,"ledger_id":"` + marker, []string{"syntax error", "at byte"}},
+		{"syntax", `{"schema_version":3,"ledger_id":"` + marker, []string{"syntax error", "at byte"}},
 		{"not an object", `["` + marker + `"]`, []string{"type error"}},
 	}
 	for _, d := range diag {

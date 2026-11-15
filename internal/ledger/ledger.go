@@ -1,66 +1,64 @@
-// Package ledger is the foundation (S1) of DSO's applied-version ledger: the
-// document model, its validation, strict (de)serialization and the canonical
-// HMAC identity encoder.
-//
-// Stage S2 adds the persistence store (store.go and its companions): the
-// single-writer durable Update, recovery modes, the KeyProvider boundary, retry
-// and health, and generic request and recovery-journal operations. It still
-// contains no key storage (S3), no rotation transitions (S4), no reconciliation
-// and no logging or metrics (S6); S2 reports through events and snapshots only.
+// Package ledger is DSO's applied-version ledger: the document model, its
+// validation, strict (de)serialization, the canonical HMAC identity encoder
+// (S1), the persistence store (S2), host-local key management (S3) and the
+// narrow transition facade (S4a, transitions*.go).
 //
 // INTEGRATION STATUS: UNWIRED LIBRARY. No production package imports this
 // package; nothing in the agent, the trigger engine, the REST server or any CLI
-// instantiates a Store. It is integrated on the M1 branch as a library only.
+// instantiates a Store. The only intended future importer is the bridge file
+// internal/agent/ledger_bridge.go (see TestRepositoryReferenceGuard).
 //
-// ROTATION LIFECYCLE AND CRASH RECOVERY ARE NOT OWNED HERE. The ledger is not
-// an independent authority for either. The following APIs and types are
-// UNWIRED - pending reconciliation with the M0 StateTracker/journal (the M0
-// journal remains authoritative for rotation lifecycle and crash recovery):
+// ROTATION LIFECYCLE AND CRASH RECOVERY ARE NOT OWNED HERE. The M0 journal
+// (StateTracker, journalGuard, AutomaticRecovery) is the only authority for
+// rotation operation identity, lifecycle, pending intent, recovery and
+// blocking (docs/design/m1-ledger-reconciliation.md section 0). The ledger
+// records verified facts the journal has established: the observed desired
+// version, the last version whose delivery the journal verified, and per
+// replica delivery and adoption records. It never starts, authorises, gates or
+// sequences a Docker mutation and never calls or bypasses the operation guard
+// (invariant X1). Schema version 3 therefore has no rotation intent, no entry
+// in_progress state and no recovery journal.
 //
-//   - the write-ahead rotation intent: Entry.Rotation (*Intent) and the Intent
-//     type, together with the entry states that depend on it (EntryInProgress,
-//     EntryPartial);
-//   - the startup-recovery journal: Ledger.Recoveries, RecoveryRecord,
-//     RecoveryScope, RecoveryTrigger (including TriggerStateTracker and
-//     TriggerLedgerIntent), RecoveryState, Action, ActionOp, ActionResult,
-//     ActionOutcome, and the Store methods BeginRecovery, CompleteRecovery and
-//     RecoveryRecords;
-//   - the manual redelivery request (Store.RequestRedelivery and the
-//     Redelivery* states), which depends on the same unreconciled lifecycle.
+// Production code mutates the document only through the Versions facade. The
+// whole-document store primitives are unexported (Store.update,
+// Store.updateMemoryOnly) and a repository guard test enforces that.
 //
-// No CLI command or API exposes any of these, and none may be exposed until the
-// reconciliation with the M0 journal has been designed and approved.
+// UNWIRED but kept: the manual redelivery request (Store.RequestRedelivery and
+// the Redelivery* states), the advisory Store.Gate, and EntryPartial (not
+// produced by the v1 facade: the journal cannot attribute per-replica outcomes).
 //
 // Durability: an update is published in memory only after its durable write
 // succeeded, so a failed update never changes the published state. A failed
 // update does not necessarily leave the previous document on disk: after a
 // failed directory fsync that follows a successful rename, the file may already
 // hold the complete candidate, and a restart may find either complete document
-// (see Store.Update).
+// (see Store.update).
 //
 //   - the ledger records, per (project, service, provider, secret), the desired
-//     and applied version identities, per-replica delivery records, a
-//     write-ahead rotation intent, a manual redelivery request and (at the
-//     document level) a startup-recovery journal;
+//     and applied version identities and per-replica delivery records;
 //   - a version identity is either a provider-native id or a keyed HMAC-SHA256
 //     of the secret. The ledger never stores a plaintext secret value and never
 //     an unkeyed hash of one;
 //   - a container ID is a replica attribute, never part of an entry's key.
 //
-// Types that look similar are kept distinct on purpose: a rotation intent is
-// not an applied delivery, a manual request is not a desired-state change, and
-// a recovery record is not a rotation intent.
+// Types that look similar are kept distinct on purpose: a delivery request is
+// not a verified delivery, a delivery is not adoption by the application, and
+// a manual request is not a desired-state change.
 package ledger
 
 import "time"
 
 // SchemaVersion is the only document schema version this package reads and
-// writes. Version 2 is the format of BL-02 design revision 6.3 (§28, §43): it
-// adds the skipped_mismatch recovery-action outcome and relaxes the partial
-// state rule. No version-1 ledger exists and no migration from version 1 is
-// defined; a version-1 document is rejected as invalid, and a version greater
-// than this one is reported as a *SchemaVersionError (never as corruption).
-const SchemaVersion = 2
+// writes. Version 3 (S2.2, docs/design/m1-ledger-reconciliation.md section
+// 1.3) adds per-replica rotation_id, delivery and adoption and removes the
+// rotation intent, the in_progress entry state and the recovery journal
+// (the M0 journal is the only rotation authority). No version-1 or version-2
+// ledger exists on disk and no migration is defined: a document older than
+// this version is rejected as invalid (the store then preserves it aside and
+// starts a fresh, all-UNKNOWN ledger), and a version greater than this one is
+// reported as a *SchemaVersionError (never as corruption; the file is left
+// untouched and the store runs memory-only).
+const SchemaVersion = 3
 
 // VersionKind says how a Version identifies a secret value.
 type VersionKind string
@@ -77,10 +75,11 @@ const (
 type EntryState string
 
 const (
-	EntryAdopted    EntryState = "adopted"
-	EntryIdle       EntryState = "idle"
-	EntryPending    EntryState = "pending"
-	EntryInProgress EntryState = "in_progress"
+	// EntryAdopted: observed, applied UNKNOWN (applied is nil).
+	EntryAdopted EntryState = "adopted"
+	EntryIdle    EntryState = "idle"
+	EntryPending EntryState = "pending"
+	// EntryPartial is valid in the schema but not produced by the v1 facade.
 	EntryPartial    EntryState = "partial"
 	EntryFailed     EntryState = "failed"
 	EntryRolledBack EntryState = "rolled_back"
@@ -99,6 +98,32 @@ const (
 	ReplicaPending    ReplicaOutcome = "pending"
 )
 
+// DeliveryState is the per-replica delivery record (schema v3).
+type DeliveryState string
+
+const (
+	// DeliveryNone: nothing is claimed about delivery.
+	DeliveryNone DeliveryState = "none"
+	// DeliveryRequested is a correlation hint written after the journal
+	// recorded the operation. It never proves delivery.
+	DeliveryRequested DeliveryState = "requested"
+	// DeliveryVerified requires journal evidence (design section 4.2).
+	DeliveryVerified DeliveryState = "verified"
+)
+
+// AdoptionState says what is known about the application holding a version.
+type AdoptionState string
+
+const (
+	// AdoptionUnknown: existing workload or interrupted operation.
+	AdoptionUnknown AdoptionState = "unknown"
+	// AdoptionUnverified: delivered, but nothing proves the application loaded
+	// it (signal reload, file-mode secrets while N19 is open).
+	AdoptionUnverified AdoptionState = "unverified"
+	// AdoptionVerified: a fresh process was started with the version.
+	AdoptionVerified AdoptionState = "verified"
+)
+
 // RedeliveryState is the state of a manual redelivery request.
 type RedeliveryState string
 
@@ -109,50 +134,6 @@ const (
 	RedeliveryFailed     RedeliveryState = "failed"
 	RedeliverySuperseded RedeliveryState = "superseded"
 	RedeliveryCancelled  RedeliveryState = "cancelled"
-)
-
-// RecoveryTrigger says why a startup-recovery record was created.
-type RecoveryTrigger string
-
-const (
-	TriggerStateTracker RecoveryTrigger = "state_tracker"
-	TriggerLedgerIntent RecoveryTrigger = "ledger_intent"
-	TriggerOrphanScan   RecoveryTrigger = "orphan_scan"
-)
-
-// RecoveryState is the state of a startup-recovery record.
-type RecoveryState string
-
-const (
-	RecoveryPlanned            RecoveryState = "planned"
-	RecoveryInProgress         RecoveryState = "in_progress"
-	RecoveryDone               RecoveryState = "done"
-	RecoveryFailed             RecoveryState = "failed"
-	RecoveryBlockedPersistence RecoveryState = "blocked_persistence"
-)
-
-// ActionOp is one planned recovery operation.
-type ActionOp string
-
-const (
-	ActionStop   ActionOp = "stop"
-	ActionRemove ActionOp = "remove"
-	ActionStart  ActionOp = "start"
-)
-
-// ActionOutcome is the result of one executed recovery action.
-type ActionOutcome string
-
-const (
-	ActionOK          ActionOutcome = "ok"
-	ActionAlreadyDone ActionOutcome = "already_done"
-	ActionFailedOp    ActionOutcome = "failed"
-	// ActionSkippedMismatch records that the planned container no longer matches
-	// the plan (id, created, name or owner changed). No Docker mutation is made
-	// for such an action. It requires a non-empty reason and counts as a
-	// successful-completion result when judging a done record (design §18.1,
-	// §18.2).
-	ActionSkippedMismatch ActionOutcome = "skipped_mismatch"
 )
 
 // Ledger is the whole document.
@@ -169,9 +150,8 @@ type Ledger struct {
 	// BodySHA256 is the SHA-256 of the canonical body (see CanonicalBody). It
 	// detects truncation and bit rot of ledger metadata, not tampering. It is
 	// computed over identity metadata only, never over a secret value.
-	BodySHA256 string           `json:"body_sha256"`
-	Entries    []Entry          `json:"entries"`
-	Recoveries []RecoveryRecord `json:"recoveries"`
+	BodySHA256 string  `json:"body_sha256"`
+	Entries    []Entry `json:"entries"`
 }
 
 // Key identifies one entry. It deliberately contains no container id.
@@ -207,28 +187,24 @@ type Replica struct {
 	ContainerID   string `json:"container_id"`
 	ContainerName string `json:"container_name"`
 	// Created is the container's creation timestamp as reported by Docker.
-	Created string         `json:"created"`
+	Created string `json:"created"`
+	// Applied is the last version whose delivery the journal verified for this
+	// replica (nil: unknown). It is never set at adoption.
 	Applied *Version       `json:"applied"`
 	Outcome ReplicaOutcome `json:"outcome"`
-	Reason  string         `json:"reason"`
-	At      time.Time      `json:"at"`
-}
-
-// Intent is the write-ahead record of a rotation that has begun and has not
-// reached a durable terminal outcome. It is not an applied delivery.
-type Intent struct {
-	// RotationID is a random 128-bit id (32 lowercase hex characters).
-	RotationID string    `json:"rotation_id"`
-	StartedAt  time.Time `json:"started_at"`
-	// Desired is the version this rotation delivers; it may be older than the
-	// entry's Desired when a newer version arrived meanwhile.
-	Desired  Version `json:"desired"`
-	Strategy string  `json:"strategy"`
-	// PriorReplicas are the replicas that existed before the rotation began.
-	PriorReplicas []Replica `json:"prior_replicas"`
-	// Supersedes is the RotationID of an unresolved earlier intent this one
-	// replaces, or "".
-	Supersedes string `json:"supersedes"`
+	// Reason is one of the closed OutcomeReason values, or "".
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+	// RotationID is "" or the M0 journal operation id that last wrote this
+	// record (1 to 64 characters of [A-Za-z0-9_-]). The ledger never mints one.
+	RotationID string `json:"rotation_id"`
+	// Delivery is none, requested (a correlation hint, subordinate to the
+	// journal) or verified (requires journal evidence).
+	Delivery DeliveryState `json:"delivery"`
+	// Adoption says whether the application is known to hold the version:
+	// unknown, unverified (delivered, nothing proves it was loaded) or verified
+	// (a fresh process was started with the version).
+	Adoption AdoptionState `json:"adoption"`
 }
 
 // Redelivery is a manual redelivery request for the entry's current desired
@@ -267,48 +243,12 @@ type Entry struct {
 	// DesiredSeq increases only when Desired changes; 0 while Desired is nil.
 	DesiredSeq        uint64    `json:"desired_seq"`
 	DesiredObservedAt time.Time `json:"desired_observed_at,omitzero"`
-	// Applied is the service-level applied version. It must advance only when
-	// every targeted replica succeeded; that rule is enforced by later stages.
+	// Applied is the service-level applied version: the last version whose
+	// delivery the journal verified for every targeted replica (nil: unknown).
+	// It advances only through Versions.RecordDeliveryVerified / RecordApplied.
 	Applied     *Version     `json:"applied"`
 	State       EntryState   `json:"state"`
 	Replicas    []Replica    `json:"replicas"`
-	Rotation    *Intent      `json:"rotation"`
 	Request     *Redelivery  `json:"request"`
 	LastOutcome *LastOutcome `json:"last_outcome"`
-}
-
-// RecoveryScope names what a recovery record is about: a service group, or an
-// artifact container by name when no group applies.
-type RecoveryScope struct {
-	Project       string `json:"project"`
-	Service       string `json:"service"`
-	ContainerName string `json:"container_name"`
-}
-
-// Action is one recovery operation, fixed before any Docker mutation.
-type Action struct {
-	Op            ActionOp `json:"op"`
-	ContainerID   string   `json:"container_id"`
-	ContainerName string   `json:"container_name"`
-	Created       string   `json:"created"`
-}
-
-// ActionResult is the outcome of the planned action at the same index.
-type ActionResult struct {
-	Outcome ActionOutcome `json:"outcome"`
-	Reason  string        `json:"reason"`
-}
-
-// RecoveryRecord is one startup-recovery journal record. It is separate from
-// a rotation Intent and never describes secret delivery.
-type RecoveryRecord struct {
-	// RecoveryID is a random 128-bit id (32 lowercase hex characters).
-	RecoveryID string          `json:"recovery_id"`
-	Scope      RecoveryScope   `json:"scope"`
-	Trigger    RecoveryTrigger `json:"trigger"`
-	Planned    []Action        `json:"planned"`
-	Done       []ActionResult  `json:"done"`
-	State      RecoveryState   `json:"state"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt time.Time       `json:"finished_at,omitzero"`
 }

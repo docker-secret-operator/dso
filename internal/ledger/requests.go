@@ -1,20 +1,14 @@
 package ledger
 
-import (
-	"fmt"
-	"sort"
-	"strconv"
-	"time"
-)
+import "strconv"
 
-// This file holds the generic persistence operations S2 owns on top of Update:
-// manual redelivery requests (design §9.7.5, §30.1) and the recovery journal
-// (§8.5, §30.2). None of them changes applied, replicas or rotation. The
-// rotation transitions (Observe, Adopt, BeginRotation, CompleteRotation,
-// Interrupted, Unblock) belong to S4 and are not implemented here.
-
-// RecoveryRetention is the retention target for done recovery records (§30.2).
-const RecoveryRetention = 50
+// This file holds the manual redelivery request (design §9.7.5, §30.1), which
+// is KEEP-UNWIRED (docs/design/m1-ledger-reconciliation.md section 1.2): a
+// durable manual request would be a second intent store, so no production code
+// may reference it (TestRepositoryReferenceGuard). It does not change applied
+// or replicas. The recovery journal of earlier revisions was removed in schema
+// version 3: recovery belongs to the M0 journal. The rotation transitions are
+// in transitions.go.
 
 // CancelReasonRestart is recorded as the reason of a request cancelled because
 // the agent restarted before dispatching it (§9.7.5).
@@ -37,7 +31,7 @@ func isActive(s RedeliveryState) bool {
 func (s *Store) RequestRedelivery(k Key, actor, reason string) (string, error) {
 	var id string
 	var evs []Event
-	err := s.Update(func(l *Ledger) error {
+	err := s.update(func(l *Ledger) error {
 		e := findEntry(l, k)
 		if e == nil {
 			return ErrNotFound
@@ -132,108 +126,4 @@ func findEntry(l *Ledger, k Key) *Entry {
 		}
 	}
 	return nil
-}
-
-func sameScope(a, b RecoveryScope) bool { return a == b }
-
-func nonTerminal(s RecoveryState) bool {
-	return s == RecoveryPlanned || s == RecoveryInProgress
-}
-
-// BeginRecovery durably records a recovery plan before any recovery mutation
-// (R-V1). At most one non-terminal record exists per scope: if one exists it is
-// returned (resumed=true) and nothing is written (R-V8). Done records beyond the
-// retention target are pruned, oldest first, inside the same update; planned,
-// in_progress and failed records are never evicted, and EventRetentionExceeded
-// is emitted when that keeps the count above the target.
-func (s *Store) BeginRecovery(scope RecoveryScope, trigger RecoveryTrigger, planned []Action) (id string, resumed bool, err error) {
-	var evs []Event
-	err = s.Update(func(l *Ledger) error {
-		for i := range l.Recoveries {
-			if r := &l.Recoveries[i]; sameScope(r.Scope, scope) && nonTerminal(r.State) {
-				id, resumed = r.RecoveryID, true
-				return ErrNoChange
-			}
-		}
-		nid, err := newID(s.random)
-		if err != nil {
-			return err
-		}
-		l.Recoveries = append(l.Recoveries, RecoveryRecord{
-			RecoveryID: nid, Scope: scope, Trigger: trigger,
-			Planned: append([]Action(nil), planned...), Done: []ActionResult{},
-			State: RecoveryPlanned, StartedAt: s.utcNow(),
-		})
-		id, resumed = nid, false
-		if pruneDone(l) {
-			evs = append(evs, Event{Kind: EventRetentionExceeded, Detail: fmt.Sprintf("%d recovery records, none evictable", len(l.Recoveries)), At: s.utcNow()})
-		}
-		return nil
-	})
-	if err != nil {
-		return "", false, err
-	}
-	s.emit(evs)
-	return id, resumed, nil
-}
-
-// pruneDone evicts the oldest done records while more than RecoveryRetention
-// records are held. It reports whether the count still exceeds the target
-// because nothing evictable remains.
-func pruneDone(l *Ledger) (exceeded bool) {
-	for len(l.Recoveries) > RecoveryRetention {
-		oldest := -1
-		for i := range l.Recoveries {
-			r := &l.Recoveries[i]
-			if r.State != RecoveryDone {
-				continue
-			}
-			if oldest < 0 || r.FinishedAt.Before(l.Recoveries[oldest].FinishedAt) {
-				oldest = i
-			}
-		}
-		if oldest < 0 {
-			return true
-		}
-		l.Recoveries = append(l.Recoveries[:oldest:oldest], l.Recoveries[oldest+1:]...)
-	}
-	return false
-}
-
-// CompleteRecovery records the results and the new state of a recovery record.
-// Only a durable write makes a record done (R-V3). The state must be
-// in_progress, done or failed; blocked_persistence is an in-memory diagnostic
-// that is never written (§30.3). It touches nothing but the named record
-// (R-V4, R-V5, R-V7).
-func (s *Store) CompleteRecovery(id string, results []ActionResult, state RecoveryState) error {
-	switch state {
-	case RecoveryInProgress, RecoveryDone, RecoveryFailed:
-	default:
-		return fmt.Errorf("ledger: a recovery record cannot be written in state %q", state)
-	}
-	return s.Update(func(l *Ledger) error {
-		for i := range l.Recoveries {
-			r := &l.Recoveries[i]
-			if r.RecoveryID != id {
-				continue
-			}
-			r.Done = append([]ActionResult(nil), results...)
-			r.State = state
-			if state == RecoveryInProgress {
-				r.FinishedAt = time.Time{}
-			} else {
-				r.FinishedAt = s.utcNow()
-			}
-			return nil
-		}
-		return ErrNotFound
-	})
-}
-
-// RecoveryRecords returns an independent, deterministic copy of the journal.
-func (s *Store) RecoveryRecords() []RecoveryRecord {
-	l := s.cur.Load()
-	out := cloneSlice(l.Recoveries, cloneRecovery)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
-	return out
 }

@@ -40,10 +40,10 @@ func TestT_U9_CorruptLedger_PreservedNewLedgerEmpty_KeyKept(t *testing.T) {
 		"garbage":            []byte("not json at all"),
 		"truncated":          base[:len(base)/2],
 		"checksum mismatch":  flip,
-		"duplicate key":      bytes.Replace(base, []byte(`"schema_version":2,`), []byte(`"schema_version":2,"ledger_id":"x",`), 1),
+		"duplicate key":      bytes.Replace(base, []byte(`"schema_version":3,`), []byte(`"schema_version":3,"ledger_id":"x",`), 1),
 		"unknown field":      bytes.Replace(base, []byte(`"entries"`), []byte(`"surprise":1,"entries"`), 1),
 		"empty file":         {},
-		"version 1 document": bytes.Replace(base, []byte(`"schema_version":2`), []byte(`"schema_version":1`), 1),
+		"version 1 document": bytes.Replace(base, []byte(`"schema_version":3`), []byte(`"schema_version":1`), 1),
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -63,7 +63,7 @@ func TestT_U9_CorruptLedger_PreservedNewLedgerEmpty_KeyKept(t *testing.T) {
 				t.Fatalf("the preserved file must hold the original bytes: %v", err)
 			}
 			l := s.Snapshot().Ledger
-			if len(l.Entries) != 0 || len(l.Recoveries) != 0 || l.HMACKeyID != s2KeyA {
+			if len(l.Entries) != 0 || l.HMACKeyID != s2KeyA {
 				t.Fatalf("new ledger must be empty and bound to the kept key: %+v", l)
 			}
 			if fk.calls() != 0 {
@@ -94,11 +94,10 @@ func TestT_U10_NewerSchema_UntouchedMemoryOnly_NoRotation(t *testing.T) {
 			if res.Mode != ModeMemoryOnly || res.Reason != ReasonNewerSchema {
 				t.Fatalf("%+v", res)
 			}
-			d := &fakeDocker{}
-			if err := beginRotation(s, d, "web"); !errors.Is(err, ErrPersistenceUnavailable) || d.n() != 0 {
+			if err := recordHint(s, "web"); !errors.Is(err, ErrPersistenceUnavailable) {
 				t.Fatalf("no BeginRotation may succeed: %v", err)
 			}
-			_ = s.UpdateMemoryOnly(addEntries("web")) // adopt in memory
+			_ = s.updateMemoryOnly(addEntries("web")) // adopt in memory
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +123,7 @@ func TestT_U16_SecondWriterRefused_NoPersistence_NoMutation(t *testing.T) {
 	dir := stateDir(t)
 	fk := newFakeKeys(validKey(s2KeyA))
 	first, _, _, _ := openT(t, dir, fk)
-	if err := first.Update(addEntries("web")); err != nil {
+	if err := first.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	// A stale temp file must survive the refused second opener: cleanup runs only
@@ -136,11 +135,10 @@ func TestT_U16_SecondWriterRefused_NoPersistence_NoMutation(t *testing.T) {
 	if res.Mode != ModeMemoryOnly || res.Reason != ReasonLocked {
 		t.Fatalf("%+v", res)
 	}
-	d := &fakeDocker{}
-	if err := second.Update(addEntries("db")); !errors.Is(err, ErrPersistenceUnavailable) {
+	if err := second.update(addEntries("db")); !errors.Is(err, ErrPersistenceUnavailable) {
 		t.Fatal(err)
 	}
-	if err := beginRotation(second, d, "web"); err == nil || d.n() != 0 {
+	if err := recordHint(second, "web"); err == nil {
 		t.Fatal("no ledger-governed mutation for the second writer")
 	}
 	if dirFingerprint(t, dir) != fp {
@@ -150,7 +148,7 @@ func TestT_U16_SecondWriterRefused_NoPersistence_NoMutation(t *testing.T) {
 		t.Fatal("cleanup ran without holding the lock")
 	}
 	// The first writer is unaffected.
-	if err := first.Update(addEntries("db")); err != nil {
+	if err := first.update(addEntries("db")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -320,10 +318,10 @@ func TestT_U27_T_U28_UnsafeAndMalformedKey_FailClosed_NeverGenerate(t *testing.T
 				if dirFingerprint(t, dir) != fp {
 					t.Fatal("a fail-closed start must leave every object untouched")
 				}
-				if err := s.Update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
+				if err := s.update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
 					t.Fatal(err)
 				}
-				if err := s.UpdateMemoryOnly(addEntries("x")); err != nil {
+				if err := s.updateMemoryOnly(addEntries("x")); err != nil {
 					t.Fatalf("observations may be adopted in memory: %v", err)
 				}
 				if dirFingerprint(t, dir) != fp {
@@ -346,7 +344,7 @@ func TestS2_KeyGenerateFailure_AfterPreservation_MemoryOnly(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(dir, "ledger.json.keyloss-"+stamp)); err != nil || !bytes.Equal(b, orig) {
 		t.Fatal("the old ledger must remain available under its preserved name")
 	}
-	if err := s.Update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
+	if err := s.update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
 		t.Fatal(err)
 	}
 }
@@ -513,11 +511,9 @@ func TestS2_HMACWalker_CoversAnyPlaceAVersionCanAppear(t *testing.T) {
 	}
 	// Positions in the real schema: each is detected.
 	pos := map[string]func(*Ledger){
-		"desired":        func(l *Ledger) { l.Entries[0].Desired = &h },
-		"applied":        func(l *Ledger) { l.Entries[0].Applied = &h },
-		"replica":        func(l *Ledger) { l.Entries[0].Replicas = []Replica{{Applied: &h}} },
-		"rotation":       func(l *Ledger) { l.Entries[0].Rotation = &Intent{Desired: h} },
-		"prior replicas": func(l *Ledger) { l.Entries[0].Rotation = &Intent{PriorReplicas: []Replica{{Applied: &h}}} },
+		"desired": func(l *Ledger) { l.Entries[0].Desired = &h },
+		"applied": func(l *Ledger) { l.Entries[0].Applied = &h },
+		"replica": func(l *Ledger) { l.Entries[0].Replicas = []Replica{{Applied: &h}} },
 	}
 	for name, set := range pos {
 		l := &Ledger{Entries: []Entry{{}}}
@@ -528,7 +524,7 @@ func TestS2_HMACWalker_CoversAnyPlaceAVersionCanAppear(t *testing.T) {
 	}
 }
 
-// Schema guard: the recovery journal currently holds no Version. If a later
+// Schema guard (schema 3: no intent, no recovery journal). If a later
 // schema adds one the walker still finds it (test above), but this guard makes
 // the change visible so the owner decision on journal coverage is revisited.
 func TestS2_SchemaGuard_VersionPositions(t *testing.T) {
@@ -554,7 +550,6 @@ func TestS2_SchemaGuard_VersionPositions(t *testing.T) {
 	walk("Ledger", reflect.TypeOf(Ledger{}), map[reflect.Type]bool{})
 	want := []string{
 		"Ledger.Entries.Desired", "Ledger.Entries.Applied", "Ledger.Entries.Replicas.Applied",
-		"Ledger.Entries.Rotation.Desired", "Ledger.Entries.Rotation.PriorReplicas.Applied",
 	}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("Version positions changed:\n got %v\nwant %v\nrevisit hasHMACIdentity coverage (owner decision: all persisted HMAC identities, including recovery-journal records)", paths, want)
@@ -607,7 +602,7 @@ func TestS2_Preserve_CollisionsExhausted_FailClosed(t *testing.T) {
 	if b := readLedgerBytes(t, dir); !bytes.Equal(b, orig) {
 		t.Fatal("ledger changed")
 	}
-	if err := s.Update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
+	if err := s.update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
 		t.Fatal(err)
 	}
 }
@@ -635,11 +630,10 @@ func TestS2_Preserve_UnsupportedOrFailing_FailClosed(t *testing.T) {
 			if fk.calls() != 0 || dirFingerprint(t, dir) != fp {
 				t.Fatal("ledger and key must stay untouched")
 			}
-			d := &fakeDocker{}
-			if err := beginRotation(s, d, "web"); err == nil || d.n() != 0 {
+			if err := recordHint(s, "web"); err == nil {
 				t.Fatal("no ledger-governed Docker mutation")
 			}
-			if err := s.UpdateMemoryOnly(addEntries("obs")); err != nil {
+			if err := s.updateMemoryOnly(addEntries("obs")); err != nil {
 				t.Fatalf("memory-only observation must be permitted: %v", err)
 			}
 		})
@@ -870,7 +864,7 @@ func TestS2_Cleanup_RemovesOwnTempAfterFailedWrite_NotOthers(t *testing.T) {
 	other := filepath.Join(dir, "ledger.json.tmp-0123456789abcdef") // another process's, not ours
 	writeFile(t, other, []byte("x"), 0o600)
 	armed.Store(true)
-	_ = s.Update(addEntries("web"))
+	_ = s.update(addEntries("web"))
 	if _, err := os.Lstat(other); err != nil {
 		t.Fatal("a failed write removed a temp file it did not create")
 	}
@@ -934,7 +928,7 @@ func TestS2_SpecialLedgerObjects_FailClosedUntouched(t *testing.T) {
 			if fk.calls() != 0 || dirFingerprint(t, dir) != fp {
 				t.Fatal("an unreadable ledger must leave everything untouched (no preserve-and-restart)")
 			}
-			if err := s.Update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
+			if err := s.update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
 				t.Fatal(err)
 			}
 		})
@@ -968,7 +962,7 @@ func TestS2_UnsupportedPlatformOps_FailClosed(t *testing.T) {
 	if res.Mode != ModeMemoryOnly || dirFingerprint(t, dir) != fp || fk.calls() != 0 {
 		t.Fatalf("%+v", res)
 	}
-	if err := s.Update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
+	if err := s.update(addEntries("x")); !errors.Is(err, ErrPersistenceUnavailable) {
 		t.Fatal(err)
 	}
 }
@@ -977,7 +971,7 @@ func TestS2_UnsupportedPlatformOps_FailClosed(t *testing.T) {
 
 func entryWithDesired(t *testing.T, s *Store, svc string) Key {
 	t.Helper()
-	if err := s.Update(addEntries(svc)); err != nil {
+	if err := s.update(addEntries(svc)); err != nil {
 		t.Fatal(err)
 	}
 	return Key{Service: svc, Provider: "p", Secret: "s"}
@@ -993,13 +987,12 @@ func TestT_U32_Request_PersistedFirst_PersistenceFailureRecordsNothing(t *testin
 		return nil
 	})})
 	k := entryWithDesired(t, s, "web")
-	d := &fakeDocker{}
 	armed.Store(true)
 	id, err := s.RequestRedelivery(k, "alice", "stuck")
 	if err == nil || id != "" || !errors.Is(err, ErrPersistenceFailed) {
 		t.Fatalf("a request that cannot be persisted must fail: %q %v", id, err)
 	}
-	if e, _ := s.Get(k); e.Request != nil || d.n() != 0 {
+	if e, _ := s.Get(k); e.Request != nil {
 		t.Fatal("nothing may be recorded or dispatched (503 path)")
 	}
 	armed.Store(false)
@@ -1038,7 +1031,7 @@ func TestT_U32_Request_Identity_Coalescing_TerminalReplaced_AppliedUntouched(t *
 		t.Fatal("a request must never change applied, desired or the entry state")
 	}
 	// Terminal request: replaced by a new one (one slot, no history).
-	if err := s.Update(func(l *Ledger) error {
+	if err := s.update(func(l *Ledger) error {
 		r := &findEntry(l, k).Request
 		(*r).State, (*r).RotationID = RedeliverySucceeded, "55555555555555555555555555555555"
 		return nil
@@ -1059,7 +1052,7 @@ func TestT_U32_Request_Errors_And_MemoryOnly(t *testing.T) {
 	if _, err := s.RequestRedelivery(Key{Service: "none"}, "a", "r"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if err := s.Update(func(l *Ledger) error { l.Entries = append(l.Entries, idleEntry("", "nodesired", "p", "s")); return nil }); err != nil {
+	if err := s.update(func(l *Ledger) error { l.Entries = append(l.Entries, idleEntry("", "nodesired", "p", "s")); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RequestRedelivery(Key{Service: "nodesired", Provider: "p", Secret: "s"}, "a", "r"); !errors.Is(err, ErrNoDesired) {
@@ -1087,11 +1080,9 @@ func TestT_U32_Request_RestartCancelsUndispatched_DispatchedFollowsIntentRules(t
 		t.Fatal(err)
 	}
 	rot := "66666666666666666666666666666666"
-	if err := s.Update(func(l *Ledger) error {
+	if err := s.update(func(l *Ledger) error {
 		e := findEntry(l, kb)
 		e.Request.State, e.Request.RotationID = RedeliveryDispatched, rot
-		e.Rotation = &Intent{RotationID: rot, StartedAt: stampT, Desired: *e.Desired, Strategy: "rolling"}
-		e.State = EntryInProgress
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -1121,7 +1112,7 @@ func TestT_U32_Request_RestartCancelsUndispatched_DispatchedFollowsIntentRules(t
 		t.Fatal("cancelling a request must never change applied or state")
 	}
 	eb, _ := s2.Get(kb)
-	if eb.Request.State != RedeliveryDispatched || eb.Request.RequestID != idb || eb.Rotation == nil {
+	if eb.Request.State != RedeliveryDispatched || eb.Request.RequestID != idb {
 		t.Fatalf("a dispatched request follows the unresolved-intent rules and is untouched: %+v", eb.Request)
 	}
 	// A later request supersedes the unresolved earlier one (leftover from a crash).
@@ -1129,8 +1120,8 @@ func TestT_U32_Request_RestartCancelsUndispatched_DispatchedFollowsIntentRules(t
 	if err != nil || nid == idb {
 		t.Fatalf("%q %v", nid, err)
 	}
-	if eb2, _ := s2.Get(kb); eb2.Request.RequestID != nid || eb2.Rotation == nil || eb2.Rotation.RotationID != rot {
-		t.Fatal("the new request replaces the slot and the rotation intent is untouched")
+	if eb2, _ := s2.Get(kb); eb2.Request.RequestID != nid || eb2.State != eb.State {
+		t.Fatal("the new request replaces the slot and the entry state is untouched")
 	}
 	if log.count(EventRequestSuperseded) != 1 {
 		t.Fatalf("supersede must be reported: %v", log.kinds())
@@ -1286,216 +1277,6 @@ func TestS2_CancelUndispatched_FailedPersistenceEmitsNoCancellationEvent(t *test
 	}
 }
 
-// ---------------------------------------------------------------- recovery journal (T-U33, S2 part)
-
-type fakeContainer struct{ id, created, owner string }
-
-func TestT_U33_RecoveryJournal_PlanBeforeMutation_States_NoCrossEffects(t *testing.T) {
-	dir := stateDir(t)
-	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
-	k := entryWithDesired(t, s, "web")
-	if _, err := s.RequestRedelivery(k, "alice", "r"); err != nil {
-		t.Fatal(err)
-	}
-	entryBefore, _ := s.Get(k)
-	scope := RecoveryScope{Project: "proj", Service: "web"}
-	ts := stampT.Format(time.RFC3339Nano)
-	planned := []Action{
-		{Op: ActionStop, ContainerID: "c1", ContainerName: "web-1", Created: ts},
-		{Op: ActionRemove, ContainerID: "c2", ContainerName: "web-1-dso-tmp", Created: ts},
-		{Op: ActionStart, ContainerID: "c1", ContainerName: "web-1", Created: ts},
-	}
-	docker := map[string]fakeContainer{"c1": {"c1", ts, "dso"}, "c2": {"c2", ts, "dso"}}
-	var mutated []string
-	mutate := func(a Action) ActionResult {
-		c, ok := docker[a.ContainerID]
-		switch {
-		case !ok:
-			return ActionResult{Outcome: ActionAlreadyDone}
-		case c.created != a.Created || c.owner != "dso":
-			return ActionResult{Outcome: ActionSkippedMismatch, Reason: "created or owner changed"}
-		}
-		mutated = append(mutated, string(a.Op)+" "+a.ContainerID)
-		return ActionResult{Outcome: ActionOK}
-	}
-	// R-V1: the recorder sees nothing until BeginRecovery returned.
-	if len(mutated) != 0 {
-		t.Fatal("nothing may run before the plan is durable")
-	}
-	id, resumed, err := s.BeginRecovery(scope, TriggerOrphanScan, planned)
-	if err != nil || resumed || len(id) != 32 {
-		t.Fatalf("%q %v %v", id, resumed, err)
-	}
-	if rec := mustLoad(t, readLedgerBytes(t, dir)).Recoveries; len(rec) != 1 || rec[0].State != RecoveryPlanned || len(rec[0].Planned) != 3 {
-		t.Fatal("the plan must be durable before the first mutation")
-	}
-	// At most one non-terminal record per scope: a second begin resumes it.
-	gen := s.Snapshot().Ledger.Generation
-	id2, resumed2, err := s.BeginRecovery(scope, TriggerLedgerIntent, planned)
-	if err != nil || !resumed2 || id2 != id || s.Snapshot().Ledger.Generation != gen {
-		t.Fatalf("resume: %q %v %v", id2, resumed2, err)
-	}
-	// Execute with re-inspection; the second container changed meanwhile.
-	docker["c2"] = fakeContainer{"c2", "2000-01-01T00:00:00Z", "dso"}
-	var results []ActionResult
-	for i, a := range planned {
-		results = append(results, mutate(a))
-		state := RecoveryInProgress
-		if err := s.CompleteRecovery(id, results, state); err != nil {
-			t.Fatalf("progress %d: %v", i, err)
-		}
-	}
-	if !reflect.DeepEqual(mutated, []string{"stop c1", "start c1"}) {
-		t.Fatalf("a changed container must be skipped, never forced: %v", mutated)
-	}
-	if results[1].Outcome != ActionSkippedMismatch {
-		t.Fatal("skipped_mismatch expected")
-	}
-	if err := s.CompleteRecovery(id, results, RecoveryDone); err != nil {
-		t.Fatal(err)
-	}
-	rec := s.RecoveryRecords()[0]
-	if rec.State != RecoveryDone || rec.FinishedAt.IsZero() || len(rec.Done) != 3 {
-		t.Fatalf("%+v", rec)
-	}
-	// R-V4/R-V5/R-V7: nothing else changed.
-	entryAfter, _ := s.Get(k)
-	if !reflect.DeepEqual(entryBefore, entryAfter) {
-		t.Fatal("a recovery transition must never change applied, replicas, rotation or request")
-	}
-	// A new plan for the same scope is allowed after done.
-	if _, resumed, err := s.BeginRecovery(scope, TriggerOrphanScan, planned); err != nil || resumed {
-		t.Fatalf("%v %v", resumed, err)
-	}
-}
-
-func TestT_U33_Journal_FailedState_BlockedPersistenceNeverWritten_Errors(t *testing.T) {
-	dir := stateDir(t)
-	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
-	ts := stampT.Format(time.RFC3339Nano)
-	planned := []Action{{Op: ActionStop, ContainerID: "c1", ContainerName: "n", Created: ts}}
-	id, _, err := s.BeginRecovery(RecoveryScope{ContainerName: "orphan"}, TriggerOrphanScan, planned)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CompleteRecovery(id, nil, RecoveryBlockedPersistence); err == nil {
-		t.Fatal("blocked_persistence is an in-memory diagnostic and is never written")
-	}
-	if err := s.CompleteRecovery(id, nil, RecoveryPlanned); err == nil {
-		t.Fatal("planned is not a completion state")
-	}
-	if err := s.CompleteRecovery("77777777777777777777777777777777", nil, RecoveryFailed); !errors.Is(err, ErrNotFound) {
-		t.Fatal(err)
-	}
-	// A done record needs a result for every action (validation, not health).
-	if err := s.CompleteRecovery(id, nil, RecoveryDone); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("got %v", err)
-	}
-	if !s.PersistenceHealthy() {
-		t.Fatal("a validation failure must not degrade health")
-	}
-	if err := s.CompleteRecovery(id, []ActionResult{{Outcome: ActionFailedOp, Reason: "docker error"}}, RecoveryFailed); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.RecoveryRecords()[0]; got.State != RecoveryFailed || got.FinishedAt.IsZero() {
-		t.Fatalf("%+v", got)
-	}
-}
-
-func TestT_U33_Journal_PersistenceFailure_PlanNotRecorded(t *testing.T) {
-	dir := stateDir(t)
-	var armed atomic.Bool
-	s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)), openOpts{ops: faultOps(func(op string) error {
-		if armed.Load() && op == "fsync" {
-			return syscall.ENOSPC
-		}
-		return nil
-	})})
-	armed.Store(true)
-	ts := stampT.Format(time.RFC3339Nano)
-	_, _, err := s.BeginRecovery(RecoveryScope{Service: "web"}, TriggerOrphanScan, []Action{{Op: ActionStop, ContainerID: "c", ContainerName: "n", Created: ts}})
-	if !errors.Is(err, ErrPersistenceFailed) {
-		t.Fatalf("got %v", err)
-	}
-	if len(s.RecoveryRecords()) != 0 {
-		t.Fatal("R-V6: if the plan cannot be made durable, nothing is recorded (and the caller must not mutate)")
-	}
-}
-
-func TestT_U33_Journal_Retention_EvictsOldestDoneOnly(t *testing.T) {
-	dir := stateDir(t)
-	s, _, log, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
-	ts := stampT.Format(time.RFC3339Nano)
-	plan := func(i int) (RecoveryScope, []Action) {
-		return RecoveryScope{Service: "svc" + string(rune('a'+i/26)) + string(rune('a'+i%26))}, []Action{{Op: ActionStop, ContainerID: "c", ContainerName: "n", Created: ts}}
-	}
-	// 3 records that must never be evicted: planned, in_progress, failed.
-	var protected []string
-	for i := 0; i < 3; i++ {
-		sc, pl := plan(1000 + i)
-		id, _, err := s.BeginRecovery(sc, TriggerOrphanScan, pl)
-		if err != nil {
-			t.Fatal(err)
-		}
-		protected = append(protected, id)
-	}
-	if err := s.CompleteRecovery(protected[1], []ActionResult{{Outcome: ActionOK}}, RecoveryInProgress); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CompleteRecovery(protected[2], []ActionResult{{Outcome: ActionFailedOp, Reason: "x"}}, RecoveryFailed); err != nil {
-		t.Fatal(err)
-	}
-	var doneIDs []string
-	for i := 0; i < RecoveryRetention+5; i++ {
-		sc, pl := plan(i)
-		id, _, err := s.BeginRecovery(sc, TriggerOrphanScan, pl)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s.CompleteRecovery(id, []ActionResult{{Outcome: ActionOK}}, RecoveryDone); err != nil {
-			t.Fatal(err)
-		}
-		doneIDs = append(doneIDs, id)
-	}
-	recs := s.RecoveryRecords()
-	if len(recs) > RecoveryRetention {
-		t.Fatalf("%d records retained, the target is %d", len(recs), RecoveryRetention)
-	}
-	have := map[string]RecoveryState{}
-	for _, r := range recs {
-		have[r.RecoveryID] = r.State
-	}
-	for _, id := range protected {
-		if _, ok := have[id]; !ok {
-			t.Fatal("a planned, in_progress or failed record was evicted")
-		}
-	}
-	if _, ok := have[doneIDs[0]]; ok {
-		t.Fatal("the oldest done record should have been evicted first")
-	}
-	if _, ok := have[doneIDs[len(doneIDs)-1]]; !ok {
-		t.Fatal("the newest done record must be kept")
-	}
-	if log.count(EventRetentionExceeded) != 0 {
-		t.Fatal("no warning expected while done records could be evicted")
-	}
-	// Only non-evictable records: the count may exceed the target and a warning is emitted.
-	dir2 := stateDir(t)
-	s2, _, log2, _ := openT(t, dir2, newFakeKeys(validKey(s2KeyA)))
-	for i := 0; i < RecoveryRetention+2; i++ {
-		sc, pl := plan(i)
-		if _, _, err := s2.BeginRecovery(sc, TriggerOrphanScan, pl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if n := len(s2.RecoveryRecords()); n != RecoveryRetention+2 {
-		t.Fatalf("nothing is evictable: %d records", n)
-	}
-	if log2.count(EventRetentionExceeded) == 0 {
-		t.Fatal("a warning event is expected when the target is exceeded")
-	}
-}
-
 // ---------------------------------------------------------------- misc: concurrent opens in one process share nothing
 
 func TestS2_ConcurrentOpenOfDifferentDirs_Independent(t *testing.T) {
@@ -1507,7 +1288,7 @@ func TestS2_ConcurrentOpenOfDifferentDirs_Independent(t *testing.T) {
 			dir := stateDir(t)
 			s, _, _, _ := openT(t, dir, newFakeKeys(validKey(s2KeyA)))
 			for j := 0; j < 5; j++ {
-				if err := s.Update(addEntries("x" + string(rune('a'+j)))); err != nil {
+				if err := s.update(addEntries("x" + string(rune('a'+j)))); err != nil {
 					t.Error(err)
 				}
 			}

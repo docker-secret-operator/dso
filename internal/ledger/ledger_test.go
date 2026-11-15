@@ -18,13 +18,14 @@ var (
 )
 
 const (
-	idLedger    = "5b1f0c9e7a2d4c3b8e6f1a0d9c8b7a65"
-	idRotation  = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-	idRotation2 = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
-	idRequest   = "11112222333344445555666677778888"
-	idRecovery  = "aaaabbbbccccddddeeeeffff00001111"
-	idRecovery2 = "99998888777766665555444433332222"
-	created     = "2026-11-12T06:00:00Z"
+	idLedger   = "5b1f0c9e7a2d4c3b8e6f1a0d9c8b7a65"
+	idRotation = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	idRequest  = "11112222333344445555666677778888"
+	created    = "2026-11-12T06:00:00Z"
+	// jrnRot is a journal operation id (rot-<16 hex>), the value of
+	// Replica.RotationID in schema version 3.
+	jrnRot  = "rot-0000000000000001"
+	jrnRot2 = "rot-0000000000000002"
 )
 
 func at(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
@@ -40,14 +41,22 @@ func hmacVer(t *testing.T, provider, secret, value string) Version {
 	return v
 }
 
+// replica builds a schema v3 replica whose delivery fields follow its outcome:
+// succeeded means journal-verified delivery with verified adoption, everything
+// else claims nothing (delivery none, adoption unknown).
 func replica(num, id, name string, applied *Version, out ReplicaOutcome, sec int) Replica {
-	return Replica{Number: num, ContainerID: id, ContainerName: name, Created: created, Applied: applied, Outcome: out, At: at(sec)}
+	r := Replica{Number: num, ContainerID: id, ContainerName: name, Created: created, Applied: applied, Outcome: out, At: at(sec),
+		Delivery: DeliveryNone, Adoption: AdoptionUnknown}
+	if out == ReplicaSucceeded {
+		r.RotationID, r.Delivery, r.Adoption = jrnRot, DeliveryVerified, AdoptionVerified
+	}
+	return r
 }
 
 // sampleLedger returns a valid document that exercises every record type:
 // the three-secret worked example of the design (two pending secrets and one
-// unchanged), a partially delivered entry, a non-Compose in-progress entry
-// with a rotation intent and a manual request, and two recovery records.
+// unchanged), a partially delivered entry and a non-Compose pending entry with
+// a requested delivery and a manual request.
 func sampleLedger(t *testing.T) *Ledger {
 	t.Helper()
 	dbV4, dbV5 := hmacVer(t, "aws", "database_password", "v4"), hmacVer(t, "aws", "database_password", "v5")
@@ -95,47 +104,25 @@ func sampleLedger(t *testing.T) *Ledger {
 					replica("1", "c0ffee11", "shop-web-1", vp(certNew), ReplicaSucceeded, 30),
 					replica("2", "c0ffee12", "shop-web-2", vp(certNew), ReplicaSucceeded, 31),
 					{Number: "3", ContainerID: "c0ffee13", ContainerName: "shop-web-3", Created: created,
-						Applied: vp(certOld), Outcome: ReplicaRolledBack, Reason: "health verification failed", At: at(45)},
+						Applied: vp(certOld), Outcome: ReplicaRolledBack, Reason: "health verification failed", At: at(45),
+						RotationID: jrnRot, Delivery: DeliveryNone, Adoption: AdoptionVerified},
 				},
 				LastOutcome: &LastOutcome{Kind: "partial", Reason: "1 of 3 replicas rolled back", At: at(45), Strategy: "rolling"},
 			},
 			{
 				Key:     Key{Project: "", Service: "legacy-batch", Provider: "vault", Secret: "kv/batch"},
 				Desired: vp(batchNew), DesiredSeq: 3, DesiredObservedAt: at(90),
-				Applied:  vp(batchOld),
-				State:    EntryInProgress,
-				Replicas: []Replica{replica("", "d00dfeed", "legacy-batch", vp(batchOld), ReplicaSucceeded, 2)},
-				Rotation: &Intent{
-					RotationID: idRotation, StartedAt: at(100), Desired: batchNew, Strategy: "restart",
-					PriorReplicas: []Replica{replica("", "d00dfeed", "legacy-batch", vp(batchOld), ReplicaSucceeded, 2)},
-				},
+				Applied: vp(batchOld),
+				State:   EntryPending,
+				Replicas: []Replica{{
+					Number: "", ContainerID: "d00dfeed", ContainerName: "legacy-batch", Created: created, Applied: vp(batchOld),
+					Outcome: ReplicaPending, Reason: "delivery_requested", At: at(100),
+					RotationID: jrnRot2, Delivery: DeliveryRequested, Adoption: AdoptionVerified,
+				}},
 				Request: &Redelivery{
 					RequestID: idRequest, RequestedAt: at(95), Actor: "alice", Reason: "manual",
 					TargetSeq: 3, State: RedeliveryDispatched, RotationID: idRotation,
 				},
-			},
-		},
-		Recoveries: []RecoveryRecord{
-			{
-				RecoveryID: idRecovery,
-				Scope:      RecoveryScope{Project: "shop", Service: "api"},
-				Trigger:    TriggerLedgerIntent,
-				Planned: []Action{
-					{Op: ActionStop, ContainerID: "feed01", ContainerName: "shop-api_dso_new_1", Created: created},
-					{Op: ActionRemove, ContainerID: "feed01", ContainerName: "shop-api_dso_new_1", Created: created},
-				},
-				Done:      []ActionResult{{Outcome: ActionOK}},
-				State:     RecoveryInProgress,
-				StartedAt: at(150),
-			},
-			{
-				RecoveryID: idRecovery2,
-				Scope:      RecoveryScope{ContainerName: "api_dso_backup_1731398400"},
-				Trigger:    TriggerOrphanScan,
-				Planned:    []Action{{Op: ActionRemove, ContainerID: "feed02", ContainerName: "api_dso_backup_1731398400", Created: created}},
-				Done:       []ActionResult{{Outcome: ActionAlreadyDone, Reason: "container already gone"}},
-				State:      RecoveryDone,
-				StartedAt:  at(151), FinishedAt: at(152),
 			},
 		},
 	}
@@ -147,22 +134,17 @@ func TestSampleLedger_IsValid(t *testing.T) {
 	}
 }
 
-// The document model must match the schema of the design exactly: no field is
+// The document model must match the schema 3 of the design (docs/design/m1-ledger-reconciliation.md section 1.3) exactly: no field is
 // invented, none is missing, and nothing can hold secret data.
 func TestSchema_FieldsMatchTheDesign(t *testing.T) {
 	want := map[reflect.Type][]string{
-		reflect.TypeOf(Ledger{}):         {"schema_version", "ledger_id", "generation", "hmac_key_id", "created_at", "updated_at", "body_sha256", "entries", "recoveries"},
-		reflect.TypeOf(Entry{}):          {"key", "desired", "desired_seq", "desired_observed_at", "applied", "state", "replicas", "rotation", "request", "last_outcome"},
-		reflect.TypeOf(Key{}):            {"project", "service", "provider", "secret"},
-		reflect.TypeOf(Version{}):        {"kind", "id", "key_id", "source"},
-		reflect.TypeOf(Replica{}):        {"number", "container_id", "container_name", "created", "applied", "outcome", "reason", "at"},
-		reflect.TypeOf(Intent{}):         {"rotation_id", "started_at", "desired", "strategy", "prior_replicas", "supersedes"},
-		reflect.TypeOf(Redelivery{}):     {"request_id", "requested_at", "actor", "reason", "target_seq", "state", "rotation_id", "superseded_by"},
-		reflect.TypeOf(LastOutcome{}):    {"kind", "reason", "at", "strategy"},
-		reflect.TypeOf(RecoveryScope{}):  {"project", "service", "container_name"},
-		reflect.TypeOf(Action{}):         {"op", "container_id", "container_name", "created"},
-		reflect.TypeOf(ActionResult{}):   {"outcome", "reason"},
-		reflect.TypeOf(RecoveryRecord{}): {"recovery_id", "scope", "trigger", "planned", "done", "state", "started_at", "finished_at"},
+		reflect.TypeOf(Ledger{}):      {"schema_version", "ledger_id", "generation", "hmac_key_id", "created_at", "updated_at", "body_sha256", "entries"},
+		reflect.TypeOf(Entry{}):       {"key", "desired", "desired_seq", "desired_observed_at", "applied", "state", "replicas", "request", "last_outcome"},
+		reflect.TypeOf(Key{}):         {"project", "service", "provider", "secret"},
+		reflect.TypeOf(Version{}):     {"kind", "id", "key_id", "source"},
+		reflect.TypeOf(Replica{}):     {"number", "container_id", "container_name", "created", "applied", "outcome", "reason", "at", "rotation_id", "delivery", "adoption"},
+		reflect.TypeOf(Redelivery{}):  {"request_id", "requested_at", "actor", "reason", "target_seq", "state", "rotation_id", "superseded_by"},
+		reflect.TypeOf(LastOutcome{}): {"kind", "reason", "at", "strategy"},
 	}
 	for typ, tags := range want {
 		var got []string
@@ -370,19 +352,48 @@ func TestValidate_RejectsInvalidDocuments(t *testing.T) {
 		}, "desired_seq"},
 		{"desired without seq", func(l *Ledger) { l.Entries[0].DesiredSeq = 0 }, "desired_seq"},
 		{"unknown entry state", func(l *Ledger) { l.Entries[0].State = "stuck" }, "state"},
-		{"in_progress without intent", func(l *Ledger) { l.Entries[4].Rotation = nil }, "state"},
-		{"intent without in_progress", func(l *Ledger) { l.Entries[0].Rotation = l.Entries[4].Rotation }, "state"},
+		{"retired in_progress state", func(l *Ledger) { l.Entries[0].State = "in_progress" }, "state"},
 		{"partial with every replica succeeded", func(l *Ledger) {
-			l.Entries[3].Replicas[2].Outcome = ReplicaSucceeded
+			r := &l.Entries[3].Replicas[2]
+			r.Outcome, r.Delivery = ReplicaSucceeded, DeliveryVerified
 		}, "partial"},
 		{"partial with no success", func(l *Ledger) {
-			l.Entries[3].Replicas[0].Outcome = ReplicaFailed
-			l.Entries[3].Replicas[1].Outcome = ReplicaFailed
+			for i := 0; i < 2; i++ {
+				r := &l.Entries[3].Replicas[i]
+				r.Outcome, r.Delivery = ReplicaFailed, DeliveryNone
+			}
 		}, "partial"},
 		{"adopted entry with non-adopted replica", func(l *Ledger) {
 			l.Entries[2].State = EntryAdopted
 		}, "outcome"},
+		{"adopted entry with an applied version", func(l *Ledger) {
+			l.Entries[2].State = EntryAdopted
+			r := &l.Entries[2].Replicas[0]
+			r.Outcome, r.Applied, r.Delivery, r.Adoption, r.RotationID = ReplicaAdopted, nil, DeliveryNone, AdoptionUnknown, ""
+		}, "an adopted entry has an unknown applied version"},
 		{"succeeded replica without applied", func(l *Ledger) { l.Entries[0].Replicas[0].Applied = nil }, "applied"},
+		{"empty delivery", func(l *Ledger) { l.Entries[0].Replicas[0].Delivery = "" }, "delivery"},
+		{"unknown delivery", func(l *Ledger) { l.Entries[0].Replicas[0].Delivery = "done" }, "delivery"},
+		{"empty adoption", func(l *Ledger) { l.Entries[0].Replicas[0].Adoption = "" }, "adoption"},
+		{"unknown adoption", func(l *Ledger) { l.Entries[0].Replicas[0].Adoption = "yes" }, "adoption"},
+		{"rotation id with a space", func(l *Ledger) { l.Entries[0].Replicas[0].RotationID = "rot 1" }, "rotation_id"},
+		{"rotation id too long", func(l *Ledger) { l.Entries[0].Replicas[0].RotationID = strings.Repeat("r", 65) }, "rotation_id"},
+		{"delivery verified without rotation id", func(l *Ledger) { l.Entries[0].Replicas[0].RotationID = "" }, "rotation_id"},
+		{"delivery requested without rotation id", func(l *Ledger) { l.Entries[4].Replicas[0].RotationID = "" }, "rotation_id"},
+		{"delivery requested with outcome failed", func(l *Ledger) { l.Entries[4].Replicas[0].Outcome = ReplicaFailed }, "outcome"},
+		{"delivery verified with unknown adoption", func(l *Ledger) { l.Entries[0].Replicas[0].Adoption = AdoptionUnknown }, "adoption"},
+		{"adoption verified without applied", func(l *Ledger) {
+			r := &l.Entries[3].Replicas[2]
+			r.Applied = nil
+			r.Adoption = AdoptionVerified
+		}, "adoption"},
+		{"outcome succeeded without verified delivery", func(l *Ledger) { l.Entries[0].Replicas[0].Delivery = DeliveryNone }, "outcome"},
+		{"verified delivery with outcome failed", func(l *Ledger) { l.Entries[0].Replicas[0].Outcome = ReplicaFailed }, "outcome"},
+		{"adopted replica claiming delivery", func(l *Ledger) {
+			r := &l.Entries[3].Replicas[2]
+			r.Outcome = ReplicaAdopted
+			r.Adoption = AdoptionVerified
+		}, "outcome"},
 		{"unknown replica outcome", func(l *Ledger) { l.Entries[0].Replicas[0].Outcome = "done" }, "outcome"},
 		{"bad replica created", func(l *Ledger) { l.Entries[0].Replicas[0].Created = "yesterday" }, "created"},
 		{"bad replica number", func(l *Ledger) { l.Entries[0].Replicas[0].Number = "one" }, "number"},
@@ -393,9 +404,6 @@ func TestValidate_RejectsInvalidDocuments(t *testing.T) {
 		{"empty provider", func(l *Ledger) { l.Entries[0].Key.Provider = "" }, "provider"},
 		{"control character in service", func(l *Ledger) { l.Entries[0].Key.Service = "a\nb" }, "service"},
 		{"control character in reason", func(l *Ledger) { l.Entries[3].Replicas[2].Reason = "bad\x00reason" }, "reason"},
-		{"intent id malformed", func(l *Ledger) { l.Entries[4].Rotation.RotationID = "nope" }, "rotation_id"},
-		{"intent supersedes itself", func(l *Ledger) { l.Entries[4].Rotation.Supersedes = idRotation }, "supersedes"},
-		{"intent without strategy", func(l *Ledger) { l.Entries[4].Rotation.Strategy = "" }, "strategy"},
 		{"request target beyond desired_seq", func(l *Ledger) { l.Entries[4].Request.TargetSeq = 4 }, "target_seq"},
 		{"unknown request state", func(l *Ledger) { l.Entries[4].Request.State = "queued" }, "state"},
 		{"dispatched request without rotation", func(l *Ledger) { l.Entries[4].Request.RotationID = "" }, "rotation_id"},
@@ -409,26 +417,6 @@ func TestValidate_RejectsInvalidDocuments(t *testing.T) {
 			l.Entries[2].DesiredObservedAt = time.Time{}
 		}, "request"},
 		{"last outcome without kind", func(l *Ledger) { l.Entries[0].LastOutcome.Kind = "" }, "kind"},
-		{"unknown recovery trigger", func(l *Ledger) { l.Recoveries[0].Trigger = "cron" }, "trigger"},
-		{"unknown recovery state", func(l *Ledger) { l.Recoveries[0].State = "paused" }, "state"},
-		{"unknown action", func(l *Ledger) { l.Recoveries[0].Planned[0].Op = "kill" }, "op"},
-		{"more results than actions", func(l *Ledger) {
-			l.Recoveries[0].Done = []ActionResult{{Outcome: ActionOK}, {Outcome: ActionOK}, {Outcome: ActionOK}}
-		}, "done"},
-		{"done record with a failed action", func(l *Ledger) { l.Recoveries[1].Done[0].Outcome = ActionFailedOp }, "done"},
-		{"done record missing a result", func(l *Ledger) { l.Recoveries[1].Done = nil }, "done"},
-		{"planned record with results", func(l *Ledger) { l.Recoveries[0].State = RecoveryPlanned }, "done"},
-		{"finished record without finish time", func(l *Ledger) { l.Recoveries[1].FinishedAt = time.Time{} }, "finished_at"},
-		{"open record with finish time", func(l *Ledger) { l.Recoveries[0].FinishedAt = at(160) }, "finished_at"},
-		{"scope with both forms", func(l *Ledger) { l.Recoveries[0].Scope.ContainerName = "x" }, "scope"},
-		{"scope with neither form", func(l *Ledger) { l.Recoveries[0].Scope = RecoveryScope{} }, "scope"},
-		{"duplicate recovery id", func(l *Ledger) { l.Recoveries[1].RecoveryID = idRecovery }, "recovery_id"},
-		{"two open records for one scope", func(l *Ledger) {
-			l.Recoveries[1].Scope = l.Recoveries[0].Scope
-			l.Recoveries[1].State = RecoveryPlanned
-			l.Recoveries[1].Done = nil
-			l.Recoveries[1].FinishedAt = time.Time{}
-		}, "non-terminal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

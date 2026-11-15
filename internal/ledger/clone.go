@@ -17,7 +17,6 @@ func (l *Ledger) Clone() *Ledger {
 	}
 	c := *l
 	c.Entries = cloneSlice(l.Entries, cloneEntry)
-	c.Recoveries = cloneSlice(l.Recoveries, cloneRecovery)
 	return &c
 }
 
@@ -49,11 +48,6 @@ func cloneEntry(e Entry) Entry {
 	e.Desired = cloneVersion(e.Desired)
 	e.Applied = cloneVersion(e.Applied)
 	e.Replicas = cloneSlice(e.Replicas, cloneReplica)
-	if e.Rotation != nil {
-		r := *e.Rotation
-		r.PriorReplicas = cloneSlice(r.PriorReplicas, cloneReplica)
-		e.Rotation = &r
-	}
 	if e.Request != nil {
 		r := *e.Request
 		e.Request = &r
@@ -63,12 +57,6 @@ func cloneEntry(e Entry) Entry {
 		e.LastOutcome = &o
 	}
 	return e
-}
-
-func cloneRecovery(r RecoveryRecord) RecoveryRecord {
-	r.Planned = cloneSlice(r.Planned, func(a Action) Action { return a })
-	r.Done = cloneSlice(r.Done, func(a ActionResult) ActionResult { return a })
-	return r
 }
 
 // newID returns a random 128-bit identifier as 32 lowercase hex characters.
@@ -94,8 +82,7 @@ func newLedger(keyID string, now time.Time, random io.Reader) (*Ledger, error) {
 
 // hasHMACIdentity reports whether any persisted value anywhere in the document
 // is a key-dependent (hmac) Version. It walks the whole document by reflection,
-// so a Version in any record, including one a later schema might add to the
-// recovery journal, is covered (owner decision, empty hmac_key_id Option B).
+// so a Version in any record, including one a later schema might add, is covered (owner decision, empty hmac_key_id Option B).
 func hasHMACIdentity(v any) bool {
 	return walkHMAC(reflectValue(v))
 }

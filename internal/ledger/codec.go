@@ -35,9 +35,8 @@ func (e *SchemaVersionError) Error() string {
 // CanonicalBody returns the canonical JSON of the document with body_sha256
 // forced to "": compact, UTF-8, struct-declaration field order, no HTML
 // escaping, no trailing newline, every slice rendered as [] rather than null,
-// and entries, replicas, prior replicas and recovery records in the canonical
-// order of design §16.2 rules 12-14. planned actions and done results keep
-// their order (they are positional). The same content always yields the same
+// and entries and replicas in the canonical order of design §16.2 rules 12-13
+// (schema v3 has no prior replicas and no recovery records). The same content always yields the same
 // bytes, whatever the order it was supplied in. l is not modified; CanonicalBody
 // does not validate l (Marshal does).
 func CanonicalBody(l *Ledger) ([]byte, error) {
@@ -131,40 +130,20 @@ func encode(l *Ledger) ([]byte, error) {
 }
 
 // normalized returns a copy of l in canonical form: every nil slice is empty,
-// and entries, replicas, prior replicas and recovery records are sorted
-// (design §16.2 rules 3 and 12-14). Every slice that is reordered or exposed is
-// copied first, so the input is never modified and the copy never aliases the
-// input's slices; planned actions and done results keep their order. Version
-// and request pointers are shared but never written.
+// and entries and replicas are sorted (design §16.2 rules 3, 12 and 13). Every
+// slice that is reordered or exposed is copied first, so the input is never
+// modified and the copy never aliases the input's slices. Version and request
+// pointers are shared but never written.
 func normalized(l *Ledger) *Ledger {
 	c := *l
 	c.Entries = make([]Entry, len(l.Entries))
 	for i := range l.Entries {
 		e := l.Entries[i]
 		e.Replicas = sortedReplicas(e.Replicas)
-		if e.Rotation != nil {
-			r := *e.Rotation
-			r.PriorReplicas = sortedReplicas(r.PriorReplicas)
-			e.Rotation = &r
-		}
 		c.Entries[i] = e
 	}
 	sort.SliceStable(c.Entries, func(i, j int) bool { return keyLess(c.Entries[i].Key, c.Entries[j].Key) })
 
-	c.Recoveries = make([]RecoveryRecord, len(l.Recoveries))
-	for i := range l.Recoveries {
-		r := l.Recoveries[i]
-		r.Planned = copyNonNil(r.Planned)
-		r.Done = copyNonNil(r.Done)
-		c.Recoveries[i] = r
-	}
-	sort.SliceStable(c.Recoveries, func(i, j int) bool {
-		a, b := c.Recoveries[i], c.Recoveries[j]
-		if !a.StartedAt.Equal(b.StartedAt) {
-			return a.StartedAt.Before(b.StartedAt)
-		}
-		return a.RecoveryID < b.RecoveryID
-	})
 	return &c
 }
 

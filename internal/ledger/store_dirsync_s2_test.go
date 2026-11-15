@@ -55,7 +55,7 @@ func newUncertain(t *testing.T, failures int) *uncertain {
 		return nil
 	}
 	u.s, _, u.log, u.ia = openT(t, u.dir, u.fk, openOpts{ops: faultOps(hook)})
-	if err := u.s.Update(addEntries("web")); err != nil {
+	if err := u.s.update(addEntries("web")); err != nil {
 		t.Fatal(err)
 	}
 	u.oldBytes = readLedgerBytes(t, u.dir)
@@ -92,14 +92,13 @@ func TestS2_DirSync_FailureBeforeRename_OldDocumentRemains(t *testing.T) {
 				}
 				return nil
 			})})
-			if err := s.Update(addEntries("web")); err != nil {
+			if err := s.update(addEntries("web")); err != nil {
 				t.Fatal(err)
 			}
 			old := readLedgerBytes(t, dir)
 			before := s.Snapshot()
 			armed.Store(true)
-			d := &fakeDocker{}
-			err := s.Update(addEntries("db"))
+			err := s.update(addEntries("db"))
 
 			if !errors.Is(err, ErrPersistenceFailed) {
 				t.Fatalf("caller result: %v", err)
@@ -117,8 +116,10 @@ func TestS2_DirSync_FailureBeforeRename_OldDocumentRemains(t *testing.T) {
 			if s.PersistenceHealthy() || s.Gate() == nil || log.count(EventPersistenceDegraded) != 1 {
 				t.Fatal("health must be degraded and the gate closed")
 			}
-			if err := beginRotation(s, d, "web"); !errors.Is(err, ErrPersistenceUnavailable) || d.n() != 0 {
-				t.Fatalf("D-3: no Docker mutation while degraded: %v", err)
+			// O-3: the gate is advisory; a write while degraded fails and
+			// changes nothing (it is never a Docker precondition).
+			if err := recordHint(s, "web"); err == nil || !reflect.DeepEqual(s.Snapshot().Ledger, after.Ledger) {
+				t.Fatalf("a write while degraded must fail without changing state: %v", err)
 			}
 		})
 	}
@@ -129,8 +130,7 @@ func TestS2_DirSync_FailureBeforeRename_OldDocumentRemains(t *testing.T) {
 func TestS2_DirSync_FailureAfterRename_CandidateOnDisk_MemoryUnchanged(t *testing.T) {
 	u := newUncertain(t, -1)
 	u.armed.Store(true)
-	d := &fakeDocker{}
-	err := u.s.Update(addEntries("db"))
+	err := u.s.update(addEntries("db"))
 
 	if err == nil || !errors.Is(err, ErrPersistenceFailed) {
 		t.Fatalf("the caller must see a persistence failure, never success: %v", err)
@@ -170,11 +170,11 @@ func TestS2_DirSync_FailureAfterRename_CandidateOnDisk_MemoryUnchanged(t *testin
 	if u.s.PersistenceHealthy() || u.s.Gate() == nil || u.log.count(EventPersistenceDegraded) != 1 {
 		t.Fatal("health must be degraded and the gate closed")
 	}
-	if err := beginRotation(u.s, d, "web"); !errors.Is(err, ErrPersistenceUnavailable) || d.n() != 0 {
-		t.Fatalf("D-3: no Docker mutation: %v", err)
-	}
 	if h := u.s.Health(); h.Healthy || h.ConsecutiveFailures != 1 || h.LastError == "" {
 		t.Fatalf("health: %+v", h)
+	}
+	if err := recordHint(u.s, "web"); err == nil {
+		t.Fatal("a write while degraded must fail")
 	}
 }
 
@@ -183,7 +183,7 @@ func TestS2_DirSync_FailureAfterRename_CandidateOnDisk_MemoryUnchanged(t *testin
 func TestS2_DirSync_RestartAfterOldDocumentOutcome(t *testing.T) {
 	u := newUncertain(t, -1)
 	u.armed.Store(true)
-	if err := u.s.Update(addEntries("db")); err == nil {
+	if err := u.s.update(addEntries("db")); err == nil {
 		t.Fatal("expected failure")
 	}
 	_ = u.s.Close()
@@ -200,7 +200,7 @@ func TestS2_DirSync_RestartAfterOldDocumentOutcome(t *testing.T) {
 	if !s2.PersistenceHealthy() || s2.Gate() != nil || !s2.Snapshot().Durable {
 		t.Fatal("a fresh start on a valid document is healthy")
 	}
-	if err := s2.Update(addEntries("db")); err != nil {
+	if err := s2.update(addEntries("db")); err != nil {
 		t.Fatal(err)
 	}
 	if got := s2.Snapshot().Ledger; got.Generation != u.before.Generation+1 || !hasEntry(got, "db") {
@@ -211,7 +211,7 @@ func TestS2_DirSync_RestartAfterOldDocumentOutcome(t *testing.T) {
 func TestS2_DirSync_RestartAfterCandidateDocumentOutcome(t *testing.T) {
 	u := newUncertain(t, -1)
 	u.armed.Store(true)
-	if err := u.s.Update(addEntries("db")); err == nil {
+	if err := u.s.update(addEntries("db")); err == nil {
 		t.Fatal("expected failure")
 	}
 	_ = u.s.Close()
@@ -227,7 +227,7 @@ func TestS2_DirSync_RestartAfterCandidateDocumentOutcome(t *testing.T) {
 	if !s2.PersistenceHealthy() || s2.Gate() != nil {
 		t.Fatal("healthy after a valid load")
 	}
-	if err := s2.Update(addEntries("cache")); err != nil || s2.Snapshot().Ledger.Generation != u.before.Generation+2 {
+	if err := s2.update(addEntries("cache")); err != nil || s2.Snapshot().Ledger.Generation != u.before.Generation+2 {
 		t.Fatalf("the next update continues from the candidate generation: %v", err)
 	}
 }
@@ -235,7 +235,7 @@ func TestS2_DirSync_RestartAfterCandidateDocumentOutcome(t *testing.T) {
 func TestS2_DirSync_PartialOrMalformedCandidateIsNeverAccepted(t *testing.T) {
 	u := newUncertain(t, -1)
 	u.armed.Store(true)
-	_ = u.s.Update(addEntries("db"))
+	_ = u.s.update(addEntries("db"))
 	cand := readLedgerBytes(t, u.dir)
 	_ = u.s.Close()
 	for name, content := range map[string][]byte{
@@ -268,11 +268,11 @@ func TestS2_DirSync_SubsequentWriteHealsUncertainState(t *testing.T) {
 	t.Run("a later Update", func(t *testing.T) {
 		u := newUncertain(t, -1)
 		u.armed.Store(true)
-		_ = u.s.Update(addEntries("db"))
+		_ = u.s.update(addEntries("db"))
 		candBytes := readLedgerBytes(t, u.dir)
 		u.armed.Store(false)
 
-		if err := u.s.Update(addEntries("cache")); err != nil {
+		if err := u.s.update(addEntries("cache")); err != nil {
 			t.Fatalf("the later write must succeed: %v", err)
 		}
 		mem := u.s.Snapshot()
@@ -296,7 +296,7 @@ func TestS2_DirSync_SubsequentWriteHealsUncertainState(t *testing.T) {
 	t.Run("the background probe", func(t *testing.T) {
 		u := newUncertain(t, -1)
 		u.armed.Store(true)
-		_ = u.s.Update(addEntries("db"))
+		_ = u.s.update(addEntries("db"))
 		u.armed.Store(false)
 		u.ia.fireProbe(t)
 		waitFor(t, func() bool { return u.s.PersistenceHealthy() })
@@ -330,7 +330,7 @@ func TestS2_DirSync_RetryHealsAndReportsSuccessOnlyAfterDurability(t *testing.T)
 	u.armed.Store(true)
 	// faultOps wraps syncDir at open time; the wrapper above sits outside it, so
 	// the failure comes from the first call of the original hook.
-	if err := u.s.Update(addEntries("db")); err != nil {
+	if err := u.s.update(addEntries("db")); err != nil {
 		t.Fatalf("the retry should succeed: %v", err)
 	}
 	if published.Load() {
