@@ -58,8 +58,13 @@ jobs:
         # -short skips the long-running stability tests in internal/testing
         # (those tests run 90s–3m each and would exceed the runner timeout).
         # Run them explicitly in a dedicated stability job instead.
+        # The -timeout applies PER PACKAGE test binary. Measured with -race -short
+        # -count=1 (12-core dev host, unstressed): internal/webuiauth 278.6 s (366.7 s
+        # in the contended full-tree run), internal/server 102.8 s (204.5 s full-tree),
+        # internal/cli ~135 s, pkg/vault ~157 s; a 4-core hosted runner is slower, and
+        # bcrypt under the race detector dominates. 300 s left under 7% margin.
         run: |
-          go test -race -short -count=1 -timeout 300s ./...
+          go test -race -short -count=1 -timeout 15m ./...
           echo "✅ Tests passed"
 
   # ── Stability Tests (long-running, separate job with extended timeout) ────
