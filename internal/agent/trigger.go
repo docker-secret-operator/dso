@@ -57,11 +57,44 @@ type TriggerEngine struct {
 	// fail, block, or otherwise influence rotation state.
 	Dispatcher *notify.Dispatcher
 
+	// ledger is the S6 applied-version ledger wiring (ledger_wiring.go). nil
+	// means "not configured": engines built without NewTriggerEngine (unit tests,
+	// NewTriggerEngineWithDirs) keep the legacy behaviour in which a first
+	// observation dispatches. NewTriggerEngine always configures it, enabled or
+	// disabled for the process.
+	ledger *ledgerWiring
+	// baselined holds the provider:secret keys observed at least once by this
+	// process. With a configured but unusable ledger, a key's first observation
+	// is adopted without rotating (design 8.2, O-5: no mass rotation).
+	baselined sync.Map
+
 	// Test seams; zero means the production defaults
-	// (defaultSecretLockTimeout, defaultRotationCooldown).
+	// (defaultSecretLockTimeout, defaultRotationCooldown, Reloader.TriggerReload).
 	secretLockTimeout time.Duration
 	rotationCooldown  time.Duration
+	reloadFn          func(ctx context.Context, secretName string, onComplete func(error)) error
 }
+
+// RotationDecision is what ExecuteRotationDecision did with one observation
+// (design 8.3, BQ-3 option b).
+type RotationDecision string
+
+const (
+	// RotationDispatched: a rotation dispatch was started for the value.
+	RotationDispatched RotationDecision = "dispatched"
+	// RotationAdopted: first observation without a baseline (ledger adoption,
+	// or no live target to record): the value is the baseline, nothing rotated.
+	RotationAdopted RotationDecision = "adopted"
+	// RotationUnchanged: the value equals the last one this process handled, or
+	// the ledger records it as already wanted/applied: nothing rotated.
+	RotationUnchanged RotationDecision = "unchanged"
+	// RotationDeferred: a change was seen but not dispatched now (cooldown, cache
+	// limits); the next observation retries.
+	RotationDeferred RotationDecision = "deferred"
+	// RotationLedgerDegraded: first observation in this process while the ledger
+	// is disabled or unusable: adopted in memory only, nothing rotated.
+	RotationLedgerDegraded RotationDecision = "ledger_degraded"
+)
 
 // emitEvent records a rotation outcome onto observability.EventStream,
 // unconditionally -- this is what makes rotation outcomes visible via
@@ -141,7 +174,18 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 	if v, ok := faultinject.Param("lock_dir"); ok {
 		lockDir = v
 	}
-	return NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, stateDir, lockDir)
+	ledgerDir := defaultLedgerDir
+	if v, ok := faultinject.Param("ledger_dir"); ok {
+		ledgerDir = v
+	}
+	t, err := NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, stateDir, lockDir)
+	if err != nil {
+		return nil, err
+	}
+	// Design 5 step 1: open the applied-version ledger. Any failure disables it
+	// for this process (operator-visible warning); it is never fatal (X6).
+	t.openLedger(ledgerDir)
+	return t, nil
 }
 
 // NewTriggerEngineWithDirs is NewTriggerEngine with explicit state and lock
@@ -261,6 +305,13 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 			zap.Error(err))
 		// Don't fail startup; cleanup is best-effort
 	}
+
+	// Design 5 step 5: converge the applied-version ledger with the journal M0
+	// recovery has just settled. It is the LAST step before the deferred
+	// settleStartup (the guard still refuses every dispatch) and before
+	// CleanupOldStates prunes journal records (StartAll). Read-only with respect
+	// to Docker and the journal; it cannot unblock anything.
+	t.reconcileLedgerAtStartup()
 }
 
 // BeginStartup arms startup gating: until StartAll has finished automatic recovery,
@@ -304,6 +355,7 @@ func (t *TriggerEngine) Stop() {
 	if t.StateTracker != nil {
 		_ = t.StateTracker.Close()
 	}
+	t.closeLedger()
 	t.Logger.Info("Trigger engine stopped")
 }
 
@@ -388,9 +440,18 @@ func (t *TriggerEngine) rollbackHash(cacheKey, newHash string) {
 // the last dispatched one, applies the cooldown, records the new hash and
 // writes the cache, so poll, webhook and IPC reconcile callers can neither
 // dispatch the same value twice nor leave the stored hash describing a
-// different value than the cache (PE-31). It reports whether the caller
-// must dispatch a rotation.
-func (t *TriggerEngine) commitObservation(cacheKey, secretName, newHash string, secretData map[string]string) bool {
+// different value than the cache (PE-31). It returns the decision and, for a
+// dispatch with a usable ledger, the ledger plan the dispatch correlates.
+//
+// S6 (design 3 and 8.2): when the value differs from the last one handled,
+// the ledger observes it under this same mutex, BEFORE the cooldown check, so
+// the ledger's desired version sees values in the same order as secretHashes.
+// The ledger then decides whether the value must be delivered (NeedsRotation):
+// a first observation without a baseline is adopted, never rotated (O-5). When
+// the ledger is configured but unusable, a key's first observation in this
+// process is adopted in memory and later changes dispatch as before (the
+// ledger is advisory, O-3). secretHashes stays the in-process dedupe layer.
+func (t *TriggerEngine) commitObservation(cacheKey, providerName, secretName, newHash string, secretData map[string]string, sec config.SecretMapping) (RotationDecision, *ledgerPlan) {
 	mu := t.keyMutex(cacheKey)
 	mu.Lock()
 	defer mu.Unlock()
@@ -407,45 +468,106 @@ func (t *TriggerEngine) commitObservation(cacheKey, secretName, newHash string, 
 		if t.Server != nil {
 			t.Server.Emit(msg)
 		}
-		return false
+		return RotationUnchanged, nil
 	}
 
-	// 2. Add cooldown window. Returns BEFORE storing the hash, so the next
+	// 2. Ledger observation and decision (S6). Not configured: legacy dispatch.
+	var plan *ledgerPlan
+	if t.ledger != nil {
+		_, seen := t.baselined.Load(cacheKey)
+		lv := t.ledgerObserve(providerName, secretName, secretData, sec)
+		hold := RotationDecision("")
+		switch {
+		case lv.usable && lv.rotate:
+			plan = lv.plan
+		case lv.usable && lv.adopted:
+			hold = RotationAdopted
+		case lv.usable:
+			hold = RotationUnchanged
+		case !seen && lv.noTargets:
+			hold = RotationAdopted
+		case !seen:
+			hold = RotationLedgerDegraded
+		}
+		if hold != "" {
+			// Not a change to deliver: keep the value as the in-process baseline
+			// and write the cache exactly as a dispatch would (PE-03: the compose
+			// restart path pre-injects from the cache).
+			t.secretHashes.Store(cacheKey, newHash)
+			t.baselined.Store(cacheKey, true)
+			if !t.writeCache(cacheKey, secretName, newHash, secretData) {
+				return RotationDeferred, nil
+			}
+			t.Logger.Info("Secret observed; no rotation dispatched",
+				zap.String("provider", providerName), zap.String("secret", secretName), zap.String("decision", string(hold)))
+			return hold, nil
+		}
+	}
+
+	// 3. Add cooldown window. Returns BEFORE storing the hash, so the next
 	// poll retries.
 	if lastRot, ok := t.lastRotations.Load(cacheKey); ok {
 		if time.Since(lastRot.(time.Time)) < t.cooldown() {
 			t.Logger.Debug("Cooldown active, skipping rotation", zap.String("secret", secretName))
-			return false
+			return RotationDeferred, nil
 		}
 	}
 
 	t.secretHashes.Store(cacheKey, newHash)
 	t.lastRotations.Store(cacheKey, time.Now())
+	t.baselined.Store(cacheKey, true)
 
-	// Route cache writes through LimitEnforcingCache when available so that
-	// per-secret size checks and total capacity limits are enforced. Fall back
-	// to direct SecretCache.Set only when no limiter is configured.
+	if !t.writeCache(cacheKey, secretName, newHash, secretData) {
+		return RotationDeferred, nil
+	}
+	return RotationDispatched, plan
+}
+
+// writeCache stores the observed value in the cache. Writes go through
+// LimitEnforcingCache when available so that per-secret size checks and total
+// capacity limits are enforced; direct SecretCache.Set is used only when no
+// limiter is configured. On a limit refusal the hash is rolled back so the
+// next poll retries instead of skipping, and false is returned.
+func (t *TriggerEngine) writeCache(cacheKey, secretName, newHash string, secretData map[string]string) bool {
 	if t.LimitCache != nil {
 		if err := t.LimitCache.SetWithLimits(cacheKey, secretData); err != nil {
 			t.Logger.Error("Secret exceeds cache limits, rotation aborted",
 				zap.String("secret", secretName),
 				zap.Error(err))
-			// Roll back the hash so the next poll retries instead of skipping.
 			t.rollbackHash(cacheKey, newHash)
 			return false
 		}
-	} else {
-		t.Cache.Set(cacheKey, secretData)
+		return true
 	}
+	t.Cache.Set(cacheKey, secretData)
 	return true
 }
 
+// triggerReload is Reloader.TriggerReload, or the test seam.
+func (t *TriggerEngine) triggerReload(ctx context.Context, secretName string, onComplete func(error)) error {
+	if t.reloadFn != nil {
+		return t.reloadFn(ctx, secretName, onComplete)
+	}
+	return t.Reloader.TriggerReload(ctx, secretName, onComplete)
+}
+
+// ExecuteRotation observes one provider value and dispatches a rotation when
+// it must be delivered. It is ExecuteRotationDecision without the decision,
+// kept so existing callers are unchanged.
 func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) {
+	_ = t.ExecuteRotationDecision(providerName, secretName, secretData, sec)
+}
+
+// ExecuteRotationDecision is ExecuteRotation returning what it decided (design
+// 8.3, BQ-3 option b). RotationDispatched means a dispatch was started (its
+// outcome is asynchronous); every other decision means nothing was rotated.
+func (t *TriggerEngine) ExecuteRotationDecision(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) RotationDecision {
 	cacheKey := fmt.Sprintf("%s:%s", providerName, secretName)
 	newHash := ComputeHash(secretData)
 
-	if !t.commitObservation(cacheKey, secretName, newHash, secretData) {
-		return
+	decision, plan := t.commitObservation(cacheKey, providerName, secretName, newHash, secretData, sec)
+	if decision != RotationDispatched {
+		return decision
 	}
 
 	t.Logger.Debug("Diagnostic: Rotation triggered for secret label", zap.String("sec_name", secretName))
@@ -509,10 +631,25 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		rotationID := rotation.NewRotationID()
 		ctx = rotation.WithRotationID(ctx, rotationID)
 
-		// Record rotation start for crash recovery
+		// Record rotation start for crash recovery, with the target version
+		// (O-2) when the ledger supplied one.
 		if t.StateTracker != nil {
-			if err := t.StateTracker.StartRotationWithID(rotationID, providerName, secretName, originalContainerIDs, ""); err != nil {
+			if err := t.StateTracker.StartRotationWithVersion(rotationID, providerName, secretName, originalContainerIDs, "", plan.journalVersion()); err != nil {
 				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
+				if t.ledger != nil {
+					// W14 / O-7: with the ledger wired, a dispatch the journal did
+					// not record durably is not run (no journal intent, no ledger
+					// citation). The value is retried on the next poll. The
+					// non-durable record is dropped from memory (F-B3).
+					t.rollbackHash(cacheKey, newHash)
+					_ = t.StateTracker.DeleteState(providerName, secretName, originalContainerIDs)
+					t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, 0, fmt.Errorf("rotation not started: the journal could not record it: %w", err))
+					return
+				}
+			} else {
+				// Design 3 step 4: delivery requested, after the journal start and
+				// before TriggerReload. A failure is logged and ignored.
+				t.ledgerCorrelate(plan, rotationID)
 			}
 		}
 
@@ -527,6 +664,8 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			newHash:      newHash,
 			containerIDs: originalContainerIDs,
 			start:        rotationStart,
+			rotationID:   rotationID,
+			plan:         plan,
 		}
 
 		// Note: The Reloader internally handles the strategy logic (restart/signal).
@@ -538,7 +677,7 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			t.finishRotation(outcome, asyncErr)
 		}
 
-		if err := t.Reloader.TriggerReload(ctx, secretName, onComplete); err != nil {
+		if err := t.triggerReload(ctx, secretName, onComplete); err != nil {
 			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
 			// Remove the cached hash so the next poll retries the rotation instead
 			// of treating this failed attempt as a successful "no change" baseline.
@@ -546,10 +685,12 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 			if t.StateTracker != nil {
 				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
 			}
+			t.ledgerTerminal(outcome.plan, rotationID)
 			t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), err)
 			return
 		}
 	}()
+	return RotationDispatched
 }
 
 // rotationOutcome carries what finishRotation needs about one dispatch.
@@ -560,6 +701,9 @@ type rotationOutcome struct {
 	newHash      string
 	containerIDs string
 	start        time.Time
+	rotationID   string
+	// plan is the ledger plan of the dispatch (nil without a usable ledger).
+	plan *ledgerPlan
 }
 
 // finishRotation records the final outcome of one TriggerReload dispatch.
@@ -585,6 +729,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 			// make crash recovery treat this as an interrupted rotation.
 			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
 		}
+		t.ledgerTerminal(o.plan, o.rotationID)
 		if t.Server != nil {
 			t.Server.Emit(fmt.Sprintf("Rotation of %s deferred: %v", o.secretName, asyncErr))
 		}
@@ -597,6 +742,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		if t.StateTracker != nil {
 			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
 		}
+		t.ledgerTerminal(o.plan, o.rotationID)
 		return
 	case asyncErr != nil:
 		t.Logger.Warn("Rotation failed after async completion", zap.String("secret", o.secretName), zap.Error(asyncErr))
@@ -604,6 +750,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		if t.StateTracker != nil {
 			_ = t.StateTracker.MarkRollback(o.providerName, o.secretName, o.containerIDs)
 		}
+		t.ledgerTerminal(o.plan, o.rotationID)
 		// Notification is emitted AFTER the authoritative state
 		// transition above, and via a non-blocking dispatch --
 		// delivery outcome can never feed back into rotation state.
@@ -615,6 +762,8 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 			t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
 		}
 	}
+	// Design 3 step 5: the ledger records the outcome the journal now states.
+	t.ledgerTerminal(o.plan, o.rotationID)
 	t.emitEvent(notify.RotationSucceeded, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), nil)
 }
 

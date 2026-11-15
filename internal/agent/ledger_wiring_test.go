@@ -1,0 +1,1132 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/docker-secret-operator/dso/internal/ledger"
+	"github.com/docker-secret-operator/dso/internal/providers"
+	"github.com/docker-secret-operator/dso/internal/rotation"
+	"github.com/docker-secret-operator/dso/internal/watcher"
+	"github.com/docker-secret-operator/dso/pkg/api"
+	"github.com/docker-secret-operator/dso/pkg/config"
+)
+
+// S6 engine tests (docs/design/m1-ledger-reconciliation.md sections 3, 5, 6, 8,
+// 11.2). Docker-free and deterministic: the REAL TriggerEngine (StartAll, first
+// poll, commitObservation, dispatch goroutine, finishRotation, startup
+// recovery and ledger reconcile) runs against
+//   - a REAL StateTracker and REAL ledger.Store + S3 FileKeyProvider in
+//     temporary directories,
+//   - the in-process "file" provider (the poll reads <dir>/db.json),
+//   - the fake Docker daemon of recovery_safety_test.go for startup recovery,
+//   - a fake reloader (the reloadFn seam) that does what TriggerReload does
+//     with respect to M0: it asks the REAL operation guard for every target,
+//     holds a per-service lock (busy => deferred), and writes the strategy's
+//     transitions through the REAL StateTracker.Record. A manual (REST/sync)
+//     rotation is the same reloader called without a rotation id, exactly as
+//     internal/server.startManualRotation calls TriggerReload.
+// A "restart" of the agent is Stop + a new engine on the same directories.
+
+const hKey = "vault:db"
+
+type hRun struct {
+	rid, version string
+	manual       bool
+}
+
+type engHarness struct {
+	t        *testing.T
+	ldir     string // ledger directory ("" = ledger not configured)
+	sdir     string
+	lkdir    string
+	pdir     string
+	strategy string
+	fileMode bool
+	cli      *client.Client
+
+	te    *TriggerEngine
+	rc    *watcher.ReloaderController
+	cfg   *config.Config
+	store *providers.SecretStoreManager
+	logs  *observer.ObservedLogs
+	open  func(te *TriggerEngine) // ledger opener (default: openLedgerWith on ldir)
+
+	mu          sync.Mutex
+	services    map[string][]string // service -> live container ids
+	order       []string
+	nextID      int
+	ran         []hRun
+	engineCalls int
+	completed   int
+	crashAt     string
+	crashed     chan string
+	hold        chan struct{}
+	svcLock     sync.Mutex
+}
+
+func newEngHarness(t *testing.T, strategy string, services map[string][]string, order ...string) *engHarness {
+	t.Helper()
+	h := &engHarness{
+		t: t, ldir: lbLedgerDir(t), sdir: t.TempDir(), lkdir: t.TempDir(), pdir: t.TempDir(),
+		strategy: strategy, fileMode: strategy == "signal", services: services, order: order,
+		crashed: make(chan string, 4),
+	}
+	if len(order) == 0 {
+		for s := range services {
+			h.order = append(h.order, s)
+		}
+	}
+	h.cli = fakeDockerClient(t, newFakeDaemon())
+	t.Cleanup(h.stop)
+	return h
+}
+
+func fakeDockerClient(t *testing.T, d *fakeDaemon) *client.Client {
+	t.Helper()
+	cli, err := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"),
+		client.WithHTTPClient(&http.Client{Transport: &recoveryMockTransport{reqFunc: func(req *http.Request) (*http.Response, error) {
+			rec := &captureWriter{h: http.Header{}}
+			d.handler().ServeHTTP(rec, req)
+			return rec.response(), nil
+		}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	return cli
+}
+
+func (h *engHarness) secret() config.SecretMapping {
+	sec := config.SecretMapping{Name: lbSecret, Provider: lbProvider, Rotation: config.RotationConfigV2{Enabled: true, Strategy: h.strategy}}
+	if h.fileMode {
+		sec.Inject.Type = "file"
+	}
+	return sec
+}
+
+func (h *engHarness) setProvider(value string) {
+	h.t.Helper()
+	if err := os.WriteFile(filepath.Join(h.pdir, lbSecret+".json"), []byte(`{"password":"`+value+`"}`), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func data(value string) map[string]string { return map[string]string{"password": value} }
+
+func (h *engHarness) key(service string) ledger.Key {
+	return ledger.Key{Project: "shop", Service: service, Provider: lbProvider, Secret: lbSecret}
+}
+
+// live is the ledger live-set seam: the harness containers per service.
+func (h *engHarness) live(providerName, secretName string) (map[ledger.Key][]ledger.LiveReplica, error) {
+	if providerName != lbProvider || secretName != lbSecret {
+		return nil, nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[ledger.Key][]ledger.LiveReplica{}
+	for _, s := range h.order {
+		for i, id := range h.services[s] {
+			out[h.key(s)] = append(out[h.key(s)], ledger.LiveReplica{Number: fmt.Sprint(i + 1), ContainerID: id,
+				ContainerName: fmt.Sprintf("shop-%s-%d", s, i+1), Created: lbCreated(id), Eligible: true})
+		}
+	}
+	return out, nil
+}
+
+func (h *engHarness) refreshTargetsLocked() {
+	if h.rc == nil {
+		return
+	}
+	h.rc.Targets.Range(func(k, _ interface{}) bool { h.rc.Targets.Delete(k); return true })
+	for _, s := range h.order {
+		for _, id := range h.services[s] {
+			h.rc.Targets.Store(id, &watcher.TargetContainer{ID: id, Strategy: h.strategy, Secrets: []string{lbSecret}})
+		}
+	}
+}
+
+// reload is the fake TriggerReload (see the file comment).
+func (h *engHarness) reload(ctx context.Context, secretName string, onComplete func(error)) error {
+	rid := rotation.RotationIDFrom(ctx)
+	manual := rid == ""
+	h.mu.Lock()
+	te := h.te
+	if te == nil {
+		h.mu.Unlock()
+		return errors.New("harness stopped")
+	}
+	if !manual {
+		h.engineCalls++
+	}
+	var keys, orig []string
+	for _, s := range h.order {
+		keys = append(keys, s)
+		keys = append(keys, h.services[s]...)
+		orig = append(orig, h.services[s]...)
+	}
+	h.mu.Unlock()
+	done := func(err error) {
+		onComplete(err)
+		if !manual {
+			h.mu.Lock()
+			h.completed++
+			h.mu.Unlock()
+		}
+	}
+	if reason, blocked := te.guard.RotationBlocked(keys...); blocked {
+		go done(fmt.Errorf("%w (%s): %w", watcher.ErrRotationBlocked, reason, watcher.ErrRotationDeferred))
+		return nil
+	}
+	if !h.svcLock.TryLock() {
+		go done(fmt.Errorf("%w: 1 of 1 targets not rotated", watcher.ErrRotationDeferred))
+		return nil
+	}
+	if manual {
+		rid = rotation.NewRotationID()
+	}
+	h.mu.Lock()
+	hold := h.hold
+	crashAt := h.crashAt
+	h.mu.Unlock()
+	st := te.StateTracker
+	go func() {
+		defer h.svcLock.Unlock()
+		jctx := rotation.WithRotationID(context.Background(), rid)
+		h.mu.Lock()
+		var cand []string
+		for range orig {
+			if h.strategy == "signal" {
+				break
+			}
+			h.nextID++
+			cand = append(cand, fmt.Sprintf("c-%d", h.nextID))
+		}
+		h.mu.Unlock()
+		if h.strategy == "signal" {
+			cand = orig
+		}
+		for i, tr := range lbSteps(h.strategy) {
+			ev := rotation.JournalEvent{RotationID: rid, Strategy: h.strategy, Transition: tr}
+			if i == 0 {
+				ev.ServiceID, ev.OriginalIDs = h.order[0], orig
+			} else if h.strategy != "signal" {
+				ev.CandidateIDs = cand
+			}
+			if err := st.Record(jctx, ev); err != nil {
+				done(err)
+				return
+			}
+			if i == 0 && hold != nil {
+				<-hold // the strategy's Docker work is in progress
+			}
+			if tr == rotation.TrCandidateReady && h.strategy != "signal" {
+				h.mu.Lock()
+				n := 0
+				for _, s := range h.order {
+					for j := range h.services[s] {
+						h.services[s][j] = cand[n]
+						n++
+					}
+				}
+				h.refreshTargetsLocked()
+				h.mu.Unlock()
+			}
+			if tr == crashAt {
+				h.crashed <- rid
+				return // the process "dies": no onComplete, no finishRotation
+			}
+		}
+		ver := ""
+		if rec := JournalRecordByID(st, rid); rec != nil {
+			ver = rec.SecretVersion
+		}
+		h.mu.Lock()
+		h.ran = append(h.ran, hRun{rid: rid, version: ver, manual: manual})
+		h.mu.Unlock()
+		done(nil)
+	}()
+	return nil
+}
+
+func (h *engHarness) manualRotate() chan error {
+	res := make(chan error, 1)
+	if err := h.reload(context.Background(), lbSecret, func(err error) { res <- err }); err != nil {
+		res <- err
+	}
+	return res
+}
+
+// start builds a new engine on the harness directories ("agent start"). With
+// poll, StartAll runs (recovery, ledger reconcile, CleanupOldStates, first
+// poll); without, only the startup recovery runs.
+func (h *engHarness) start(poll bool) {
+	h.t.Helper()
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+	h.logs = logs
+	h.cfg = &config.Config{
+		Providers: map[string]config.ProviderConfig{lbProvider: {Type: "file", Config: map[string]string{"path": h.pdir}, Retry: config.RetryConfig{Backoff: "20ms"}}},
+		Agent:     config.AgentConfig{Watch: config.WatchConfig{PollingInterval: "1h"}},
+		Secrets:   []config.SecretMapping{h.secret()},
+	}
+	cache := NewSecretCache(time.Hour)
+	h.store = providers.NewSecretStoreManager(logger)
+	rc, err := watcher.NewReloaderController(logger)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	te, err := NewTriggerEngineWithDirs(cache, h.store, rc, logger, h.cfg, h.cli, h.sdir, h.lkdir)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	te.reloadFn = h.reload
+	te.rotationCooldown = time.Nanosecond
+	h.mu.Lock()
+	h.te, h.rc = te, rc
+	h.engineCalls, h.completed = 0, 0
+	h.refreshTargetsLocked()
+	h.mu.Unlock()
+	switch {
+	case h.open != nil:
+		h.open(te)
+	case h.ldir != "":
+		kp, err := ledger.NewFileKeyProvider(h.ldir)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		te.openLedgerWith(h.ldir, kp, ledger.Config{Keys: kp, After: lbAfter})
+	}
+	if te.ledger.enabled() {
+		te.ledger.liveFn = h.live
+	}
+	te.BeginStartup()
+	if poll {
+		if err := te.StartAll(); err != nil {
+			h.t.Fatal(err)
+		}
+		return
+	}
+	te.performAutomaticRecovery()
+}
+
+func (h *engHarness) stop() {
+	if h.te == nil {
+		return
+	}
+	h.waitIdle()
+	h.mu.Lock()
+	te := h.te
+	h.te = nil
+	h.mu.Unlock()
+	te.Stop()
+	h.store.Shutdown()
+}
+
+// waitIdle waits until every dispatch the engine decided (one "Secret
+// rotated" log each) reached the reloader or was abandoned before it (lock
+// timeout, journal failure), and every reloader call finished.
+func (h *engHarness) waitIdle() {
+	h.t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		decided := h.logs.FilterMessageSnippet("Secret rotated:").Len()
+		aborted := h.logs.FilterMessageSnippet("Failed to acquire rotation lock").Len() + h.logs.FilterMessage("Failed to record rotation state").Len()
+		h.mu.Lock()
+		idle := h.completed == h.engineCalls && h.engineCalls+aborted >= decided
+		h.mu.Unlock()
+		if idle {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatal("engine dispatches did not finish")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitCalls waits until the engine handed n dispatches to the reloader and
+// all of them finished.
+func (h *engHarness) waitCalls(n int) {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		h.mu.Lock()
+		ok := h.engineCalls >= n && h.completed == h.engineCalls
+		h.mu.Unlock()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("expected %d finished engine dispatches", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (h *engHarness) calls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.engineCalls
+}
+
+func (h *engHarness) runs() []hRun {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]hRun(nil), h.ran...)
+}
+
+// waitFirstDecision waits for the first poll's decision log and returns the
+// decision ("dispatched" for a dispatch).
+func (h *engHarness) waitFirstDecision() RotationDecision {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if e := h.logs.FilterMessageSnippet("Secret rotated:").All(); len(e) > 0 {
+			return RotationDispatched
+		}
+		if e := h.logs.FilterMessage("Secret observed; no rotation dispatched").All(); len(e) > 0 {
+			return RotationDecision(e[0].ContextMap()["decision"].(string))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.t.Fatal("the first poll made no decision")
+	return ""
+}
+
+func (h *engHarness) ver(value string) ledger.Version {
+	h.t.Helper()
+	v, err := h.te.ledger.v.NewVersion(lbProvider, lbSecret, data(value))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return v
+}
+
+func (h *engHarness) entry(service string) ledger.Entry {
+	h.t.Helper()
+	e, ok := h.te.ledger.v.Get(h.key(service))
+	if !ok {
+		h.t.Fatalf("no ledger entry for %s", service)
+	}
+	return e
+}
+
+func (h *engHarness) decide(value string) RotationDecision {
+	return h.te.ExecuteRotationDecision(lbProvider, lbSecret, data(value), h.secret())
+}
+
+// assertNoDispatchSettled checks that nothing was handed to the reloader and
+// no dispatch was decided by this engine.
+func (h *engHarness) assertNoDispatch(what string) {
+	h.t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	if n := h.calls(); n != 0 {
+		h.t.Fatalf("%s: %d dispatch(es), want 0", what, n)
+	}
+	if _, ok := h.te.lastRotations.Load(hKey); ok {
+		h.t.Fatalf("%s: a dispatch was decided", what)
+	}
+}
+
+// ============================================================ O-5 / scenarios 1, 2
+
+func TestLedgerEngine_FirstStart_ExistingWorkloads_ZeroRotations(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1", "a2", "a3"}})
+	h.setProvider("one")
+	h.start(true)
+	if d := h.waitFirstDecision(); d != RotationAdopted {
+		t.Fatalf("first poll decision %s, want adopted", d)
+	}
+	h.assertNoDispatch("first start")
+	e := h.entry("app")
+	if e.State != ledger.EntryAdopted || e.Applied != nil || len(e.Replicas) != 3 || e.DesiredSeq != 1 {
+		t.Fatalf("entry %+v", e)
+	}
+	for _, r := range e.Replicas {
+		if r.Adoption != ledger.AdoptionUnknown || r.Delivery != ledger.DeliveryNone {
+			t.Fatalf("replica %+v", r)
+		}
+	}
+	if _, ok := h.te.secretHashes.Load(hKey); !ok {
+		t.Fatal("the baseline hash was not stored")
+	}
+	if _, ok := h.te.Cache.Get(hKey); !ok {
+		t.Fatal("the cache was not populated (PE-03)")
+	}
+	if recs := h.te.StateTracker.snapshotRecords(); len(recs) != 0 {
+		t.Fatalf("journal written: %+v", recs)
+	}
+}
+
+// ============================================================ restart unchanged / changed
+
+func TestLedgerEngine_Restart_UnchangedDesired_ZeroRotations(t *testing.T) {
+	t.Run("adopted_unknown", func(t *testing.T) {
+		h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+		h.setProvider("one")
+		h.start(true)
+		h.waitFirstDecision()
+		h.stop()
+		h.start(true)
+		if d := h.waitFirstDecision(); d != RotationUnchanged {
+			t.Fatalf("decision %s, want unchanged", d)
+		}
+		h.assertNoDispatch("restart, adopted unknown")
+	})
+	t.Run("applied_equals_desired", func(t *testing.T) {
+		h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+		h.setProvider("one")
+		h.start(true)
+		h.waitFirstDecision()
+		h.setProvider("two")
+		if d := h.decide("two"); d != RotationDispatched {
+			t.Fatalf("a change after the baseline: %s", d)
+		}
+		h.waitCalls(1)
+		if e := h.entry("app"); !appliedIs(e, h.ver("two")) || e.State != ledger.EntryIdle {
+			t.Fatalf("entry %+v", e)
+		}
+		h.stop()
+		h.start(true)
+		if d := h.waitFirstDecision(); d != RotationUnchanged {
+			t.Fatalf("decision %s, want unchanged", d)
+		}
+		h.assertNoDispatch("restart, applied == desired")
+		if n := len(h.runs()); n != 1 {
+			t.Fatalf("%d rotations in total, want 1", n)
+		}
+	})
+}
+
+func TestLedgerEngine_Restart_ChangedDesired_ExactlyOneRotationPerKey(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1", "a2"}, "worker": {"w1"}}, "app", "worker")
+	h.setProvider("one")
+	h.start(true)
+	if d := h.waitFirstDecision(); d != RotationAdopted {
+		t.Fatalf("decision %s", d)
+	}
+	h.stop()
+	h.setProvider("three") // changed while the agent was down
+	h.start(true)
+	if d := h.waitFirstDecision(); d != RotationDispatched {
+		t.Fatalf("decision %s, want dispatched", d)
+	}
+	h.waitCalls(1)
+	runs := h.runs()
+	if len(runs) != 1 || runs[0].manual {
+		t.Fatalf("runs %+v, want exactly one engine rotation", runs)
+	}
+	three := h.ver("three")
+	if runs[0].version != FormatJournalSecretVersion(three) {
+		t.Fatalf("O-2: the journal names %q", runs[0].version)
+	}
+	for _, s := range []string{"app", "worker"} {
+		e := h.entry(s)
+		if !appliedIs(e, three) || e.State != ledger.EntryIdle {
+			t.Fatalf("%s: %+v", s, e)
+		}
+		for _, r := range e.Replicas {
+			if r.RotationID != runs[0].rid || r.Delivery != ledger.DeliveryVerified || r.Adoption != ledger.AdoptionVerified {
+				t.Fatalf("%s replica %+v", s, r)
+			}
+		}
+	}
+	// The next poll of the same value: nothing more.
+	if d := h.decide("three"); d != RotationUnchanged {
+		t.Fatalf("second poll %s", d)
+	}
+	h.waitIdle()
+	if n := h.calls(); n != 1 {
+		t.Fatalf("%d dispatches, want 1", n)
+	}
+}
+
+// ============================================================ ledger disabled
+
+func TestLedgerEngine_LedgerDisabled_NoMassRotation(t *testing.T) {
+	disabled := func(t *testing.T, h *engHarness, why string) {
+		t.Helper()
+		if h.te.ledger == nil || h.te.ledger.mode != ledgerDisabled {
+			t.Fatalf("%s: ledger not disabled: %+v", why, h.te.ledger)
+		}
+		if h.logs.FilterMessageSnippet("ledger DISABLED").Len() == 0 {
+			t.Fatalf("%s: no operator-visible warning", why)
+		}
+		if d := h.waitFirstDecision(); d != RotationLedgerDegraded {
+			t.Fatalf("%s: decision %s, want ledger_degraded", why, d)
+		}
+		h.assertNoDispatch(why)
+	}
+
+	t.Run("unwritable_dir", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can write a 0500 directory")
+		}
+		h := newEngHarness(t, "restart", map[string][]string{"app": {"a1", "a2"}})
+		parent := filepath.Join(h.ldir, "ro")
+		if err := os.Mkdir(parent, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+		dir := filepath.Join(parent, "ledger")
+		h.open = func(te *TriggerEngine) { te.openLedger(dir) } // the production opener
+		h.setProvider("one")
+		h.start(true)
+		disabled(t, h, "unwritable dir")
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("something was created: %v", err)
+		}
+		// Today's behaviour for a later change in the same process (advisory).
+		if d := h.decide("two"); d != RotationDispatched {
+			t.Fatalf("a change after the in-memory baseline: %s", d)
+		}
+		h.waitCalls(1)
+	})
+
+	t.Run("lost_key", func(t *testing.T) {
+		h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+		h.setProvider("one")
+		h.start(true)
+		h.waitFirstDecision()
+		h.stop()
+		if err := os.Remove(filepath.Join(h.ldir, "ledger.key")); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(filepath.Join(h.ldir, "ledger.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.setProvider("two") // even a change while down is not rotated without a ledger
+		h.start(true)
+		disabled(t, h, "lost key")
+		after, _ := os.ReadFile(filepath.Join(h.ldir, "ledger.json"))
+		if !bytes.Equal(before, after) {
+			t.Fatal("the ledger was modified while its key is lost")
+		}
+		if _, err := os.Stat(filepath.Join(h.ldir, "ledger.key")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a lost key was regenerated")
+		}
+	})
+
+	t.Run("run_dso_refused", func(t *testing.T) {
+		h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+		h.open = func(te *TriggerEngine) { te.openLedger("/run/dso/ledger") }
+		h.setProvider("one")
+		h.start(true)
+		disabled(t, h, "/run/dso")
+	})
+}
+
+// ============================================================ crash window W6
+
+func TestLedgerEngine_CrashW6_WithO2_ZeroReRotations(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(true)
+	h.waitFirstDecision()
+	two := h.ver("two")
+	h.mu.Lock()
+	h.crashAt = rotation.TrCompleted // the journal committed; the ledger update never ran
+	h.mu.Unlock()
+	h.setProvider("two")
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("decision %s", d)
+	}
+	var rid string
+	select {
+	case rid = <-h.crashed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no crash")
+	}
+	rec := JournalRecordByID(h.te.StateTracker, rid)
+	if rec == nil || rec.Status != "completed" || rec.SecretVersion != FormatJournalSecretVersion(two) {
+		t.Fatalf("journal %+v", rec)
+	}
+	e := h.entry("app")
+	if e.Applied != nil || e.Replicas[0].Delivery != ledger.DeliveryRequested || e.Replicas[0].RotationID != rid {
+		t.Fatalf("pre-crash ledger %+v", e)
+	}
+	h.mu.Lock()
+	h.crashAt = ""
+	h.completed = h.engineCalls // the dead dispatch never reports
+	h.mu.Unlock()
+	h.stop()
+
+	h.start(true) // recovery, reconcile (W6 from the journal-carried version), first poll
+	if d := h.waitFirstDecision(); d != RotationUnchanged {
+		t.Fatalf("first poll after the crash: %s, want unchanged", d)
+	}
+	h.assertNoDispatch("after W6")
+	e = h.entry("app")
+	if !appliedIs(e, two) || e.State != ledger.EntryIdle {
+		t.Fatalf("reconciled entry %+v", e)
+	}
+	if r := e.Replicas[0]; r.Delivery != ledger.DeliveryVerified || r.Adoption != ledger.AdoptionVerified || r.RotationID != rid {
+		t.Fatalf("replica %+v", r)
+	}
+	if h.logs.FilterMessage("Applied-version ledger reconciled from the journal").Len() == 0 {
+		t.Fatal("no reconcile change reported")
+	}
+}
+
+// ============================================================ signal
+
+func TestLedgerEngine_SignalReload_AdoptionUnverified(t *testing.T) {
+	h := newEngHarness(t, "signal", map[string][]string{"app": {"s1"}})
+	h.setProvider("one")
+	h.start(true)
+	h.waitFirstDecision()
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("decision %s", d)
+	}
+	h.waitCalls(1)
+	e := h.entry("app")
+	if !appliedIs(e, h.ver("two")) || e.State != ledger.EntryIdle {
+		t.Fatalf("entry %+v", e)
+	}
+	r := e.Replicas[0]
+	if r.Delivery != ledger.DeliveryVerified || r.Adoption != ledger.AdoptionUnverified || r.Reason != string(ledger.WhyAdoptionUnverifiedSignal) {
+		t.Fatalf("replica %+v", r)
+	}
+	// No signal loop: the same value again rotates nothing, also after a restart.
+	if d := h.decide("two"); d != RotationUnchanged {
+		t.Fatalf("again: %s", d)
+	}
+	h.setProvider("two")
+	h.stop()
+	h.start(true)
+	if d := h.waitFirstDecision(); d != RotationUnchanged {
+		t.Fatalf("after restart: %s", d)
+	}
+	h.assertNoDispatch("signal after restart")
+}
+
+// ============================================================ BQ-3: IPC Rotated
+
+func TestLedgerEngine_IPCRotated_NoOverReport(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(false) // no poller: the IPC reconcile is the first observation of the process
+	srv := &AgentServer{Cache: h.te.Cache, Store: h.store, Logger: zap.NewNop(), Config: h.cfg, Trigger: h.te}
+	reconcile := func() api.ReconcileResponse {
+		t.Helper()
+		var resp api.ReconcileResponse
+		if err := srv.TriggerReconciliation(&api.ReconcileRequest{Secret: lbSecret}, &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Results) != 1 || resp.Results[0].Error != "" {
+			t.Fatalf("results %+v", resp.Results)
+		}
+		return resp
+	}
+	// The old code reported Rotated=true here (empty in-memory hash) although the
+	// value was only adopted.
+	if resp := reconcile(); resp.Results[0].Rotated || resp.SecretsRotated != 0 {
+		t.Fatalf("first observation reported as rotated: %+v", resp)
+	}
+	h.assertNoDispatch("IPC first observation")
+	if resp := reconcile(); resp.Results[0].Rotated {
+		t.Fatalf("unchanged reported as rotated: %+v", resp)
+	}
+	h.setProvider("two")
+	if resp := reconcile(); !resp.Results[0].Rotated || resp.SecretsRotated != 1 {
+		t.Fatalf("a real change not reported: %+v", resp)
+	}
+	h.waitCalls(1)
+	// Restart, unchanged: not rotated.
+	h.stop()
+	h.start(false)
+	srv.Trigger, srv.Cache, srv.Store = h.te, h.te.Cache, h.store
+	if resp := reconcile(); resp.Results[0].Rotated {
+		t.Fatalf("restart with an unchanged value reported as rotated: %+v", resp)
+	}
+	if n := h.calls(); n != 0 {
+		t.Fatalf("%d dispatches after restart", n)
+	}
+}
+
+// ============================================================ scenario 5
+
+func TestLedgerEngine_Scenario05_ProviderUnavailableAtStartup(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.start(true) // the provider has no db.json yet: every fetch fails
+	deadline := time.Now().Add(10 * time.Second)
+	for h.logs.FilterMessage("Secret fetch failed, will retry").Len() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the poller did not retry")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := h.te.secretHashes.Load(hKey); ok {
+		t.Fatal("an outage stored a hash")
+	}
+	if snap := h.te.ledger.v.Snapshot(); len(snap.Ledger.Entries) != 0 {
+		t.Fatalf("an outage recorded ledger entries: %+v", snap.Ledger.Entries)
+	}
+	gen := h.te.ledger.store.Health().Generation
+	h.assertNoDispatch("outage")
+	h.setProvider("one") // the provider recovers
+	if d := h.waitFirstDecision(); d != RotationAdopted {
+		t.Fatalf("decision after recovery %s, want adopted", d)
+	}
+	h.assertNoDispatch("after recovery")
+	if g := h.te.ledger.store.Health().Generation; g != gen+1 {
+		t.Fatalf("generation %d -> %d, want exactly one write (the adoption)", gen, g)
+	}
+	h.stop()
+	kp, err := ledger.NewFileKeyProvider(h.ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, res, err := ledger.Open(h.ldir, ledger.Config{Keys: kp, After: lbAfter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if res.Mode != ledger.ModeDurable || res.Reason != ledger.ReasonNone || res.Preserved != "" {
+		t.Fatalf("the ledger did not survive intact: %+v", res)
+	}
+	if _, ok := s.Get(h.key("app")); !ok {
+		t.Fatal("the adoption was not persisted")
+	}
+}
+
+// ============================================================ scenario 8
+
+func TestLedgerEngine_Scenario08_ConcurrentProviderUpdates(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("base")
+	h.start(false)
+	if d := h.decide("base"); d != RotationAdopted {
+		t.Fatalf("baseline %s", d)
+	}
+	lastSeq := h.entry("app").DesiredSeq
+	for round := 0; round < 25; round++ {
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func(v string) {
+				defer wg.Done()
+				<-start
+				h.decide(v)
+			}(fmt.Sprintf("r%d-v%d", round, i))
+		}
+		close(start)
+		wg.Wait()
+		cached, ok := h.te.Cache.Get(hKey)
+		hv, hok := h.te.secretHashes.Load(hKey)
+		e := h.entry("app")
+		if !ok {
+			t.Fatalf("round %d: no cache", round)
+		}
+		// The ledger's desired is the value the per-key mutex let win last: the
+		// cached (dispatched or baselined) value. No lost update.
+		v, err := h.te.ledger.v.NewVersion(lbProvider, lbSecret, cached)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Desired == nil || ledger.Compare(*e.Desired, v) != ledger.Same {
+			t.Fatalf("round %d: ledger desired is not the last observed value", round)
+		}
+		if hok && hv.(string) != ComputeHash(cached) {
+			t.Fatalf("round %d: hash and cache disagree", round)
+		}
+		if e.DesiredSeq < lastSeq {
+			t.Fatalf("round %d: desired_seq went back %d -> %d", round, lastSeq, e.DesiredSeq)
+		}
+		lastSeq = e.DesiredSeq
+	}
+	// In process the ledger may lag behind (stale-low: overlapping dispatches of
+	// one secret share a journal key, so a correlation can be refused, finding
+	// F-S6-1) but never over-claims: whenever applied is not the desired value
+	// the ledger still wants exactly that rotation.
+	h.waitIdle()
+	final, _ := h.te.Cache.Get(hKey)
+	fv := h.ver(final["password"])
+	e := h.entry("app")
+	if e.Desired == nil || ledger.Compare(*e.Desired, fv) != ledger.Same {
+		t.Fatal("final desired is not the last observed value")
+	}
+	if !appliedIs(e, fv) && !h.te.ledger.v.NeedsRotation(h.key("app")).Rotate() {
+		t.Fatalf("the ledger lags and does not want the rotation: %+v", e)
+	}
+	// After a restart the first poll of the final value converges with at most
+	// one rotation, and a second poll rotates nothing.
+	h.setProvider(final["password"])
+	h.stop()
+	h.start(false)
+	h.decide(final["password"])
+	h.waitIdle()
+	if n := h.calls(); n > 1 {
+		t.Fatalf("%d rotations to converge, want at most 1", n)
+	}
+	if d := h.decide(final["password"]); d != RotationUnchanged {
+		t.Fatalf("second poll %s", d)
+	}
+	e = h.entry("app")
+	if !appliedIs(e, fv) || e.State != ledger.EntryIdle {
+		for _, r := range h.te.StateTracker.snapshotRecords() {
+			t.Logf("journal %s status=%s seq=%d tr=%s orig=%v svc=%s", r.RotationID, r.Status, r.Seq, r.Transition, r.OriginalIDs(), r.ServiceID)
+		}
+		for _, l := range h.logs.FilterLevelExact(zapcore.WarnLevel).All() {
+			t.Logf("WARN %s %v", l.Message, l.ContextMap())
+		}
+		t.Fatalf("not converged: %+v", e)
+	}
+}
+
+// ============================================================ scenario 9 and the guard
+
+func TestLedgerEngine_Scenario09_ConcurrentManualAndAutomatic(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(false)
+	h.decide("one")
+	hold := make(chan struct{})
+	h.mu.Lock()
+	h.hold = hold
+	h.mu.Unlock()
+	manual := h.manualRotate() // REST/sync: TriggerReload without a rotation id
+	time.Sleep(20 * time.Millisecond)
+	h.mu.Lock()
+	h.hold = nil
+	h.mu.Unlock()
+	// The poll sees a change while the manual rotation holds the service.
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("decision %s", d)
+	}
+	h.waitCalls(1) // deferred: the service is busy
+	if n := len(h.runs()); n != 0 {
+		t.Fatalf("%d rotations ran while the manual one holds the service", n)
+	}
+	// One journal operation: the manual one (the deferred dispatch's record was
+	// removed by finishRotation, as before S6).
+	recs := h.te.StateTracker.snapshotRecords()
+	if len(recs) != 1 || recs[0].Seq == 0 {
+		t.Fatalf("journal %+v, want only the manual operation", recs)
+	}
+	manualRID := recs[0].RotationID
+	e := h.entry("app")
+	if e.Applied != nil || e.Replicas[0].Delivery != ledger.DeliveryNone {
+		t.Fatalf("the deferred dispatch left a ledger claim: %+v", e)
+	}
+	close(hold)
+	if err := <-manual; err != nil {
+		t.Fatal(err)
+	}
+	if e := h.entry("app"); e.Applied != nil || e.Replicas[0].RotationID == manualRID {
+		t.Fatalf("the manual rotation was attributed to the ledger: %+v", e)
+	}
+	// The next poll retries (hash rolled back) and the ledger cites that one.
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("retry decision %s", d)
+	}
+	h.waitCalls(2)
+	runs := h.runs()
+	if len(runs) != 2 || !runs[0].manual || runs[1].manual {
+		t.Fatalf("runs %+v", runs)
+	}
+	e = h.entry("app")
+	if !appliedIs(e, h.ver("two")) || e.Replicas[0].RotationID != runs[1].rid {
+		t.Fatalf("entry %+v", e)
+	}
+}
+
+func TestLedgerEngine_GuardAlwaysAsked_LedgerNeverBypasses(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(false)
+	h.decide("one")
+	// An unresolved operation for the service (an operator must act).
+	ctx := rotation.WithRotationID(context.Background(), "rot-crit")
+	if err := h.te.StateTracker.Record(ctx, rotation.JournalEvent{RotationID: "rot-crit", ServiceID: "app", Strategy: "restart", Transition: rotation.TrIntentRenameOriginal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.te.StateTracker.MarkCriticalRecord(JournalRecordByID(h.te.StateTracker, "rot-crit"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("the ledger wants it: %s", d)
+	}
+	h.waitCalls(1)
+	if n := len(h.runs()); n != 0 {
+		t.Fatal("the guard was bypassed")
+	}
+	if e := h.entry("app"); e.Applied != nil || e.State != ledger.EntryPending {
+		t.Fatalf("entry %+v", e)
+	}
+	_ = h.te.StateTracker.MarkRecoveredRecord(JournalRecordByID(h.te.StateTracker, "rot-crit"))
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("after the operator: %s", d)
+	}
+	h.waitCalls(2)
+	if n := len(h.runs()); n != 1 {
+		t.Fatalf("%d rotations", n)
+	}
+}
+
+// ============================================================ W14 / O-7
+
+func TestLedgerEngine_JournalStartFails_NoDispatchNoCitation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a 0500 directory")
+	}
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(false)
+	h.decide("one")
+	if err := os.Chmod(h.sdir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(h.sdir, 0o700) })
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("decision %s", d)
+	}
+	waitHashGone(t, h.te, hKey)
+	time.Sleep(50 * time.Millisecond)
+	if n := h.calls(); n != 0 {
+		t.Fatalf("%d reloads without a durable journal record", n)
+	}
+	e := h.entry("app")
+	for _, r := range e.Replicas {
+		if r.RotationID != "" || r.Delivery != ledger.DeliveryNone {
+			t.Fatalf("the ledger cites an unjournalled operation: %+v", r)
+		}
+	}
+	if len(h.te.StateTracker.snapshotRecords()) != 0 {
+		t.Fatal("a non-durable record stayed in memory (F-B3)")
+	}
+	if err := os.Chmod(h.sdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("retry %s", d)
+	}
+	h.waitCalls(1)
+}
+
+// ============================================================ wiring units
+
+func TestLedgerWiring_DefaultDirPinned(t *testing.T) {
+	if defaultLedgerDir != "/var/lib/dso/ledger" {
+		t.Fatalf("default ledger dir %q", defaultLedgerDir)
+	}
+	if strings.HasPrefix(defaultLedgerDir, "/run/") || strings.HasPrefix(defaultLedgerDir, "/var/run/") {
+		t.Fatal("the ledger must never live on tmpfs")
+	}
+}
+
+// Engines built without NewTriggerEngine keep the legacy first-observation
+// dispatch (unit tests, NewTriggerEngineWithDirs).
+func TestLedgerWiring_NotConfigured_LegacyDecision(t *testing.T) {
+	te := newOutcomeTestEngine(t)
+	if te.ledger != nil {
+		t.Fatal("configured")
+	}
+	d := te.ExecuteRotationDecision("aws", "x", syntheticV2, config.SecretMapping{Name: "x", Rotation: config.RotationConfigV2{Strategy: "none"}})
+	if d != RotationDispatched {
+		t.Fatalf("legacy first observation: %s", d)
+	}
+	if d := te.ExecuteRotationDecision("aws", "x", syntheticV2, config.SecretMapping{Name: "x", Rotation: config.RotationConfigV2{Strategy: "none"}}); d != RotationUnchanged {
+		t.Fatalf("legacy repeat: %s", d)
+	}
+}
+
+// The production live set: a read-only inspection of the reloader targets,
+// keyed by Compose project/service (or the container name), artifacts skipped.
+func TestLedgerWiring_LiveSetFromDockerInspect(t *testing.T) {
+	inspect := map[string]container.InspectResponse{}
+	add := func(id, name, created string, labels map[string]string) {
+		inspect[id] = container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{ID: id, Name: "/" + name, Created: created},
+			Config:            &container.Config{Labels: labels},
+		}
+	}
+	compose := func(svc, n string) map[string]string {
+		return map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": svc, "com.docker.compose.container-number": n}
+	}
+	add("id-a2", "shop-app-2", "2026-01-01T00:00:02Z", compose("app", "2"))
+	add("id-a1", "shop-app-1", "2026-01-01T00:00:01Z", compose("app", "1"))
+	add("id-p", "plain", "2026-01-01T00:00:03Z", nil)
+	add("id-x", "app_dso_new_1700000000", "2026-01-01T00:00:04Z", compose("app", "3"))
+	var calls []string
+	var mu sync.Mutex
+	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		calls = append(calls, req.Method+" "+req.URL.Path)
+		mu.Unlock()
+		for id, ins := range inspect {
+			if strings.HasSuffix(req.URL.Path, "/containers/"+id+"/json") && req.Method == http.MethodGet {
+				b, _ := json.Marshal(ins)
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: stringBody(string(b))}, nil
+			}
+		}
+		return &http.Response{StatusCode: 404, Header: http.Header{}, Body: stringBody(`{"message":"no such container"}`)}, nil
+	})
+	rc, err := watcher.NewReloaderController(zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id := range inspect {
+		rc.Targets.Store(id, &watcher.TargetContainer{ID: id, Strategy: "restart", Secrets: []string{"db"}})
+	}
+	rc.Targets.Store("id-other", &watcher.TargetContainer{ID: "id-other", Secrets: []string{"other"}})
+	te := &TriggerEngine{Reloader: rc, DockerClient: cli, Logger: zap.NewNop()}
+	live, err := te.ledgerLiveSet(context.Background(), "vault", "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := live[ledger.Key{Project: "shop", Service: "app", Provider: "vault", Secret: "db"}]
+	plain := live[ledger.Key{Service: "plain", Provider: "vault", Secret: "db"}]
+	if len(live) != 2 || len(app) != 2 || len(plain) != 1 {
+		t.Fatalf("live %+v", live)
+	}
+	if app[0].Number != "1" || app[0].ContainerID != "id-a1" || app[1].Number != "2" || app[0].Created != "2026-01-01T00:00:01Z" || !app[0].Eligible {
+		t.Fatalf("app replicas %+v", app)
+	}
+	if plain[0].Number != "" || plain[0].ContainerName != "plain" {
+		t.Fatalf("plain %+v", plain)
+	}
+	for _, c := range calls {
+		if !strings.HasPrefix(c, "GET ") {
+			t.Fatalf("the live set mutated Docker: %s", c)
+		}
+	}
+	// An inspection failure is reported, never guessed around.
+	rc.Targets.Store("id-gone", &watcher.TargetContainer{ID: "id-gone", Secrets: []string{"db"}})
+	if _, err := te.ledgerLiveSet(context.Background(), "vault", "db"); err == nil {
+		t.Fatal("a failed inspection was ignored")
+	}
+}
+
+// ledger_wiring.go is the production caller of the bridge.
+func TestLedgerWiring_UsesTheBridge(t *testing.T) {
+	src, err := os.ReadFile("ledger_wiring.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"CorrelateAfterJournalStart(", "RecordRotationOutcome(", "ReconcileLedgerFromTracker(", "FormatJournalSecretVersion("} {
+		if !bytes.Contains(src, []byte(name)) {
+			t.Errorf("ledger_wiring.go does not call %s", name)
+		}
+	}
+}

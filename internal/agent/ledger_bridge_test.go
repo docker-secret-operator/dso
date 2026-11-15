@@ -1880,11 +1880,12 @@ func TestLedgerBridge_Scenario15_IdentityChanged(t *testing.T) {
 	})
 }
 
-// ============================================================ unwired
+// ============================================================ wiring boundary
 
-// The bridge stays unwired: no non-test Go file outside ledger_bridge.go
-// references any of its entry points.
-func TestLedgerBridge_NoProductionCaller(t *testing.T) {
+// S6 wired the bridge: its entry points have exactly one production caller,
+// the trigger-engine wiring in ledger_wiring.go (state_tracker.go uses only the
+// version-shape check). No other non-test Go file references them.
+func TestLedgerBridge_ProductionCallersOnlyInWiring(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..")
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
@@ -1908,7 +1909,8 @@ func TestLedgerBridge_NoProductionCaller(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "ledger_bridge.go" {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "ledger_bridge.go" ||
+			filepath.Base(path) == "ledger_wiring.go" {
 			return nil
 		}
 		f, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
@@ -1918,7 +1920,7 @@ func TestLedgerBridge_NoProductionCaller(t *testing.T) {
 		scanned++
 		ast.Inspect(f, func(n ast.Node) bool {
 			if id, ok := n.(*ast.Ident); ok && names[id.Name] {
-				t.Errorf("%s references the unwired bridge (%s)", path, id.Name)
+				t.Errorf("%s references the bridge (%s) outside ledger_wiring.go", path, id.Name)
 			}
 			return true
 		})

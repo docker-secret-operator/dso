@@ -128,23 +128,14 @@ func (s *AgentServer) TriggerReconciliation(req *api.ReconcileRequest, resp *api
 		}
 		s.Store.MarkProviderHealthy(sec.Provider)
 
-		// ExecuteRotation is fire-and-forget: it does its own hash-diff
-		// against the last-seen value and silently no-ops when nothing
-		// changed. Compare here too so the response can honestly report
-		// whether THIS call actually caused a rotation, rather than always
-		// claiming success once the fetch succeeded.
-		cacheKey := fmt.Sprintf("%s:%s", sec.Provider, sec.Name)
-		var oldHash string
-		if val, ok := s.Trigger.secretHashes.Load(cacheKey); ok {
-			oldHash = val.(string)
-		}
-		newHash := ComputeHash(data)
-		if newHash != oldHash {
+		// The engine reports what it decided (design 8.3, BQ-3 option b), so the
+		// response says whether THIS call started a rotation. A value that is
+		// adopted as a baseline (first observation, ledger adoption or a
+		// degraded ledger), unchanged, or deferred did not rotate anything.
+		if s.Trigger.ExecuteRotationDecision(sec.Provider, sec.Name, data, sec) == RotationDispatched {
 			result.Rotated = true
 			resp.SecretsRotated++
 		}
-
-		s.Trigger.ExecuteRotation(sec.Provider, sec.Name, data, sec)
 		resp.Results = append(resp.Results, result)
 	}
 

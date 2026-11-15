@@ -18,7 +18,7 @@ import (
 //
 // Rules:
 //  1. No Go file outside internal/ledger imports this package, except the files
-//     in ledgerImportAllowlist (the future S4b bridge). The package is UNWIRED.
+//     in ledgerImportAllowlist (the S4b bridge and the S6 trigger wiring).
 //  2. An allowlisted importer must not reference the KEEP-UNWIRED or retired
 //     surface (forbiddenOutsideNames).
 //  3. Inside the package, the whole-document mutators update and
@@ -33,8 +33,10 @@ const ledgerImportPath = "github.com/docker-secret-operator/dso/internal/ledger"
 // outside internal/ledger that may import it. Extend it explicitly when the
 // wiring slice lands; nothing else may.
 var ledgerImportAllowlist = map[string]bool{
-	"internal/agent/ledger_bridge.go":      true, // S4b bridge (design 12.5 step 4), unwired
+	"internal/agent/ledger_bridge.go":      true, // S4b bridge (design 12.5 step 4): journal -> ledger evidence
 	"internal/agent/ledger_bridge_test.go": true, // S4b bridge tests (real Store + real StateTracker)
+	"internal/agent/ledger_wiring.go":      true, // S6 trigger-engine wiring (design 12.5 step 6): the only production user
+	"internal/agent/ledger_wiring_test.go": true, // S6 engine tests (real Store + real StateTracker, Docker-free)
 }
 
 // forbiddenOutsideNames may not be referenced (as a selector) by any file
@@ -85,7 +87,7 @@ func outsideViolations(rel string, f *ast.File) []string {
 			local = imp.Name.Name
 		}
 		if !ledgerImportAllowlist[rel] {
-			out = append(out, rel+": imports internal/ledger (not allowlisted; the package is unwired)")
+			out = append(out, rel+": imports internal/ledger (not allowlisted; only the bridge and the S6 wiring may)")
 		}
 	}
 	if local == "" {
