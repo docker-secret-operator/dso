@@ -57,6 +57,8 @@ The journal record (`RotationState`) is keyed by `RotationID`, one record per `E
 
 ### 1.3 Schema amendment required before S4 (call it S2.2) **[OWNER]**
 
+Status (S2.2 implemented, unwired, uncommitted at the time of writing): `SchemaVersion = 3` in `internal/ledger`. Per replica `rotation_id`, `delivery`, `adoption` added as specified; additionally (implementation decision, owner to confirm) the retired `Entry.rotation`/`Intent`, the `in_progress` state and the document-level `recoveries` journal were removed from the v3 schema and the exported API instead of being kept decodable, because a v2 file is rejected anyway. A v2 file takes the existing corrupt path (preserved aside byte for byte, fresh all-UNKNOWN ledger); a newer file stays memory-only and untouched. `Store.Update`/`UpdateMemoryOnly` are now unexported and guarded by `TestRepositoryReferenceGuard_*`.
+
 The ledger must distinguish five things; v2 cannot say all of them without stringly-typed `Reason` conventions, and v2 has no field for the correlation id. Because no ledger exists on disk anywhere (library unwired), the cost of changing the schema now is near zero and later is not. Proposal: schema **version 3**, additive per `Replica`:
 
 | Field | Values | Meaning |
@@ -257,6 +259,8 @@ Real text: `secretHashes` is read by `server.go:138` to compute the IPC `Rotated
 **`Store.Update(fn)` and `UpdateMemoryOnly(fn)` mutate the whole document**, so production code could bypass every rule above. Decision **[OWNER, library change in S2.2]**: (1) rename them to unexported `update` and `updateMemoryOnly` when S4 lands (all `internal/ledger` tests are in-package, so they keep compiling); (2) production code gets only the S4 facade (`ledger.Versions`, built on `*Store`) whose exported methods are the transitions of section 10; (3) add an import/reference guard test that scans the repository and fails if any non-`internal/ledger` package references `RequestRedelivery`, `BeginRecovery`, `CompleteRecovery`, `RecoveryRecords`, `Entry.Rotation`, `EntryInProgress`, `EntryPartial` (before J1) or the unexported escape hatches by any exported wrapper; (4) `Gate()` stays exported but is advisory (it selects durable vs memory-only, section 6) and is **not** a Docker precondition.
 
 ## 10. The transitions S4 implements
+
+Status (S4a implemented, unwired, uncommitted at the time of writing): `internal/ledger/transitions*.go` (facade `ledger.Versions`). Decisions taken where this section is silent are listed in the S4a change report; the main ones: a `Block` transition was added (needed to produce `blocked`), `ambiguous_provider` was added to the 10.1 vocabulary, and without a journal-carried version (O-2) reconcile cannot apply W6 and leaves the replicas unknown (no advance).
 
 All are methods of the facade on top of the store (replacing rev 6.3's `Observe/Adopt/BeginRotation/CompleteRotation/Interrupted/Unblock`; `BeginRotation` disappears because the journal authorises). Each is one `update`, idempotent, returns `ErrNoChange` when nothing would change, and refuses (changes nothing) on an invalid transition. None performs Docker I/O.
 
