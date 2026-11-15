@@ -31,7 +31,12 @@ var version = "dev"
 // For IAM Agency (ECS-attached role), supply security_token via
 // /etc/dso/agent.env (EnvironmentFile in the dso-agent.service systemd unit).
 type HuaweiProvider struct {
-	client *csms.CsmsClient
+	client secretShower
+}
+
+// secretShower is the test seam over *csms.CsmsClient (the only method used).
+type secretShower interface {
+	ShowSecretVersion(req *model.ShowSecretVersionRequest) (*model.ShowSecretVersionResponse, error)
 }
 
 func (h *HuaweiProvider) Init(cfg map[string]string) error {

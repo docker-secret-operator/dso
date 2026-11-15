@@ -26,7 +26,12 @@ var version = "dev"
 //   - AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID (service principal)
 //   - Managed Identity (Azure VMs, Container Instances, App Service)
 type AzureProvider struct {
-	client *azsecrets.Client
+	client secretGetter
+}
+
+// secretGetter is the test seam over *azsecrets.Client (the only method used).
+type secretGetter interface {
+	GetSecret(ctx context.Context, name, version string, options *azsecrets.GetSecretOptions) (azsecrets.GetSecretResponse, error)
 }
 
 // azureClientOptions disables azcore's built-in retry policy (default 3
