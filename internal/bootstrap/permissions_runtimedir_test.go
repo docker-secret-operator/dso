@@ -20,7 +20,7 @@ func TestDsoDirectoryPlan_RuntimeDirectoryIs0750AndOthersAreUnchanged(t *testing
 		strict bool
 	}{
 		"/etc/dso":     {0o775, false},
-		"/var/lib/dso": {0o770, false},
+		"/var/lib/dso": {0o750, false},
 		"/var/run/dso": {0o750, true},
 		"/var/log/dso": {0o770, false},
 	}

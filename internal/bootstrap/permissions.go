@@ -256,7 +256,7 @@ type dsoDirSpec struct {
 func dsoDirectoryPlan() []dsoDirSpec {
 	return []dsoDirSpec{
 		{"/etc/dso", 0775, false},     // root:dso, rw for group so dso members can operate without sudo
-		{"/var/lib/dso", 0770, false}, // root:dso, readable/writable by group
+		{"/var/lib/dso", 0750, false}, // root:dso, group read-only: only the root agent writes state/locks/ledger, and the ledger key and plugin trust checks refuse a group-writable ancestor
 		// Runtime directory: group may traverse (connect to the socket) but never
 		// write, and others have no access. Applying a wider mode here would undo
 		// the agent's own enforcement (internal/runtimedir) on a live service,
@@ -572,7 +572,7 @@ After bootstrap, the following permission structure is in place:
    - Users in 'dso' group can read configuration; changing it requires root (sudo)
 
 3. State Directory
-   - /var/lib/dso: 0770 (root:dso) - Owner and group can read/write
+   - /var/lib/dso: 0750 (root:dso) - Owner writes; group can read
    - Users in 'dso' group can write state and logs
 
 4. Runtime Directory
