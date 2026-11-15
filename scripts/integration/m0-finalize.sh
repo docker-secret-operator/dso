@@ -144,10 +144,12 @@ finalize() {
   if [[ -n ${DSO_IT_SECURITY_REVIEW_FILE:-} && "$(m0_security_review "$DSO_IT_SECURITY_REVIEW_FILE")" != CLOSED ]]; then
     finding "DSO_IT_SECURITY_REVIEW_FILE is set but does not state DSO_SECURITY_REVIEW_STATUS=CLOSED in an acceptable file: security_review stays OPEN."
   fi
+  # The N19 verdict is a FINDING computed by the scenario-n19-diagnostic step from its evidence; absent => inconclusive.
+  M0_N19_VERDICT="$(cat "$M0_STATE/n19_verdict" 2>/dev/null || echo inconclusive)"
   # The runner never decides security_review (operator file only) and never sees a teardown (always PENDING).
   m0_compute_verdicts "$M0_STEPS_FILE" "${M0_MARKER_OK:-}" "${DSO_IT_SECURITY_REVIEW_FILE:-}" PENDING -- "${REQUIRED_STEPS[@]}" >"$M0_STATE/verdicts.json"
   if ! m0_write_summary_json "$M0_ART/summary.json" "$M0_STATE/meta.json" "$M0_STATE/traffic.json" "$M0_STATE/recovery.json" \
-    "$M0_STATE/findings.txt" "$M0_STATE/cleanup.json" "$M0_STATE/verdicts.json"; then
+    "$M0_STATE/findings.txt" "$M0_STATE/cleanup.json" "$M0_STATE/verdicts.json" "$M0_STATE/n19.json"; then
     echo "FAILED to write summary.json" >&2
     jq '.automated_integration="FAIL" | .release_readiness="FAIL"' "$M0_STATE/verdicts.json" >"$M0_STATE/verdicts.fail.json" && mv "$M0_STATE/verdicts.fail.json" "$M0_STATE/verdicts.json"
   else

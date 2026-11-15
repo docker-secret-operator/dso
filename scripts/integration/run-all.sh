@@ -44,7 +44,7 @@ REQUIRED_STEPS=(
   secret-tmpfs-injection secret-nonroot-access health-probe-behaviour network-bind-protocol
   compose-stdin-deploy compose-profiles compose-failure compose-cancellation
   scenario-signal scenario-restart scenario-rolling scenario-traffic
-  scenario-recovery-realdaemon scenario-crash-recovery scenario-ownership-concurrency scenario-inject docker-suite-coverage
+  scenario-recovery-realdaemon scenario-crash-recovery scenario-ownership-concurrency scenario-inject scenario-n19-diagnostic docker-suite-coverage
   host-listeners
   evidence-collection cleanup foreign-resources-post source-tree-unchanged evidence-leak-scan
 )
@@ -70,6 +70,14 @@ INJECT_TESTS=(TestInjectSecurity_01_ManagedContainerVerifiedTmpfs TestInjectSecu
   TestInjectSecurity_13_RestrictivePermissions TestInjectSecurity_14_PartialInjectionFailure
   TestInjectSecurity_15_RepeatedInjection TestInjectSecurity_16_NoPlaintextInPersistentLocations
   TestInjectSecurity_17_NoSecretInLogsOrMetadata TestInjectSecurity_18_PatchedEngineNormalBehaviour)
+# N19 diagnostic (test/docker/n19_diag_*_test.go; docs/audit/42): every one must RUN (not skip) and record evidence.
+# The tests record observations, they do not assert the hoped-for outcome: a demonstrated N19 failure is a PASSING
+# diagnostic; the verdict (n19_verdict) is computed from the evidence by m0_n19_verdict.
+N19_DIAG_TESTS=(TestN19Diag_A_CreatedNotStartedWithTmpfs TestN19Diag_B_ArchiveInjectBeforeStart TestN19Diag_C_LayerInspectionWithoutStart
+  TestN19Diag_D_StartAndInspectTmpfs TestN19Diag_E_ApplicationReadsSecret TestN19Diag_F_ArchiveInjectIntoRunning
+  TestN19Diag_G_ExecInjectRequireTmpfs TestN19Diag_H_StopRestartBehaviour TestN19Diag_I_PersistentPlaintextBeneathTmpfs
+  TestN19Diag_J_RemovalAndScopedCleanup TestN19Diag_K_ManagedRollingFileRotation TestN19Diag_L_ManagedRecreateFileRotation
+  TestN19Diag_M_ReadinessGateWithAbsentFile TestN19Diag_R_MinimalReproducer)
 CRASH_PATTERN='^TestCrash'
 CRASH_TAGS="${DSO_IT_CRASH_TAGS:-dockerint}"
 CRASH_MIN_TESTS="${DSO_IT_CRASH_MIN_TESTS:-1}"
@@ -470,6 +478,29 @@ post_crash() {
     finding "No recovery-measurement log lines (t.Logf containing 'recover') were found in the crash/recovery output; recovery timings are therefore not in summary.json."
   fi
 }
+# n19_collect GO_JSON -- extract the N19-EVIDENCE lines to evidence/n19-evidence.jsonl, validate them, compute the
+# n19_verdict FINDING and publish it (state/n19_verdict, state/n19.json, findings). Returns 1 when the evidence is
+# missing or malformed (the verdict is then `inconclusive`, never a pass).
+N19_EVIDENCE="$M0_ART/evidence/n19-evidence.jsonl"
+n19_collect() {
+  local json=$1 verdict note valid=true rc=0
+  m0_n19_extract "$json" >"$N19_EVIDENCE" || true
+  note="$(m0_n19_validate "$N19_EVIDENCE")" || { valid=false rc=1; }
+  verdict="$(m0_n19_verdict "$N19_EVIDENCE")"
+  [[ $valid == true ]] || verdict=inconclusive
+  echo "$verdict" >"$M0_STATE/n19_verdict"
+  m0_n19_summary "$N19_EVIDENCE" "$verdict" "$valid" "$note" >"$M0_STATE/n19.json"
+  finding "n19_verdict: $verdict"
+  case "$verdict" in
+    confirmed) finding "N19 CONFIRMED by runtime evidence (see evidence/n19-evidence.jsonl): file-mode managed delivery by archive injection into a created-not-started container leaves the secret in the writable layer and/or hides it behind the tmpfs. release_readiness stays INCOMPLETE until this is fixed and re-verified." ;;
+    not_confirmed) finding "N19 not confirmed by this diagnostic run (canary present in the running tmpfs and absent from the layer); this is evidence for one Engine/storage driver only." ;;
+    *) finding "N19 INCONCLUSIVE ($note): release_readiness stays INCOMPLETE." ;;
+  esac
+  echo "$note"
+  echo "n19_verdict: $verdict"
+  return $rc
+}
+post_n19() { n19_collect "$1"; }
 s_listeners() {
   local allowed=" ${DSO_IT_ALLOWED_PORTS:-22} " bad=0 addr port
   while read -r addr; do
@@ -485,7 +516,7 @@ s_coverage() {
   local list="$M0_WORK/test-list.txt" covered=() t
   env -u DSO_INTEGRATION_TESTS go test -tags "$CRASH_TAGS" -list '^Test' ./test/docker >"$list"
   for t in "${SIGNAL_TESTS[@]}" "${RESTART_TESTS[@]}" "${ROLLING_TESTS[@]}" "${OWNERSHIP_TESTS[@]}" "${INJECT_TESTS[@]}" "$S3_TEST"; do covered+=("^${t}\$"); done
-  covered+=('^TestTraffic_' '^TestRecovery_RealDaemon_' '^TestCrash')
+  covered+=('^TestTraffic_' '^TestRecovery_RealDaemon_' '^TestCrash' '^TestN19Diag_')
   echo "tests listed in ./test/docker: $(grep -c '^Test' "$list")"
   t="$(m0_uncovered "$list" "${covered[@]}")"
   if [[ -n $t ]]; then echo "tests not executed by any step:"; echo "$t"; return 1; fi
@@ -553,6 +584,10 @@ gotest_step scenario-recovery-realdaemon 0 3 "${RECOVERY_TESTS[*]}" -tags docker
 GOTEST_POST=post_crash gotest_step scenario-crash-recovery 0 "$CRASH_MIN_TESTS" "" -tags "$CRASH_TAGS" -run "$CRASH_PATTERN" ./test/docker
 gotest_step scenario-ownership-concurrency 0 "${#OWNERSHIP_TESTS[@]}" "${OWNERSHIP_TESTS[*]}" -tags dockerint -run "$(alt "${OWNERSHIP_TESTS[@]}")" ./test/docker
 gotest_step scenario-inject 0 "${#INJECT_TESTS[@]}" "${INJECT_TESTS[*]}" -tags dockerint -run "$(alt "${INJECT_TESTS[@]}")" ./test/docker
+# N19 diagnostic: its own step; all named tests must RUN and the evidence lines must be captured. A demonstrated N19
+# failure does NOT fail this step (the verdict is a finding and keeps release_readiness INCOMPLETE).
+GOTEST_POST=post_n19 gotest_step scenario-n19-diagnostic 0 "${#N19_DIAG_TESTS[@]}" "${N19_DIAG_TESTS[*]}" -tags dockerint -timeout "${DSO_IT_N19_GO_TIMEOUT:-40m}" -run '^TestN19Diag_' ./test/docker
+[[ -s $M0_STATE/n19_verdict ]] || n19_collect "$M0_LOGS/scenario-n19-diagnostic.json" >/dev/null 2>&1 || true
 unset DSO_INTEGRATION_TESTS
 m0_step docker-suite-coverage s_coverage
 m0_step host-listeners s_listeners

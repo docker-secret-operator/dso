@@ -163,20 +163,22 @@ eq "cleanup skipped => FAIL (fail closed)" "$(m0_cleanup_status "$M0_STEPS_FILE"
 
 echo "== release_readiness: every combination =="
 mismatch=0 combos=0
-for au in PASS FAIL INCOMPLETE; do for at in VERIFIED UNVERIFIED; do for sr in OPEN CLOSED; do for cl in PASS FAIL; do for td in PENDING DONE; do
+for au in PASS FAIL INCOMPLETE; do for at in VERIFIED UNVERIFIED; do for sr in OPEN CLOSED; do for cl in PASS FAIL; do for td in PENDING DONE; do for n9 in not_confirmed confirmed inconclusive garbage; do
   combos=$((combos + 1))
   if [[ $au == FAIL || $cl == FAIL ]]; then want=FAIL
-  elif [[ $au == PASS && $at == VERIFIED && $sr == CLOSED && $cl == PASS && $td == DONE ]]; then want=PASS
+  elif [[ $au == PASS && $at == VERIFIED && $sr == CLOSED && $cl == PASS && $td == DONE && $n9 == not_confirmed ]]; then want=PASS
   else want=INCOMPLETE; fi
-  [[ "$(m0_release_readiness "$au" "$at" "$sr" "$cl" "$td")" == "$want" ]] || { mismatch=$((mismatch + 1)); echo "    mismatch: $au $at $sr $cl $td"; }
-done; done; done; done; done
-eq "all $combos combinations of the five inputs map as specified" "$mismatch" 0
+  [[ "$(m0_release_readiness "$au" "$at" "$sr" "$cl" "$td" "$n9")" == "$want" ]] || { mismatch=$((mismatch + 1)); echo "    mismatch: $au $at $sr $cl $td $n9"; }
+done; done; done; done; done; done
+eq "all $combos combinations of the six inputs map as specified (PASS needs n19 not_confirmed)" "$mismatch" 0
+eq "n19 verdict omitted => treated as inconclusive => never PASS" "$(m0_release_readiness PASS VERIFIED CLOSED PASS DONE)" INCOMPLETE
+eq "n19 confirmed does not turn readiness into FAIL (finding, not failure)" "$(m0_release_readiness PASS VERIFIED CLOSED PASS DONE confirmed)" INCOMPLETE
 eq "automated PASS alone (everything else open) => readiness INCOMPLETE" "$(m0_release_readiness PASS UNVERIFIED OPEN PASS PENDING)" INCOMPLETE
 eq "automated PASS + attestation VERIFIED, review OPEN => INCOMPLETE" "$(m0_release_readiness PASS VERIFIED OPEN PASS PENDING)" INCOMPLETE
 eq "...review CLOSED but teardown PENDING => INCOMPLETE" "$(m0_release_readiness PASS VERIFIED CLOSED PASS PENDING)" INCOMPLETE
-eq "...review CLOSED + teardown DONE (operator-confirmed) => PASS" "$(m0_release_readiness PASS VERIFIED CLOSED PASS DONE)" PASS
-eq "automated FAIL beats everything => FAIL" "$(m0_release_readiness FAIL VERIFIED CLOSED PASS DONE)" FAIL
-eq "automated INCOMPLETE never reaches PASS" "$(m0_release_readiness INCOMPLETE VERIFIED CLOSED PASS DONE)" INCOMPLETE
+eq "...review CLOSED + teardown DONE (operator-confirmed) => PASS" "$(m0_release_readiness PASS VERIFIED CLOSED PASS DONE not_confirmed)" PASS
+eq "automated FAIL beats everything => FAIL" "$(m0_release_readiness FAIL VERIFIED CLOSED PASS DONE not_confirmed)" FAIL
+eq "automated INCOMPLETE never reaches PASS" "$(m0_release_readiness INCOMPLETE VERIFIED CLOSED PASS DONE not_confirmed)" INCOMPLETE
 
 echo "== m0_compute_verdicts (steps -> independent verdict fields) =="
 new_run
@@ -198,19 +200,25 @@ eq "operator CLOSED file: security_review CLOSED" "$(jq -r .security_review <<<"
 eq "...but release_readiness is still INCOMPLETE (teardown pending)" "$(jq -r .release_readiness <<<"$V")" INCOMPLETE
 eq "...file sha256 recorded" "$(jq -r .security_review_source.sha256 <<<"$V")" "$(sha256sum "$SR/closed" | cut -d' ' -f1)"
 V="$(cv ok "$SR/closed" DONE)"
-eq "pure function: CLOSED + operator-confirmed teardown + all green => PASS" "$(jq -r .release_readiness <<<"$V")" PASS
-V="$(cv ok "$SR/closed" garbage)"
+eq "no N19 verdict (M0_N19_VERDICT unset): all green + teardown DONE is still INCOMPLETE" "$(jq -r '[.n19_verdict,.release_readiness]|join(",")' <<<"$V")" "inconclusive,INCOMPLETE"
+V="$(M0_N19_VERDICT=confirmed cv ok "$SR/closed" DONE)"
+eq "n19 confirmed: field recorded, readiness INCOMPLETE" "$(jq -r '[.n19_verdict,.release_readiness]|join(",")' <<<"$V")" "confirmed,INCOMPLETE"
+V="$(M0_N19_VERDICT=bogus cv ok "$SR/closed" DONE)"
+eq "n19 unknown value is coerced to inconclusive" "$(jq -r .n19_verdict <<<"$V")" inconclusive
+V="$(M0_N19_VERDICT=not_confirmed cv ok "$SR/closed" DONE)"
+eq "pure function: CLOSED + operator-confirmed teardown + all green + n19 not_confirmed => PASS" "$(jq -r .release_readiness <<<"$V")" PASS
+V="$(M0_N19_VERDICT=not_confirmed cv ok "$SR/closed" garbage)"
 eq "any teardown value other than DONE is PENDING" "$(jq -r .vm_teardown <<<"$V")" PENDING
 V="$(cv "" "$SR/closed" DONE)"
 eq "marker not ok: attestation UNVERIFIED, readiness INCOMPLETE, automated unaffected" "$(jq -r '[.environment_attestation,.release_readiness,.automated_integration]|join(",")' <<<"$V")" "UNVERIFIED,INCOMPLETE,PASS"
 awk -F'\t' -v OFS='\t' '$1=="gobuild" {$5="skipped"} {print}' "$M0_STEPS_FILE" >"$T/sk.tsv"
-V="$(m0_compute_verdicts "$T/sk.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+V="$(M0_N19_VERDICT=not_confirmed m0_compute_verdicts "$T/sk.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
 eq "required test/step skipped => automated INCOMPLETE and readiness INCOMPLETE" "$(jq -r '[.automated_integration,.release_readiness]|join(",")' <<<"$V")" "INCOMPLETE,INCOMPLETE"
 awk -F'\t' -v OFS='\t' '$1=="gobuild" {$5="failed"} {print}' "$M0_STEPS_FILE" >"$T/fl.tsv"
-V="$(m0_compute_verdicts "$T/fl.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+V="$(M0_N19_VERDICT=not_confirmed m0_compute_verdicts "$T/fl.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
 eq "executable step failed => automated FAIL and readiness FAIL" "$(jq -r '[.automated_integration,.release_readiness]|join(",")' <<<"$V")" "FAIL,FAIL"
 awk -F'\t' -v OFS='\t' '$1=="cleanup" {$5="failed"} {print}' "$M0_STEPS_FILE" >"$T/cf.tsv"
-V="$(m0_compute_verdicts "$T/cf.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
+V="$(M0_N19_VERDICT=not_confirmed m0_compute_verdicts "$T/cf.tsv" ok "$SR/closed" DONE -- "${REQ[@]}")"
 eq "cleanup failed => cleanup FAIL, automated FAIL, readiness FAIL" "$(jq -r '[.cleanup,.automated_integration,.release_readiness]|join(",")' <<<"$V")" "FAIL,FAIL,FAIL"
 
 echo "== go test result classification (skip / zero-test detection) =="
@@ -360,6 +368,143 @@ expect "summary.txt has automated_integration line" grep -q '^automated_integrat
 expect "summary.txt has release_readiness line" grep -q '^release_readiness: *INCOMPLETE' "$T/summary.txt"
 expect "summary.txt has the verdict alias line" grep -q '^VERDICT: INCOMPLETE' "$T/summary.txt"
 expect "summary.txt shows the skipped scenario" grep -q 'scenario-crash-recovery *skipped' "$T/summary.txt"
+
+echo "== N19 diagnostic evidence: extraction, validation, verdict (pure; no Docker) =="
+N19D="$T/n19"
+mkdir -p "$N19D"
+n19ev() { # SCENARIO OBSERVATION LOCATION INTEGRITY  -> one evidence JSON line
+  jq -cn --arg s "$1" --arg o "$2" --arg l "$3" --arg i "$4" \
+    '{scenario:$s,observation:$o,operation:"selftest",location:$l,docker_server:"29.5.1",api_version:"1.54",storage_driver:"overlayfs",snapshotter:"",container:"abc123def456",run_id:"dso-it-0123456789ab",declared_tmpfs:{"/run/secrets/dso":""},declared_mounts:[],runtime_mountinfo:[],lifecycle_state:"running",file_visibility:"n/a",canary_integrity:$i,layer_inspection:"not_checked",cleanup:"",detail:"selftest"}'
+}
+base_all() { local sc; for sc in A B C D E F G H I J K L M R; do n19ev "$sc" filler none n/a; done; }
+mk() { # NAME  then lines on stdin (appended to a full filler set)
+  { base_all; cat; } >"$N19D/$1.jsonl"
+}
+v() { m0_n19_verdict "$N19D/$1.jsonl"; }
+
+{ n19ev B layer_read_unstarted layer match; n19ev D running_tmpfs_after_start running_tmpfs absent; } | mk conf1
+eq "verdict: canary on the layer while absent from the running tmpfs => confirmed" "$(v conf1)" confirmed
+{ n19ev I hypothesis_path_after_stop layer match; n19ev D running_tmpfs_after_start running_tmpfs match; } | mk conf2
+eq "verdict: present on the layer at all (even also in the tmpfs) => confirmed" "$(v conf2)" confirmed
+{ n19ev C file_read_unstarted layer match; } | mk conf3
+eq "verdict: layer match from scenario C alone => confirmed" "$(v conf3)" confirmed
+
+{ n19ev B layer_read_unstarted layer absent; n19ev C file_read_unstarted layer absent; n19ev I hypothesis_path_after_stop layer absent
+  n19ev D running_tmpfs_after_start running_tmpfs match; n19ev E application_view app_view match; n19ev K replacement_file_state shadow_tmpfs match; } | mk notc
+eq "verdict: present in the running tmpfs AND absent from the layer => not_confirmed" "$(v notc)" not_confirmed
+
+{ n19ev B layer_read_unstarted layer unknown; n19ev D running_tmpfs_after_start running_tmpfs match; } | mk inc1
+eq "verdict: layer outcome unknown => inconclusive" "$(v inc1)" inconclusive
+{ n19ev B layer_read_unstarted layer absent; n19ev D running_tmpfs_after_start running_tmpfs absent; } | mk inc2
+eq "verdict: absent from both the layer and the tmpfs (file vanished) => inconclusive" "$(v inc2)" inconclusive
+{ n19ev B layer_read_unstarted layer absent; n19ev D running_tmpfs_after_start running_tmpfs match; n19ev K replacement_file_state shadow_tmpfs absent; } | mk inc3
+eq "verdict: contradictory running evidence (D match, K absent) => inconclusive" "$(v inc3)" inconclusive
+{ n19ev D running_tmpfs_after_start running_tmpfs match; n19ev I control_exec_inject_then_stop control_layer absent; } | mk inc4
+eq "verdict: a CONTROL layer line never counts as layer evidence => inconclusive" "$(v inc4)" inconclusive
+{ n19ev R cp_out_unstarted layer match; n19ev F running_tmpfs_after_archive_inject running_tmpfs absent; } | mk inc5
+eq "verdict: scenarios R/F do not feed the verdict => inconclusive" "$(v inc5)" inconclusive
+{ n19ev B layer_read_unstarted layer absent; n19ev D running_tmpfs_after_start running_tmpfs match; n19ev K x shadow_tmpfs mismatch; } | mk inc6
+eq "verdict: a mismatching digest in a running view blocks not_confirmed" "$(v inc6)" inconclusive
+base_all >"$N19D/onlyfiller.jsonl"
+eq "verdict: only filler lines (no decisive observation) => inconclusive" "$(v onlyfiller)" inconclusive
+
+echo "== N19 evidence: missing / malformed =="
+eq "verdict: missing file => inconclusive" "$(m0_n19_verdict "$N19D/does-not-exist.jsonl")" inconclusive
+: >"$N19D/empty.jsonl"
+eq "verdict: empty file => inconclusive" "$(m0_n19_verdict "$N19D/empty.jsonl")" inconclusive
+eq "verdict: no argument => inconclusive" "$(m0_n19_verdict)" inconclusive
+{ base_all; echo 'this is not json'; n19ev B layer_read_unstarted layer match; } >"$N19D/mal1.jsonl"
+eq "verdict: one malformed line poisons the evidence (even with a confirming line) => inconclusive" "$(v mal1)" inconclusive
+{ base_all; n19ev B layer_read_unstarted layer match | jq -c 'del(.canary_integrity)'; } >"$N19D/mal2.jsonl"
+eq "verdict: a line without canary_integrity => inconclusive" "$(v mal2)" inconclusive
+{ base_all; n19ev B layer_read_unstarted layer match | jq -c '.canary_integrity="yes"'; } >"$N19D/mal3.jsonl"
+eq "verdict: an out-of-vocabulary canary_integrity => inconclusive" "$(v mal3)" inconclusive
+{ base_all; echo '[1,2,3]'; } >"$N19D/mal4.jsonl"
+eq "verdict: a non-object JSON line => inconclusive" "$(v mal4)" inconclusive
+refuses "validate: empty evidence fails" m0_n19_validate "$N19D/empty.jsonl"
+refuses "validate: missing file fails" m0_n19_validate "$N19D/does-not-exist.jsonl"
+refuses "validate: a malformed line fails" m0_n19_validate "$N19D/mal1.jsonl"
+expect "validate: a complete set (A..M,R) passes" m0_n19_validate "$N19D/notc.jsonl"
+grep -v '"scenario":"M"' "$N19D/notc.jsonl" >"$N19D/nom.jsonl"
+refuses "validate: a missing scenario (M) fails" m0_n19_validate "$N19D/nom.jsonl"
+expect "validate: ...and names the missing scenario" bash -c "source '$HERE/m0-lib.sh'; m0_n19_validate '$N19D/nom.jsonl' | grep -q 'scenario(s): M'"
+
+echo "== N19 evidence: extraction from go test -json =="
+{
+  printf '{"Action":"run","Test":"TestN19Diag_B_ArchiveInjectBeforeStart"}\n'
+  jq -cn --arg o "    n19_diag_basic_test.go:61: N19-EVIDENCE $(n19ev B layer_read_unstarted layer match)"$'\n' '{Action:"output",Test:"TestN19Diag_B_ArchiveInjectBeforeStart",Output:$o}'
+  jq -cn --arg o "    n19_diag_basic_test.go:62: N19-EVIDENCE $(n19ev B layer_read_unstarted layer match)"$'\n' '{Action:"output",Test:"TestN19Diag_B_ArchiveInjectBeforeStart",Output:$o}'
+  jq -cn --arg o "    n19_diag_basic_test.go:80: N19-EVIDENCE $(n19ev D running_tmpfs_after_start running_tmpfs absent)"$'\n' '{Action:"output",Test:"TestN19Diag_D_StartAndInspectTmpfs",Output:$o}'
+  jq -cn '{Action:"output",Test:"TestN19Diag_D_StartAndInspectTmpfs",Output:"=== some other output\n"}'
+  printf 'not a json event line\n'
+  printf '{"Action":"pass","Test":"TestN19Diag_B_ArchiveInjectBeforeStart"}\n'
+} >"$N19D/go.json"
+m0_n19_extract "$N19D/go.json" >"$N19D/extracted.jsonl"
+eq "extract: two distinct evidence lines (identical duplicate dropped, noise ignored)" "$(wc -l <"$N19D/extracted.jsonl" | tr -d ' ')" 2
+expect "extract: every extracted line is valid evidence JSON" m0_n19_lines_valid "$N19D/extracted.jsonl"
+eq "extract: go-test log prefix removed (first char is a brace)" "$(head -c1 "$N19D/extracted.jsonl")" "{"
+eq "verdict from extracted evidence (B layer match + D absent) => confirmed" "$(m0_n19_verdict "$N19D/extracted.jsonl")" confirmed
+echo '{"Action":"pass"}' >"$N19D/go-none.json"
+eq "extract: no evidence lines => empty output" "$(m0_n19_extract "$N19D/go-none.json" | wc -c | tr -d ' ')" 0
+
+echo "== N19 step logic (n19_collect from run-all.sh, no Docker) =="
+eval "$(sed -n '/^n19_collect() {/,/^}/p' "$HERE/run-all.sh")"
+nc_run() { # NAME GO_JSON_BUILDER_FILE
+  local d="$N19D/col-$1"
+  mkdir -p "$d/art/evidence" "$d/state"
+  ( M0_ART="$d/art" M0_STATE="$d/state"; N19_EVIDENCE="$d/art/evidence/n19-evidence.jsonl"; : >"$M0_STATE/findings.txt"
+    n19_collect "$2" >"$d/out.txt" 2>&1; echo $? >"$d/rc" )
+  NC_D="$d"
+}
+go_json_from() { # JSONL -> go test -json file on stdout
+  local n=1 l
+  while IFS= read -r l; do
+    n=$((n + 1))
+    jq -cn --arg o "    n19_diag_x_test.go:$n: N19-EVIDENCE $l"$'\n' '{Action:"output",Test:"TestN19Diag_X",Output:$o}'
+  done <"$1"
+}
+go_json_from "$N19D/notc.jsonl" >"$N19D/go-notc.json"
+nc_run notc "$N19D/go-notc.json"
+eq "collect (not_confirmed evidence): rc 0, verdict file, finding string" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict"),$(head -n1 "$NC_D/state/findings.txt")" "0,not_confirmed,n19_verdict: not_confirmed"
+expect "collect: evidence captured to evidence/n19-evidence.jsonl" test -s "$NC_D/art/evidence/n19-evidence.jsonl"
+eq "collect: n19.json records the verdict, validity and line count" "$(jq -r '[.verdict,(.evidence_valid|tostring),(.lines|tostring)]|join(",")' "$NC_D/state/n19.json")" "not_confirmed,true,$(grep -c . "$N19D/notc.jsonl")"
+go_json_from "$N19D/conf1.jsonl" >"$N19D/go-conf1.json"
+nc_run conf "$N19D/go-conf1.json"
+eq "collect (confirmed evidence): rc 0 (a demonstrated N19 does NOT fail the step), verdict confirmed" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict")" "0,confirmed"
+expect "collect (confirmed): a human-readable CONFIRMED finding is added" grep -q '^N19 CONFIRMED' "$NC_D/state/findings.txt"
+go_json_from "$N19D/inc1.jsonl" >"$N19D/go-inc1.json"
+nc_run inc "$N19D/go-inc1.json"
+eq "collect (inconclusive evidence): rc 0, verdict inconclusive" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict")" "0,inconclusive"
+echo '{"Action":"pass"}' >"$N19D/go-empty.json"
+nc_run none "$N19D/go-empty.json"
+eq "collect (no evidence lines): rc 1 (step fails), verdict inconclusive" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict")" "1,inconclusive"
+{ go_json_from "$N19D/notc.jsonl"; jq -cn '{Action:"output",Test:"TestN19Diag_X",Output:"    n19_diag_x_test.go:9: N19-EVIDENCE {truncated\n"}'; } >"$N19D/go-mal.json"
+nc_run mal "$N19D/go-mal.json"
+eq "collect (a malformed evidence line): rc 1, verdict inconclusive even though the rest says not_confirmed" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict")" "1,inconclusive"
+grep -v '"scenario":"K"' "$N19D/notc.jsonl" >"$N19D/notc-nok.jsonl"
+go_json_from "$N19D/notc-nok.jsonl" >"$N19D/go-nok.json"
+nc_run nok "$N19D/go-nok.json"
+eq "collect (scenario K evidence missing): rc 1 (step fails), verdict inconclusive" "$(cat "$NC_D/rc"),$(cat "$NC_D/state/n19_verdict")" "1,inconclusive"
+expect "collect: the missing scenario is named in the finding" grep -q 'scenario(s): K' "$NC_D/state/findings.txt"
+
+echo "== N19 summary.json integration =="
+new_run
+for st in environment-identity docker-endpoint daemon-identity foreign-resources-pre foreign-resources-post cleanup gobuild; do m0_record "$st" passed 0 t t step "" >/dev/null; done
+NS="$T/n19sum"
+mkdir -p "$NS/state"
+M0_STATE="$NS/state"
+M0_N19_VERDICT=confirmed m0_compute_verdicts "$M0_STEPS_FILE" ok "" PENDING -- "${REQ[@]}" >"$NS/verdicts.json"
+printf '{"schema":1,"source":{"sha":"a","mode":"git","tree_sha":"b","tree_clean":true},"run_id":"r","run_dir":"d","started":"s","finished":"f"}\n' >"$NS/meta.json"
+echo '[]' >"$NS/traffic.json"; echo '[]' >"$NS/recovery.json"; : >"$NS/findings.txt"; echo '{"status":"passed","detail":"x"}' >"$NS/cleanup.json"
+m0_n19_summary "$N19D/conf1.jsonl" confirmed true "ok" >"$NS/n19.json"
+m0_write_summary_json "$NS/summary.json" "$NS/meta.json" "$NS/traffic.json" "$NS/recovery.json" "$NS/findings.txt" "$NS/cleanup.json" "$NS/verdicts.json" "$NS/n19.json"
+eq "summary.json: n19_verdict field (top level)" "$(jq -r .n19_verdict "$NS/summary.json")" confirmed
+eq "summary.json: n19_evidence summarises the evidence (verdict, lines, scenarios)" "$(jq -r '[.n19_evidence.verdict,(.n19_evidence.lines|tostring),(.n19_evidence.scenarios|join(""))]|join(",")' "$NS/summary.json")" "confirmed,16,ABCDEFGHIJKLMR"
+eq "summary.json: n19_evidence carries the engine identity" "$(jq -r .n19_evidence.docker_server "$NS/summary.json")" 29.5.1
+m0_write_summary_json "$NS/summary2.json" "$NS/meta.json" "$NS/traffic.json" "$NS/recovery.json" "$NS/findings.txt" "$NS/cleanup.json" "$NS/verdicts.json"
+eq "summary.json without n19.json: n19_evidence is an invalid/not-run record" "$(jq -r '[.n19_evidence.verdict,(.n19_evidence.evidence_valid|tostring)]|join(",")' "$NS/summary2.json")" "inconclusive,false"
+m0_write_summary_txt "$NS/summary.txt" "$NS/summary.json"
+expect "summary.txt shows the n19_verdict line" grep -q '^n19_verdict: *confirmed' "$NS/summary.txt"
 
 echo "== finalisation dry-run (real finalize(), stub docker/go, fake artifact dir, no daemon) =="
 FIN_SENT=dso-it-sentinel-0badc0ffee
@@ -581,6 +726,10 @@ expect "external prerequisites are not in the automated step list" bash -c "! se
 expect "external prerequisites have their own EXTERNAL_STEPS list" bash -c "grep -q '^EXTERNAL_STEPS=(external-provisioning-provenance external-network-perimeter external-vm-teardown)' '$RA'"
 expect "scenario-inject is a required step and requires all 18 named inject tests" bash -c "sed -n '/^REQUIRED_STEPS=(/,/^)/p' '$RA' | grep -q 'scenario-inject' && grep -q 'gotest_step scenario-inject 0 \"\${#INJECT_TESTS\[@\]}\"' '$RA' && [ \"\$(sed -n '/^INJECT_TESTS=(/,/)/p' '$RA' | grep -o 'TestInjectSecurity_[0-9]*_[A-Za-z]*' | sort -u | wc -l)\" = 18 ]"
 expect "every required inject test name is defined in test/docker" bash -c "for t in \$(sed -n '/^INJECT_TESTS=(/,/)/p' '$RA' | grep -o 'TestInjectSecurity_[0-9]*_[A-Za-z]*' | sort -u); do grep -q \"^func \$t(t \*testing.T)\" '$HERE/../../test/docker/inject_security_test.go' || { echo missing \$t; exit 1; }; done"
+expect "scenario-n19-diagnostic is a required step, runs -run '^TestN19Diag_' with the dockerint tag and requires all 14 named tests" bash -c "sed -n '/^REQUIRED_STEPS=(/,/^)/p' '$RA' | grep -q 'scenario-n19-diagnostic' && grep -q \"gotest_step scenario-n19-diagnostic 0 \\\"\\\${#N19_DIAG_TESTS\\[@\\]}\\\"\" '$RA' && grep -q \"'^TestN19Diag_' ./test/docker\" '$RA' && [ \"\$(sed -n '/^N19_DIAG_TESTS=(/,/)/p' '$RA' | grep -o 'TestN19Diag_[A-Z]_[A-Za-z]*' | sort -u | wc -l)\" = 14 ]"
+expect "every N19 diagnostic test name is defined in test/docker" bash -c "for t in \$(sed -n '/^N19_DIAG_TESTS=(/,/)/p' '$RA' | grep -o 'TestN19Diag_[A-Z]_[A-Za-z]*' | sort -u); do grep -qh \"^func \$t(t \*testing.T)\" '$HERE'/../../test/docker/n19_diag_*_test.go || exit 1; done"
+expect "the scenario-n19-diagnostic step is not allowed to skip (ALLOW_SKIP=0)" bash -c "grep -q 'gotest_step scenario-n19-diagnostic 0 ' '$RA'"
+expect "the n19 diagnostic evidence is captured to evidence/n19-evidence.jsonl" bash -c "grep -q 'evidence/n19-evidence.jsonl' '$RA'"
 expect "exit codes derive from automated_integration only" bash -c "grep -q 'case \"\$auto\" in PASS) exit 0' '$HERE/m0-finalize.sh'"
 if command -v ss >/dev/null 2>&1; then
   out="$(DOCKER_HOST=tcp://127.0.0.1:1 bash "$RA" 2>&1)"

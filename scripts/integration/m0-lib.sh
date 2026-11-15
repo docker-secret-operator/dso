@@ -20,8 +20,12 @@
 #   security_review         OPEN | CLOSED              operator-owned; default OPEN; read from a file, never decided here
 #   cleanup                 PASS | FAIL                ownership-scoped cleanup step
 #   vm_teardown             PENDING | DONE             always PENDING in runner output (external)
+#   n19_verdict             confirmed | not_confirmed | inconclusive   FINDING computed from the N19 diagnostic
+#                                                      evidence (m0_n19_verdict); never an approval. Anything but
+#                                                      not_confirmed keeps release_readiness INCOMPLETE.
 #   release_readiness       PASS | FAIL | INCOMPLETE   INCOMPLETE unless every one of the above is
-#                                                      green/closed/done; the runner can never reach PASS
+#                                                      green/closed/done AND n19_verdict == not_confirmed;
+#                                                      the runner can never reach PASS
 #   verdict                 alias of release_readiness (compatibility only; not an approval)
 
 # ---- globals set by the caller (run-all.sh / selftest.sh) ----------------------
@@ -167,32 +171,38 @@ m0_cleanup_status() {
   if m0_step_all_passed "$1" cleanup; then echo PASS; else echo FAIL; fi
 }
 
-# m0_release_readiness AUTOMATED ATTESTATION SECURITY_REVIEW CLEANUP TEARDOWN -> PASS|FAIL|INCOMPLETE
+# m0_release_readiness AUTOMATED ATTESTATION SECURITY_REVIEW CLEANUP TEARDOWN [N19_VERDICT] -> PASS|FAIL|INCOMPLETE
+# N19_VERDICT (finding N19, a release blocker until runtime verification) must be exactly
+# `not_confirmed` for PASS; absent/confirmed/inconclusive/anything else => INCOMPLETE (never FAIL by itself:
+# the diagnostic did its job, the release is simply not ready).
 m0_release_readiness() {
-  local auto=$1 att=$2 sec=$3 cln=$4 td=$5
+  local auto=$1 att=$2 sec=$3 cln=$4 td=$5 n19=${6:-inconclusive}
   if [[ $auto == FAIL || $cln == FAIL ]]; then echo FAIL
-  elif [[ $auto == PASS && $att == VERIFIED && $sec == CLOSED && $cln == PASS && $td == DONE ]]; then echo PASS
+  elif [[ $auto == PASS && $att == VERIFIED && $sec == CLOSED && $cln == PASS && $td == DONE && $n19 == not_confirmed ]]; then echo PASS
   else echo INCOMPLETE; fi
 }
 
 # m0_compute_verdicts STEPS_FILE MARKER_OK SECURITY_REVIEW_FILE TEARDOWN -- REQUIRED_AUTOMATED_STEP...
 # -> JSON object with every independent verdict on stdout. TEARDOWN is "DONE" only
 # for an operator-confirmed teardown (the runner always passes PENDING).
+# The N19 verdict is read from the global M0_N19_VERDICT (set by the caller from the
+# diagnostic evidence); anything other than confirmed|not_confirmed is inconclusive.
 m0_compute_verdicts() {
-  local steps=$1 marker=$2 secfile=$3 td=$4 auto att sec cln rel secsha=""
+  local steps=$1 marker=$2 secfile=$3 td=$4 auto att sec cln rel n19 secsha=""
   shift 4
+  case "${M0_N19_VERDICT:-}" in confirmed | not_confirmed) n19=$M0_N19_VERDICT ;; *) n19=inconclusive ;; esac
   if [[ ${1:-} == -- ]]; then shift; fi
   [[ $td == DONE ]] || td=PENDING
   auto=$(m0_automated_integration "$steps" "$@")
   att=$(m0_environment_attestation "$steps" "$marker")
   sec=$(m0_security_review "$secfile")
   cln=$(m0_cleanup_status "$steps")
-  rel=$(m0_release_readiness "$auto" "$att" "$sec" "$cln" "$td")
+  rel=$(m0_release_readiness "$auto" "$att" "$sec" "$cln" "$td" "$n19")
   if [[ -n $secfile && -f $secfile && ! -L $secfile ]]; then secsha=$(sha256sum "$secfile" | cut -d' ' -f1); fi
-  jq -n --arg auto "$auto" --arg att "$att" --arg sec "$sec" --arg cln "$cln" --arg td "$td" --arg rel "$rel" \
+  jq -n --arg auto "$auto" --arg att "$att" --arg sec "$sec" --arg cln "$cln" --arg td "$td" --arg rel "$rel" --arg n19 "$n19" \
     --arg secfile "$secfile" --arg secsha "$secsha" '
     {automated_integration: $auto, environment_attestation: $att, security_review: $sec, cleanup: $cln,
-     vm_teardown: $td, release_readiness: $rel,
+     vm_teardown: $td, n19_verdict: $n19, release_readiness: $rel,
      security_review_source: (if $secfile == "" then null else {file: $secfile, sha256: (if $secsha == "" then null else $secsha end)} end)}'
 }
 
@@ -265,6 +275,85 @@ m0_uncovered() {
     for r in "$@"; do if [[ $t =~ $r ]]; then hit=1; break; fi; done
     ((hit)) || echo "$t"
   done <"$list"
+}
+
+# ---- N19 diagnostic evidence (test/docker/n19_diag_*_test.go; docs/audit/42) ---------
+# Evidence lines are emitted by t.Logf as `N19-EVIDENCE {json}`. Required fields of every line:
+# scenario (A..M, R), observation, location, canary_integrity (match|mismatch|absent|unknown|n/a),
+# docker_server, container. The canary VALUE is never in evidence, only digests/presence.
+M0_N19_SCENARIOS=(A B C D E F G H I J K L M R)
+
+# m0_n19_extract GO_JSON -> stdout: the JSON object of every N19-EVIDENCE line (first occurrence, in order).
+m0_n19_extract() {
+  m0__events "$1" | jq -r 'select(.Action=="output") | .Output' | sed -e 's/\r$//' |
+    grep -o 'N19-EVIDENCE .*' | sed -e 's/^N19-EVIDENCE //' | awk '!seen[$0]++' || true
+}
+
+# m0_n19_lines_valid FILE -- true iff the file is non-empty and EVERY line is a JSON object with the required fields.
+m0_n19_lines_valid() {
+  local f=${1:-} bad
+  [[ -n $f && -s $f ]] || return 1
+  bad=$(jq -R -s '[split("\n")[] | select(length>0) | (try fromjson catch null)
+    | select((type=="object" and (.scenario|type=="string") and (.observation|type=="string") and (.location|type=="string")
+              and (.docker_server|type=="string") and (.container|type=="string")
+              and (.canary_integrity|IN("match","mismatch","absent","unknown","n/a"))) | not)] | length' "$f" 2>/dev/null) || return 1
+  [[ $bad == 0 ]]
+}
+
+# m0_n19_validate FILE -> exit 0 iff the lines are valid AND every scenario in M0_N19_SCENARIOS has >=1 line.
+# Prints the reason on failure.
+m0_n19_validate() {
+  local f=${1:-} s have missing=()
+  [[ -n $f && -s $f ]] || { echo "no N19-EVIDENCE lines were captured"; return 1; }
+  m0_n19_lines_valid "$f" || { echo "N19 evidence is malformed (a line is not a JSON object with the required fields)"; return 1; }
+  have=$(jq -R -r 'fromjson | .scenario' "$f" | sort -u)
+  for s in "${M0_N19_SCENARIOS[@]}"; do
+    grep -qxF -- "$s" <<<"$have" || missing+=("$s")
+  done
+  if ((${#missing[@]} > 0)); then echo "no N19 evidence for scenario(s): ${missing[*]}"; return 1; fi
+  echo "N19 evidence complete: $(grep -c . "$f") line(s), scenarios ${M0_N19_SCENARIOS[*]}"
+}
+
+# m0_n19_verdict FILE -> confirmed | not_confirmed | inconclusive   (pure; missing/malformed => inconclusive)
+#   layer lines   = location "layer"                      of scenarios B, C, I  (archive-injected container read
+#                   through the archive API while the tmpfs is NOT mounted: created-not-started or stopped)
+#   running lines = location running_tmpfs|app_view|shadow_tmpfs of scenarios D, E, K  (what the started
+#                   container / its application / the managed replacement actually sees)
+#   confirmed      the canary digest is present on the layer at all (this includes "absent from the running
+#                  tmpfs after start while present in the layer"): plaintext sits in the writable layer
+#   not_confirmed  NO layer line matches, at least one layer line is positively "absent", at least one running
+#                  line matches AND no running line is absent/mismatch
+#   inconclusive   everything else (no decisive line, unknown outcomes, contradictory evidence)
+# Scenarios F, G, H, J, L, M and the minimal reproducer R are reported but do not feed the verdict.
+m0_n19_verdict() {
+  local f=${1:-}
+  m0_n19_lines_valid "$f" || { echo inconclusive; return 0; }
+  jq -R -s -r '
+    [split("\n")[] | select(length>0) | fromjson] as $e
+    | [$e[] | select(.location=="layer" and (.scenario|IN("B","C","I")))] as $layer
+    | [$e[] | select((.location|IN("running_tmpfs","app_view","shadow_tmpfs")) and (.scenario|IN("D","E","K")))] as $run
+    | (any($layer[]; .canary_integrity=="match")) as $lmatch
+    | (any($layer[]; .canary_integrity=="absent")) as $labsent
+    | (any($run[]; .canary_integrity=="match")) as $rmatch
+    | (any($run[]; .canary_integrity=="absent" or .canary_integrity=="mismatch")) as $rbad
+    | if $lmatch then "confirmed"
+      elif $labsent and $rmatch and ($rbad|not) then "not_confirmed"
+      else "inconclusive" end' "$f" 2>/dev/null || echo inconclusive
+}
+
+# m0_n19_summary FILE VERDICT VALID(true|false) NOTE -> JSON for summary.json `n19_evidence`.
+m0_n19_summary() {
+  local f=${1:-} v=$2 valid=$3 note=$4
+  if m0_n19_lines_valid "$f"; then
+    jq -R -s --arg v "$v" --arg valid "$valid" --arg note "$note" '
+      [split("\n")[] | select(length>0) | fromjson] as $e
+      | {verdict: $v, evidence_valid: ($valid == "true"), note: $note, evidence_file: "evidence/n19-evidence.jsonl",
+         lines: ($e | length), scenarios: ($e | map(.scenario) | unique),
+         docker_server: ($e[0].docker_server), storage_driver: ($e[0].storage_driver), snapshotter: ($e[0].snapshotter),
+         observations: ($e | map({scenario, observation, location, container, lifecycle_state, file_visibility, canary_integrity, layer_inspection}))}' "$f"
+  else
+    jq -n --arg v "$v" --arg note "$note" '{verdict: $v, evidence_valid: false, note: $note, evidence_file: "evidence/n19-evidence.jsonl", lines: 0, scenarios: [], observations: []}'
+  fi
 }
 
 # ---- go-test report extraction -------------------------------------------------
@@ -390,16 +479,22 @@ m0_steps_json() {
        exit_code: (.[3] | tonumber? // null), status: .[4], kind: .[5], note: (.[6] // "")}]' "$M0_STEPS_FILE"
 }
 
-# m0_write_summary_json OUT META_JSON TRAFFIC_JSON RECOVERY_JSON FINDINGS_FILE CLEANUP_DETAIL_JSON VERDICTS_JSON
+# m0_write_summary_json OUT META_JSON TRAFFIC_JSON RECOVERY_JSON FINDINGS_FILE CLEANUP_DETAIL_JSON VERDICTS_JSON [N19_JSON]
 # VERDICTS_JSON is the output of m0_compute_verdicts. `verdict` and `automated_verdict`
 # are compatibility aliases (of release_readiness and automated_integration).
+# N19_JSON (m0_n19_summary output) becomes `n19_evidence`; absent/unreadable => a not-run record.
 m0_write_summary_json() {
-  local out=$1 meta=$2 traffic=$3 recovery=$4 findings=$5 cleanup=$6 verdicts=$7
-  local steps
+  local out=$1 meta=$2 traffic=$3 recovery=$4 findings=$5 cleanup=$6 verdicts=$7 n19=${8:-}
+  local steps n19file tmpn19=""
   steps=$(m0_steps_json)
+  if [[ -n $n19 && -s $n19 ]] && jq -e . "$n19" >/dev/null 2>&1; then n19file=$n19
+  else
+    tmpn19=$(mktemp) && n19file=$tmpn19
+    echo '{"verdict":"inconclusive","evidence_valid":false,"note":"N19 diagnostic did not run or produced no evidence","lines":0,"scenarios":[],"observations":[]}' >"$n19file"
+  fi
   jq -n \
     --slurpfile meta "$meta" --slurpfile traffic "$traffic" --slurpfile recovery "$recovery" \
-    --slurpfile cleanup "$cleanup" --slurpfile verdicts "$verdicts" --argjson steps "$steps" \
+    --slurpfile cleanup "$cleanup" --slurpfile verdicts "$verdicts" --slurpfile n19e "$n19file" --argjson steps "$steps" \
     --rawfile findings "$findings" '
     ($meta[0]) + ($verdicts[0]) + {
       verdict: $verdicts[0].release_readiness,
@@ -410,6 +505,7 @@ m0_write_summary_json() {
       traffic: $traffic[0],
       recovery: $recovery[0],
       cleanup_detail: $cleanup[0],
+      n19_evidence: $n19e[0],
       findings: ($findings | split("\n") | map(select(length>0))),
       external_prerequisites: ($steps | map(select(.kind=="external_prerequisite") | {name, reason: .note})),
       counts: {
@@ -419,13 +515,16 @@ m0_write_summary_json() {
         incomplete: ($steps | map(select(.status=="incomplete")) | length)
       }
     }' >"$out"
+  local rc=$?
+  [[ -z $tmpn19 ]] || rm -f "$tmpn19"
+  return $rc
 }
 
 # m0_write_summary_txt OUT SUMMARY_JSON
 m0_write_summary_txt() {
   local out=$1 js=$2
   {
-    jq -r '"DSO M0 runtime verification\n\nautomated_integration:   \(.automated_integration)   (executable steps only; external prerequisites do not affect it)\nenvironment_attestation: \(.environment_attestation)   (identity, endpoint, daemon, foreign-resource gates + marker)\nsecurity_review:         \(.security_review)   (operator-owned; the runner never decides it)\ncleanup:                 \(.cleanup)   (ownership-scoped)\nvm_teardown:             \(.vm_teardown)   (external; destroy the VM after the evidence is copied off)\nrelease_readiness:       \(.release_readiness)   (needs automated PASS + attestation VERIFIED + security review CLOSED + cleanup PASS + teardown DONE)\n\nsource sha:        \(.source.sha)\nsource mode:       \(.source.mode)   tree \(.source.tree_sha)   tree clean: \(.source.tree_clean)\nrun id:            \(.run_id)\nstarted/finished:  \(.started) / \(.finished)\nvm:                \(.vm.hostname) (\(.vm.os), kernel \(.vm.kernel), \(.vm.cpus) cpu, \(.vm.mem_mb) MB, machine-id#\(.vm.machine_id_sha256_12))\nenvironment id:    \(.docker.environment_id)\ndaemon id:         \(.docker.daemon_id)\ndocker:            client \(.docker.client) / server \(.docker.server)\ncompose:           \(.docker.compose)\ngo:                \(.go.version)\ncounts:            passed=\(.counts.passed) failed=\(.counts.failed) skipped=\(.counts.skipped) incomplete=\(.counts.incomplete)\n"' "$js"
+    jq -r '"DSO M0 runtime verification\n\nautomated_integration:   \(.automated_integration)   (executable steps only; external prerequisites do not affect it)\nenvironment_attestation: \(.environment_attestation)   (identity, endpoint, daemon, foreign-resource gates + marker)\nsecurity_review:         \(.security_review)   (operator-owned; the runner never decides it)\ncleanup:                 \(.cleanup)   (ownership-scoped)\nvm_teardown:             \(.vm_teardown)   (external; destroy the VM after the evidence is copied off)\nn19_verdict:             \(.n19_verdict)   (finding from the N19 diagnostic evidence; release_readiness needs not_confirmed)\nrelease_readiness:       \(.release_readiness)   (needs automated PASS + attestation VERIFIED + security review CLOSED + cleanup PASS + teardown DONE + n19_verdict not_confirmed)\n\nsource sha:        \(.source.sha)\nsource mode:       \(.source.mode)   tree \(.source.tree_sha)   tree clean: \(.source.tree_clean)\nrun id:            \(.run_id)\nstarted/finished:  \(.started) / \(.finished)\nvm:                \(.vm.hostname) (\(.vm.os), kernel \(.vm.kernel), \(.vm.cpus) cpu, \(.vm.mem_mb) MB, machine-id#\(.vm.machine_id_sha256_12))\nenvironment id:    \(.docker.environment_id)\ndaemon id:         \(.docker.daemon_id)\ndocker:            client \(.docker.client) / server \(.docker.server)\ncompose:           \(.docker.compose)\ngo:                \(.go.version)\ncounts:            passed=\(.counts.passed) failed=\(.counts.failed) skipped=\(.counts.skipped) incomplete=\(.counts.incomplete)\n"' "$js"
     printf '%-36s %-10s %-5s %-21s %s\n' STEP STATUS EXIT STARTED NOTE
     jq -r '.scenarios[] | [.name, .status, (.exit_code // "-" | tostring), .started, (.finished + "  " + .note)] | @tsv' "$js" |
       awk -F'\t' '{printf "%-36s %-10s %-5s %-21s %s\n", $1, $2, $3, $4, $5}'
@@ -443,6 +542,8 @@ m0_write_summary_txt() {
     jq -r '(.recovery | if length==0 then ["  (none recorded)"] else map("  " + .line) end)[]' "$js"
     echo
     echo "cleanup detail: $(jq -r '.cleanup_detail.status + " - " + .cleanup_detail.detail' "$js")"
+    echo
+    echo "N19 diagnostic: n19_verdict=$(jq -r '.n19_verdict' "$js") evidence_valid=$(jq -r '.n19_evidence.evidence_valid' "$js") lines=$(jq -r '.n19_evidence.lines' "$js") (evidence/n19-evidence.jsonl; a finding, not an approval)"
     echo
     echo "findings:"
     jq -r '(.findings | if length==0 then ["  (none)"] else map("  - " + .) end)[]' "$js"
