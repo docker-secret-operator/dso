@@ -1108,12 +1108,7 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	actor := "webui"
-	if s.WebUIAuth != nil {
-		if sess, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
-			actor = sess.Username
-		}
-	}
+	actor := s.actorFromContext(r).String()
 
 	// TriggerReload returns quickly: synchronously it either finds no
 	// managed containers for this secret (error, no rotation happened) or
@@ -1162,12 +1157,7 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 func (s *RESTServer) handleNotificationsTest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	actor := "webui"
-	if s.WebUIAuth != nil {
-		if sess, err := s.WebUIAuth.Validate(webuiauth.TokenFromRequest(r)); err == nil {
-			actor = sess.Username
-		}
-	}
+	actor := s.actorFromContext(r).String()
 
 	results, err := notify.RunTest(r.Context(), s.Config)
 
