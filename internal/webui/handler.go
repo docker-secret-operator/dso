@@ -24,6 +24,8 @@ const indexFile = "index.html"
 type Handler struct {
 	fsys       fs.FS
 	fileServer http.Handler
+	// csp maps each embedded .html name to its Content-Security-Policy (see csp.go).
+	csp map[string]string
 }
 
 // NewHandler builds a Handler over the embedded (or, in tests, injected)
@@ -32,6 +34,7 @@ func NewHandler(fsys fs.FS) *Handler {
 	return &Handler{
 		fsys:       fsys,
 		fileServer: http.FileServer(http.FS(fsys)),
+		csp:        buildCSPIndex(fsys),
 	}
 }
 
@@ -50,6 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// http.FileServer handle these (correct content-type, range, caching).
 	if f, err := h.fsys.Open(name); err == nil {
 		_ = f.Close()
+		h.setCSP(w, name)
 		h.fileServer.ServeHTTP(w, r)
 		return
 	}
@@ -111,7 +115,16 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, name string)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	h.setCSP(w, name)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+}
+
+// setCSP attaches the document policy for an embedded HTML file. Non-HTML
+// assets are left alone (a CSP only governs documents).
+func (h *Handler) setCSP(w http.ResponseWriter, name string) {
+	if p, ok := h.csp[name]; ok {
+		w.Header().Set("Content-Security-Policy", p)
+	}
 }
 
 // generatedPrefix is the namespace of generated Next.js build output
