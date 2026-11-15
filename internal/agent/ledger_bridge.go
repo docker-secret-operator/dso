@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +16,7 @@ import (
 // 4.3, 5 and 12.5 step 4). It converts the authoritative M0 journal (the
 // StateTracker records) into the plain inputs of the S4a ledger facade
 // (ledger.Evidence, ledger.JournalSnapshot) and offers the calls the S6 wiring
-// will make. It is UNWIRED: no production code calls anything in this file.
+// makes; ledger_wiring.go is its only production caller.
 //
 // Rules the bridge keeps:
 //   - the journal is the only authority on rotation lifecycle; the bridge only
@@ -28,9 +30,10 @@ import (
 //   - critical_error, rollback_required, recovered without a committed swap,
 //     in_progress without a committed swap, Seq 0 and every pre-ready transition
 //     are never evidence (X2);
-//   - without a journal-carried version (owner decision O-2, not implemented in
-//     M0) reconciliation cannot apply a delivery: the replicas become unknown and
-//     no applied version advances (the S4a decision). In process the version the
+//   - without a journal-carried version (owner decision O-2; absent from
+//     records written before StartRotationWithVersion or by a dispatch without
+//     a ledger version) reconciliation cannot apply a delivery: the replicas
+//     become unknown and no applied version advances (the S4a decision). In process the version the
 //     engine correlated (the hint) is used instead.
 
 // ledgerJournalRetention mirrors the journal retention of StartAll
@@ -126,7 +129,7 @@ func journalDeliveryRefusal(rec *RotationState) error {
 // FormatJournalSecretVersion renders a ledger version identity as the opaque
 // journal SecretVersion string "kind:key_id:id" (design 1.3, O-2). It carries no
 // secret value. A provider identity with a source cannot be rendered and
-// yields "". O-2 is not implemented in M0: nothing writes this yet.
+// yields "". StartRotationWithVersion records the HMAC form in the journal (O-2).
 func FormatJournalSecretVersion(v ledger.Version) string {
 	switch v.Kind {
 	case ledger.KindHMAC:
@@ -170,9 +173,21 @@ func parseJournalSecretVersion(s string) *ledger.Version {
 	return nil
 }
 
+// validJournalHMACVersion reports whether s is a keyed HMAC identity in the
+// FormatJournalSecretVersion encoding (the only form StartRotationWithVersion
+// accepts, O-2): kind hmac, a ledger key id, and a base64url 32-byte MAC.
+func validJournalHMACVersion(s string) bool {
+	v := parseJournalSecretVersion(s)
+	if v == nil || v.Kind != ledger.KindHMAC || !ledger.ValidKeyID(v.KeyID) {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(v.ID)
+	return err == nil && len(raw) == sha256.Size
+}
+
 // JournalRecordFor converts one StateTracker record into the plain journal view
 // ReconcileFromJournal consumes. CandidateVerified is candidateVerified itself;
-// Version is the journal-carried SecretVersion (nil while O-2 is open).
+// Version is the journal-carried SecretVersion (nil when the record has none).
 func JournalRecordFor(rec *RotationState) ledger.JournalRecord {
 	seq := uint64(0)
 	if rec.Seq > 0 {
@@ -320,7 +335,7 @@ type BridgeResult struct {
 // (RecordDeliveryVerified, which advances applied in the same single update,
 // W7) or resolves the requested hint with the cause the journal states. hint
 // is the version the engine correlated for this dispatch; it stands in for the
-// journal-carried version while O-2 is open. A journal that proves delivery but
+// journal-carried version when the record has none (pre-O-2). A journal that proves delivery but
 // names no version leaves the replicas unknown (no advance).
 func RecordRotationOutcome(v *ledger.Versions, st *StateTracker, k ledger.Key, rotationID string, hint *ledger.Version, fileMode bool, live []ledger.LiveReplica) (BridgeResult, error) {
 	if st == nil {

@@ -148,6 +148,21 @@ func (st *StateTracker) StartRotation(providerName, secretName, originalContaine
 // generates one), so the trigger engine can hand the same ID to the strategies via
 // the context and the journal records land on this record.
 func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName, originalContainerID, newContainerID string) error {
+	return st.StartRotationWithVersion(rotationID, providerName, secretName, originalContainerID, newContainerID, "")
+}
+
+// StartRotationWithVersion is StartRotationWithID that also records the target
+// secret version of the dispatch in the journal record (owner decision O-2), so
+// a journal-committed rotation states which version it delivered and the ledger
+// can be reconciled from the journal alone after a crash (window W6).
+// secretVersion is "" (unknown, the pre-O-2 behaviour) or a keyed HMAC identity
+// in the FormatJournalSecretVersion encoding "hmac:<key id>:<mac>": never a
+// secret value, never an unkeyed hash. Anything else is refused and nothing is
+// recorded. Older journals without the field load unchanged (omitempty).
+func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion string) error {
+	if secretVersion != "" && !validJournalHMACVersion(secretVersion) {
+		return errors.New("journal secret version must be a keyed HMAC identity (hmac:<key id>:<mac>)")
+	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if rotationID == "" {
@@ -162,6 +177,7 @@ func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName
 		OriginalContainerIDs: splitContainerIDs(originalContainerID),
 		NewContainerID:       newContainerID,
 		RotationID:           rotationID,
+		SecretVersion:        secretVersion,
 		Phase:                "rotation_requested",
 		Status:               "in_progress",
 		StartTime:            time.Now(),
