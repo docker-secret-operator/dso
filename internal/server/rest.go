@@ -27,59 +27,17 @@ import (
 	"go.uber.org/zap"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin:     checkWebSocketOrigin,
-}
-
-// checkWebSocketOrigin validates WebSocket origin headers to prevent CSWSH attacks
-func checkWebSocketOrigin(r *http.Request) bool {
-	// Get origin from request header (set by browser on cross-origin requests)
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-
-	// If no origin header, allow (same-origin requests don't send Origin)
-	if origin == "" {
-		return true
+// wsUpgrader builds the WebSocket upgrader. Its Origin check is the SAME
+// predicate the CSRF gate uses (originAllowed: same-origin or a configured
+// webui.allowed_origins entry, "null" and cross-site Sec-Fetch-Site rejected),
+// applied here to every upgrade regardless of how it authenticated, so there
+// is one origin policy for REST and WebSocket.
+func (s *RESTServer) wsUpgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     s.originAllowed,
 	}
-
-	// Get the host from request
-	host := r.Host
-	if host == "" {
-		return false
-	}
-
-	// Extract origin host (remove protocol)
-	// origin format: "http://example.com:8080" or "https://example.com"
-	originURL := origin
-	if idx := strings.Index(originURL, "://"); idx != -1 {
-		originURL = originURL[idx+3:]
-	}
-
-	// For loopback addresses, allow localhost variants
-	if isLoopbackHost(host) {
-		return isLoopbackHost(originURL)
-	}
-
-	// For non-loopback, origin must match host exactly
-	return originURL == host
-}
-
-// isLoopbackHost checks if a host is a loopback address (localhost, 127.0.0.1, ::1)
-func isLoopbackHost(host string) bool {
-	// Remove port
-	h := host
-	if idx := strings.LastIndex(h, ":"); idx != -1 {
-		h = h[:idx]
-	}
-
-	// Check for IPv6
-	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
-		h = h[1 : len(h)-1]
-	}
-
-	// Check common loopback patterns
-	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
 }
 
 type WebhookPayload struct {
@@ -152,15 +110,69 @@ type RESTServer struct {
 	legacyWarned sync.Once
 }
 
-// secureHeaders wraps a handler and adds security response headers to every reply.
+// baselineCSP is the policy on every response that is not an embedded HTML
+// document (API JSON, errors, static assets): nothing may load or frame it.
+// Embedded HTML documents override it with their own policy (internal/webui).
+const baselineCSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+// hstsValue is deliberately conservative: one year, no includeSubDomains, no
+// preload (those are domain-wide commitments an operator must opt into).
+const hstsValue = "max-age=31536000"
+
+// secureHeaders wraps a handler and adds security response headers to every
+// reply. HSTS is added only when the connection itself is TLS.
 func secureHeaders(next http.Handler) http.Handler {
+	return secureHeadersFor(func(r *http.Request) bool { return r.TLS != nil }, next)
+}
+
+// secureHeadersFor is secureHeaders with an explicit "is this request verifiably
+// HTTPS" predicate (see RESTServer.requestIsHTTPS).
+func secureHeadersFor(isHTTPS func(*http.Request) bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Cache-Control", "no-store")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()")
+		h.Set("Content-Security-Policy", baselineCSP)
+		if isHTTPS != nil && isHTTPS(r) {
+			h.Set("Strict-Transport-Security", hstsValue)
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requestIsHTTPS reports whether r arrived over verifiable HTTPS: a TLS
+// connection to this listener, or a request from a configured
+// webui.trusted_proxies peer whose (proxy-appended, i.e. last)
+// X-Forwarded-Proto is "https". An untrusted peer's X-Forwarded-Proto is
+// ignored, so a client cannot make a plain-HTTP endpoint advertise HSTS.
+func (s *RESTServer) requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if s.WebUIAuth == nil || !s.WebUIAuth.PeerIsTrustedProxy(r) {
+		return false
+	}
+	vals := strings.Split(strings.Join(r.Header.Values("X-Forwarded-Proto"), ","), ",")
+	return strings.EqualFold(strings.TrimSpace(vals[len(vals)-1]), "https")
+}
+
+// newRESTHTTPServer builds the http.Server with the request-size and timeout
+// boundaries (slowloris, slow body, idle keep-alive, oversized headers).
+// Hijacked WebSocket connections are exempt from these deadlines by net/http
+// and are bounded by the hub's own read limit and ping/pong deadlines.
+func newRESTHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10, // 64 KB (was 1 MB); cookies/headers are far smaller
+	}
 }
 
 // maxRequestBodyBytes caps incoming request bodies to prevent memory exhaustion.
@@ -238,6 +250,12 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if allow, ok := methodNotAllowed(r); ok {
+		w.Header().Set("Allow", allow)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	switch {
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
@@ -286,6 +304,44 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// methodNotAllowed enforces the HTTP method of every known API route centrally
+// (the read handlers do not check the method themselves). It returns the Allow
+// value and true when r.Method is not permitted. Unknown paths return false so
+// they keep falling through to the 404 default. It runs after authentication
+// and the CSRF gate, so an unauthenticated caller learns nothing from a 405.
+func methodNotAllowed(r *http.Request) (string, bool) {
+	p := r.URL.Path
+	isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
+	switch {
+	case p == "/api/auth/login", p == "/api/auth/logout":
+		return "POST", r.Method != http.MethodPost
+	case p == "/health", p == "/api/auth/session":
+		return "GET, HEAD", !isRead
+	case p == "/api/events/ws":
+		return "GET", r.Method != http.MethodGet
+	case p == webhookPath, p == "/api/sessions/revoke-others",
+		p == "/api/integrations/notifications/test":
+		// POST-only action; a safe-method request keeps its historical
+		// fall-through to the parent list route, anything else is rejected.
+		if r.Method == http.MethodPost || isRead {
+			return "", false
+		}
+		return "GET, HEAD, POST", true
+	case strings.HasPrefix(p, "/api/secrets/") && strings.HasSuffix(p, "/rotate"):
+		if r.Method == http.MethodPost || isRead {
+			return "", false
+		}
+		return "GET, HEAD, POST", true
+	}
+	for _, prefix := range []string{"/api/discovery", "/api/config/raw", "/api/secrets", "/api/events", "/api/logs",
+		"/api/containers", "/api/audit", "/api/sessions", "/api/integrations", "/api/drift", "/api/analytics", "/api/alerts"} {
+		if strings.HasPrefix(p, prefix) {
+			return "GET, HEAD", !isRead
+		}
+	}
+	return "", false
+}
+
 // authorized reports whether r carries acceptable credentials. See
 // authenticate for the decision table; in particular, enabling the WebUI means
 // an unset DSO_AUTH_TOKEN no longer makes the API open.
@@ -313,6 +369,11 @@ func (s *RESTServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Invalid Payload", http.StatusBadRequest)
 		return
 	}
@@ -456,22 +517,54 @@ func (s *RESTServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// wsRecheck returns the periodic "is this connection's credential still
+// valid" predicate, or nil when there is nothing to re-verify (open mode).
+// A bearer connection is re-verified against the configured token (so a
+// rotated DSO_AUTH_TOKEN ends it); a session connection is re-checked with
+// Peek, which sees logout, revoke-others, idle expiry and absolute expiry
+// without refreshing the idle timer.
+func (s *RESTServer) wsRecheck(r *http.Request, method authMethod, sess *webuiauth.Session) func() bool {
+	switch method {
+	case authBearer:
+		token := strings.TrimPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+		return func() bool { return s.Auth.Enabled() && s.Auth.Verify(token) == nil }
+	case authSession:
+		if sess == nil || s.WebUIAuth == nil {
+			return func() bool { return false }
+		}
+		token := sess.Token
+		return func() bool { return s.WebUIAuth.Peek(token) == nil }
+	}
+	return nil
+}
+
 func (s *RESTServer) handleEventWS(w http.ResponseWriter, r *http.Request) {
 	if s.Hub.ClientCount() >= maxHubClients {
 		http.Error(w, "too many active connections", http.StatusServiceUnavailable)
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	// Defense in depth: the gate in ServeHTTP has already authenticated this
+	// request; re-derive the method here so the connection can be re-verified
+	// for its whole lifetime (see Client.recheck). Credentials are only ever
+	// read from the Authorization header or the session cookie, never the URL.
+	method, sess := s.authenticate(r)
+	if method == authNone {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := s.wsUpgrader().Upgrade(w, r, nil)
 	if err != nil {
 		s.Logger.Error("WebSocket upgrade failed", zap.Error(err))
 		return
 	}
 
 	client := &Client{
-		hub:  s.Hub,
-		conn: conn,
-		send: make(chan Event, 256),
+		hub:     s.Hub,
+		conn:    conn,
+		send:    make(chan Event, 256),
+		recheck: s.wsRecheck(r, method, sess),
 	}
 
 	// Push last N events synchronously on connect
@@ -1418,17 +1511,9 @@ func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.Se
 	rl := newRateLimitMiddleware(10, 30)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", rl.wrap(secureHeaders(restServer)))
+	mux.Handle("/", rl.wrap(secureHeadersFor(restServer.requestIsHTTPS, restServer)))
 
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadTimeout:       15 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MB
-	}
+	server := newRESTHTTPServer(addr, mux)
 
 	logger.Info("Starting secure REST API server",
 		zap.String("addr", addr),

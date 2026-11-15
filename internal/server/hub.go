@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,12 +21,29 @@ const (
 	// connections could be opened — each costing a buffered channel and two
 	// goroutines. This bounds that instead.
 	maxHubClients = 500
+
+	// maxClientMessageBytes bounds a single inbound frame. Clients never need
+	// to send anything meaningful; this only tolerates control/keepalive text.
+	maxClientMessageBytes = 512
 )
+
+// wsRecheckInterval is how often an open socket re-verifies its credential
+// (a var so tests can shorten it).
+// Stored atomically because tests change it while earlier connections' pumps
+// are still winding down.
+var wsRecheckNanos atomic.Int64
+
+func init() { wsRecheckNanos.Store(int64(15 * time.Second)) }
+
+func wsRecheckInterval() time.Duration { return time.Duration(wsRecheckNanos.Load()) }
 
 type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan Event
+	// recheck, when non-nil, is polled every wsRecheckInterval; returning false
+	// ends the connection (credential revoked, expired or rotated).
+	recheck func() bool
 }
 
 type Hub struct {
@@ -93,8 +111,10 @@ func (h *Hub) Run(ctx context.Context) {
 
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
+	recheckTicker := time.NewTicker(wsRecheckInterval())
 	defer func() {
 		ticker.Stop()
+		recheckTicker.Stop()
 		_ = c.conn.Close()
 	}()
 
@@ -107,6 +127,13 @@ func (c *Client) writePump() {
 				return
 			}
 			if err := c.conn.WriteJSON(event); err != nil {
+				return
+			}
+		case <-recheckTicker.C:
+			if c.recheck != nil && !c.recheck() {
+				_ = c.conn.WriteControl(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session ended"),
+					time.Now().Add(writeWait))
 				return
 			}
 		case <-ticker.C:
@@ -129,7 +156,7 @@ func (c *Client) readPump(ctx context.Context) {
 		}
 		_ = c.conn.Close()
 	}()
-	c.conn.SetReadLimit(512)
+	c.conn.SetReadLimit(maxClientMessageBytes)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pingPeriod + 10*time.Second))
 	c.conn.SetPongHandler(func(string) error {
 		_ = c.conn.SetReadDeadline(time.Now().Add(pingPeriod + 10*time.Second))
