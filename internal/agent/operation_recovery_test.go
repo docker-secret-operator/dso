@@ -144,7 +144,11 @@ func TestRestartRecovery_EachInterruptionPoint(t *testing.T) {
 			func() []*fakeCtr { return []*fakeCtr{oldC(true), cand(false, "")} }, nil, true, "holder not running: preserve both"},
 		{"stop intent, both present", []string{rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated, rotation.TrIntentStopOriginal},
 			func() []*fakeCtr { return []*fakeCtr{oldC(false), cand(false, "")} }, nil, true, "neither running: preserve both"},
-		{"replacement started and healthy, original stopped", []string{rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated, rotation.TrIntentStopOriginal, rotation.TrOriginalStopped, rotation.TrIntentStartReplacement, rotation.TrReplacementStarted},
+		// N21: started and healthy is NOT verified: file-secret delivery is proven only by
+		// the probe that precedes candidate_ready. The stopped original must be kept.
+		{"replacement started and healthy, original stopped, NOT journalled ready", []string{rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated, rotation.TrIntentStopOriginal, rotation.TrOriginalStopped, rotation.TrIntentStartReplacement, rotation.TrReplacementStarted},
+			func() []*fakeCtr { return []*fakeCtr{oldC(false), cand(true, "healthy")} }, nil, true, "unverified replacement must not retire the original"},
+		{"replacement journalled ready, original stopped", []string{rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated, rotation.TrIntentStopOriginal, rotation.TrOriginalStopped, rotation.TrIntentStartReplacement, rotation.TrReplacementStarted, rotation.TrCandidateReady},
 			func() []*fakeCtr { return []*fakeCtr{oldC(false), cand(true, "healthy")} }, []string{"app_old_1700000000"}, false, "journalled replacement serves"},
 		{"replacement started but UNHEALTHY", []string{rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated, rotation.TrIntentStopOriginal, rotation.TrOriginalStopped, rotation.TrIntentStartReplacement},
 			func() []*fakeCtr { return []*fakeCtr{oldC(false), cand(true, "unhealthy")} }, nil, true, "holder unhealthy: never remove the only other workload"},

@@ -1769,6 +1769,11 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 
+				// N21: the replacement has now been started, passed its health gate and
+				// the file-secret probe. Journal that BEFORE traffic can move to it, so
+				// recovery can tell a verified replacement from one that merely runs.
+				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{created.ID}})
+
 				if useZeroDowntime {
 					// Proxy swap: new container gets all traffic immediately;
 					// old connections drain on old backend within 5 s.
@@ -1805,7 +1810,6 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					_ = r.cli.ContainerStop(ctx, target.ID, container.StopOptions{Timeout: &stopTimeout})
 				}
 
-				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{created.ID}})
 				// Retire the old container only after its removal intent is durable;
 				// otherwise leave it for recovery rather than delete without a record.
 				if jerr := r.jIntent(ctx, js, rotation.JournalEvent{Transition: rotation.TrIntentCleanup, OriginalIDs: []string{target.ID}}); jerr != nil {

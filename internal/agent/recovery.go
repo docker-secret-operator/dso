@@ -388,6 +388,64 @@ func (ar *AutomaticRecovery) holderHealthy(ctx context.Context, base, excludeID 
 // holderState is holderHealthy that also returns the holder's container ID, which
 // the journal-aware retirement rules need to establish the holder's IDENTITY.
 func (ar *AutomaticRecovery) holderState(ctx context.Context, base, excludeID string) (id string, ok bool, why string) {
+	id, ok, why = ar.holderStateRaw(ctx, base, excludeID)
+	if !ok {
+		return id, ok, why
+	}
+	// N21: Docker-visible health is not evidence that the secret was delivered. A
+	// container the journal names as a CANDIDATE that has not been acknowledged as
+	// ready (started, healthy, file-secret probe passed) is never accepted as the
+	// holder, however long it has been running or whatever its HEALTHCHECK says.
+	insp, err := ar.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return "", false, "name holder could not be re-inspected"
+	}
+	var labels map[string]string
+	if insp.Config != nil {
+		labels = insp.Config.Labels
+	}
+	if tr, unverified := ar.unverifiedCandidate(id, labels); unverified {
+		return "", false, "name holder is a journalled candidate that never reached candidate_ready (journal at " + tr + "): its secret delivery was not verified"
+	}
+	return id, true, ""
+}
+
+// candidateVerified reports whether the journal has acknowledged that rec's candidate
+// passed the readiness gate. TrCandidateReady is written only after the secret was
+// delivered (file streams succeeded), the container started, WaitReady/WaitHealthy
+// passed and the file-secret probe (ExecProbe/ExecProbeFiles) passed; every later
+// transition is only ever written after it. Transition is the LAST durable step, so a
+// fallback restart that follows a failed rolling attempt correctly regresses it.
+func candidateVerified(transition string) bool {
+	switch transition {
+	case rotation.TrCandidateReady, rotation.TrIntentHandoff, rotation.TrHandoffDone,
+		rotation.TrIntentSwap, rotation.TrSwapCommitted, rotation.TrIntentCleanup, rotation.TrCompleted:
+		return true
+	}
+	return false
+}
+
+// unverifiedCandidate reports whether container id is, according to an unfinished
+// journal record, a candidate (by journalled ID or rotation label) that has not been
+// acknowledged ready, and the record's last transition. A record that already reached a
+// terminal status, or in which the container is an ORIGINAL, does not apply.
+func (ar *AutomaticRecovery) unverifiedCandidate(id string, labels map[string]string) (string, bool) {
+	if ar.st == nil {
+		return "", false
+	}
+	for _, r := range ar.st.snapshotRecords() {
+		if r.Seq == 0 || r.Status == "completed" || r.Status == "recovered" || idIn(r.OriginalIDs(), id) {
+			continue
+		}
+		isCandidate := idIn(r.CandidateContainerIDs, id) || (r.RotationID != "" && labels[rotation.LabelRotationID] == r.RotationID)
+		if isCandidate && !candidateVerified(r.Transition) {
+			return r.Transition, true
+		}
+	}
+	return "", false
+}
+
+func (ar *AutomaticRecovery) holderStateRaw(ctx context.Context, base, excludeID string) (id string, ok bool, why string) {
 	t := ar.timings()
 	deadline := time.Now().Add(t.healthWait)
 	for {
@@ -505,6 +563,9 @@ func (ar *AutomaticRecovery) journalPermits(ctx context.Context, artifactID stri
 	case isOriginal:
 		if !holderIsCandidate {
 			return "the healthy name holder is not the journalled candidate", false
+		}
+		if !candidateVerified(rec.Transition) {
+			return "the journalled candidate never reached candidate_ready (journal at " + rec.Transition + "): secret delivery not verified", false
 		}
 		if rec.ExpectedProxyTarget != "" {
 			evidence := rec.ObservedProxyTarget == holderID || rec.Committed
