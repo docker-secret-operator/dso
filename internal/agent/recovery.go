@@ -512,26 +512,47 @@ func idIn(ids []string, id string) bool {
 }
 
 // journalRecordFor finds the journal record an artifact belongs to: by container
-// identity first (original or candidate ID), then by the rotation label stamped on
+// identity (original or candidate ID) or by the rotation label stamped on
 // candidates, which exists even if the crash preceded the ID being journalled.
+//
+// Several records can name the same container (F-B1): a completed restart R0
+// whose candidate is the original of a later, interrupted R1. The choice is
+// deterministic (never map order): an unresolved record (not completed or
+// recovered) wins over a terminal one, then the most recently updated, then the
+// highest Seq, then the rotation id. A terminal record is therefore never chosen
+// while an unresolved record names the container.
 func (ar *AutomaticRecovery) journalRecordFor(id string, labels map[string]string) *RotationState {
 	if ar.st == nil {
 		return nil
 	}
-	recs := ar.st.snapshotRecords()
-	for _, r := range recs {
-		if idIn(r.OriginalIDs(), id) || idIn(r.CandidateContainerIDs, id) {
-			return r
+	rid := labels[rotation.LabelRotationID]
+	var best *RotationState
+	for _, r := range ar.st.snapshotRecords() {
+		named := idIn(r.OriginalIDs(), id) || idIn(r.CandidateContainerIDs, id) || (rid != "" && r.RotationID == rid)
+		if named && journalRecordBefore(r, best) {
+			best = r
 		}
 	}
-	if rid := labels[rotation.LabelRotationID]; rid != "" {
-		for _, r := range recs {
-			if r.RotationID == rid {
-				return r
-			}
-		}
+	return best
+}
+
+// journalRecordBefore reports whether a is preferred over b (nil b: always) by
+// the deterministic order of journalRecordFor.
+func journalRecordBefore(a, b *RotationState) bool {
+	if b == nil {
+		return true
 	}
-	return nil
+	unresolved := func(r *RotationState) bool { return r.Status != "completed" && r.Status != "recovered" }
+	if ua, ub := unresolved(a), unresolved(b); ua != ub {
+		return ua
+	}
+	if !a.LastUpdate.Equal(b.LastUpdate) {
+		return a.LastUpdate.After(b.LastUpdate)
+	}
+	if a.Seq != b.Seq {
+		return a.Seq > b.Seq
+	}
+	return a.RotationID < b.RotationID
 }
 
 // journalPermits applies the transition-journal rules to retiring `artifact` while
