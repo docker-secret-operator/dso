@@ -27,8 +27,17 @@ type AWSProvider struct {
 	client *secretsmanager.Client
 }
 
+// sdkRetryOption disables the AWS SDK's built-in retryer (default 3 attempts).
+// Retries are owned by provider.Resilient in the daemon (G013); leaving the
+// SDK's on would multiply attempts (3 SDK x 3 wrapper = 9 requests per read
+// during an outage) and hide throttling from the wrapper's Retry-After/floor
+// handling.
+func sdkRetryOption() func(*config.LoadOptions) error {
+	return config.WithRetryMaxAttempts(1)
+}
+
 func (p *AWSProvider) Init(cfg map[string]string) error {
-	opts := []func(*config.LoadOptions) error{}
+	opts := []func(*config.LoadOptions) error{sdkRetryOption()}
 
 	// If region is specified in dso.yaml, use it; otherwise fall back to
 	// the standard AWS_REGION / AWS_DEFAULT_REGION environment variables.

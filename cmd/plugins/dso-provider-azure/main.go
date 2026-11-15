@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/docker-secret-operator/dso/pkg/api"
@@ -25,6 +27,15 @@ var version = "dev"
 //   - Managed Identity (Azure VMs, Container Instances, App Service)
 type AzureProvider struct {
 	client *azsecrets.Client
+}
+
+// azureClientOptions disables azcore's built-in retry policy (default 3
+// retries; a negative MaxRetries turns it off). Retries are owned by
+// provider.Resilient in the daemon (G013) so attempts are not multiplied.
+func azureClientOptions() *azsecrets.ClientOptions {
+	return &azsecrets.ClientOptions{
+		ClientOptions: azcore.ClientOptions{Retry: policy.RetryOptions{MaxRetries: -1}},
+	}
 }
 
 func (p *AzureProvider) Init(cfg map[string]string) error {
@@ -48,7 +59,7 @@ func (p *AzureProvider) Init(cfg map[string]string) error {
 		)
 	}
 
-	client, err := azsecrets.NewClient(vaultURL, cred, nil)
+	client, err := azsecrets.NewClient(vaultURL, cred, azureClientOptions())
 	if err != nil {
 		return fmt.Errorf(
 			"failed to create Azure Key Vault client for '%s': %w",
