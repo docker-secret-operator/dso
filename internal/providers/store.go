@@ -211,6 +211,13 @@ func (s *SecretStoreManager) initProvider(providerName, digest string, pCfg conf
 		return nil, fmt.Errorf("provider %s initialization %w", providerName, err)
 	}
 
+	// External plugin providers are network-backed: bound and retry their
+	// reads (G013). Native in-process backends (file, env) have no transient
+	// failure mode worth retrying and are left unwrapped.
+	if client != nil {
+		prov = pkgprovider.NewResilient(prov, providerName, pkgprovider.DefaultResilience())
+	}
+
 	entry := &StoreEntry{
 		Provider:     prov,
 		Client:       client,

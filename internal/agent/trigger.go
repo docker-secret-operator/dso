@@ -17,6 +17,7 @@ import (
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
+	pkgprovider "github.com/docker-secret-operator/dso/pkg/provider"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
@@ -669,7 +670,12 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 			}
 
 			if err != nil {
-				t.Store.MarkProviderFailure(providerName)
+				// A breaker short-circuit is not evidence the plugin is bad:
+				// counting it would hit the store's failure threshold, kill and
+				// respawn the plugin, and reset the breaker mid-outage (G013).
+				if !errors.Is(err, pkgprovider.ErrCircuitOpen) {
+					t.Store.MarkProviderFailure(providerName)
+				}
 				observability.SecretRequestsTotal.WithLabelValues(providerName, "error").Inc()
 				t.Logger.Error("Secret fetch failed, will retry", zap.String("secret", sec.Name), zap.Error(err))
 				timer.Reset(baseBackoff)
