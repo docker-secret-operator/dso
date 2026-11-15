@@ -126,3 +126,31 @@ A durable `OperationGuard` is consulted inside `ReloaderController.TriggerReload
 * **Partial multi-file secret delivery** is reported precisely in-process (`SignalState`), but the persisted journal does not yet record per-file progress for signal rotation.
 * Durability is process-crash safe, and intended power-loss safe where fsync is honoured; not a Docker+file transaction.
 * The journal records no secret versions yet because providers do not expose a version identifier through the cache; the field exists for when they do.
+
+## 5. N21: an unverified restart candidate must never retire the original
+
+**Defect (reproduced against the fake daemon, fixed).** `holderState` accepted any owned, running real-name holder (HEALTHCHECK `healthy`, or no HEALTHCHECK and running 30 s) and `journalPermits` then allowed the original to be retired when the holder was the journalled candidate and `ExpectedProxyTarget` was empty (always the case for the restart strategy). The restart strategy renames the original to `<name>_old_<ts>` and (unproxied) stops it BEFORE the replacement starts, so a crash between `intent_start_replacement` and `candidate_ready` left a running replacement that had not passed the journalled readiness gate, and recovery removed the stopped original, the only workload known to hold a working secret. Status and health are not evidence of secret delivery: for file secrets that is the post-start `ExecProbe/ExecProbeFiles`, which precedes `TrCandidateReady`. (Env secrets are in the candidate's config at create time; file secrets are streamed before start, so a started candidate always had its streams attempted, but nothing before the probe verifies them.) A candidate that was created but never started was already refused (not running); the unreproducible variant of the claim is "never received its secret and still accepted": the stream precedes the start in all three code paths, so the reachable defect is "started, delivery unverified", not "started, delivery never attempted".
+
+**Rule now.** `TrCandidateReady` (and any later step: `intent_handoff`, `handoff_done`, `intent_swap`, `swap_committed`, `intent_cleanup`, `completed`) is the only acknowledgement that delivery plus health plus probe passed. A container the journal names as a candidate (journalled ID or `dso.rotation.id` label) of an unfinished record whose LAST transition is not one of those is never a verified holder (`unverifiedCandidate`, applied inside `holderState`, so recovery, orphan cleanup and the committed-rotation check all inherit it; `journalPermits` repeats it as defence in depth). Everything is preserved and the rotation is flagged `critical_error` (manual recovery). Unknown or future transition names are treated as unverified. The primary restart branch now journals `candidate_ready` BEFORE the proxy `SwapBackend` (it was after the swap and the old container's stop), so a verified replacement that took traffic is not misclassified. Rolling (candidate stays under `_dso_new_` until `intent_swap`, which follows `candidate_ready`) and the restart fallback were already ordered correctly; signal rotation has no candidate and never auto-recovers.
+
+**Deliberately not done:** automatic rollback (stop/remove the candidate, rename and start the original). It would be a new destructive recovery action that contradicts the M0 "preserve, escalate" contract for these layouts; it needs an owner decision. Consequence: after such a crash the service may be running the unverified replacement (or nothing, if it never started) until an operator acts.
+
+### N21 acceptance matrix
+
+| # | Case | Journal / layout | Expected | Test |
+|---|------|------------------|----------|------|
+| 1 | Candidate created, delivery not attempted | `candidate_created`, candidate stopped | no mutation, critical | `TestN21_EveryPreReadyRestartStep_*` |
+| 2 | Delivery attempted, outcome unknown | `intent_stop_original`, candidate stopped | no mutation, critical | same |
+| 3 | Partial delivery (multi-file) | same layout as 2 (no per-file journal) | no mutation, critical | same; per-file progress is not journalled (limit) |
+| 4 | Delivery failure | in-process rollback removes the candidate; journal left at `candidate_created` | original under real name serves, ordinary rules | `TestRestartRecovery_EachInterruptionPoint` |
+| 5 | Verified delivery | `candidate_ready` / `intent_cleanup`, candidate healthy | original retired | `TestN21_VerifiedCandidate_StillRetiresTheOriginal` |
+| 6 | Crash before delivery ack | = 1/2 (no ack exists) | no mutation, critical | same as 1 |
+| 7 | Crash after delivery, before journal commit | `replacement_started`, candidate running/healthy | original NOT retired, critical | `TestN21_UnverifiedStartedCandidate_MustNotRetireTheOriginal` |
+| 8 | Crash after journal commit, before ledger reconciliation | `candidate_ready`/`completed` | **ledger-dependent: implement with the ledger slice** (applied version must be derived from the journal-committed outcome, never from Docker state) | pending |
+| 9 | Missing original | pre-ready, original absent | candidate untouched, critical | `TestN21_AmbiguousStates_*/original missing` |
+| 10 | Unreadable/inconsistent recovery state | corrupt file; unknown transition | corrupt: nothing touched (existing test); unknown transition: treated unverified | `TestRecovery_UnreadableStateDisablesAllAutomaticAction`, `TestN21_AmbiguousStates_*` |
+| 11 | Repeated recovery | any of the above | no further change | idempotency assertions in each N21 test |
+| 12 | Ownership mismatch (candidate or original) | pre-ready | no mutation, critical | `TestN21_AmbiguousStates_*` |
+| 13 | Proxy-managed restart | pre-ready, both running | both left running, critical | `TestN21_ProxiedRestart_*` |
+
+Ledger rule for the future slice: a secret version may be recorded as applied only from a journal record whose last transition is `candidate_ready`+ (restart/rolling: preferably `swap_committed`/`completed`); `critical_error`, `rolled_back`, signal `signal_done` (adoption unverified) and any pre-ready record never qualify. Real Docker behaviour (copy-to-container atomicity, exec probe semantics, container start timing) was NOT verified by these tests.
