@@ -6,6 +6,8 @@ DSO is designed around a single principle: **secrets must never touch disk in pl
 narrower guarantee — see [Secret Lifecycle → Local Mode](#local-mode-developmentci)
 below for the exact scope.
 
+> **Status note:** this is the intended guarantee. Runtime verification of managed file-mode delivery is open (finding N19); see the status note under [File Injection](#file-injection-recommended-for-production).
+
 ---
 
 ## Core Security Principles
@@ -102,6 +104,8 @@ When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` 
 - Disappears if the container stops or the machine reboots
 - **Invisible to `docker inspect`**
 - File permissions: `0400` (read-only by owner, no group/world access)
+
+> **Status note (finding N19, open):** The description above is the intended design, not a verified property. Runtime verification of managed file-mode delivery to created-not-started containers is not complete: the Docker archive endpoint is not known to write into a tmpfs, so delivery into the tmpfs, and the absence of persistent plaintext, are not yet verified. Do not rely on the zero-persistence guarantee for managed file-mode delivery until verification completes. The standalone `dso inject` command uses a different, hardened exec-based path (running container, declared tmpfs required, in-container tmpfs check); see [docs/cli.md](docs/cli.md). That path does not establish the managed path's guarantee.
 
 ### Environment Variable Injection
 
