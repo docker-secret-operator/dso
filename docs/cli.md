@@ -1207,6 +1207,106 @@ docker dso completion zsh >> ~/.zshrc
 
 ---
 
+### `docker dso inject`
+
+**Inject one secret file into a running container's tmpfs (administrative command).**
+
+Writes a single secret as a file into a directory that is already a `tmpfs` mount of the **running** target container. It does not touch the vault or any configuration; use configuration for persistent changes. Delivery uses `docker exec` plus an atomic rename (the older tar/archive upload is no longer used).
+
+> **Verification status:** implemented and unit-tested; guarded runtime scenarios exist but have not been executed. Managed zero-persistence delivery is not runtime-verified (finding N19 is open). Do not treat this command as evidence that the managed `dsofile://` path is verified.
+
+#### Usage
+
+```bash
+docker dso inject --container <id|name> --secret <file-name> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--container` | (required) | Target container ID or name |
+| `--secret` | (required) | Secret file name: letters, digits, `.`, `_`, `-`; no path separators |
+| `--value` | | **Unsafe for real secrets**: visible in shell history, process lists and CI logs. A warning is printed. Mutually exclusive with `--value-stdin` |
+| `--value-stdin` | `false` | Read the exact bytes from stdin (nothing trimmed) |
+| `--trim-newline` | `false` | Remove one trailing newline from stdin input (nothing else is trimmed) |
+| `--mount` | `/run/secrets/dso` | Absolute, clean, non-root directory inside the container; must lie inside a declared tmpfs mount |
+
+With no value flag, the value is read from a hidden prompt on a terminal, or from piped stdin.
+
+#### Authorization boundary
+
+This is an administrative command. It acts on whichever container you name through the Docker endpoint in your environment (`DOCKER_HOST`, default `/var/run/docker.sock`). Access to that endpoint is the authority; the container does not need a DSO owner label and does not need to be DSO-managed.
+
+#### Requirements
+
+- The target must be **running**. Stopped, paused and restarting containers are refused.
+- The destination directory must lie inside a tmpfs mount **declared in the container configuration** (`HostConfig.Tmpfs` or `Mounts`). The deepest declared mount covering the directory decides, so a bind mount or volume nested under a tmpfs refuses.
+- The image must provide `sh`, `mktemp`, `base64` and `sha256sum`. Images lacking them (for example distroless or scratch images) are **not supported** by this command.
+- `--container` must resolve to exactly one container (name, full ID or unique ID prefix). An ambiguous reference is refused; the first match is never chosen.
+
+#### Supported and refused configurations
+
+| Configuration | Result |
+|---|---|
+| Running container with a declared tmpfs covering the destination | Supported |
+| Stopped, paused or restarting container | Refused |
+| No tmpfs declared at the destination | Refused |
+| Destination on a bind mount or volume (including nested under a tmpfs) | Refused |
+| Ambiguous or unknown container reference | Refused |
+| Invalid `--secret` name or `--mount` directory | Refused before any Docker call |
+
+#### File ownership and mode
+
+The file is currently written as owner `root:root`, mode `0400`. A non-root application process therefore cannot read it. This behaviour is under review (finding N16); do not rely on the file being readable by the application's user.
+
+#### Failure behaviour
+
+On any refusal or failure the command exits non-zero. When refused, nothing is written. The injector removes its temporary file on failure, and a previously existing file at the destination is left intact (the final step is an atomic rename).
+
+#### Security limitations
+
+- A tmpfs removes **host-disk persistence only**. Host root, anyone with access to the Docker socket, swap and core dumps can still expose the value.
+- With `--value`, the secret appears in the command's argument list. Prefer the prompt or `--value-stdin`.
+- A container whose filesystem an adversary controls can race the destination directory. The in-container `/proc/mounts` check performed by the injector is the authority; the pre-check against the container configuration only fails early.
+
+#### Examples (synthetic values)
+
+```bash
+# Hidden prompt
+docker dso inject --container my-app --secret api_key
+
+# From stdin, exact bytes
+printf %s "example-value-123" | docker dso inject --container my-app --secret api_key --value-stdin
+
+# From a file, into a custom tmpfs directory
+docker dso inject --container my-app --secret tls_key --value-stdin --mount /run/tls < example-key.pem
+
+# Throwaway test value only (unsafe)
+docker dso inject --container my-app --secret scratch --value "test-only-value"
+```
+
+The container must declare the tmpfs, for example in Compose:
+
+```yaml
+services:
+  my-app:
+    tmpfs:
+      - /run/secrets/dso
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| Not verified | Not verified | Not verified (the command needs access to the Docker endpoint) | Not verified |
+
+The command reads no DSO configuration or vault in the code path reviewed (`internal/cli/inject.go`), and
+needs only Docker access, but its behaviour in each mode has not been tested; this table will be filled in
+after the guarded runtime scenarios have been executed.
+
+---
+
 ## Hidden / Internal Commands
 
 These commands are not shown in `--help` output.
@@ -1242,7 +1342,6 @@ The following commands exist in the CLI tree and are registered, but return `not
 | Command | Description |
 |---|---|
 | `docker dso apply` | Apply a DSO configuration file |
-| `docker dso inject` | Inject secrets directly into a specific running container |
 | `docker dso sync` | Synchronize secrets manually against cloud providers |
 
 ---
