@@ -358,7 +358,7 @@ export HUAWEI_PROJECT_ID="project-id"
 /etc/dso/               → root:dso, 0755 (readable by all)
 /var/lib/dso/          → root:dso, 0770 (read/write by group)
 /var/log/dso/          → root:dso, 0770 (read/write by group)
-/run/dso/              → root:dso, 0775 (sockets)
+/run/dso/              → root:dso, 0750 (sockets; group may traverse, never write)
 
 # Non-root access setup
 sudo usermod -aG dso $USER

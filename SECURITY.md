@@ -139,6 +139,22 @@ DSO agent communicates via Unix domain socket (`/run/dso/dso.sock`). Socket perm
 - Verify permissions: `ls -la /run/dso/dso.sock` (should show `root dso 0660`)
 - Monitor socket: `docker dso doctor` reports socket status
 
+### Runtime Directory (Cloud/Agent Mode)
+
+The runtime directory `/run/dso` (the same directory as `/var/run/dso`) holds the agent socket and the event log (`events.jsonl`). Anyone who can write to it can replace the socket or plant files that the root agent would open, so it is locked down:
+
+- **Owner/group/mode**: `root:dso` (or `root:root` if the `dso` group does not exist), mode exactly `0750`. Members of `dso` can traverse it to reach the socket (the socket itself stays `0660 root:dso`); nobody but root can create, rename or remove anything in it. `0750` replaces the previous `0775`; no DSO directory is group- or world-writable by this change. The other directories keep their modes (`/etc/dso` 0775, `/var/lib/dso` 0770, `/var/log/dso` 0770).
+- **Production agents run as root.** The agent establishes the invariant on every start, *before* it creates the trigger engine, the IPC socket, the driver socket or the event log: it creates the directory if missing, corrects the group and mode of a root-owned directory, and **refuses to start** if the path is a symlink, is not a directory, is owned by anyone but root, or cannot be corrected. The directory is opened once with `O_NOFOLLOW|O_DIRECTORY` and checked and corrected through that descriptor (`fstat`/`fchown`/`fchmod`), so there is no path-based check-then-use gap. Ownership is never changed, only group and mode of a root-owned directory.
+- **Bootstrap and units**: bootstrap applies the same `0750` and `VerifyPermissions` fails on any deviation of this directory (wrong owner, group, mode, or a symlink; other directories only warn). The systemd `RuntimeDirectory=`/`RuntimeDirectoryMode=0750` settings in the unit files are an extra, not a replacement for the agent's own enforcement.
+- **A non-root agent** (development with custom `--socket`/`--driver-socket` paths only) never modifies `/run/dso`.
+- **Scope**: this protects the directory. The event store in this release still opens `events.jsonl` by path; per-file validation (symlink/FIFO/hard-link refusal) is not part of this change, and the `0750` root-only directory is what keeps others from planting entries. The Unix socket is still created with path-based `chown`/`chmod` (separate socket-hardening work), and the directory ancestors (`/run`) are trusted as root-owned.
+
+**What survives what.** `/run` is a tmpfs, so the directory and its files never survive a reboot. Across a service stop or restart it depends on the installed unit (check with `systemctl cat dso-agent`):
+
+- **Shipped bootstrap unit** (`internal/bootstrap/systemd.go`): declares `RuntimeDirectory=dso` but **not** `RuntimeDirectoryPreserve`, so systemd **removes `/run/dso`** (socket and `events.jsonl` included) whenever the service stops.
+- **Planner and repair unit templates** (`internal/setup/planner.go`, `internal/setup/repair_service.go`): declare `RuntimeDirectoryPreserve=yes`, so the directory and event log survive a stop or restart. All three templates write the same file, `/etc/systemd/system/dso-agent.service`, so the behavior depends on which installer wrote it last. This difference is intentional for now and pending an owner decision; it does not affect the `0750` invariant, which the agent re-establishes on every start under either unit.
+- **A manually started agent** keeps the directory until the next reboot.
+
 ### Log Redaction
 
 All DSO output passes through a redaction engine, masking:
