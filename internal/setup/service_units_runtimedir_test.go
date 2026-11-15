@@ -22,14 +22,16 @@ func TestServiceUnitTemplates_DeclareTheRuntimeDirectory(t *testing.T) {
 		for _, want := range []string{
 			"RuntimeDirectory=dso\n",
 			"RuntimeDirectoryMode=0750\n",
-			// Preserve keeps the event log across restarts, as these units
-			// behaved before the directive existed.
-			"RuntimeDirectoryPreserve=yes\n",
+			// Restart-preserved, removed on explicit stop (owner decision).
+			"RuntimeDirectoryPreserve=restart\n",
 			c.execLine,
 		} {
 			if !strings.Contains(c.unit, want) {
 				t.Errorf("%s unit lacks %q", c.name, strings.TrimSpace(want))
 			}
+		}
+		if strings.Contains(c.unit, "RuntimeDirectoryPreserve=yes") {
+			t.Errorf("%s unit still preserves the directory across an explicit stop", c.name)
 		}
 		if strings.Contains(c.unit, "RuntimeDirectoryMode=0775") {
 			t.Errorf("%s unit widens the runtime directory", c.name)

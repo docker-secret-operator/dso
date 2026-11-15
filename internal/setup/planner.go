@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
 // Planner generates an InstallPlan from environment facts, validation results,
@@ -106,7 +108,7 @@ const (
 	dsoServicePath = "/etc/systemd/system/" + dsoServiceName
 )
 
-var dsoServiceUnit = []byte(`[Unit]
+var dsoServiceUnit = []byte(strings.Replace(`[Unit]
 Description=Docker Secret Operator Agent
 Documentation=https://github.com/docker-secret-operator/dso
 After=network.target docker.service
@@ -116,17 +118,15 @@ Requires=docker.service
 Type=simple
 ExecStart=/usr/local/bin/dso agent
 # /run/dso is root:dso 0750. The agent also enforces this itself on every start;
-# these directives only make systemd create it with the right mode first.
-# Preserve keeps the event log across service restarts (as before).
-RuntimeDirectory=dso
-RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=yes
+# these directives only make systemd create it with the right mode first
+# (shared with the bootstrap and repair units: runtimedir.UnitDirectives).
+{{RUNTIME_DIRECTORY}}
 Restart=on-failure
 RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-`)
+`, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1))
 
 func (p *Planner) planService(plan *InstallPlan, ctr *opCounter) {
 	plan.Files = append(plan.Files, FileChange{

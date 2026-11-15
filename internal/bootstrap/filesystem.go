@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -364,7 +365,7 @@ func (dv *DirectoryValidator) ValidateBootstrapDirectories(phase string) error {
 	}{
 		{"/etc/dso", 0775},
 		{"/var/lib/dso", 0750},
-		{"/var/run/dso", 0755},
+		{"/var/run/dso", runtimedir.DirMode},
 		{"/var/log/dso", 0750},
 	}
 

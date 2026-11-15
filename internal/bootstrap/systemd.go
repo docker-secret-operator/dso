@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
 // ServiceFilePath is the systemd unit file DSO installs. Exported so
@@ -29,7 +31,7 @@ func NewSystemdManager(logger Logger, dryRun bool) *SystemdManager {
 
 // GenerateServiceFile generates a hardened systemd service file for DSO agent
 func (sm *SystemdManager) GenerateServiceFile() string {
-	return `[Unit]
+	unit := `[Unit]
 Description=DSO Secret Injection Runtime Agent
 Documentation=https://github.com/docker-secret-operator/dso
 After=docker.service network-online.target
@@ -45,10 +47,7 @@ WorkingDirectory=/var/lib/dso
 StateDirectory=dso
 CacheDirectory=dso
 LogsDirectory=dso
-RuntimeDirectory=dso
-RuntimeDirectoryMode=0750
-
-ExecStartPre=/usr/bin/install -d -m 0750 /run/dso
+{{RUNTIME_DIRECTORY}}
 ExecStartPre=/usr/bin/install -d -m 0755 /run/docker/plugins
 ExecStart=/usr/local/bin/dso --config /etc/dso/dso.yaml agent --socket /run/dso/dso.sock --driver-socket /run/docker/plugins/dso.sock
 Restart=on-failure
@@ -88,6 +87,9 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 `
+	// The runtime-directory lines are shared with the setup planner and repair
+	// units (see runtimedir.UnitDirectives for the lifecycle rationale).
+	return strings.Replace(unit, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1)
 }
 
 // InstallServiceFile writes the systemd service file
