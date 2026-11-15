@@ -2,12 +2,16 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"strconv"
+	"strings"
 	"syscall"
+
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
 // PermissionManager handles user/group/ownership and ACL setup
@@ -236,17 +240,35 @@ func rejectSymlink(path string) error {
 	return nil
 }
 
+// dsoDirSpec is one directory in the bootstrap permission plan.
+type dsoDirSpec struct {
+	path string
+	perm os.FileMode
+	// strict makes a deviation from root:dso + perm a verification FAILURE
+	// instead of a warning. It is set for the runtime directory, which holds
+	// the IPC socket and the event log and must never be group- or
+	// other-writable.
+	strict bool
+}
+
+// dsoDirectoryPlan is the single source of truth for the DSO directories'
+// ownership (root:dso) and modes, shared by setup and verification.
+func dsoDirectoryPlan() []dsoDirSpec {
+	return []dsoDirSpec{
+		{"/etc/dso", 0775, false},     // root:dso, rw for group so dso members can operate without sudo
+		{"/var/lib/dso", 0770, false}, // root:dso, readable/writable by group
+		// Runtime directory: group may traverse (connect to the socket) but never
+		// write, and others have no access. Applying a wider mode here would undo
+		// the agent's own enforcement (internal/runtimedir) on a live service,
+		// because bootstrap applies permissions after it has started the agent.
+		{"/var/run/dso", runtimedir.DirMode, true},
+		{"/var/log/dso", 0770, false}, // root:dso, readable/writable by group
+	}
+}
+
 // setupDSODirectories configures permissions on DSO directories
 func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
-	directories := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{"/etc/dso", 0775},     // root:dso, rw for group so dso members can operate without sudo
-		{"/var/lib/dso", 0770}, // root:dso, readable/writable by group
-		{"/var/run/dso", 0775}, // root:dso, readable/writable by group, others can cd into
-		{"/var/log/dso", 0770}, // root:dso, readable/writable by group
-	}
+	directories := dsoDirectoryPlan()
 
 	for _, dir := range directories {
 		// Reject a symlink at this path BEFORE MkdirAll/Chmod/Chown, all of
@@ -395,20 +417,27 @@ func (pm *PermissionManager) validateDockerGroupAccess(uid int) error {
 	return nil
 }
 
-// VerifyPermissions verifies that DSO directories have correct permissions
-func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
-	directories := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{"/etc/dso", 0775},
-		{"/var/lib/dso", 0770},
-		{"/var/run/dso", 0775},
-		{"/var/log/dso", 0770},
-	}
+// permissionViolations reports strict-directory deviations. They fail
+// verification (every other deviation stays a warning).
+type permissionViolations struct{ msgs []string }
 
-	for _, dir := range directories {
-		info, err := os.Stat(dir.path)
+func (v *permissionViolations) Error() string {
+	return "directory permission violations: " + strings.Join(v.msgs, "; ")
+}
+
+// verifyDirectories checks every directory in plan. Deviations on a strict
+// directory (the runtime directory) are collected and returned as a
+// *permissionViolations after all directories were reported; deviations on
+// the others only warn, as before. Stat failures and non-directories are hard
+// errors returned immediately. ownerUID is the uid directories must belong to
+// (0 in production; injectable so tests need no root).
+func (pm *PermissionManager) verifyDirectories(plan []dsoDirSpec, dsoGID int, ownerUID uint32) error {
+	var violations []string
+	for _, dir := range plan {
+		// Lstat, not Stat: a symlinked strict directory is itself a violation
+		// and must not be judged by what it points at.
+		recorded := len(violations)
+		info, err := os.Lstat(dir.path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				pm.logger.Warn("Directory does not exist", "path", dir.path)
@@ -416,19 +445,40 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 			}
 			return fmt.Errorf("failed to stat %s: %w", dir.path, err)
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if dir.strict {
+				violations = append(violations, dir.path+" is a symbolic link")
+				continue
+			}
+			// Existing behaviour for the other directories: judge the target.
+			if info, err = os.Stat(dir.path); err != nil {
+				return fmt.Errorf("failed to stat %s: %w", dir.path, err)
+			}
+		}
 
 		// Check if it's a directory
 		if !info.IsDir() {
 			return fmt.Errorf("path is not a directory: %s", dir.path)
 		}
 
+		wantGID := dsoGID
+		if wantGID < 0 {
+			wantGID = 0 // no dso group: the invariant is root:root
+		}
+
 		// Check ownership
 		stat := info.Sys().(*syscall.Stat_t)
-		if stat.Uid != 0 {
+		if stat.Uid != ownerUID {
 			pm.logger.Warn("Directory owner is not root", "path", dir.path, "uid", stat.Uid)
+			if dir.strict {
+				violations = append(violations, fmt.Sprintf("%s is owned by uid %d, expected %d", dir.path, stat.Uid, ownerUID))
+			}
 		}
-		if int(stat.Gid) != dsoGID {
+		if int(stat.Gid) != wantGID {
 			pm.logger.Warn("Directory group is not dso", "path", dir.path, "gid", stat.Gid)
+			if dir.strict {
+				violations = append(violations, fmt.Sprintf("%s has group gid %d, expected %d", dir.path, stat.Gid, wantGID))
+			}
 		}
 
 		// Check permissions
@@ -438,9 +488,29 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 				"path", dir.path,
 				"expected", fmt.Sprintf("%o", dir.perm),
 				"actual", fmt.Sprintf("%o", actualPerm))
+			if dir.strict {
+				violations = append(violations, fmt.Sprintf("%s has mode %04o, expected exactly %04o", dir.path, actualPerm, dir.perm))
+			}
 		}
 
-		pm.logger.Info("Directory verified", "path", dir.path)
+		if len(violations) == recorded { // never call a violating directory "verified"
+			pm.logger.Info("Directory verified", "path", dir.path)
+		}
+	}
+	if len(violations) > 0 {
+		return &permissionViolations{msgs: violations}
+	}
+	return nil
+}
+
+// VerifyPermissions verifies that DSO directories have correct permissions.
+// A violation on the runtime directory (wrong owner, group, mode, or a
+// symlink) is returned as an error; other deviations are logged as warnings.
+func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
+	dirErr := pm.verifyDirectories(dsoDirectoryPlan(), dsoGID, 0)
+	var violations *permissionViolations
+	if dirErr != nil && !errors.As(dirErr, &violations) {
+		return dirErr // hard failure (stat error, not a directory): stop as before
 	}
 
 	// Check config file if it exists
@@ -464,6 +534,11 @@ func (pm *PermissionManager) VerifyPermissions(dsoGID int) error {
 				"actual", fmt.Sprintf("%04o", perm),
 				"fix", "chown root:dso "+configPath+" && chmod 0640 "+configPath)
 		}
+	}
+
+	if dirErr != nil {
+		pm.logger.Error("Permission verification FAILED", "error", dirErr.Error())
+		return dirErr
 	}
 
 	pm.logger.Info("Permission verification completed")
@@ -501,8 +576,12 @@ After bootstrap, the following permission structure is in place:
    - Users in 'dso' group can write state and logs
 
 4. Runtime Directory
-   - /var/run/dso: 0775 (root:dso) - Owner/group read/write, others can execute
-   - Socket files for communication placed here
+   - /var/run/dso (/run/dso): 0750 (root:dso) - Owner read/write/traverse, group
+     read/traverse only, no access for others. The group can connect to the
+     agent socket here but can never create, replace or remove files in it.
+   - The agent (which must run as root) re-establishes this on every start;
+     bootstrap verification fails if the directory is not exactly root:dso 0750
+   - Socket files for communication and the event log are placed here
 
 5. Log Directory
    - /var/log/dso: 0770 (root:dso) - Owner and group can read/write
