@@ -60,3 +60,45 @@ func TestAllUnitWriters_ProduceIdenticalRuntimeDirectorySettings(t *testing.T) {
 		}
 	}
 }
+
+// The three writers must emit identical sandbox settings, and none may
+// switch the service identity (the agent stays root: see SECURITY.md).
+func TestAllUnitWriters_ProduceIdenticalHardening(t *testing.T) {
+	units := map[string]string{
+		"bootstrap": bootstrap.NewSystemdManager(nil, true).GenerateServiceFile(),
+		"planner":   string(dsoServiceUnit),
+		"repair":    dsoAgentUnitContent("dso-agent"),
+	}
+	want := map[string][]string{}
+	for _, line := range strings.Split(strings.TrimSpace(runtimedir.HardeningDirectives), "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		want[k] = []string{v}
+	}
+	for name, unit := range units {
+		sec := serviceSection(t, unit)
+		if !strings.Contains(unit, runtimedir.HardeningDirectives) {
+			t.Errorf("%s: does not embed runtimedir.HardeningDirectives verbatim", name)
+		}
+		for k, v := range want {
+			if strings.Join(sec[k], ",") != strings.Join(v, ",") {
+				t.Errorf("%s: %s = %v, want %v", name, k, sec[k], v)
+			}
+		}
+		// Never switch identity or add directives that break required behaviour.
+		for _, k := range []string{"User", "Group"} {
+			for _, v := range sec[k] {
+				if v != "root" {
+					t.Errorf("%s: %s=%s; the agent must stay root", name, k, v)
+				}
+			}
+		}
+		for _, banned := range []string{"MemoryDenyWriteExecute", "UMask", "CapabilityBoundingSet", "PrivateNetwork", "ProtectProc", "SystemCallFilter"} {
+			if _, ok := sec[banned]; ok {
+				t.Errorf("%s: %s is unverified without a live systemd host (deferred)", name, banned)
+			}
+		}
+		if strings.Contains(unit, "{{") {
+			t.Errorf("%s: unexpanded placeholder", name)
+		}
+	}
+}

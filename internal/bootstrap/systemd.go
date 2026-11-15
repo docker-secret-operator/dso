@@ -57,22 +57,12 @@ StartLimitBurst=3
 
 SyslogIdentifier=dso-agent
 
-# Security Hardening
-NoNewPrivileges=true
-PrivateTmp=yes
+# Security Hardening (shared sandbox directives: runtimedir.HardeningDirectives)
+{{HARDENING}}
+# Filesystem sandbox (bootstrap-only: depends on the directories bootstrap creates)
 ProtectSystem=strict
 ProtectHome=yes
-ProtectClock=yes
-ProtectHostname=yes
-ProtectKernelLogs=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictNamespaces=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/etc/dso /var/lib/dso /var/log/dso /run/dso /run/docker/plugins
 
 # Resource Limits
@@ -89,7 +79,8 @@ WantedBy=multi-user.target
 `
 	// The runtime-directory lines are shared with the setup planner and repair
 	// units (see runtimedir.UnitDirectives for the lifecycle rationale).
-	return strings.Replace(unit, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1)
+	unit = strings.Replace(unit, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1)
+	return strings.Replace(unit, "{{HARDENING}}\n", runtimedir.HardeningDirectives, 1)
 }
 
 // InstallServiceFile writes the systemd service file

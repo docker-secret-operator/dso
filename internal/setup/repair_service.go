@@ -115,11 +115,12 @@ ExecStart=/usr/local/bin/dso-agent
 # (shared with the bootstrap and planner units: runtimedir.UnitDirectives).
 %sRestart=on-failure
 RestartSec=5s
-StandardOutput=journal
+# Shared sandbox directives (runtimedir.HardeningDirectives).
+%sStandardOutput=journal
 StandardError=journal
 SyslogIdentifier=%s
 
 [Install]
 WantedBy=multi-user.target
-`, runtimedir.UnitDirectives, serviceName)
+`, runtimedir.UnitDirectives, runtimedir.HardeningDirectives, serviceName)
 }

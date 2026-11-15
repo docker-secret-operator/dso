@@ -108,7 +108,7 @@ const (
 	dsoServicePath = "/etc/systemd/system/" + dsoServiceName
 )
 
-var dsoServiceUnit = []byte(strings.Replace(`[Unit]
+var dsoServiceUnit = []byte(strings.Replace(strings.Replace(`[Unit]
 Description=Docker Secret Operator Agent
 Documentation=https://github.com/docker-secret-operator/dso
 After=network.target docker.service
@@ -123,10 +123,12 @@ ExecStart=/usr/local/bin/dso agent
 {{RUNTIME_DIRECTORY}}
 Restart=on-failure
 RestartSec=5s
+# Shared sandbox directives (runtimedir.HardeningDirectives).
+{{HARDENING}}
 
 [Install]
 WantedBy=multi-user.target
-`, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1))
+`, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1), "{{HARDENING}}\n", runtimedir.HardeningDirectives, 1))
 
 func (p *Planner) planService(plan *InstallPlan, ctr *opCounter) {
 	plan.Files = append(plan.Files, FileChange{
