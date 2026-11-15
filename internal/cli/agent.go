@@ -104,6 +104,14 @@ func NewAgentCmd() *cobra.Command {
 				logger.Warn(advisory)
 			}
 
+			// Establish the runtime-directory security invariant (root:dso 0750,
+			// never a symlink) BEFORE anything is created in it: the trigger
+			// engine, IPC socket, driver socket and event store all come after
+			// this point. A root agent that cannot establish it does not start.
+			if err := establishAgentRuntimeDir(logger, currentEUID()); err != nil {
+				return fail("agent runtime directory is not safe", err)
+			}
+
 			// Initialize Cache & Store
 			cache := agent.NewSecretCache(5 * time.Minute)
 			defer cache.Close()
