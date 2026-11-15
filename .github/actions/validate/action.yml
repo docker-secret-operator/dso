@@ -51,7 +51,7 @@ runs:
     # uses to produce cosign (.github/workflows/release.yml) -- not a
     # separately-maintained install path.
     - name: Install cosign
-      uses: sigstore/cosign-installer@v3
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
     - name: Install DSO ${{ inputs.version }}
       id: install
