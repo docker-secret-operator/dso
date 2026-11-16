@@ -86,12 +86,20 @@ omitted, not guessed. `status -q` prints nothing; use the exit code.
 `dso central` also has `--json`, sharing one encoder (`writeCentralJSON` in
 `internal/cli/central.go`) across every command below plus `central audit
 verify` (documented separately above): a single indented JSON document,
-non-printable characters escaped, written to stdout, with the same contract —
-stdout is exactly one document, diagnostics stay on stderr, secret values
-never appear, and a non-zero exit still carries the document. No new exit
-codes were added for any of these: they reuse 0 (success) and 1 (usage error
-or any other failure), since no script needs to tell their failures apart
-from a generic one.
+non-printable characters escaped, written to stdout. On success, stdout is
+exactly that one document and diagnostics stay on stderr, and no command's
+`--json` output ever contains a secret value. The "non-zero exit still
+carries the document" half of the contract applies only to `project delete`
+and `environment delete` (see below): their rejection paths are a normal,
+expected outcome worth describing in machine-readable form. `project
+rename`/`environment rename` and the read commands below (`project list`,
+`environment list`, `secret list`, `secret versions`, `secret rollback`)
+return the error before reaching the encoder on failure, exactly like
+`status`/`doctor`/`validate`/`config path` do for most of their own failure
+paths: stdout is empty and the one `Error:` line goes to stderr, per the
+general exit-code table above. No new exit codes were added for any of
+these: they reuse 0 (success) and 1 (usage error or any other failure),
+since no script needs to tell their failures apart from a generic one.
 
 New mutating commands (Task 5's `Service.RenameProject`,
 `RenameEnvironment`, `DeleteProject`, `DeleteEnvironment`):

@@ -210,7 +210,7 @@ func TestCentralEnvironmentRename_CLI_Success(t *testing.T) {
 	if !strings.Contains(listOut, "staging") || !strings.Contains(listOut, "Staging") {
 		t.Fatalf("expected renamed environment in listing, got:\n%s", listOut)
 	}
-	if strings.Contains(listOut, "prod\t") {
+	if strings.Contains(listOut, "prod") {
 		t.Fatalf("old environment slug still listed:\n%s", listOut)
 	}
 }
@@ -351,7 +351,12 @@ func TestCentralJSON_NeverLeaksSecretValue(t *testing.T) {
 		t.Fatalf("add-version: %v", err)
 	}
 
-	jsonCapable := [][]string{
+	// Success-path commands: each must actually succeed (code 0, non-empty
+	// stdout) and that stdout must be exactly one JSON document. Discarding
+	// the exit code here would let a regression that makes a command fail
+	// outright (empty stdout) silently pass this leak check as a no-op.
+	successPath := [][]string{
+		{"audit", "verify", "--json"}, // the 10th --json command, already using the shared helper
 		{"project", "list", "--json"},
 		{"environment", "list", "app", "--json"},
 		{"secret", "list", "app", "prod", "--json"},
@@ -359,22 +364,46 @@ func TestCentralJSON_NeverLeaksSecretValue(t *testing.T) {
 		{"secret", "rollback", "app", "prod", "k", "1", "--json"},
 		{"project", "rename", "app", "app-renamed", "--json"},
 		{"environment", "rename", "app-renamed", "prod", "prod-renamed", "--json"},
-		{"environment", "delete", "app-renamed", "prod-renamed", "--json"}, // non-empty, rejected but must still carry a document
-		{"project", "delete", "app-renamed", "--json"},                     // non-empty, rejected
 	}
-	for _, args := range jsonCapable {
-		out, errOut, _ := runCentral(e, args...)
+	for _, args := range successPath {
+		out, errOut, code := runCentral(e, args...)
+		if code != 0 {
+			t.Fatalf("%v expected to succeed, got code=%d stderr=%s", args, code, errOut)
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Fatalf("%v produced no stdout", args)
+		}
+		decodeOneJSONDoc(t, out)
 		if strings.Contains(out, marker) {
 			t.Fatalf("%v leaked the secret marker into stdout JSON: %s", args, out)
 		}
 		if strings.Contains(errOut, marker) {
 			t.Fatalf("%v leaked the secret marker into stderr: %s", args, errOut)
 		}
-		// Every invocation above that produces output must still be a single
-		// JSON document when it produces any stdout at all (rejected mutating
-		// commands with --json always print exactly one object).
-		if strings.TrimSpace(out) != "" {
-			decodeOneJSONDoc(t, out)
+	}
+
+	// Rejected-delete commands (project/environment still non-empty): per
+	// docs/cli-conventions.md, `project delete`/`environment delete --json`
+	// are the two commands that still carry a JSON document on a non-zero
+	// exit. Assert both the failure and the document, not just "no leak".
+	rejectedDeletes := [][]string{
+		{"environment", "delete", "app-renamed", "prod-renamed", "--json"}, // non-empty
+		{"project", "delete", "app-renamed", "--json"},                     // non-empty
+	}
+	for _, args := range rejectedDeletes {
+		out, errOut, code := runCentral(e, args...)
+		if code == 0 {
+			t.Fatalf("%v expected to be rejected (non-empty), got code=0", args)
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Fatalf("%v: non-zero exit must still carry a JSON document on stdout, got empty stdout", args)
+		}
+		decodeOneJSONDoc(t, out)
+		if strings.Contains(out, marker) {
+			t.Fatalf("%v leaked the secret marker into stdout JSON: %s", args, out)
+		}
+		if strings.Contains(errOut, marker) {
+			t.Fatalf("%v leaked the secret marker into stderr: %s", args, errOut)
 		}
 	}
 }
