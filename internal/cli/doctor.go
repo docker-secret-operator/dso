@@ -42,6 +42,14 @@ var doctorSections = []doctorSection{
 	},
 	{title: "Configuration", categories: map[setup.DoctorCategory]bool{setup.DoctorCatConfiguration: true}},
 	{title: "Provider", categories: map[setup.DoctorCategory]bool{setup.DoctorCatProvider: true}},
+	// Security covers DSO-DOCTOR-004/005 (Docker socket / config file
+	// world-readable) and DSO-DOCTOR-026..031 (central-store root-key and
+	// database custody). Without this entry those checks still count toward
+	// Failures/Warnings/OverallStatus (buildDoctorResult walks all checks
+	// regardless of section), but render nowhere in the default or --level
+	// full terminal view -- an operator sees only the error count, with no
+	// check name, detail, or Recovery text to act on.
+	{title: "Security", categories: map[setup.DoctorCategory]bool{setup.DoctorCatSecurity: true}},
 	{title: "Operations", categories: map[setup.DoctorCategory]bool{setup.DoctorCatRotation: true}},
 	{title: "Project", categories: map[setup.DoctorCategory]bool{doctorCatProject: true}},
 }

@@ -279,13 +279,23 @@ func TestRenderDoctorSections_NoPanicAllStatuses(t *testing.T) {
 		{ID: "3", Category: setup.DoctorCatProvider, Status: setup.DoctorFail, Name: "c", Detail: "fail", RootCause: "rc2", Recovery: []string{"fix2"}},
 		{ID: "4", Category: doctorCatProject, Status: setup.DoctorInfo, Name: "d", Detail: "info"},
 		{ID: "5", Category: setup.DoctorCatRotation, Status: setup.DoctorPass, Name: "e", Detail: "no pending rotations"},
+		{ID: "DSO-DOCTOR-027", Category: setup.DoctorCatSecurity, Status: setup.DoctorFail, Name: "Root key file custody",
+			Detail: "mode 0644, expected 0400", RootCause: "modified since installation", Recovery: []string{"chmod 0400 /path"}},
 	}
 	result := buildDoctorResult(checks)
 
 	out := renderSectionedResult("DSO Doctor", result, doctorSections, true)
-	for _, want := range []string{"Environment", "Configuration", "Provider", "Operations", "Project", "Result"} {
+	for _, want := range []string{"Environment", "Configuration", "Provider", "Security", "Operations", "Project", "Result"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected rendered output to contain section %q", want)
+		}
+	}
+	// Review finding: a DoctorCatSecurity check (e.g. the Task 8 central-store
+	// custody checks) must actually render its name and Recovery text, not
+	// just count toward the summary.
+	for _, want := range []string{"Root key file custody", "chmod 0400 /path"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected verbose output to show the Security check's detail: missing %q in:\n%s", want, out)
 		}
 	}
 }
@@ -295,9 +305,11 @@ func TestRenderDoctorSections_NoPanicAllStatuses(t *testing.T) {
 // entry in doctorSections is silently dropped from the default terminal
 // view (still present in JSON/Summary, just invisible by default) -- this
 // is exactly the bug the Phase 7 P2-5 rotation checks' Operations section
-// was added to fix (see doctorSections above). This test fails loudly if a
-// future category is added to setup.go without a corresponding section
-// here.
+// was added to fix, and the same bug DoctorCatSecurity's Security section
+// fixed for DSO-DOCTOR-004/005 and the Task 8 central-store custody checks
+// (DSO-DOCTOR-026..031) -- see doctorSections above. This test fails loudly
+// if a future category is added to setup.go without a corresponding
+// section here.
 func TestDoctorSections_EveryCategoryIsRendered(t *testing.T) {
 	allCategories := []setup.DoctorCategory{
 		setup.DoctorCatDocker, setup.DoctorCatPermissions, setup.DoctorCatSecurity,
@@ -311,11 +323,6 @@ func TestDoctorSections_EveryCategoryIsRendered(t *testing.T) {
 		}
 	}
 	for _, cat := range allCategories {
-		if cat == setup.DoctorCatSecurity {
-			// Not currently emitted by any check constructor; skip rather
-			// than force a placeholder section for an unused category.
-			continue
-		}
 		if !sectioned[cat] {
 			t.Errorf("category %q has no doctorSections entry -- its checks would be silently dropped from terminal output", cat)
 		}
