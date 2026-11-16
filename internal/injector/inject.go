@@ -76,6 +76,22 @@ func InjectFilesWithOptions(ctx context.Context, cli *client.Client, containerID
 	return nil
 }
 
+// CheckFileName reports whether name is an acceptable secret file name for the
+// exec injector (the same rule the injector applies before any write). Exported
+// so managed callers can refuse an unsafe name BEFORE any container is created.
+func CheckFileName(name string) error {
+	_, err := checkFileName(name)
+	return err
+}
+
+// CheckDir reports whether dir is an acceptable delivery directory (absolute,
+// clean, non-root, no NUL; empty means the default). Exported for the same
+// reason as CheckFileName.
+func CheckDir(dir string) error {
+	_, err := resolveDir(dir)
+	return err
+}
+
 func injectOneFile(ctx context.Context, cli *client.Client, containerID, fileName, content string, uid, gid int) error {
 	return injectOneFileOpts(ctx, cli, containerID, fileName, content, uid, gid, Options{})
 }

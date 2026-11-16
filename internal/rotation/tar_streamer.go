@@ -23,6 +23,10 @@ type FileSecretSpec struct {
 	Data map[string]string
 	UID  int
 	GID  int
+	// Version is the keyed identity (hmac:<key id>:<mac>) of Data, computed by the
+	// caller from the exact values it hands over; "" when no ledger key is available.
+	// Journalled by managed delivery after verification; never plaintext.
+	Version string
 }
 
 // StreamSecretToContainer uploads secrets into a container's filesystem using an

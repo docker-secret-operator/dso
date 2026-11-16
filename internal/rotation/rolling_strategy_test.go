@@ -470,14 +470,19 @@ func TestRollingStrategy_CleanupContainerWithRetry(t *testing.T) {
 //     is detected, not silently swallowed)
 func TestRollingStrategy_Execute_FileSecretStreamFailure_RollsBack(t *testing.T) {
 	inspectResp := getBaseInspect()
+	// N19: gated delivery needs a declared tmpfs at the destination and a command.
+	inspectResp.HostConfig.Tmpfs = map[string]string{"/run/secrets/dso": ""}
+	inspectResp.Config.Cmd = []string{"nginx", "-g", "daemon off;"}
 	bInspect, _ := json.Marshal(inspectResp)
+	// N19: the archive endpoint is no longer used; the delivery failure is injected at
+	// the exec-injector seam (the same "daemon hiccup during file delivery" point).
+	gate := &n19Rec{injectErr: errN19Sim}
 
 	createResp := container.CreateResponse{ID: "new-container-id"}
 	bCreate, _ := json.Marshal(createResp)
 
 	renameCalled := 0
 	newContainerRemoved := 0
-	streamAttempted := 0
 
 	httpClient := &http.Client{
 		Transport: &mockTransport{
@@ -486,13 +491,12 @@ func TestRollingStrategy_Execute_FileSecretStreamFailure_RollsBack(t *testing.T)
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/cid/json":
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bInspect))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
+					cb, _ := io.ReadAll(req.Body)
+					gate.capture(cb)
 					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
 				case req.Method == "PUT" && strings.Contains(req.URL.Path, "/archive"):
-					// Simulate the file-secret stream failing (e.g. daemon
-					// hiccup, disk full, container removed out-of-band) --
-					// this is the deterministic failure-injection point.
-					streamAttempted++
-					return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte("simulated stream failure")))}, nil
+					t.Error("the archive endpoint must never be used for file-secret delivery (N19)")
+					return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte("archive used")))}, nil
 				case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/new-container-id":
 					newContainerRemoved++
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
@@ -508,6 +512,7 @@ func TestRollingStrategy_Execute_FileSecretStreamFailure_RollsBack(t *testing.T)
 
 	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
 	rs := NewRollingStrategy(cli)
+	rs.DeliveryOps = gate.ops()
 
 	fileSecrets := []FileSecretSpec{
 		{Path: "/run/secrets/dso", Data: map[string]string{"db-password": "DSO_TEST_SECRET_UNIQUE_9f31c8e7"}, UID: 1000, GID: 1000},
@@ -517,11 +522,14 @@ func TestRollingStrategy_Execute_FileSecretStreamFailure_RollsBack(t *testing.T)
 	if err == nil {
 		t.Fatal("Expected error when file-secret streaming fails, got nil")
 	}
-	if !strings.Contains(err.Error(), "stream file-mode secret") {
-		t.Errorf("Expected error to identify the file-secret streaming step, got: %v", err)
+	if !strings.Contains(err.Error(), "managed file delivery") {
+		t.Errorf("Expected error to identify the file-secret delivery step, got: %v", err)
 	}
-	if streamAttempted == 0 {
-		t.Error("Expected the stream step to actually be attempted")
+	if !gate.has("inject:/run/secrets/dso") {
+		t.Error("Expected the delivery step to actually be attempted")
+	}
+	if gate.has("release:/run/secrets/dso") {
+		t.Error("the startup gate must not be released when delivery failed")
 	}
 	if renameCalled != 0 {
 		t.Errorf("Expected 0 rename calls (failure occurred before the swap point, original container must stay untouched), got %d", renameCalled)
@@ -544,6 +552,9 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 	const sentinel = "DSO_TEST_SECRET_UNIQUE_9f31c8e7"
 
 	inspectResp := getBaseInspect()
+	inspectResp.HostConfig.Tmpfs = map[string]string{"/run/secrets/dso": ""}
+	inspectResp.Config.Cmd = []string{"nginx"}
+	gate := &n19Rec{}
 
 	createResp := container.CreateResponse{ID: "new-container-id"}
 	bCreate, _ := json.Marshal(createResp)
@@ -554,7 +565,6 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 	}
 
 	var createRequestBody []byte
-	var streamedData map[string]string
 
 	httpClient := &http.Client{
 		Transport: &mockTransport{
@@ -567,17 +577,11 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(bResp))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/create":
 					createRequestBody, _ = io.ReadAll(req.Body)
+					gate.capture(createRequestBody)
 					return &http.Response{StatusCode: 201, Body: io.NopCloser(bytes.NewReader(bCreate))}, nil
 				case req.Method == "PUT" && strings.Contains(req.URL.Path, "/archive"):
-					// Decode the tar stream StreamSecretToContainer sent so we
-					// can assert the sentinel DID reach the file-injection
-					// path (functional correctness), just not Config.Env.
-					streamedData = map[string]string{"probe": "received"}
-					body, _ := io.ReadAll(req.Body)
-					if bytes.Contains(body, []byte(sentinel)) {
-						streamedData["sentinel_seen_in_tar"] = "true"
-					}
-					return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
+					t.Error("the archive endpoint must never be used for file-secret delivery (N19)")
+					return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-container-id/start":
 					return &http.Response{StatusCode: 204, Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 				case req.Method == "GET" && req.URL.Path == "/v1.41/containers/new-container-id/json":
@@ -620,6 +624,7 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 
 	cli, _ := client.NewClientWithOpts(client.WithVersion("1.41"), client.WithHost("tcp://127.0.0.1:2375"), client.WithHTTPClient(httpClient))
 	rs := NewRollingStrategy(cli)
+	rs.DeliveryOps = gate.ops()
 
 	// Only an env-mode secret goes in newEnvs; the sentinel is exclusively a
 	// file-mode secret, mirroring how internal/watcher/controller.go now
@@ -640,8 +645,14 @@ func TestRollingStrategy_Execute_FileSecretNeverInCreateRequest(t *testing.T) {
 	if bytes.Contains(createRequestBody, []byte(sentinel)) {
 		t.Fatalf("SECURITY REGRESSION: sentinel secret value found in container create request body (would appear in `docker inspect`):\n%s", createRequestBody)
 	}
-	if streamedData["sentinel_seen_in_tar"] != "true" {
-		t.Error("sentinel was not observed in the file-streaming request -- fix may have dropped the secret instead of safely delivering it")
+	// The sentinel DID reach the delivery step (so the fix did not drop the secret),
+	// just not Config.Env / the create request.
+	if gate.delivered["/run/secrets/dso"]["db-password"] != sentinel {
+		t.Error("sentinel was not handed to the exec delivery -- the secret was dropped instead of safely delivered")
+	}
+	// The create request carries the startup gate and no secret value.
+	if !bytes.Contains(createRequestBody, []byte("dso-gate")) {
+		t.Error("the candidate was not created with the startup gate")
 	}
 }
 

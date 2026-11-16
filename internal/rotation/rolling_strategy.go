@@ -62,6 +62,28 @@ type RollingStrategy struct {
 	// rotations with no proxy involvement, where the old container holds no
 	// traffic and can be reclaimed immediately.
 	PreCleanupDelay time.Duration
+
+	// DeliveryOps, when set, replaces the real delivery operations (hardened exec
+	// injector, probe, inspect) used for gated file delivery. TEST-ONLY seam; nil in
+	// production (DefaultDeliveryOps over the strategy's client).
+	DeliveryOps *DeliveryOps
+	// GateTimeout bounds the candidate's startup gate (DefaultGateTimeout when zero).
+	GateTimeout time.Duration
+}
+
+// delivery builds the managed-delivery runner for the candidate id of this operation.
+func (rs *RollingStrategy) delivery() *Delivery {
+	ops := DefaultDeliveryOps(rs.cli)
+	if rs.DeliveryOps != nil {
+		ops = *rs.DeliveryOps
+	}
+	return &Delivery{
+		Ops:        ops,
+		RotationID: rs.rid,
+		Intent:     func(ctx context.Context, e JournalEvent) error { return rs.intent(ctx, e) },
+		Ack:        func(ctx context.Context, e JournalEvent) { rs.ack(ctx, e) },
+		Fault:      rs.fault,
+	}
 }
 
 func NewRollingStrategy(cli *client.Client) *RollingStrategy {
@@ -219,10 +241,14 @@ func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, contai
 // The rotation follows these atomic steps:
 // 1. Prepare new container config (no state changes)
 // 2. Create new container with temporary name
-// 3. Stream file-mode secrets into the new container's filesystem
-// 4. Start new container
+// 3. (file secrets) arm the startup gate on the candidate; no secret is written yet
+// 4. Start new container (gated: the application has not run)
+// 4.5 Verify identity + tmpfs, deliver files (exec injector), probe, journal the
+//
+//	delivery evidence, release the gate (N19; docs/design/n19-managed-delivery.md)
+//
 // 5. Verify health with timeout
-// 6. Verify file-mode secrets actually landed (exec probe)
+// 6. Verify file-mode secrets are still present (exec probe)
 // 7. Rename old -> backup, new -> original (atomic swap point)
 // 8. Cleanup backup container
 // If any step fails before the swap, full rollback occurs with no state changes.
@@ -282,6 +308,19 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		return fmt.Errorf("failed to prepare shadow config: %w", err)
 	}
 
+	// N19: a candidate that must receive file secrets is created with a startup gate
+	// (the original ENTRYPOINT/CMD/user/workdir are preserved) and never receives the
+	// secret through the archive endpoint. Deterministic refusals (no tmpfs at the
+	// destination, unsafe path, no ENTRYPOINT/CMD, owner mismatch) happen here, before
+	// any container exists and before the journal records anything.
+	gated := len(fileSecrets) > 0
+	if gated {
+		if err := PrepareGatedCandidate(config, hostConfig, fileSecrets, rs.GateTimeout); err != nil {
+			rs.logger.Error("Managed file delivery refused before any change", zap.String("container_id", containerID), zap.Error(err))
+			return err
+		}
+	}
+
 	// Step 3: Create new container with temporary name
 	// Operation identity that exists even if we crash before the candidate's
 	// container ID is journalled: recovery finds the candidate by this label.
@@ -309,7 +348,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	}
 	newContainerID := createResp.ID
 	rs.fault("after_candidate_create_before_ack")
-	rs.ack(ctx, JournalEvent{Transition: TrCandidateCreated, CandidateIDs: []string{newContainerID}})
+	rs.ack(ctx, JournalEvent{Transition: TrCandidateCreated, CandidateIDs: []string{newContainerID}, Gated: gated})
 
 	// Suppress proxy registration for this shadow before it is ever started.
 	// Docker emits "start" the moment ContainerStart returns, and the
@@ -320,22 +359,9 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		rs.OnShadowCreated(newContainerID)
 	}
 
-	// Step 3.5: Stream file-mode secrets into the new container's filesystem
-	// before it starts, so the app never starts without them present (same
-	// ordering already used by the compose-recreation path in
-	// internal/watcher/controller.go). CopyToContainer works on a
-	// created-but-not-started container.
-	for _, fs := range fileSecrets {
-		if err := StreamSecretToContainer(ctx, rs.cli, newContainerID, fs.Path, fs.Data, fs.UID, fs.GID); err != nil {
-			rs.logger.Error("Failed to stream file-mode secret into new container, rolling back",
-				zap.String("new_container_id", newContainerID),
-				zap.String("path", fs.Path),
-				zap.Error(err))
-			rs.discardShadow(ctx, newContainerID, tempNewName, false)
-			return fmt.Errorf("failed to stream file-mode secret to new container: %w", err)
-		}
-	}
-
+	// Step 3.5 (N19): file-mode secrets are NOT written before start. The candidate was
+	// created with a startup gate; delivery happens after start, through the hardened
+	// exec injector into the verified tmpfs, and releases the gate last (step 4.5).
 	// Step 4: Start new container
 	rs.fault("after_secret_delivery")
 	rs.logger.Info("Starting new container", zap.String("new_container_id", newContainerID))
@@ -346,6 +372,19 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			zap.Error(err))
 		rs.discardShadow(ctx, newContainerID, tempNewName, false)
 		return fmt.Errorf("failed to start new container: %w", err)
+	}
+
+	// Step 4.5 (N19): verify the running candidate's identity and tmpfs, deliver every
+	// file, probe them, record delivery evidence (keyed versions) durably, and only then
+	// release the gate so the application starts. Any failure leaves the gate closed or
+	// the candidate discarded; the original is untouched.
+	if gated {
+		if _, derr := rs.delivery().Execute(ctx, newContainerID, fileSecrets); derr != nil {
+			rs.logger.Error("Managed file delivery failed, rolling back",
+				zap.String("new_container_id", newContainerID), zap.Error(derr))
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return fmt.Errorf("managed file delivery to the candidate failed: %w", derr)
+		}
 	}
 
 	// Step 5: Verify health
@@ -374,8 +413,9 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	// commit to the swap -- catches a partially-completed injection (e.g. the
 	// stream succeeded but something removed/overwrote the file) rather than
 	// swapping traffic onto a container missing a secret it needs.
+	probeOps := rs.delivery().Ops
 	for _, fs := range fileSecrets {
-		if err := ExecProbeFiles(ctx, rs.cli, newContainerID, fs.Path, secretFileNames(fs.Data), 15*time.Second, 3); err != nil {
+		if err := probeOps.Probe(ctx, newContainerID, fs); err != nil {
 			rs.logger.Warn("File-mode secret probe failed, rolling back",
 				zap.String("new_container_id", newContainerID),
 				zap.String("path", fs.Path),

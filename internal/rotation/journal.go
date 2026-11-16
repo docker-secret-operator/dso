@@ -45,6 +45,18 @@ const (
 	TrIntentStartReplacement = "intent_start_replacement"
 	TrReplacementStarted     = "replacement_started"
 
+	// N19 managed file delivery (gated candidates, docs/design/n19-managed-delivery.md).
+	// These phases lie strictly BEFORE TrCandidateReady and none of them is delivery
+	// evidence by itself: only TrSecretsDelivered (all files delivered AND probed,
+	// keyed versions recorded) followed by the gate release makes a later
+	// TrCandidateReady a verified candidate.
+	TrGateStarted          = "gate_started"           // candidate running, application NOT started (verified by inspect)
+	TrIntentDeliverSecrets = "intent_deliver_secrets" // before the first byte is delivered
+	TrDeliveryPartial      = "delivery_partial"       // some, not all, files delivered when delivery failed
+	TrSecretsDelivered     = "secrets_delivered"      // every file delivered and probed; keyed versions recorded
+	TrIntentReleaseGate    = "intent_release_gate"    // before the release flag is written
+	TrGateReleased         = "gate_released"          // release flag written: the application may now start
+
 	// Signal (file re-delivery + reload) strategy.
 	TrIntentSignalPublish = "intent_signal_publish"
 	TrSignalPublished     = "signal_published"
@@ -75,6 +87,13 @@ type JournalEvent struct {
 	ObservedProxyTarget string
 
 	Detail string
+
+	// Gated marks (on TrCandidateCreated) a candidate created with the N19 startup gate.
+	// DeliveredVersions (on TrSecretsDelivered) are the keyed identities
+	// (hmac:<key id>:<mac>) of the exact values handed to the delivery; never plaintext
+	// and never an unkeyed hash. Empty when no ledger key is available.
+	Gated             bool
+	DeliveredVersions []string
 
 	// State is a named end/progress condition (e.g. the signal strategy's
 	// partially_published); ManualRecovery marks that an operator must act. Neither
