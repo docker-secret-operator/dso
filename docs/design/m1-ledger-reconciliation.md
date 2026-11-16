@@ -411,7 +411,7 @@ Every writer of the persistent-state tree must agree with this table. It is pinn
 
 | Path | Owner | Mode | Writer component |
 |---|---|---|---|
-| `/etc/dso` | `root:dso` | 0775 | bootstrap permission step (`dsoDirectoryPlan`) |
+| `/etc/dso` | `root:dso` (`root:root` if no `dso` group) | 0750 (was 0775; see §14.1) | bootstrap permission step (`dsoDirectoryPlan`), setup planner (`configDirMode`), `dso repair permissions` |
 | `/var/lib/dso` | `root:dso` (`root:root` if no `dso` group) | 0750 (accepted change b360128; was 0770) | bootstrap; setup repair `REPAIR-STATE-001`; the root agent writes inside |
 | `/var/run/dso` = `/run/dso` | `root:dso` | exactly 0750, strict | systemd `RuntimeDirectory`, the agent (`runtimedir`), bootstrap (strict verification) |
 | `/var/log/dso` | `root:dso` | 0770 | bootstrap |
@@ -421,9 +421,36 @@ Every writer of the persistent-state tree must agree with this table. It is pinn
 | `ledger/ledger.json`, `ledger.lock` | root | 0600, private | ledger store |
 | `/usr/local/lib/dso/plugins` | root | root-owned, no group/world write (0755) | bootstrap provider-plugin installer |
 
+Repair has a CLI entry point: `dso repair permissions [--dry-run]` (`internal/setup/permissions_repair.go`, over the same `dsoDirectoryPlan` via `bootstrap.DirectoryContract()`); it reports actual vs expected owner/mode for the paths in this table (except `/var/log/dso`), repairs directory owner/mode only, and treats the ledger key as inspect-only (only a verified, root-owned key may have its mode tightened to 0400). Exit status 0 ok, 1 failure/not root, 12 dry-run changes required, 13 manual action required.
+
 Rules that follow from it: the ledger key provider and the plugin trust checks refuse a group- or world-writable ancestor, so `/var/lib/dso` must stay 0750; nothing under `/run/dso` is durable. Permission repair is non-recursive by construction: `bootstrap.ApplyDirectoryNoFollow` opens the one directory with `O_NOFOLLOW|O_DIRECTORY`, applies `fchown`/`fchmod` on the descriptor, refuses a symlink or non-directory, touches nothing already correct, and never visits files inside (plugins, databases, keys, user content). No code path runs a recursive chmod/chown, and none regenerates a lost key.
 
 An installation upgraded from an earlier build still has `/var/lib/dso` at 0770; the ledger then opens disabled (code `unsafe_permissions`). The agent logs one warning at start, `docker dso status` shows a `LEDGER` block, `docker dso doctor` reports `DSO-DOCTOR-024`/`-025`, and the supported fix is `sudo chown root:dso /var/lib/dso && sudo chmod 0750 /var/lib/dso` (or `sudo docker dso bootstrap agent`, which also rewrites `dso.yaml`) followed by an agent restart.
+
+### 14.1 `/etc/dso` readers, writers and the 0750 decision
+
+`/etc/dso` is `root:dso` `0750` in bootstrap (`dsoDirectoryPlan`, `EtcDirMode`, the rollback recreation), the setup planner (`configDirMode`) and `dso repair permissions`; `internal/bootstrap/permissions_contract_test.go` and `internal/setup/permissions_repair_test.go` pin that they agree. Inventory verified from the source at the time of the change:
+
+| Component | Access to `/etc/dso` | Runs as |
+|---|---|---|
+| `dso bootstrap agent` (`WriteConfigOp`, `SafeWriteFile`, `setupDSODirectories`, rollback) | creates the directory; writes `dso.yaml` (temp file in the directory, then rename; mode 0640); chown/chmod | root (bootstrap refuses otherwise) |
+| `dso setup` agent mode (planner, `executor_directory`, `executor_file`, `RepairConfiguration` REPAIR-CFG-001/002) | creates the directory (0750 root:dso) and `dso.yaml` (0640 root:dso) | root |
+| `dso repair permissions` | chown/chmod of the directory only | root (apply); anyone (`--dry-run`) |
+| `dso config edit` | opens `$EDITOR` on the resolved file in place; no CLI code writes the file itself | the invoking user; succeeds only if that user can write the file |
+| `dso config show/validate/path`, `status`, `doctor`, `up`, `compose`, `fetch`, `core` config resolution | read/stat `dso.yaml` (and stat the directory); never write | any user able to read the file (root or `dso` group) |
+| `dso-agent` (systemd, root) | reads `dso.yaml`; the unit lists `/etc/dso` in `ReadWritePaths`, but no agent code writes there | root |
+| file backend (`pkg/backend/file`) | default `basePath` `/etc/dso/secrets`, read only | the agent |
+| provider loader (`pkg/provider/load.go`) | `/etc/dso/plugins` is an allowed plugin directory (plugin binaries are executed by the agent) | the agent |
+| `/etc/dso/agent.env` | documented `EnvironmentFile` created by the operator for provider credentials; read by systemd | root (operator-managed; DSO never creates it) |
+| WebUI tokens, provider manifests | no file under `/etc/dso` is read or written for them (the WebUI password hash and the webhook secrets live inside `dso.yaml`) | n/a |
+
+Files: `dso.yaml` is 0640 `root:dso` (tighten-only; an install with a stricter mode keeps it). The group-absence fallback: bootstrap creates the `dso` group when missing; the setup doctor, planner owner and repair use `root:root` when the group does not exist (`lookupDSOGroup`).
+
+**Non-root writes.** No supported workflow lets a `dso`-group member write `/etc/dso/dso.yaml`: the file is 0640 (group read only since M0-CONFIG-PERMS), so `dso config edit` as a group member could not save in place, and `bootstrap`, `setup` and the repairs all require root. The only thing a 0775 directory added was the ability to rename a different file over `dso.yaml` (an editor's write-new-file-then-rename, or `mv`) - and the root agent loads that file (provider selection, plugin paths, rotation commands, webhook targets), so group-writable configuration is root-equivalent. The 0775 was therefore not preserved for compatibility. `README.md` still described group editing; it was stale and has been corrected.
+
+If non-root configuration is ever required, the safe design is not to widen the directory: use `sudoedit /etc/dso/dso.yaml` under a sudoers rule scoped to that one file (the editor runs as the user on a temp copy, root installs it), or an agent-mediated `config set` over the existing 0660 `root:dso` socket that authenticates the caller by `SO_PEERCRED`, validates the change against the config schema, and writes it atomically as root.
+
+Existing installs at 0775 are not changed by upgrading the binary; they are corrected only by `sudo docker dso repair permissions` (preview with `--dry-run`).
 
 ## 15. Guarantees and degraded mode
 

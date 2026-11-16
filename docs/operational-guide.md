@@ -252,7 +252,7 @@ sudo docker dso config validate
 # If errors, fix and validate again
 
 # 2. Check permissions (contract: /var/lib/dso and /run/dso are root:dso 0750;
-#    /etc/dso 0775; /var/log/dso 0770 -- see docs/design/m1-ledger-reconciliation.md)
+#    /etc/dso 0750; /var/log/dso 0770 -- see docs/design/m1-ledger-reconciliation.md)
 ls -la /etc/dso /var/lib/dso /run/dso
 
 # 3. Check disk space
@@ -566,11 +566,21 @@ Earlier builds created `/var/lib/dso` as `root:dso` `0770`. The applied-version 
 - `docker dso status` shows a `LEDGER` block (`active`, `disabled (<code>)` or `not_configured`) and `docker dso doctor` reports `DSO-DOCTOR-024` (live ledger state) and `DSO-DOCTOR-025` (state-directory owner and mode);
 - while it is disabled the first observation of each secret per process is adopted without rotating (no mass rotation) and a provider change made while the agent was down may go undetected until that secret changes again. Rotation otherwise works and the rotation journal is unaffected.
 
-Fix (this one directory only; never `chown -R` / `chmod -R`):
+Fix (this one directory only; never `chown -R` / `chmod -R`). Preferred, with a preview first:
+
+```bash
+docker dso repair permissions --dry-run      # current vs expected; changes nothing
+sudo docker dso repair permissions           # directory-level corrections only
+sudo systemctl restart dso-agent             # the command never restarts the agent
+```
+
+or by hand:
 
 ```bash
 sudo chown root:dso /var/lib/dso && sudo chmod 0750 /var/lib/dso
 sudo systemctl restart dso-agent
 ```
 
-`sudo docker dso bootstrap agent` applies the same non-recursive change (it also rewrites `dso.yaml`, so review it); the setup repair engine has the equivalent action `REPAIR-STATE-001` (library only, no CLI command exposes it today). A lost key (`key_lost`) is never regenerated: restore `ledger.key` from a backup. Other codes: `corrupt_state`, `unsupported_schema` (a newer DSO wrote the ledger; upgrade the binary), `lock_held` (another agent uses the directory).
+`docker dso repair permissions` also corrects `/etc/dso` (an install from an earlier build has it at `0775`; the contract is `root:dso` `0750`), `/run/dso`, the private ledger directory and the plugin directory mode. It never rewrites `dso.yaml`, never regenerates the ledger key (a missing or unsafe key is reported with a diagnostic) and never recurses. See `docs/cli.md`.
+
+`sudo docker dso bootstrap agent` applies the same non-recursive change (it also rewrites `dso.yaml`, so review it); the setup repair engine action `REPAIR-STATE-001` is the same change, and `docker dso repair permissions` is its CLI entry point. A lost key (`key_lost`) is never regenerated: restore `ledger.key` from a backup. Other codes: `corrupt_state`, `unsupported_schema` (a newer DSO wrote the ledger; upgrade the binary), `lock_held` (another agent uses the directory).

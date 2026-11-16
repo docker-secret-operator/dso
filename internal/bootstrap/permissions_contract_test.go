@@ -118,7 +118,7 @@ func TestDirectoryContract_PlanIsPinned(t *testing.T) {
 		perm   os.FileMode
 		strict bool
 	}{
-		"/etc/dso":     {0o775, false},
+		"/etc/dso":     {0o750, false},
 		"/var/lib/dso": {0o750, false},
 		"/var/run/dso": {0o750, true},
 		"/var/log/dso": {0o770, false},
@@ -344,5 +344,47 @@ func TestRepairStateDirectory_LedgerDirChainAcceptsTheRepairedParent(t *testing.
 	}
 	if got := dirModeOf(t, ldir); got != 0o700 {
 		t.Fatalf("the ledger directory mode changed to %04o", got)
+	}
+}
+
+// /etc/dso is root:dso 0750 in every writer: the bootstrap plan, the rollback
+// recreation and the documented permission model. (The setup planner and the
+// repair command are checked against the same plan in internal/setup.)
+func TestDirectoryContract_EtcDirIsRootDso0750EverywhereInBootstrap(t *testing.T) {
+	if EtcDirPath != "/etc/dso" || EtcDirMode != 0o750 {
+		t.Fatalf("etc constants drifted: %s %04o", EtcDirPath, EtcDirMode)
+	}
+	if EtcDirMode&0o027 != 0 {
+		t.Fatalf("/etc/dso mode %04o must not grant group write or any other access", EtcDirMode)
+	}
+	found := false
+	for _, d := range dsoDirectoryPlan() {
+		if d.path == EtcDirPath {
+			found = true
+			if d.perm != EtcDirMode {
+				t.Errorf("plan mode %04o != EtcDirMode %04o", d.perm, EtcDirMode)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("/etc/dso is not in the directory plan")
+	}
+	for _, c := range DirectoryContract() {
+		if c.Path == EtcDirPath && c.Mode != EtcDirMode {
+			t.Errorf("DirectoryContract %04o != EtcDirMode", c.Mode)
+		}
+	}
+	// The rollback recreation (a hard-coded path in rollback.go) must use the
+	// contract constants rather than a literal mode.
+	src, err := os.ReadFile("rollback.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "SafeCreateDirectory(ctx, EtcDirPath, EtcDirMode,") || strings.Contains(string(src), "0775") {
+		t.Error("rollback.go must recreate /etc/dso with EtcDirMode, not a literal 0775")
+	}
+	doc := NewPermissionManager(&MockLogger{}, false).DocumentPermissionModel()
+	if !strings.Contains(doc, "/etc/dso: 0750 (root:dso)") || strings.Contains(doc, "0775") {
+		t.Error("the permission model must state /etc/dso is 0750 root:dso and no 0775")
 	}
 }

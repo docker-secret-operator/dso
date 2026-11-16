@@ -273,7 +273,7 @@ func dirConsequence(path string) string {
 // runtime-directory enforcement and the ledger key provider) must agree with
 // this table; internal/bootstrap/permissions_contract_test.go pins it.
 //
-//	/etc/dso            root:dso 0775  bootstrap
+//	/etc/dso            root:dso 0750  bootstrap; setup planner; `dso repair permissions`
 //	/var/lib/dso        root:dso 0750  bootstrap (this plan); agent writes as root
 //	/var/run|/run/dso   root:dso 0750  systemd RuntimeDirectory + agent (strict)
 //	/var/log/dso        root:dso 0770  bootstrap
@@ -285,13 +285,24 @@ const (
 	StateDirPath = "/var/lib/dso"
 	// StateDirMode is the exact mode of StateDirPath.
 	StateDirMode os.FileMode = 0750
+
+	// EtcDirPath is the agent-mode configuration directory.
+	EtcDirPath = "/etc/dso"
+	// EtcDirMode is the exact mode of EtcDirPath in every writer (bootstrap, the
+	// setup planner and `dso repair permissions`). The directory is root:dso with
+	// group read/traverse only: the root agent consumes dso.yaml, so a group that
+	// could write the directory could replace the file (rename over it) and so
+	// control a root process. Writing configuration needs root (sudo).
+	EtcDirMode os.FileMode = 0750
 )
 
 // dsoDirectoryPlan is the single source of truth for the DSO directories'
 // ownership (root:dso) and modes, shared by setup and verification.
 func dsoDirectoryPlan() []dsoDirSpec {
 	return []dsoDirSpec{
-		{"/etc/dso", 0775, false}, // root:dso, rw for group so dso members can operate without sudo
+		// root:dso, group read/traverse only: dso members can read the config but
+		// changing it (or replacing files in the directory) needs root.
+		{EtcDirPath, EtcDirMode, false},
 		// root:dso, group read-only: only the root agent writes state/locks/ledger,
 		// and the ledger key and plugin trust checks refuse a group-writable ancestor.
 		{StateDirPath, StateDirMode, false},
@@ -655,6 +666,10 @@ After bootstrap, the following permission structure is in place:
    - /etc/dso/dso.yaml: 0640 (root:dso) - Owner read/write, group read-only, no access for others
    - The file can hold credentials, so it is never world-readable or group-writable
    - Users in 'dso' group can read configuration; changing it requires root (sudo)
+   - /etc/dso: 0750 (root:dso) - group read/traverse only. A group that could write
+     the directory could replace dso.yaml (rename over it) and so control the root
+     agent, so the directory is never group-writable. Installs from earlier builds
+     are corrected with 'sudo docker dso repair permissions'
 
 3. State Directory
    - /var/lib/dso: 0750 (root:dso) - only root (the agent) writes; the dso group

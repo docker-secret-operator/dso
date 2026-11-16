@@ -383,9 +383,12 @@ world bit or group-write bit). Local mode already used `0600`.
   exactly as it is. Only the DSO-managed path `/etc/dso/dso.yaml` is touched.
 * **Behavior change:** group members of `dso` can no longer edit the file
   directly (group-write was removed because the file holds secrets); use `sudo`.
-  The `/etc/dso` directory mode is unchanged (`0775`): a group member can still
-  replace the file by renaming over it, so treat `dso` group membership as
-  trusted.
+  The `/etc/dso` directory is `root:dso` `0750` (bootstrap, `docker dso setup`
+  and `docker dso repair permissions` agree): a `dso` group member can read the
+  configuration but can neither edit the file nor replace it by renaming over
+  it. Earlier builds created the directory `0775`, which let a group member
+  replace the file the root agent loads; correct an existing install with
+  `sudo docker dso repair permissions` (see `docs/cli.md`).
 
 **Existing installations are NOT changed by upgrading the binary.** The new mode
 is applied when bootstrap/permission setup is re-run. DSO never changes the

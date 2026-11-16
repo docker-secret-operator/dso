@@ -111,7 +111,7 @@ func (sc *StateDirChecks) checkStateDir() DoctorCheck {
 		fmt.Sprintf("%s: %s -- %s; expected root:dso, mode %04o", sc.dir, actual, problems, bootstrap.StateDirMode),
 		"The directory was created by an older build (0770) or changed by hand; while it is group- or world-writable the applied-version ledger opens disabled",
 		DoctorCatPermissions,
-		"Repair only this directory (non-recursive; nothing inside is changed): the setup repair engine's REPAIR-STATE-001, or `sudo docker dso bootstrap agent` (re-applies the DSO directory permissions and rewrites dso.yaml, so review it)",
+		"Repair only this directory (non-recursive; nothing inside is changed): `sudo docker dso repair permissions` (add --dry-run to preview; REPAIR-STATE-001 is the same change), or `sudo docker dso bootstrap agent` (re-applies the DSO directory permissions and rewrites dso.yaml, so review it)",
 		fmt.Sprintf("By hand: `sudo chown root:dso %s && sudo chmod 0750 %s` (never -R), then restart dso-agent", sc.dir, sc.dir),
 	)
 }

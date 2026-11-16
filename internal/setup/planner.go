@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/bootstrap"
 	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
@@ -222,7 +223,7 @@ func configDirectory(env *Environment, mode SetupMode) string {
 
 func configDirMode(mode SetupMode) os.FileMode {
 	if mode == ModeAgent {
-		return 0750
+		return bootstrap.EtcDirMode // the one contract: root:dso 0750 (bootstrap and repair agree)
 	}
 	return 0700
 }

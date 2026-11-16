@@ -140,6 +140,7 @@ Advanced Usage (Manual Bootstrapping):
 
 Quick reference:
   docker dso doctor                 # Validate environment
+  docker dso repair permissions     # Inspect/repair directory permissions (--dry-run first)
   docker dso status                 # Check operational status
   docker dso config show            # View configuration
 
@@ -156,6 +157,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewSetupCmd())
 	cmd.AddCommand(NewBootstrapCmd())
 	cmd.AddCommand(NewDoctorCmd())
+	cmd.AddCommand(NewRepairCmd())
 	cmd.AddCommand(NewStatusCmd())
 	cmd.AddCommand(NewConfigCmd())
 	cmd.AddCommand(NewSystemCmd())

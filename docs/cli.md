@@ -26,6 +26,10 @@ docker dso
 ├── doctor                 # Check environment health and connectivity (Phase 2)
 │   ├── --level [default|full]  # Detail level
 │   └── --json             # Machine-readable output
+├── repair                 # Explicit, narrowly scoped repairs
+│   └── permissions        # Inspect/repair the directory permission contract
+│       ├── --dry-run      # Show current vs expected; change nothing (no root)
+│       └── --json         # Machine-readable output
 ├── status                 # View real-time system metrics (Phase 3)
 │   ├── --watch            # Auto-refresh every 2 seconds
 │   └── --json             # Machine-readable output
@@ -175,6 +179,73 @@ docker dso doctor --json
 ```
 
 Returns JSON with all diagnostic data for integration with monitoring systems.
+
+---
+
+### Repair Directory Permissions
+
+`docker dso repair permissions` is the dedicated entry point for the permission repair that `docker dso doctor` recommends (`DSO-DOCTOR-025` and the directory checks). It is **not** run automatically.
+
+```bash
+docker dso repair permissions --dry-run   # current vs expected, changes nothing, no root needed
+sudo docker dso repair permissions        # apply the directory-level corrections
+```
+
+Checked paths, and only these:
+
+| Path | Expected |
+|------|----------|
+| `/etc/dso` | `root:dso` `0750` |
+| `/var/lib/dso` | `root:dso` `0750` |
+| `/var/run/dso` (`/run/dso`) | `root:dso` `0750` (exact) |
+| `/var/lib/dso/ledger` | `root` `0700` |
+| `/var/lib/dso/ledger/ledger.key` | `root` `0400` (`0600` accepted) |
+| `/usr/local/lib/dso/plugins` | root-owned, no group/world write |
+
+`root:root` replaces `root:dso` when the host has no `dso` group. `/var/log/dso` (`0770`) is outside this command.
+
+Example dry-run output (before `sudo` is used; nothing is modified):
+
+```
+DSO permission contract (dry run: nothing is modified)
+
+PATH                              CURRENT         EXPECTED                                STATUS
+/etc/dso                          root:dso 0775   root:dso 0750                           change
+/var/lib/dso                      root:dso 0770   root:dso 0750                           change
+/var/run/dso                      root:dso 0750   root:dso 0750                           ok
+/var/lib/dso/ledger               root:root 0700  root 0700                               ok
+/var/lib/dso/ledger/ledger.key    root:root 0400  root 0400 (0600 accepted)               ok
+/usr/local/lib/dso/plugins        root:root 0755  root-owned, no group/world write (0755) ok
+
+Changes required: 2
+
+Details:
+  /etc/dso: mode 0775, expected 0750
+  /var/lib/dso: mode 0770, expected 0750
+
+Configuration files will not be rewritten
+Ledger keys will not be regenerated
+No recursive permission changes will be performed
+```
+
+What it does: sets the owner and mode of the directories above, one directory at a time, through a descriptor opened with `O_NOFOLLOW|O_DIRECTORY` (`fchown`/`fchmod`). A symlink, or a regular file where a directory is expected, is refused and reported as `manual`. A path that already conforms is not touched, so a second run changes nothing. A directory that is *stricter* than the contract (except `/var/run/dso`, which is exact) is never loosened.
+
+What it never does: recursive chmod/chown; read, rewrite or replace `dso.yaml` or any configuration file; create, regenerate, rename or remove the ledger key; reset authentication state; restart the agent (restart `dso-agent` yourself afterwards); modify unrelated files; print key material.
+
+The ledger key is only ever *inspected*. A missing key beside existing ledger state, a key owned by someone other than root, a hard-linked or symlinked key, or a file that is not a ledger key (wrong size or header) is reported as `manual` with a diagnostic and left untouched. Only the mode of a key that is verifiably a ledger key owned by root is tightened (to `0400`). The plugin directory is only repaired when it is root-owned, and only its group/world write bits are removed.
+
+Existing installs created by earlier builds have `/etc/dso` at `0775`; this command is how they are corrected (upgrading the binary does not change them).
+
+Applying requires root: a non-root `docker dso repair permissions` (without `--dry-run`) is refused before anything changes, with a message saying to use `sudo`.
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | Every path conforms, or every required correction was applied and nothing needs manual action (also what a second run returns) |
+| `1` | Not root (apply), one or more corrections failed (the table shows which paths changed and which failed), or another error |
+| `12` | `--dry-run` only: corrections are required (nothing was changed) |
+| `13` | A path needs manual action (symlink, wrong owner, missing/corrupt/unsafe key) that this command never performs |
+
+Precedence when several apply: `1`, then `12`, then `13`. `--json` prints the same report as JSON (paths, owners, modes, statuses; never file contents).
 
 ---
 

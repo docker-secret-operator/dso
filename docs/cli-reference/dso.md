@@ -19,6 +19,7 @@ Advanced Usage (Manual Bootstrapping):
 
 Quick reference:
   docker dso doctor                 # Validate environment
+  docker dso repair permissions     # Inspect/repair directory permissions (--dry-run first)
   docker dso status                 # Check operational status
   docker dso config show            # View configuration
 
@@ -56,6 +57,7 @@ dso [flags]
 * [dso logs](dso_logs.md)	 - View DSO agent logs
 * [dso migrate](dso_migrate.md)	 - Migrate an existing .env + Compose project to DSO-managed secrets
 * [dso notifications](dso_notifications.md)	 - Manage rotation-event notification destinations
+* [dso repair](dso_repair.md)	 - Repair DSO host state that diagnostics reported as wrong
 * [dso secret](dso_secret.md)	 - Manage DSO Native Vault secrets
 * [dso setup](dso_setup.md)	 - Simple setup wizard for DSO
 * [dso status](dso_status.md)	 - Show DSO runtime operational status

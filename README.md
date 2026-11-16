@@ -273,7 +273,7 @@ See **[Getting Started Guide](docs/getting-started.md)** for detailed setup inst
 ## Configuration
 
 Configuration lives at `/etc/dso/dso.yaml` (Cloud/Agent mode) or `./dso.yaml` (Local mode).  
-Members of the `dso` group can read and edit `/etc/dso/dso.yaml` without `sudo`.
+Members of the `dso` group can read `/etc/dso/dso.yaml`; editing it requires `sudo` (the file holds credentials and is consumed by the root agent).
 
 ### Cloud Mode — AWS Example
 
@@ -414,8 +414,8 @@ After running `docker dso setup`, all DSO directories and the agent socket are g
 
 | Path | Permissions | Notes |
 |------|------------|-------|
-| `/etc/dso/` | `0775 root:dso` | Group members can list and read |
-| `/etc/dso/dso.yaml` | `0664 root:dso` | Group members can read and edit |
+| `/etc/dso/` | `0750 root:dso` | Group members can list and read; only root can write |
+| `/etc/dso/dso.yaml` | `0640 root:dso` | Group members can read; only root can edit |
 | `/run/dso/dso.sock` | `0660 root:dso` | Group members can connect to agent |
 
 Add your user to the `dso` group once and all DSO commands work without `sudo`:
@@ -428,9 +428,9 @@ newgrp dso                   # Apply immediately without logout
 docker dso watch
 docker dso status
 docker dso compose up
-vi /etc/dso/dso.yaml
 
 # These still require sudo (system-level operations):
+sudo vi /etc/dso/dso.yaml
 sudo docker dso system enable
 sudo systemctl restart dso-agent
 ```
