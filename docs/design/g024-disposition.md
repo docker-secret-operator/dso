@@ -3,6 +3,8 @@
 Status: DECIDED 2026-11-16 (owner-approved reading of D1). Scope: documentation plus
 package doc comments only. No production code was removed.
 
+> Provenance note: citations of `docs/audit/...` in this document point to local, intentionally untracked working notes (repository policy, commit 1bf9f6c). Every requirement and decision this document relies on is stated here; the citations only record where it came from.
+
 ## 1. G024 versus G027
 
 G024 (`docs/audit/gap-backlog.json`, id `DSO-G024`; `docs/audit/10-PRIORITIZED-GAP-BACKLOG.md:30`) is an

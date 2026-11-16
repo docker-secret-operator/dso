@@ -6,6 +6,8 @@ Status: **working scope note. NOT an ADR.** Written 2026-11-16 on
 `docs/audit/54-M2-SCOPE-INVENTORY.md` (section numbers below refer to it). Where they say
 "held" or "pending", sections 6, 9 and 10 supersede them. This note changes no behaviour.
 
+> Provenance note: citations of `docs/audit/...` in this document point to local, intentionally untracked working notes (repository policy, commit 1bf9f6c). Every requirement and decision this document relies on is stated here; the citations only record where it came from.
+
 ## 1. Which "M2" this is
 
 Three unrelated things are called M2 (inventory section 1): audit-roadmap M2

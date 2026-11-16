@@ -11,6 +11,8 @@ Builds on `docs/audit/45-N19-STARTGATE-REUSE-REVIEW.md` (section 12 design F1+F2
 the hardened exec injector inside the existing managed lifecycle. No sidecar, daemon, runtime, second journal or external
 orchestration was added.
 
+> Provenance note: citations of `docs/audit/...` in this document point to local, intentionally untracked working notes (repository policy, commit 1bf9f6c). Every requirement and decision this document relies on is stated here; the citations only record where it came from.
+
 ## 1. What changed in one paragraph
 
 For config-driven `inject.type: file` secrets, the three managed paths (rolling `RollingStrategy.Execute`, restart
@@ -215,14 +217,23 @@ costs nothing when no container waits. `redeliverGated` (also the Docker `start`
 same OperationGuard, re-checks the rotation ownership markers after taking them, resolves the cached specs (private copies), skips a gate whose release flag already exists (idempotent), verifies
 identity/gate/tmpfs/file-set (`VerifyRunningGate`) and delivers. It never starts a stopped container, never retries a failed delivery in a loop and never fetches from a provider.
 
-**The one goroutine (`RequestGateReconcile`), ratified as an intentional exception.** The N19 follow-up work carried a working constraint of "no new goroutines"; `RequestGateReconcile` starts one anyway, reviewed and
-accepted by the controller as justified. What it does: a single CAS-gated (`gateScanBusy`) coalescing worker that runs `ReconcileGatedContainers` passes in a loop, draining `gateScanPending` each
-time, and exits once no further request arrived while it ran (the "coalesce any number of triggers into one worker" behaviour above). Why it exists: the cache-warm-after-restart gap. The three fixed
-call sites that invoke reconciliation synchronously (startup after recovery settles, a Docker reconnect, and the periodic reconciliation tick) cannot reach a container whose secret becomes cacheable
-strictly BETWEEN those calls -- `NotifyCacheWarm` fires from the cache-write path itself, at an arbitrary point in time none of the three fixed call sites can predict or block on, so a background
-worker is the only way to serve that container promptly without the cache-write path blocking on a full reconciliation pass. Why it is safe: it is bounded and coalescing -- at most one pass in flight
-at a time (`gateScanBusy.CompareAndSwap`), any number of concurrent requests while a pass runs collapse into exactly one further pass (`gateScanPending`), so triggers never accumulate goroutines or
-Docker calls; `TestN19Reconcile_BoundedAndCoalesced` exercises 50 concurrent requests and asserts at most 2 passes result, and the full `internal/watcher` suite is verified clean under `go test -race`.
+**The reconciliation worker (`RequestGateReconcile`).** One background goroutine exists for gated-container reconciliation. It is a deliberate, bounded design, not an incidental one.
+
+*Why a worker is needed.* Reconciliation passes run synchronously at three fixed points: startup once recovery settles, a Docker reconnect, and the periodic tick. A gated container waiting for its secret can become deliverable strictly *between* those points: the cache is populated by a provider fetch at an arbitrary time, and `NotifyCacheWarm` fires from the cache-write path. That path must not block on a full pass, so the request is handed to a worker.
+
+*Bounded and coalescing.* At most one worker runs at a time: it is started only when `gateScanBusy` moves false to true by compare-and-swap. A request stores `gateScanPending` first and then attempts that swap. Any number of requests during a running pass collapse into exactly one further pass, so triggers never accumulate goroutines, Docker calls or provider calls. Each pass examines at most `maxGateScan` (128) containers per class (running, exited) and resumes from a rotating cursor so later containers are not starved.
+
+*No lost wakeup.* The worker clears `gateScanBusy` before re-reading `gateScanPending` and re-claims by compare-and-swap. A request that arrives as the worker finishes is therefore either started by the requester's own swap or seen by the worker's re-check, and both cannot fail. (This ordering argument is backed by a 1,500-cycle stress test; it is not provable by a single mutation test because the window is very narrow.)
+
+*Cancellation and shutdown.* The worker uses the agent context. It checks `ctx.Err()` per container and before re-claiming, releases `gateScanBusy` first when it exits, and every Docker call it makes (list, inspect, probe, execute) takes that context. After cancellation it issues no further Docker operations. A coalesced request runs under the context of the worker that was already running, which in practice is the single agent context.
+
+*Synchronization.* State shared with other paths is the two atomic flags and the scan cursor, which is mutex-guarded. Nothing else is shared; the worker holds no lock while waiting for another request.
+
+*Operation ownership is unchanged.* Re-delivery from the worker takes the same per-service lock key and the same operation-guard keys (service name, container id, container name) as `TriggerReload`, and it re-checks ownership after taking them. It refuses a gate owned by a rotation (`gateOwned`, proxy-pending, rotation artifacts, another agent). It never releases a gate that an unresolved operation owns.
+
+*No retry storm.* There is no internal retry loop. One pass runs per consumed request, `resolveFileSpecs` reads only the in-memory cache and never calls a provider, and a failure leaves the container waiting until the next trigger or cache warm.
+
+Tests: `TestN19Reconcile_BoundedAndCoalesced`, the `TestN19ReconcileLifecycle_*` tests (no worker accumulation, request during a running pass, no lost wakeup, cancel stops the worker, cancel mid-pass), and the rotation-ownership tests; the `internal/watcher` suite is race-clean. This worker supersedes the earlier working constraint of "no new goroutines" for this one mechanism only.
 
 **Timed-out gate, no restart policy.** DSO does not restart a stopped container automatically: an operator's stop must stand, and exit status 75 cannot be told apart from an application's own status
 with certainty. The warning (once per container exit, from the `die` event or the pass) names the recovery: once the secret provider is reachable run `docker start <container>`; the running agent
@@ -271,3 +282,15 @@ after probing (re-delivery has no journal). Ownership: files are `0400`, written
 before any change); the probe now also requires readability by the probing user (meaningful for a non-root app user, trivially true for root); never world-readable (injector `umask 077` + `chmod 0400` before
 publish). A gate cannot be released by a concurrent unrelated operation: the service lock and OperationGuard are held/consulted, and rotation candidates are marked in memory and by name. Repeated recovery and
 repeated passes are idempotent (an existing release flag ends the attempt).
+
+## 12. Convergence after re-delivery (verified guarantee)
+
+A promoted gated container that restarts is re-delivered whatever the cache currently holds, and re-delivery writes no journal record and makes no ledger claim. The applied version therefore never moves ahead of what a verified managed operation recorded, and the guarantee is that **a discrepancy converges without the provider changing again** (no later value V4 is required):
+
+- The ledger keeps durable desired and applied versions per service. `NeedsRotation` (`internal/ledger/transitions_decision.go`) returns rotate whenever desired differs from applied.
+- The in-memory "already handled" hash in `commitObservation` (`internal/agent/trigger.go`) is consulted before the ledger, so convergence depends on every outcome that did not apply the version rolling that hash back. The covered outcomes do: failure or rollback, deferral, guard block, lock timeout, journal-start failure and cache-limit refusal. After an agent restart the hash is empty and the persistent ledger decides, so the same unchanged value dispatches.
+- An unresolved `critical_error` journal record blocks the run (the operation guard stays authoritative) and applied stays at the old version; after the record is resolved the same value converges.
+- Multi-replica: the entry is per service and applied moves only in `ledgerTerminal` after a verified managed operation. A replica that received the newer value through re-delivery does not make the workload report it as applied.
+- Two paths intentionally keep the hash: a rotation that reached no targets (`ErrNoTargetsRotated`, the ledger records a block cleared by a configuration change) and the "another operation holds the entry" skip (not reachable as a successful-but-unrecorded dispatch because the per-service lock defers the second operation).
+
+Re-delivery is never treated as application adoption. Deterministic tests: `internal/agent/n19_convergence_test.go`.
