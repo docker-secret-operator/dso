@@ -1284,7 +1284,7 @@ docker dso completion zsh >> ~/.zshrc
 
 Writes a single secret as a file into a directory that is already a `tmpfs` mount of the **running** target container. It does not touch the vault or any configuration; use configuration for persistent changes. Delivery uses `docker exec` plus an atomic rename (the older tar/archive upload is no longer used).
 
-> **Verification status:** implemented and unit-tested; guarded runtime scenarios exist but have not been executed. Managed zero-persistence delivery is not runtime-verified (finding N19 is open). Do not treat this command as evidence that the managed `dsofile://` path is verified.
+> **Verification status:** implemented and unit-tested; guarded runtime scenarios exist but have not been executed. Managed zero-persistence delivery is not runtime-verified (finding N19 is open; managed config-driven rotation now reuses this injector behind a startup gate, see [design note](design/n19-managed-delivery.md), but that is also runtime-unverified). Do not treat this command as evidence that the managed path is verified.
 
 #### Usage
 

@@ -45,7 +45,7 @@ DSO introduces two URI protocols that you embed directly in your `docker-compose
 
 **Why use it:** This is the most secure method. The secret never touches disk. It is completely invisible to `docker inspect`. Applications designed for production often read secrets from file paths (e.g., `POSTGRES_PASSWORD_FILE`).
 
-> **Status note (finding N19, open):** this describes the intended design for local-mode `dsofile://`, which source analysis shows is delivered by the exec injector (tmpfs required) into a running container behind a start gate; it is not a verified runtime property. Config-driven `inject.type: file` rotation uses a different path (Docker archive endpoint into a created-not-started candidate) and is runtime-unverified. Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
+> **Status note (finding N19, open):** this describes the intended design for local-mode `dsofile://`, which source analysis shows is delivered by the exec injector (tmpfs required) into a running container behind a start gate; it is not a verified runtime property. Config-driven `inject.type: file` rotation now uses a gated candidate start plus the same exec injector (no archive endpoint; the destination must be a declared tmpfs and the image needs `/bin/sh`); it is implemented and Docker-free tested but **runtime-unverified** (see [design note](design/n19-managed-delivery.md)). Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
 
 > ⚠️ `dsofile://` is **only supported in Local Mode**. Cloud Mode uses native provider injection directly.
 

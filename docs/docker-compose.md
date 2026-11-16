@@ -16,7 +16,7 @@ services:
       STRIPE_API_KEY_FILE: dsofile://billing/stripe_key
 ```
 
-> **Status note (finding N19, open):** the tmpfs mount at `/run/secrets/dso/` is the intended design, not a verified property. For local-mode `dsofile://` (this page), source analysis shows delivery by the exec injector into a running container behind a start gate; config-driven `inject.type: file` rotation uses a different, runtime-unverified path. Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
+> **Status note (finding N19, open):** the tmpfs mount at `/run/secrets/dso/` is the intended design, not a verified property. For local-mode `dsofile://` (this page), source analysis shows delivery by the exec injector into a running container behind a start gate; config-driven `inject.type: file` rotation now uses a gated start plus the same exec injector instead of the archive endpoint (implemented and Docker-free tested, **runtime-unverified**; destination must be a declared tmpfs, the image needs `/bin/sh`; see [design note](design/n19-managed-delivery.md)). Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
 
 ## 2. Environment Injection (Legacy)
 If your application absolutely cannot read from a file, use `dso://`. DSO will inject the literal text into the environment block right before boot.
