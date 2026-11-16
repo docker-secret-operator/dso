@@ -10,6 +10,7 @@ package watcher
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -392,6 +393,94 @@ func TestN19Reconcile_BoundedAndCoalesced(t *testing.T) {
 	}
 	if n := w2.lists(); n < 1 || n > 2 {
 		t.Fatalf("50 requests produced %d passes; they must coalesce into at most 2", n)
+	}
+}
+
+// Fairness (finding 1a): with more than maxGateScan RUNNING gated containers, a hard
+// prefix cut by sorted ID would examine the SAME first maxGateScan containers on every
+// single pass forever -- container maxGateScan+1 would never be reconciled. The scan must
+// instead rotate so repeated passes eventually cover every container. The cache is left
+// empty so every container the scan actually reaches ends up recorded in gateWaiting (and
+// stays there across passes, since it is still running) -- a precise, cumulative record of
+// everything any pass has ever examined.
+func TestN19Reconcile_FairnessAcrossPasses_AllEventuallyExamined(t *testing.T) {
+	w := newGateWorld(t)
+	w.cache.data = map[string]map[string]string{} // no cached value: every examined container waits
+	total := maxGateScan*2 + 13
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("c%05d", i)
+		w.addRunning(id, id)
+	}
+	passes := total/maxGateScan + 2
+	for i := 0; i < passes; i++ {
+		rep := w.r.ReconcileGatedContainers(t.Context())
+		if rep.Examined != maxGateScan {
+			t.Fatalf("pass %d: expected a full bounded pass, got %+v", i, rep)
+		}
+	}
+	seen := 0
+	w.r.gateWaiting.Range(func(_, _ interface{}) bool { seen++; return true })
+	if seen != total {
+		t.Fatalf("after %d passes of %d each, only %d/%d containers were ever examined -- "+
+			"the same prefix is being re-scanned every pass instead of rotating", passes, maxGateScan, seen, total)
+	}
+}
+
+// Fairness (finding 1b): All:true means exited rotation artifacts/shadows are listed
+// alongside running containers. They must never consume the bounded scan budget ahead of
+// a RUNNING container waiting at its gate -- that gate is what keeps an application from
+// starting. More exited(75) artifacts than the entire budget must still leave every running
+// container served in the same pass.
+func TestN19Reconcile_ExitedArtifactsDoNotStarveRunningContainers(t *testing.T) {
+	w := newGateWorld(t)
+	for i := 0; i < maxGateScan+10; i++ {
+		id := fmt.Sprintf("a-exited-%04d", i)
+		w.addExited(id, fmt.Sprintf("exited-%04d", i), "Exited (75) 5 minutes ago", 75, "no")
+	}
+	const nRunning = 5
+	for i := 0; i < nRunning; i++ {
+		w.addRunning(fmt.Sprintf("z-running-%d", i), fmt.Sprintf("app-%d", i))
+	}
+	rep := w.r.ReconcileGatedContainers(t.Context())
+	// The mock delivery seam shares one gate flag across containers, so after the first
+	// delivery the rest observe the flag already present (gateReleased rather than
+	// gateDelivered) -- both outcomes mean the container's gate is open and it was served
+	// this pass, which is what matters here.
+	if served := rep.Delivered + rep.Released; served != nRunning {
+		t.Fatalf("exited artifacts starved the running-container scan budget: %+v", rep)
+	}
+}
+
+// Fairness (finding 1c): gateWaiting bookkeeping must still converge even when a pass is
+// truncated -- it does not require having examined a container THIS pass, only knowing
+// whether it is still running, which the single listing call already answers for every
+// container returned. A container that stops being listed (removed/stopped) must have its
+// gateWaiting entry cleared even while other containers overflow the scan budget.
+func TestN19Reconcile_WaitingBookkeepingConvergesEvenWhenTruncated(t *testing.T) {
+	w := newGateWorld(t)
+	w.cache.data = map[string]map[string]string{}
+	w.addRunning("stale-waiter", "stale-waiter")
+	w.r.ReconcileGatedContainers(t.Context()) // marks "stale-waiter" as waiting
+	if _, waiting := w.r.gateWaiting.Load("stale-waiter"); !waiting {
+		t.Fatal("setup: expected stale-waiter to be recorded as waiting")
+	}
+
+	// Now overflow the budget with other running containers, and stop tracking the
+	// original one (it is no longer in the listing at all -- e.g. removed, or no longer
+	// gated): its gateWaiting entry must still be cleared even though this pass truncates.
+	w.mu.Lock()
+	w.list = w.list[:0]
+	w.mu.Unlock()
+	for i := 0; i < maxGateScan+7; i++ {
+		id := fmt.Sprintf("c%05d", i)
+		w.addRunning(id, id)
+	}
+	rep := w.r.ReconcileGatedContainers(t.Context())
+	if !rep.Truncated {
+		t.Fatalf("expected this pass to be truncated: %+v", rep)
+	}
+	if _, stillWaiting := w.r.gateWaiting.Load("stale-waiter"); stillWaiting {
+		t.Fatal("gateWaiting bookkeeping for a container no longer listed was skipped because the pass was truncated")
 	}
 }
 

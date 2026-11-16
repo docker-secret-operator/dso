@@ -101,6 +101,36 @@ func TestRenameProject_Service_SlugCollisionIsCleanConflict(t *testing.T) {
 	}
 }
 
+// TestRenameProject_Service_InvalidSlugRejected is the rename counterpart of
+// CreateProject's slug validation: RenameProject must reject a newSlug that
+// does not match slugRe (uppercase, spaces, or empty) with the SAME
+// ErrInvalidName CreateProject would produce, audited the same way a
+// rejected create is, and must not touch the stored slug at all.
+func TestRenameProject_Service_InvalidSlugRejected(t *testing.T) {
+	for _, newSlug := range []string{"Not A Slug!", "", strings.Repeat("a", 64)} {
+		e := setup(t)
+		e.project(t, "p1")
+
+		err := e.svc.RenameProject(ctx, "p1", newSlug, "P1 Renamed", "alice")
+		if !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("newSlug %q: expected ErrInvalidName, got %v", newSlug, err)
+		}
+
+		events := eventsOfType(t, e.st, store.AuditProjectRename)
+		if len(events) != 1 || events[0].Outcome != store.AuditFailure {
+			t.Fatalf("newSlug %q: expected exactly 1 failure AuditProjectRename event, got %+v", newSlug, events)
+		}
+		if events[0].ReasonCategory != "validation_error" {
+			t.Fatalf("newSlug %q: expected reason category validation_error, got %q", newSlug, events[0].ReasonCategory)
+		}
+
+		// The stored slug must be entirely unchanged: a rejected rename is not partial.
+		if _, err := e.st.GetProjectBySlug(ctx, "p1"); err != nil {
+			t.Fatalf("newSlug %q: p1 should still resolve by its original slug: %v", newSlug, err)
+		}
+	}
+}
+
 // ---- RenameEnvironment -------------------------------------------------------
 
 func TestRenameEnvironment_Service_Success(t *testing.T) {
@@ -176,6 +206,38 @@ func TestRenameEnvironment_Service_SlugCollisionIsCleanConflict(t *testing.T) {
 	events := eventsOfType(t, e.st, store.AuditEnvironmentRename)
 	if len(events) != 1 || events[0].Outcome != store.AuditFailure || events[0].ReasonCategory != "conflict" {
 		t.Fatalf("expected exactly 1 failure/conflict AuditEnvironmentRename event, got %+v", events)
+	}
+}
+
+// TestRenameEnvironment_Service_InvalidSlugRejected is RenameProject's invalid-
+// slug test above, scoped to environments: RenameEnvironment must reject a
+// newSlug CreateEnvironment would also reject, with the same audited
+// validation_error failure, and the stored slug must be unchanged.
+func TestRenameEnvironment_Service_InvalidSlugRejected(t *testing.T) {
+	for _, newSlug := range []string{"Not A Slug!", "", strings.Repeat("a", 64)} {
+		e := setup(t)
+		e.project(t, "p1", "env1")
+
+		err := e.svc.RenameEnvironment(ctx, "p1", "env1", newSlug, "Env1 Renamed", "alice")
+		if !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("newSlug %q: expected ErrInvalidName, got %v", newSlug, err)
+		}
+
+		events := eventsOfType(t, e.st, store.AuditEnvironmentRename)
+		if len(events) != 1 || events[0].Outcome != store.AuditFailure {
+			t.Fatalf("newSlug %q: expected exactly 1 failure AuditEnvironmentRename event, got %+v", newSlug, events)
+		}
+		if events[0].ReasonCategory != "validation_error" {
+			t.Fatalf("newSlug %q: expected reason category validation_error, got %q", newSlug, events[0].ReasonCategory)
+		}
+
+		p, err := e.st.GetProjectBySlug(ctx, "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.st.GetEnvironmentBySlug(ctx, p.ID, "env1"); err != nil {
+			t.Fatalf("newSlug %q: env1 should still resolve by its original slug: %v", newSlug, err)
+		}
 	}
 }
 

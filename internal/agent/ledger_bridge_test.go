@@ -820,6 +820,77 @@ func TestLedgerBridge_JournalVersionEncoding(t *testing.T) {
 	}
 }
 
+// B/C (docs/design/n19-managed-delivery.md section 11 B/C). Mixed-version fallback: the
+// first candidate (c1) delivers V2 and then fails; the cache moves on mid-rotation and its
+// fallback (c2) delivers V3 instead, the version actually running. deliveredEvidenceMatches
+// requires EVERY delivering candidate's own recorded evidence to name the SAME dispatch
+// version -- c1's evidence names only V2, c2's only V3, so neither V2 nor V3 is provable and
+// the ledger must refuse to advance applied state for this rotation at all (it self-heals on
+// the next rotation). recordCandidateVerified for c2, the candidate actually running, must be
+// unaffected by c1's mismatched evidence: it is still a healthy, verified workload.
+func TestLedgerBridge_MixedVersionFallback_NeitherVersionIsEvidence_RunningCandidateUnaffected(t *testing.T) {
+	st, err := NewStateTracker(t.TempDir(), nil)
+	if err != nil {
+		t.Skip("state tracker unavailable: ", err)
+	}
+	ctx := context.Background()
+	rec := func(ev rotation.JournalEvent) {
+		t.Helper()
+		ev.RotationID = "rot-mv"
+		if err := st.Record(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v2, v3 := n19Version(2), n19Version(3)
+
+	// c1: gated, delivers V2, then fails (no candidate_ready for it).
+	rec(rotation.JournalEvent{Strategy: "restart", Transition: rotation.TrIntentCreateCandidate, ServiceID: "app", OriginalIDs: []string{"o1"}})
+	rec(rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{"c1"}, Gated: true})
+	rec(rotation.JournalEvent{Transition: rotation.TrSecretsDelivered, CandidateIDs: []string{"c1"}, DeliveredVersions: []string{v2}})
+
+	// c1's replacement, c2: gated, delivers V3 (the cache moved on in between) and reaches
+	// candidate_ready -- the one actually running.
+	rec(rotation.JournalEvent{Transition: rotation.TrIntentCreateCandidate})
+	rec(rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{"c2"}, Gated: true})
+	rec(rotation.JournalEvent{Transition: rotation.TrSecretsDelivered, CandidateIDs: []string{"c2"}, DeliveredVersions: []string{v3}})
+	rec(rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{"c2"}})
+
+	r := JournalRecordByID(st, "rot-mv")
+	if got := r.DeliveredByCandidate["c1"]; len(got) != 1 || got[0] != v2 {
+		t.Fatalf("c1's own evidence must stay on record: %+v", r.DeliveredByCandidate)
+	}
+	if got := r.DeliveredByCandidate["c2"]; len(got) != 1 || got[0] != v3 {
+		t.Fatalf("c2's own evidence must stay on record: %+v", r.DeliveredByCandidate)
+	}
+
+	// (a) Neither V2 nor V3 is provable as THE delivered version: c1 never named V3 and c2
+	// never named V2, so deliveredEvidenceMatches (and the EvidenceForRotation it gates)
+	// refuses both -- applied state for rot-mv never advances for either candidate's version.
+	hv2, hv3 := parseJournalSecretVersion(v2), parseJournalSecretVersion(v3)
+	if hv2 == nil || hv3 == nil {
+		t.Fatal("test setup: could not parse the synthetic journal versions")
+	}
+	if deliveredEvidenceMatches(r, *hv2) {
+		t.Fatal("V2 was accepted as evidence even though c2's delivery does not name it")
+	}
+	if deliveredEvidenceMatches(r, *hv3) {
+		t.Fatal("V3 was accepted as evidence even though c1's delivery does not name it")
+	}
+	if _, err := EvidenceForRotation(r, hv2, false, nil); !errors.Is(err, ledger.ErrNoEvidence) {
+		t.Fatalf("EvidenceForRotation(V2) = %v, want ledger.ErrNoEvidence (applied must not advance)", err)
+	}
+	if _, err := EvidenceForRotation(r, hv3, false, nil); !errors.Is(err, ledger.ErrNoEvidence) {
+		t.Fatalf("EvidenceForRotation(V3) = %v, want ledger.ErrNoEvidence (applied must not advance)", err)
+	}
+
+	// (b) c2's own verification status -- the actually-running candidate -- is unaffected by
+	// c1's evidence naming a different version: it is still a healthy, verified workload, not
+	// retired and not marked invalid.
+	if !recordCandidateVerified(r) {
+		t.Fatal("c2, the actually-running candidate with its OWN matching delivery evidence, must still verify")
+	}
+}
+
 // ============================================================ windows
 
 // T-W1: crash between Observe and the journal start.

@@ -125,6 +125,15 @@ type ReloaderController struct {
 	gateScanPending atomic.Bool
 	gateDiag        sync.Map
 
+	// gateScanCursor is the ID of the last running gated container examined by a bounded
+	// ReconcileGatedContainers pass. A fresh pass resumes just after it (wrapping around
+	// the sorted ID space), so repeated bounded passes eventually cover every container
+	// instead of always re-scanning the same lexicographic prefix. Guarded by
+	// gateScanCursorMu (ReconcileGatedContainers can run from both the coalescing worker
+	// and a direct caller/test).
+	gateScanCursor   string
+	gateScanCursorMu sync.Mutex
+
 	// deliveryOps, when set (tests only), replaces the real managed-delivery
 	// operations (hardened exec injector, probe, inspect).
 	deliveryOps *rotation.DeliveryOps

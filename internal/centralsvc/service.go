@@ -767,6 +767,9 @@ func (s *Service) RenameProject(ctx context.Context, projectSlug, newSlug, newNa
 		})
 		return err
 	}
+	if err := validateSlug("project slug", newSlug); err != nil {
+		return fail(err)
+	}
 	p, err := s.store.GetProjectBySlug(ctx, projectSlug)
 	if err != nil {
 		return fail(err)
@@ -809,6 +812,9 @@ func (s *Service) RenameEnvironment(ctx context.Context, projectSlug, envSlug, n
 			ProjectSlug: projectSlug, EnvironmentSlug: envSlug,
 		})
 		return err
+	}
+	if err := validateSlug("environment slug", newSlug); err != nil {
+		return fail(err)
 	}
 	sc, err := s.resolve(ctx, projectSlug, envSlug)
 	if err != nil {

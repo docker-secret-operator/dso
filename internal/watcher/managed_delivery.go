@@ -332,12 +332,24 @@ type GateReconcileReport struct {
 // container that was waiting at its gate when the agent (re)started, or whose restart
 // found no cached value, was only served by a FUTURE start event.
 //
-// One pass lists the labelled containers (single Docker call, at most maxGateScan
-// examined), re-delivers to each RUNNING one through redeliverGated (service lock +
-// OperationGuard + cache only: it never fetches from a provider), and only DIAGNOSES an
-// exited one: a gate that timed out (exit 75) on a container without a restart policy is
-// NOT restarted (an operator's stop must stand) but is reported once with the recovery
-// command. Stopped containers are never started.
+// One pass lists the labelled containers (single Docker call), re-delivers to each
+// RUNNING one through redeliverGated (service lock + OperationGuard + cache only: it
+// never fetches from a provider), and only DIAGNOSES an exited one: a gate that timed out
+// (exit 75) on a container without a restart policy is NOT restarted (an operator's stop
+// must stand) but is reported once with the recovery command. Stopped containers are
+// never started.
+//
+// The per-container work (redeliverGated: inspect, service lock, OperationGuard) stays
+// bounded at maxGateScan per pass -- running containers always get that budget first, so
+// exited rotation artifacts/shadows (included in the listing via All:true, needed for the
+// exit-75 diagnostic) can never crowd out a running container waiting at its gate.
+// Fairness across repeated passes: the scan resumes just after the container ID it last
+// examined (gateScanCursor, wrapping around the sorted ID space) instead of always
+// re-scanning the same lexicographic prefix, so with more than maxGateScan running gated
+// containers every one of them is eventually examined, not only the first maxGateScan
+// forever. gateWaiting bookkeeping does not depend on a container having been examined
+// THIS pass -- only on whether it is still running at all, which the single listing call
+// already answers for every container -- so it runs every pass, truncated or not.
 func (r *ReloaderController) ReconcileGatedContainers(ctx context.Context) GateReconcileReport {
 	var rep GateReconcileReport
 	if r.cli == nil {
@@ -351,53 +363,114 @@ func (r *ReloaderController) ReconcileGatedContainers(ctx context.Context) GateR
 		return rep
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+
+	// The full running set, from the single listing call above (no per-container work):
+	// used below for gateWaiting bookkeeping so it stays correct regardless of how much of
+	// the bounded scan below actually ran this pass.
 	running := map[string]bool{}
-	for i, c := range list {
-		if ctx.Err() != nil {
-			break
-		}
-		if i >= maxGateScan {
-			rep.Truncated = true
-			r.Logger.Warn("Gated-container reconciliation examined the first containers only", zap.Int("limit", maxGateScan))
-			break
-		}
-		name := ""
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-		rep.Examined++
+	var runningList, exitedList []container.Summary
+	for _, c := range list {
 		switch {
 		case c.State == "running":
 			running[c.ID] = true
-			switch r.redeliverGated(ctx, c.ID, name, c.Labels) {
-			case gateDelivered:
-				rep.Delivered++
-			case gateReleased:
-				rep.Released++
-			case gateWaiting:
-				rep.Waiting++
-			case gateBlocked:
-				rep.Blocked++
-			case gateFailed:
-				rep.Failed++
-			default:
-				rep.Skipped++
-			}
+			runningList = append(runningList, c)
 		case strings.HasPrefix(c.Status, "Exited (75)"):
-			if r.diagnoseTimedOutGate(ctx, c.ID, name, c.Labels) {
-				rep.TimedOut++
-			}
+			exitedList = append(exitedList, c)
 		}
 	}
-	if !rep.Truncated {
-		r.gateWaiting.Range(func(k, _ interface{}) bool {
-			if !running[k.(string)] {
-				r.gateWaiting.Delete(k)
-			}
-			return true
-		})
+
+	runningList = r.rotateFromGateScanCursor(runningList)
+	budget := maxGateScan
+	for _, c := range runningList {
+		if ctx.Err() != nil {
+			break
+		}
+		if budget <= 0 {
+			rep.Truncated = true
+			r.Logger.Warn("Gated-container reconciliation examined a bounded number of running containers this pass; the rest are picked up by a later pass",
+				zap.Int("limit", maxGateScan))
+			break
+		}
+		budget--
+		rep.Examined++
+		r.setGateScanCursor(c.ID)
+		switch r.redeliverGated(ctx, c.ID, containerName(c), c.Labels) {
+		case gateDelivered:
+			rep.Delivered++
+		case gateReleased:
+			rep.Released++
+		case gateWaiting:
+			rep.Waiting++
+		case gateBlocked:
+			rep.Blocked++
+		case gateFailed:
+			rep.Failed++
+		default:
+			rep.Skipped++
+		}
 	}
+
+	// Exited (gate-timed-out) artifacts are diagnostic only (never restarted here) and get
+	// their own, separate budget rather than sharing the running-container scan above.
+	exBudget := maxGateScan
+	for _, c := range exitedList {
+		if ctx.Err() != nil || exBudget <= 0 {
+			break
+		}
+		exBudget--
+		rep.Examined++
+		if r.diagnoseTimedOutGate(ctx, c.ID, containerName(c), c.Labels) {
+			rep.TimedOut++
+		}
+	}
+
+	r.gateWaiting.Range(func(k, _ interface{}) bool {
+		if !running[k.(string)] {
+			r.gateWaiting.Delete(k)
+		}
+		return true
+	})
 	return rep
+}
+
+// containerName extracts the display name ReconcileGatedContainers and its helpers use
+// from a listed container summary.
+func containerName(c container.Summary) string {
+	if len(c.Names) > 0 {
+		return strings.TrimPrefix(c.Names[0], "/")
+	}
+	return ""
+}
+
+// rotateFromGateScanCursor reorders list (already sorted by ID) to start just after
+// gateScanCursor, wrapping around, so the next bounded scan resumes where the previous
+// one left off instead of always starting from the same ID. An empty or stale cursor
+// (nothing after it, or nothing before it) leaves list unchanged, which naturally restarts
+// from the beginning once a cursor has worked all the way around.
+func (r *ReloaderController) rotateFromGateScanCursor(list []container.Summary) []container.Summary {
+	if len(list) == 0 {
+		return list
+	}
+	r.gateScanCursorMu.Lock()
+	cursor := r.gateScanCursor
+	r.gateScanCursorMu.Unlock()
+	if cursor == "" {
+		return list
+	}
+	idx := sort.Search(len(list), func(i int) bool { return list[i].ID > cursor })
+	if idx == 0 {
+		return list
+	}
+	rotated := make([]container.Summary, 0, len(list))
+	rotated = append(rotated, list[idx:]...)
+	rotated = append(rotated, list[:idx]...)
+	return rotated
+}
+
+func (r *ReloaderController) setGateScanCursor(id string) {
+	r.gateScanCursorMu.Lock()
+	r.gateScanCursor = id
+	r.gateScanCursorMu.Unlock()
 }
 
 // diagnoseTimedOutGate reports (once per exit) a gated container that exited 75, the gate's
