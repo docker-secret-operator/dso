@@ -1,10 +1,10 @@
 # Audit-roadmap M2 "Control plane": scope, held items and pending decisions (S0)
 
-Status: **working scope note. NOT an ADR. NOT ratified.** Written 2026-11-16 on
-`feature/m2-development`. It restates `docs/audit/54-M2-SCOPE-INVENTORY.md` (the
-evidence base; section numbers below refer to it) and records what is held for
-the owner. It changes no behaviour and authorizes no implementation beyond the
-test-only slice S3.
+Status: **working scope note. NOT an ADR.** Written 2026-11-16 on
+`feature/m2-development`; revised the same day to record the owner's resolution of D1-D6
+(sections 6, 9, 10). Sections 1-5 and 7-8 are retained as the historical evidence base and restate
+`docs/audit/54-M2-SCOPE-INVENTORY.md` (section numbers below refer to it). Where they say
+"held" or "pending", sections 6, 9 and 10 supersede them. This note changes no behaviour.
 
 ## 1. Which "M2" this is
 
@@ -83,25 +83,21 @@ real-process crash qualification (`47:127-131`) and does not touch any API.
 multi-tenancy and any remote or HTTP vault API are NOT started, and this document
 does not unfreeze them.** No code for them exists on this branch.
 
-## 6. Items HELD pending owner decisions
+## 6. Owner decisions D1-D6: RESOLVED
 
-Recommended answers are from inventory section 13; they are recommendations only.
+All six questions are resolved by the owner. Section 8 below is the original slice
+proposal and is superseded by sections 9 and 10 where they differ.
 
-| # | Question | Recommended answer | Status |
-|---|---|---|---|
-| D1 | Does "G024 groundwork" mean the dead-code decision (G024, `10:30`) or the vault track (G027, `10:33`)? | Treat G024 literally (decide `internal/polling`, `pkg/backend`; ledger is already wired) and scope vault work as "G027-lite" by D2-D4. | OWNER DECISION PENDING |
-| D2 | May `dso central` be extended (rollback, purge, project/env delete) despite ADR-002? | Yes, via a narrow new ADR for a local-only, no-identity extension; central-store identity stays frozen. | OWNER DECISION PENDING |
-| D3 | Is an HTTP vault API permitted at all (ADR-010 "remote API for dso central")? | Not now. If wanted: loopback only, existing single-operator auth, with an ADR amending ADR-010. Otherwise defer the "via API" clause to roadmap M3. | OWNER DECISION PENDING |
-| D4 | Is "authn/z" a single authenticated operator or RBAC? | Single role; RBAC stays deferred with G009/M3. | OWNER DECISION PENDING |
-| D5 | Does M2 include agent consumption of central secrets or web UI screens? | No (not in the roadmap row; design M3/M4). | OWNER DECISION PENDING |
-| D6 | Root-key custody for a deployed central store (key/DB co-location, doctor check)? | Add a doctor check and documented separation; no KMS (roadmap M5). | OWNER DECISION PENDING |
+| # | Decision | Status |
+|---|---|---|
+| D1 | G024 is treated literally as the dead-code/architecture-disposition item (see `docs/design/g024-disposition.md`). The limited local encrypted-vault work is a separate "G027-lite" track. | RESOLVED |
+| D2 | Extending `dso central` locally (rollback, rename, safe delete, CLI completion, custody diagnostics) is approved via ADR-011 (`docs/product-evolution/architecture-decisions.md`). ADR-011 is ACCEPTED and amends ADR-002; it states ADR-010's exclusion of a remote API for `dso central` "remains unchanged and unamended", so ADR-010 is not invalidated. Permanent purge is excluded by ADR-011. | RESOLVED |
+| D3 | An HTTP vault API, including a loopback-only one, is deferred to a future, separately authorized milestone. Nothing is built or approved now. | RESOLVED (deferred) |
+| D4 | Single operator; the OS file-permission boundary is the access control. The central CLI is not protected by the agent REST authentication. The audit chain stays unkeyed (ratified R-1, R-3) and is not tamper-proof. | RESOLVED |
+| D5 | Agent consumption of central secrets, Web UI vault screens, `dso run` and service tokens are deferred. | RESOLVED (deferred) |
+| D6 | Doctor checks plus documented separation of root key and database. Separation reduces accidental co-disclosure and supports separate backup custody; it does NOT protect against full host compromise. No KMS/HSM. | RESOLVED |
 
-Held, therefore not started: rollback / restore-version, purge, project/env
-rename or delete, central CLI completion (`--json`, exit codes), any HTTP vault
-route (including backup endpoints), keyed audit chain, key-holding service,
-web UI, `dso run`, service tokens.
-
-## 7. Narrow ADR needed for local `dso central` extensions
+## 7. Narrow ADR needed for local `dso central` extensions (historical; now ADR-011)
 
 ADR-002 says no further central milestones without a new ADR. Rollback, purge and
 project/env delete extend the store and CLI even though they are local and
@@ -109,10 +105,11 @@ identity-free, so the text requires an ADR before slice S1 begins. The ADR (name
 unassigned; the inventory suggested ADR-011) should state: local-only, no network,
 no identity, audited via the existing chain inside `Store.WithTx`; a purge needs
 its own migration because migration 0001 forbids version deletion by trigger; and
-that central-store M2 identity work stays frozen. This note does not draft or
-ratify that ADR.
+that central-store M2 identity work stays frozen. That ADR was subsequently written and ratified as ADR-011 (ACCEPTED). It does
+not authorize purge, so the purge-migration remark above remains a constraint;
+purge is design-only in `docs/design/central-purge-design.md` (status: proposed).
 
-## 8. Proposed slice order (from the inventory; not authorized except S3)
+## 8. Original slice order (historical; superseded by sections 9-10)
 
 1. **S3** tests (this change): no owner decision needed, test-only.
 2. **S0** this note.
@@ -127,3 +124,51 @@ ratify that ADR.
 Open follow-ups noticed while qualifying (not slices): fix the F-row ambiguity
 between G024 and G027 in `docs/audit/02`; hosted CI and crash qualification of
 backup/restore remain uncovered.
+
+## 9. What is implemented (verified against git log 71c15ad..f4b0453)
+
+| Item | Commit(s) | State |
+|---|---|---|
+| ADR-011 ratified | `71c15ad` | accepted |
+| Store: RenameProject/DeleteProject, RenameEnvironment/DeleteEnvironment | `d190a39`, `3234a10` | implemented |
+| Service: immutable secret-version rollback (new version; history untouched) | `ce1b32c` | implemented |
+| Service: project/environment rename and non-cascading delete | `e838d8c` | implemented |
+| CLI: `central secret rollback`, historical-version retrieval tests | `3a5a887` | implemented |
+| CLI: `central project|environment rename|delete`; `--json` across central lifecycle commands; exit-code contract | `668daf4`, `c61a836` | implemented |
+| Doctor: root-key custody diagnostics DSO-DOCTOR-026..031 (permissions, symlinks, key/DB co-location WARN), rendered in default view | `e9080b6`, `c1ac6c8` | implemented; opt-in: skipped unless `--central-db`/`--central-key-file`/`--central-key-provider` are given |
+| Tests: at-rest scan and backup/restore round trip extended to rollback/rename/delete | `f4b0453` (and S3 files in section 4) | implemented |
+
+Not implemented: permanent purge, any HTTP vault route, network authn/z, RBAC, agent consumption, Web UI vault
+screens, `dso run`, service tokens, key rotation commands, keyed audit chain.
+
+## 10. Revised M2 acceptance and gate statement
+
+| Criterion | Class | State |
+|---|---|---|
+| Encrypted persistence (per-project DEK wrapped by a root key held outside the DB) | required | implemented |
+| Projects and environments (create, list, rename, non-cascading delete) | required | implemented |
+| Secret CRUD with immutable versions | required | implemented |
+| Rollback (as a new version) | required | implemented |
+| Local CLI (`dso central`, `--json`, exit codes) | required | implemented |
+| OS permission boundary (0400/0600/0700, securefs checks) as the access control | required | implemented, no application-level authn |
+| Backup/restore qualification | required | implemented at store, service and CLI test level; hosted CI and real-process crash qualification not covered |
+| No plaintext secret values in INSPECTED persistence artifacts | required | implemented, see wording below |
+| Root-key custody diagnostics | required | implemented (doctor, opt-in flags) |
+| Audit correctness (chain verifies across new event types) | required | implemented, chain unkeyed |
+| Vault HTTP API | deferred | future roadmap item, own authorization |
+| Network authn/z | deferred | future roadmap item |
+| Remote disclosure of values | deferred | future roadmap item |
+| RBAC | deferred | out of scope (ADR-010) |
+| Permanent purge | deferred | design only: `docs/design/central-purge-design.md` |
+
+**The ORIGINAL audit-roadmap M2 gate ("Vault API with authn/z, backup/restore tested, no plaintext at rest",
+`docs/audit/11-DEVELOPMENT-ROADMAP.md:9`) is NOT claimed as passed.** Its "Vault API" and "authn/z" clauses are
+not implemented. The API is tracked as a future roadmap item that requires its own authorization (and an ADR
+amending ADR-010). The revised table above is the gate this milestone is measured against; passing it is not
+equivalent to passing the original gate.
+
+Security claim wording (use exactly this scope, not a general claim): tested persistence paths show no plaintext
+secret values and no unwrapped key material in the inspected artifacts (database, WAL/SHM, backups, safety and
+displaced copies, locks, and captured service logger output). Names, slugs and actors are cleartext metadata.
+Nothing here claims protection against a compromised host, a process reading memory, a holder of both the
+database and the root key, or tampering with an unkeyed audit chain.

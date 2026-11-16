@@ -91,6 +91,13 @@ multi-tenancy, or any change to the central-store M2 identity/audit
 architecture. ADR-010's exclusion of a remote API for `dso central`
 remains unchanged and unamended by this decision.
 
+Clarification (2026-11-16; no decision above is changed): permanent purge is
+deferred (design only, `docs/design/central-purge-design.md`, status proposed)
+and the HTTP/network vault API is deferred to a future, separately authorized
+milestone. The audit-roadmap M2 gate is therefore revised to local, no-network
+acceptance criteria (`docs/design/m2-control-plane-scope.md` section 10); the
+original M2 gate ("Vault API with authn/z, ...") is not claimed as passed.
+
 ---
 
 ## Owner decision table
