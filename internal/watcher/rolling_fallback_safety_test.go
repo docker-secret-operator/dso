@@ -397,7 +397,9 @@ func (s *simpleFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && strings.Contains(p, "/containers/orig-1/json"):
-		b, _ := json.Marshal(minimalInspect("myapp", "orig-1"))
+		oi := minimalInspect("myapp", "orig-1")
+		withTmpfsAndCmd(&oi, "/run/secrets") // N19: gated delivery needs a tmpfs and a command
+		b, _ := json.Marshal(oi)
 		writeInspect(w, b)
 	case r.Method == http.MethodGet && strings.Contains(p, "/containers/new-1/json"):
 		in := minimalInspect("myapp", "new-1")
@@ -470,13 +472,21 @@ func TestExecuteSimpleRestart_UnhealthyReplacement_RollsBackKeepingOriginal(t *t
 
 // A file-mode secret probe failure after a healthy start also rolls back.
 func TestExecuteSimpleRestart_ExecProbeFailure_RollsBack(t *testing.T) {
-	s := &simpleFake{health: "healthy", execErr: true}
-	rc := newMockController(t, s)
+	s := &simpleFake{health: "healthy"}
+	gate := &gateRec{probeErr: errSimulated}
+	rc := newMockController(t, gate.wrap(s))
+	rc.deliveryOps = gate.ops()
 	files := []rotation.FileSecretSpec{{Path: "/run/secrets/k", Data: map[string]string{"k": "test-placeholder"}}}
 
 	err := rc.executeSimpleRestart(context.Background(), "orig-1", nil, files, nil, time.Second, "svc")
-	if err == nil || !strings.Contains(err.Error(), "file-mode secret probe failed") {
+	// N19: the probe now also runs BEFORE the gate is released (delivery verification),
+	// so a failing probe is caught earlier than the post-readiness probe this test
+	// used to reach; the rollback assertions below are unchanged.
+	if err == nil || !strings.Contains(err.Error(), "probe") {
 		t.Fatalf("err = %v, want exec probe failure", err)
+	}
+	if gate.has("release:/run/secrets") {
+		t.Fatalf("gate released although the probe failed: %v", gate.eventList())
 	}
 	if n := s.log.n(http.MethodDelete, "/containers/orig-1"); n != 0 {
 		t.Fatalf("original deleted after a failed probe: %v", s.log.r)

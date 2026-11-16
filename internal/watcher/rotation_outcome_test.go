@@ -228,6 +228,7 @@ func TestTriggerReload_RestartFileInjectionFailure_IsFailure(t *testing.T) {
 	)
 	inspect := minimalInspect("app", origID)
 	inspect.Config.Labels = map[string]string{}
+	withTmpfsAndCmd(&inspect, "/run/secrets/dso")
 	inspectJSON, _ := json.Marshal(inspect)
 	createJSON, _ := json.Marshal(map[string]string{"Id": newID})
 
@@ -246,8 +247,6 @@ func TestTriggerReload_RestartFileInjectionFailure_IsFailure(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write(createJSON)
-		case strings.Contains(p, "/containers/"+newID+"/archive"):
-			http.Error(w, `{"message":"simulated copy failure"}`, http.StatusInternalServerError)
 		case strings.HasSuffix(p, "/start"):
 			mu.Lock()
 			startedID = append(startedID, p)
@@ -263,7 +262,11 @@ func TestTriggerReload_RestartFileInjectionFailure_IsFailure(t *testing.T) {
 		}
 	})
 
-	r := newMockController(t, handler)
+	// N19: the delivery fails inside the (gated) replacement. The archive endpoint is
+	// not used any more, so the failure is injected at the exec-injector seam.
+	gate := &gateRec{injectErr: errSimulated}
+	r := newMockController(t, gate.wrap(handler))
+	r.deliveryOps = gate.ops()
 	r.Cache = &fakeSecretCache{data: map[string]map[string]string{
 		"vault:db": {"value": "synthetic-placeholder"},
 	}}
@@ -279,16 +282,16 @@ func TestTriggerReload_RestartFileInjectionFailure_IsFailure(t *testing.T) {
 	r.Targets.Store(origID, &TargetContainer{ID: origID, Strategy: "restart", Secrets: []string{"db"}})
 
 	err := waitOutcome(t, r, "db")
-	if err == nil || !strings.Contains(err.Error(), "file secret injection") {
-		t.Fatalf("expected a file-injection failure outcome, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "managed file delivery") {
+		t.Fatalf("expected a file-delivery failure outcome, got %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, p := range startedID {
-		if strings.Contains(p, "/containers/"+newID+"/") {
-			t.Fatalf("replacement without its secret file must never be started (calls: %v)", startedID)
-		}
+	// N19: the replacement is started GATED (its application has not run); what must
+	// never happen is the gate being released without the secret.
+	if gate.has("release:/run/secrets/dso") {
+		t.Fatalf("the startup gate was released although delivery failed (events: %v)", gate.eventList())
 	}
 	discarded := false
 	for _, p := range removed {

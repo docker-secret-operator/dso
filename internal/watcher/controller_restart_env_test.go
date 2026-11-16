@@ -39,7 +39,7 @@ func (f *fakeSecretCache) Get(key string) (map[string]string, bool) {
 //     env-mode) is stripped once that secret is reconfigured as file-mode
 //   - the unrelated env var FOO=bar survives untouched
 //   - a *currently* env-mode secret still gets its fresh rotated value
-//   - the file-mode secret is delivered via StreamSecretToContainer, not env
+//   - the file-mode secret is delivered by the managed gated exec delivery (N19), not env
 func TestTriggerReload_PrimaryRestart_StripsStaleManagedSecretEnv(t *testing.T) {
 	const (
 		origID   = "container-1"
@@ -62,6 +62,8 @@ func TestTriggerReload_PrimaryRestart_StripsStaleManagedSecretEnv(t *testing.T) 
 		"CURRENT_SECRET=old-current-value",
 	}
 	inspect.Config.Labels = map[string]string{}
+	// N19: file delivery needs a declared tmpfs at the destination and a command to gate.
+	withTmpfsAndCmd(&inspect, "/run/secrets/dso")
 	inspectJSON, _ := json.Marshal(inspect)
 
 	newInspectHealthy := minimalInspect(origName, newID)
@@ -137,7 +139,9 @@ func TestTriggerReload_PrimaryRestart_StripsStaleManagedSecretEnv(t *testing.T) 
 		}
 	})
 
-	rc := newMockController(t, handler)
+	gate := &gateRec{}
+	rc := newMockController(t, gate.wrap(handler))
+	rc.deliveryOps = gate.ops()
 	rc.Cache = &fakeSecretCache{data: map[string]map[string]string{
 		"vault:current_secret": {"value": freshVal},
 		"vault:stale_secret":   {"value": "file-mode-secret-value"},

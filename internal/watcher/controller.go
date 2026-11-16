@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +104,20 @@ type ReloaderController struct {
 	// FaultHook is a TEST-ONLY hook called at named transition points of the signal
 	// and restart strategies; tests panic from it to model the process dying there.
 	FaultHook func(point string)
+
+	// DeliveredVersion, when set, returns the keyed identity (hmac:<key id>:<mac>) of
+	// the exact values a file delivery will hand over, or "" when no ledger key is
+	// available. The agent wires it from the applied-version ledger; it never returns
+	// plaintext or an unkeyed hash.
+	DeliveredVersion func(provider, secret string, data map[string]string) string
+
+	// gateOwned holds candidate IDs whose delivery a rotation is running (see
+	// markGateOwned).
+	gateOwned sync.Map
+
+	// deliveryOps, when set (tests only), replaces the real managed-delivery
+	// operations (hardened exec injector, probe, inspect).
+	deliveryOps *rotation.DeliveryOps
 
 	// signalRunHook, when set (tests only), replaces runSignalRotation.
 	signalRunHook func(ctx context.Context, target *TargetContainer, serviceName, secretName string) error
@@ -619,6 +632,11 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 					zap.String("strategy", strategy))
 			}
 		}
+		// N19: a container carrying the startup gate that is not a rotation candidate in
+		// flight was restarted by the daemon: deliver again and release its gate.
+		if msg.Actor.Attributes[rotation.GateLabel] != "" {
+			r.redeliverGated(ctx, msg.Actor.ID, strings.TrimPrefix(msg.Actor.Attributes["name"], "/"), msg.Actor.Attributes)
+		}
 		// Register with proxy for any container that has DSO-managed host ports.
 		//
 		// A rotation replacement is deliberately excluded here: it is started
@@ -1097,9 +1115,8 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			// container's Config.Env (PrepareShadowConfig/executeSimpleRestart),
 			// which is visible via `docker inspect`. File-mode secrets
 			// (Inject.Type == "file") are collected separately into
-			// rollingFileSecrets and delivered via the existing
-			// StreamSecretToContainer tar-copy mechanism instead, matching how
-			// the compose-recreation path below already handles them.
+			// rollingFileSecrets and delivered by the gated exec delivery (N19)
+			// instead; the archive endpoint is no longer used.
 			rollingEnvs := make(map[string]string)
 			var rollingFileSecrets []rotation.FileSecretSpec
 			// SEC-P0: every env name this container's config ever maps a secret
@@ -1134,24 +1151,15 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					for _, envName := range sec.Mappings {
 						managedEnvNames[envName] = true
 					}
+					// N19/N22: file-mode secrets are resolved (and fail closed on a
+					// miss) by resolveFileSpecs below; only env-mode values are
+					// merged here.
+					if r.effectiveInject(sec).Type == "file" {
+						continue
+					}
 					cacheKey := fmt.Sprintf("%s:%s", pName, sec.Name)
 					data, found := r.Cache.Get(cacheKey)
 					if !found {
-						continue
-					}
-
-					injectConfig := sec.Inject
-					if injectConfig.Type == "" {
-						injectConfig = r.Config.Defaults.Inject
-					}
-
-					if injectConfig.Type == "file" {
-						rollingFileSecrets = append(rollingFileSecrets, rotation.FileSecretSpec{
-							Path: injectConfig.Path,
-							Data: data,
-							UID:  injectConfig.UID,
-							GID:  injectConfig.GID,
-						})
 						continue
 					}
 
@@ -1165,6 +1173,19 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				}
 			}
 
+			// N22: a file secret the container needs but that has no usable value
+			// aborts the rotation BEFORE any candidate exists (previously the file
+			// secret was silently skipped and the candidate started without it).
+			var ferr error
+			rollingFileSecrets, ferr = r.resolveFileSpecs(target)
+			if ferr != nil {
+				r.Logger.Error("Rolling rotation rejected before any change", zap.String("id", util.ShortID(target.ID)), zap.Error(ferr))
+				audit.Log(ctx, "rotate", "system", r.resolveSecretProvider(secretName), secretName, target.ID, "failed")
+				recordAsyncErr(ferr)
+				releaseLock()
+				return true
+			}
+
 			healthTimeout := 60 * time.Second
 			if r.Config != nil && r.Config.Agent.Rotation.HealthCheckTimeout != "" {
 				if d, err := time.ParseDuration(r.Config.Agent.Rotation.HealthCheckTimeout); err == nil {
@@ -1173,6 +1194,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			}
 
 			rs := rotation.NewRollingStrategyWithLogger(r.cli, r.Logger)
+			rs.DeliveryOps = r.deliveryOps
 			if r.Journal != nil {
 				rs.Journal = r.Journal
 				rs.OwnerID = r.ownerID()
@@ -1201,6 +1223,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 			rs.OnShadowCreated = func(newID string) {
 				rollingShadowID = newID
 				r.markProxyPending(newID)
+				r.markGateOwned(newID)
 			}
 			rs.OnReady = func(hctx context.Context, newID string) error {
 				// Nothing to hand off when this container's ports aren't
@@ -1300,6 +1323,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				defer func() {
 					if rollingShadowID != "" {
 						r.clearProxyPending(rollingShadowID)
+						r.clearGateOwned(rollingShadowID)
 					}
 				}()
 
@@ -1370,6 +1394,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					// serving the previous secret. Only confirmed health-class
 					// failures skip; every other failure (inspect, create,
 					// start, Docker API, context) still takes the fallback.
+					// N19: a deterministic delivery refusal (no tmpfs at the
+					// destination, unsafe path, unsupported image/user) would be
+					// refused identically by the fallback restart; nothing was
+					// changed and the original keeps serving.
+					if rotation.IsDeliveryRefusal(err) {
+						r.Logger.Error("Rolling rotation refused by managed file delivery checks; fallback restart skipped, original container kept in service",
+							zap.String("id", util.ShortID(tc.ID)), zap.Error(err))
+						recordAsyncErr(fmt.Errorf("rolling rotation refused (fail closed, no fallback): %w", err))
+						return
+					}
 					if errors.Is(err, rotation.ErrUnhealthy) {
 						r.Logger.Error("Rolling rotation rejected by health verification; fallback restart skipped, original container kept in service",
 							zap.String("id", util.ShortID(tc.ID)),
@@ -1423,6 +1457,18 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				if as, ok := r.Server.(interface{ Emit(string) }); ok {
 					as.Emit("\033[1;36m[DSO EXECUTION]\033[0m\nStrategy: restart\nStopping container → removing → recreating with new secrets → starting")
 				}
+			}
+
+			// N22: resolve every file secret the container needs BEFORE any change.
+			// A cache miss (or a missing inject.path) used to be skipped silently, so
+			// the replacement was started without its file secret.
+			restartFileSpecs, rferr := r.resolveFileSpecs(target)
+			if rferr != nil {
+				r.Logger.Error("Restart rotation rejected before any change", zap.String("id", util.ShortID(target.ID)), zap.Error(rferr))
+				audit.Log(ctx, "rotate", "system", r.resolveSecretProvider(secretName), secretName, target.ID, "failed")
+				recordAsyncErr(rferr)
+				releaseLock()
+				return true
 			}
 
 			// CQ-C4: target, releaseLock and serviceName are passed as explicit
@@ -1479,8 +1525,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				//
 				// SEC: file-mode secrets (Inject.Type == "file") are
 				// deliberately excluded here -- they're delivered via
-				// StreamSecretToContainer in step 5.1 below (PRE-START SECRET
-				// INJECTION). Including them here too would additionally
+				// the gated exec delivery in step 6.1 below (N19). Including them here too would additionally
 				// leak them as plaintext into Config.Env / `docker inspect`.
 				//
 				// SEC-P0-2: managedEnvNames tracks every env name this
@@ -1546,6 +1591,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 
+				// N19: refuse, before ANY change (no journal record, no rename), a
+				// container the managed delivery cannot serve safely.
+				if perr := r.armRestartCandidate(cloneContainerConfig(inspect.Config), inspect.HostConfig, restartFileSpecs); perr != nil {
+					r.Logger.Error("Restart rotation refused by managed file delivery checks; nothing was changed", zap.Error(perr))
+					finish(perr)
+					return
+				}
+
 				// M0-04: restart (full recreation) journal. It may involve downtime BY
 				// DESIGN (not zero downtime unless the DSO proxy owns the ports) and
 				// writes intents before the steps that rename, stop or remove a
@@ -1607,6 +1660,15 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					}
 				}
 
+				// N19: arm the startup gate on the replacement (original ENTRYPOINT/CMD/
+				// user/workdir preserved). Same inputs as the preflight above.
+				if aerr := r.armRestartCandidate(config, inspect.HostConfig, restartFileSpecs); aerr != nil {
+					r.restoreOriginalName(ctx, target.ID, originalName)
+					r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "managed delivery checks failed; original name restored"})
+					finish(aerr)
+					return
+				}
+
 				// 5. Create new instance with ORIGINAL name (STOPPED)
 				networkingConfig := &network.NetworkingConfig{
 					// Strip the original's runtime network identity (MAC in
@@ -1636,7 +1698,7 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					return
 				}
 				r.fault("restart:after_create_before_ack")
-				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}})
+				r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}, Gated: len(restartFileSpecs) > 0})
 
 				// Keep the replacement out of the proxy until it passes the
 				// health check and exec probes below. Without this the "start"
@@ -1646,52 +1708,12 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				// registered" -- which would skip draining the old backend.
 				r.markProxyPending(created.ID)
 				defer r.clearProxyPending(created.ID)
+				r.markGateOwned(created.ID)
+				defer r.clearGateOwned(created.ID)
 
-				// 5.1 PRE-START SECRET INJECTION (TAR STREAMING)
-				for _, secretName := range target.Secrets {
-					var targetMapping *dsoConfig.SecretMapping
-					for _, sm := range r.Config.Secrets {
-						if sm.Name == secretName {
-							targetMapping = &sm
-							break
-						}
-					}
-
-					if targetMapping != nil {
-						injectConfig := targetMapping.Inject
-						if injectConfig.Type == "" {
-							injectConfig = r.Config.Defaults.Inject
-						}
-
-						if injectConfig.Type == "file" && injectConfig.Path != "" {
-							pName := targetMapping.Provider
-							if pName == "" {
-								if len(r.Config.Providers) == 1 {
-									for name := range r.Config.Providers {
-										pName = name
-										break
-									}
-								}
-							}
-
-							cacheKey := fmt.Sprintf("%s:%s", pName, secretName)
-							if data, found := r.Cache.Get(cacheKey); found {
-								if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, injectConfig.Path, data, injectConfig.UID, injectConfig.GID); err != nil {
-									// PE-33: starting the replacement without its
-									// file secret and reporting success would leave
-									// the service on a missing/stale secret. The
-									// original is still running (it is stopped only
-									// in step 6), so discard the replacement, restore
-									// the original's name and fail this target.
-									r.Logger.Error("Secret injection failed, rolling back", zap.String("secret", secretName), zap.Error(err))
-									r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
-									finish(fmt.Errorf("file secret injection for %s failed: %w", secretName, err))
-									return
-								}
-							}
-						}
-					}
-				}
+				// 5.1 (N19) file secrets are NOT written before start: the replacement
+				// carries the startup gate and receives them after start through the
+				// hardened exec injector (step 6.1), which releases the gate last.
 
 				// 6. Stop old and Start new
 				// When the DSO proxy owns the host port (dso.host_ports label present),
@@ -1733,6 +1755,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					return
 				}
 
+				// 6.1 (N19) verify identity + tmpfs, deliver every file, probe, record the
+				// evidence durably, then release the gate. On failure the replacement is
+				// stopped and moved out of the way and the original restored (N21).
+				if derr := r.deliverGatedRestart(ctx, js, created.ID, restartFileSpecs); derr != nil {
+					r.stopReplacement(ctx, created.ID, stopTimeout)
+					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
+					finish(derr)
+					return
+				}
+
 				// 7. Health Check & Finalize
 				healthTimeout := 60 * time.Second
 				if r.Config != nil && r.Config.Agent.Rotation.HealthCheckTimeout != "" {
@@ -1749,24 +1781,14 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					return
 				}
 
-				// 7.1 EXEC PROBE FOR SECRET EXISTENCE
-				for _, secretName := range target.Secrets {
-					var targetMapping *dsoConfig.SecretMapping
-					for _, sm := range r.Config.Secrets {
-						if sm.Name == secretName {
-							targetMapping = &sm
-							break
-						}
-					}
-					if targetMapping != nil && targetMapping.Inject.Type == "file" {
-						if err := rotation.ExecProbe(ctx, r.cli, created.ID, targetMapping.Inject.Path, 15*time.Second, 3); err != nil {
-							r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(err), zap.String("path", targetMapping.Inject.Path))
-							r.stopReplacement(ctx, created.ID, stopTimeout)
-							r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
-							finish(err)
-							return
-						}
-					}
+				// 7.1 EXEC PROBE FOR SECRET EXISTENCE (N22: every delivered file of every
+				// secret whose EFFECTIVE inject type is file, defaults included).
+				if perr := r.probeSpecs(ctx, created.ID, restartFileSpecs); perr != nil {
+					r.Logger.Error("Exec probe failed, rolling back with retries", zap.Error(perr))
+					r.stopReplacement(ctx, created.ID, stopTimeout)
+					r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName)
+					finish(perr)
+					return
 				}
 
 				// N21: the replacement has now been started, passed its health gate and
@@ -2293,7 +2315,7 @@ func cloneContainerConfig(src *container.Config) *container.Config {
 //
 // envOverrides must contain only env-mode secrets; fileSecrets carries any
 // file-mode secrets (Inject.Type == "file") that the container depends on,
-// streamed into its filesystem via StreamSecretToContainer instead of
+// delivered by the gated exec delivery (N19) instead of
 // Config.Env -- see the SEC comment on the rolling-branch env-building loop
 // this fallback is fed from.
 //
@@ -2315,6 +2337,11 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 
 	originalName := strings.TrimPrefix(inspect.Name, "/")
 	tempOldName := originalName + "_old_" + fmt.Sprintf("%d", time.Now().Unix())
+
+	// N19: refuse, before any change, a container managed delivery cannot serve safely.
+	if perr := r.armRestartCandidate(cloneContainerConfig(inspect.Config), inspect.HostConfig, fileSecrets); perr != nil {
+		return fmt.Errorf("executeSimpleRestart: %w", perr)
+	}
 
 	// Restart (full recreation) journal: it may involve downtime BY DESIGN (the
 	// original is stopped before the replacement is started) and is not zero downtime.
@@ -2368,6 +2395,13 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		}
 	}
 
+	// N19: arm the startup gate (original ENTRYPOINT/CMD/user/workdir preserved).
+	if aerr := r.armRestartCandidate(cfg, inspect.HostConfig, fileSecrets); aerr != nil {
+		r.restoreOriginalName(ctx, containerID, originalName)
+		r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, Detail: "managed delivery checks failed; original name restored"})
+		return fmt.Errorf("executeSimpleRestart: %w", aerr)
+	}
+
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: rotation.SanitizedEndpointsConfig(inspect.NetworkSettings.Networks),
 	}
@@ -2390,17 +2424,13 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 		return fmt.Errorf("executeSimpleRestart: container create failed: %w", err)
 	}
 	r.fault("restart:after_create_before_ack")
-	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}})
+	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{created.ID}, Gated: len(fileSecrets) > 0})
+	r.markGateOwned(created.ID)
+	defer r.clearGateOwned(created.ID)
 
-	// Stream file-mode secrets before starting, same ordering as the primary
-	// restart/rolling paths -- the app must never start without them present.
-	for _, fs := range fileSecrets {
-		if err := rotation.StreamSecretToContainer(ctx, r.cli, created.ID, fs.Path, fs.Data, fs.UID, fs.GID); err != nil {
-			r.discardReplacement(ctx, created.ID)
-			r.restoreOriginalName(ctx, containerID, originalName)
-			return fmt.Errorf("executeSimpleRestart: file secret injection failed: %w", err)
-		}
-	}
+	// N19: file-mode secrets are NOT written before start. The replacement carries the
+	// startup gate; they are delivered after start through the hardened exec injector,
+	// which releases the gate last (below). The app can never start without them.
 
 	stopTO := 10
 	// Stopping the original is where downtime begins: record the intent first. If it
@@ -2442,21 +2472,16 @@ func (r *ReloaderController) executeSimpleRestart(ctx context.Context, container
 	}
 	r.fault("restart:after_start_before_ack")
 	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrReplacementStarted, CandidateIDs: []string{created.ID}})
+	if derr := r.deliverGatedRestart(ctx, js, created.ID, fileSecrets); derr != nil {
+		return rollBack(fmt.Errorf("executeSimpleRestart: %w", derr))
+	}
 	if err := rotation.WaitHealthy(ctx, r.cli, created.ID, healthTimeout); err != nil {
 		r.Logger.Error("Fallback replacement unhealthy, rolling back to the original container", zap.Error(err))
 		return rollBack(fmt.Errorf("executeSimpleRestart: replacement failed health verification: %w", err))
 	}
-	for _, fs := range fileSecrets {
-		names := make([]string, 0, len(fs.Data))
-		for n := range fs.Data {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		if err := rotation.ExecProbeFiles(ctx, r.cli, created.ID, fs.Path, names, 15*time.Second, 3); err != nil {
-			r.Logger.Error("Fallback replacement exec probe failed, rolling back to the original container",
-				zap.String("path", fs.Path), zap.Error(err))
-			return rollBack(fmt.Errorf("executeSimpleRestart: file-mode secret probe failed for %s: %w", fs.Path, err))
-		}
+	if perr := r.probeSpecs(ctx, created.ID, fileSecrets); perr != nil {
+		r.Logger.Error("Fallback replacement exec probe failed, rolling back to the original container", zap.Error(perr))
+		return rollBack(fmt.Errorf("executeSimpleRestart: file-mode secret probe failed: %w", perr))
 	}
 
 	r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrCandidateReady, CandidateIDs: []string{created.ID}})
