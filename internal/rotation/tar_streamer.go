@@ -106,8 +106,3 @@ func buildSecretTar(targetPath string, data map[string]string, uid, gid int) ([]
 	}
 	return buf.Bytes(), nil
 }
-
-// InjectedSecretSync is a helper for syncing a single secret's data
-func InjectedSecretSync(ctx context.Context, cli *client.Client, containerID string, targetPath string, data map[string]string, uid, gid int) error {
-	return StreamSecretToContainer(ctx, cli, containerID, targetPath, data, uid, gid)
-}

@@ -26,7 +26,7 @@ external importability cannot be disproved, nothing under `pkg/` is deleted on i
 | `pkg/backend` (root) | retain-public-compat | package doc comment `pkg/backend/doc.go` |
 | `pkg/backend/env`, `pkg/backend/file` | retain-active | none |
 | Duplicate installer paths | retain-active; no duplicate exists | none (installer architecture not reopened) |
-| Duplicate injection paths | retain-active (`internal/injector`); legacy `StreamSecretToContainer` retained for diagnostics; `InjectedSecretSync` is an unreferenced wrapper, removal deferred | none in this change (see 2.5) |
+| Duplicate injection paths | retain-active (`internal/injector`); legacy `StreamSecretToContainer` retained for diagnostics; `InjectedSecretSync` is an unreferenced wrapper, removed in a follow-up commit (zero callers) | none in this change (see 2.5) |
 
 ### 2.1 internal/ledger: retain-active
 - Non-test importers: `internal/agent/ledger_wiring.go`, `ledger_bridge.go` (plus their tests and
