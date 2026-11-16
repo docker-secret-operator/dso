@@ -66,7 +66,7 @@ jobs:
       - name: Check coverage thresholds
         run: |
           COVERAGE=$(tail -n 1 coverage.txt | awk '{print $NF}' | sed 's/%//')
-          THRESHOLD=30
+          THRESHOLD=60 # M1: raised from 30; local -short total at 8e69783 was 74.6%, margin for the race/atomic CI run
 
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
             echo "❌ Code coverage ${COVERAGE}% is below minimum threshold of ${THRESHOLD}%"
@@ -159,7 +159,7 @@ jobs:
             "pkg/config"
           )
 
-          THRESHOLD=30
+          THRESHOLD=55 # M1: raised from 30; lowest critical package locally is internal/injector at 65.5%
           FAILED=0
 
           for package in "${CRITICAL_PACKAGES[@]}"; do
