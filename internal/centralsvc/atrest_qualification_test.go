@@ -93,6 +93,134 @@ func newS3Fixture(t *testing.T) *s3Fixture {
 	return &s3Fixture{env: e, root: filepath.Dir(filepath.Dir(e.dbPath))}
 }
 
+// ---- Task 9: rollback and rename fixtures --------------------------------------------------------------
+//
+// Distinct synthetic markers from s3ValueMarkers above (different prefixes:
+// "S3MARK-rollback-" / "S3MARK-rename-"), so a Task 9 scan can never pass or
+// fail because of an accidental substring collision with the base S3
+// fixture's own markers. Each sibling fixture builds on newS3Fixture (so the
+// base fixture's projects/secrets/markers are present too, for realism) and
+// adds its own scenario on top.
+
+const (
+	s3RollbackOld = "S3MARK-rollback-OLD-7f1b2e9c41aa"
+	s3RollbackNew = "S3MARK-rollback-NEW-4a6d8c2109bb"
+	s3RenameValue = "S3MARK-rename-value-b82f0ce5aa19"
+)
+
+func rollbackNeedles() []needle {
+	return []needle{{"rollback-old:" + s3RollbackOld, []byte(s3RollbackOld)}, {"rollback-new:" + s3RollbackNew, []byte(s3RollbackNew)}}
+}
+
+func renameNeedles() []needle {
+	return []needle{{"rename-value:" + s3RenameValue, []byte(s3RenameValue)}}
+}
+
+// s3RollbackFixture is an s3Fixture plus one secret (alpha/stage,
+// "rollback/target") that has been rolled back: version 1 carries
+// s3RollbackOld, version 2 carries s3RollbackNew, and RollbackSecret(toVersion:
+// 1) has already appended version 3 (also carrying s3RollbackOld).
+type s3RollbackFixture struct {
+	*s3Fixture
+	project, env, secret string
+	rolledBackFrom       int // the untouched source version (1)
+	newVersion           int // the version RollbackSecret appended (3)
+}
+
+func newS3RollbackFixture(t *testing.T) *s3RollbackFixture {
+	t.Helper()
+	f := newS3Fixture(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const project, env, secret = "alpha", "stage", "rollback/target"
+	must(f.svc.CreateSecret(ctx, project, env, secret, []byte(s3RollbackOld), s3Actor, "rb-initial"))
+	if v, err := f.svc.AddVersion(ctx, project, env, secret, []byte(s3RollbackNew), s3Actor, "rb-rotate"); err != nil || v != 2 {
+		t.Fatalf("v2=%d %v", v, err)
+	}
+	newV, err := f.svc.RollbackSecret(ctx, project, env, secret, 1, s3Actor, "rb-rollback")
+	must(err)
+	if newV != 3 {
+		t.Fatalf("expected rollback to append version 3, got %d", newV)
+	}
+	return &s3RollbackFixture{s3Fixture: f, project: project, env: env, secret: secret, rolledBackFrom: 1, newVersion: newV}
+}
+
+// s3RenameFixture is an s3Fixture plus one secret (beta/prod,
+// "rename/target", value s3RenameValue) created before the project and
+// environment were renamed: beta -> beta-renamed, prod -> prod-renamed.
+type s3RenameFixture struct {
+	*s3Fixture
+	oldProjectSlug, newProjectSlug string
+	oldEnvSlug, newEnvSlug         string
+	secret                         string
+}
+
+func newS3RenameFixture(t *testing.T) *s3RenameFixture {
+	t.Helper()
+	f := newS3Fixture(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const oldProject, newProject = "beta", "beta-renamed"
+	const oldEnv, newEnv = "prod", "prod-renamed"
+	const secret = "rename/target"
+	must(f.svc.CreateSecret(ctx, oldProject, oldEnv, secret, []byte(s3RenameValue), s3Actor, ""))
+	must(f.svc.RenameProject(ctx, oldProject, newProject, "Beta Renamed", s3Actor))
+	must(f.svc.RenameEnvironment(ctx, newProject, oldEnv, newEnv, "Prod Renamed", s3Actor))
+	return &s3RenameFixture{
+		s3Fixture: f, oldProjectSlug: oldProject, newProjectSlug: newProject,
+		oldEnvSlug: oldEnv, newEnvSlug: newEnv, secret: secret,
+	}
+}
+
+// rawVersionBytes is the raw ciphertext+nonce of one stored version, read
+// through a second connection that bypasses the service entirely -- used to
+// prove byte-for-byte that an operation did or did not re-seal a version.
+type rawVersionBytes struct{ ciphertext, nonce []byte }
+
+func fetchRawVersion(t *testing.T, dbPath, secretName string, version int) rawVersionBytes {
+	t.Helper()
+	db := rawOpen(t, dbPath)
+	var rv rawVersionBytes
+	err := db.QueryRow(`SELECT v.ciphertext, v.nonce FROM secret_versions v JOIN secrets s ON s.id = v.secret_id
+		WHERE s.name = ? AND v.version = ?`, secretName, version).Scan(&rv.ciphertext, &rv.nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rv
+}
+
+// modeState captures only the permission bits of every entry below root
+// (never content), for asserting that an operation changed no file or
+// directory mode even though it changed file content (e.g. appended a row).
+func modeState(t *testing.T, root string) map[string]fs.FileMode {
+	t.Helper()
+	m := map[string]fs.FileMode{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		m[rel] = fi.Mode().Perm()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
 // ---- scanning -----------------------------------------------------------------------------------------
 
 type needle struct {
@@ -1032,4 +1160,411 @@ func TestS3_FileModes_UmaskIndependent(t *testing.T) {
 			assertModes(t, f.root, "after restore over live DB (incl. safety/preserved copies)")
 		})
 	}
+}
+
+// ---- Task 9: at-rest and backup/restore qualification for the new lifecycle operations --------------------------
+//
+// Tasks 4/5 added RollbackSecret, RenameProject, RenameEnvironment,
+// DeleteProject and DeleteEnvironment. They are documented (service.go
+// comments) to reuse the existing sealed-write path (RollbackSecret: the same
+// tx.AddVersion SealFunc AddVersion uses) and to never touch ciphertext at all
+// (rename/delete are slug/row-presence changes keyed by id, never by AAD).
+// These tests hold the new operations to exactly the same "no plaintext at
+// rest" and "backup/restore round-trips" guarantees as every other mutator,
+// reusing newS3Fixture/scanTree/takeSnapshot/assertModes rather than
+// reimplementing any of that machinery.
+
+// TestAtRest_RollbackLeavesNoPlaintextMarker scans the live (uncheckpointed),
+// backed-up, and checkpointed (closed) data directory for both the
+// rolled-back-from value's marker (s3RollbackOld) and the value it was rolled
+// back away from being latest (s3RollbackNew) in any form other than
+// ciphertext.
+func TestAtRest_RollbackLeavesNoPlaintextMarker(t *testing.T) {
+	f := newS3RollbackFixture(t)
+	needles := append(valueNeedles(), keyNeedles(t, f.s3Fixture)...)
+	needles = append(needles, rollbackNeedles()...)
+	dataDir := filepath.Dir(f.dbPath)
+
+	nf, nb := scanTree(t, "data dir after rollback (live, uncheckpointed WAL)", dataDir, needles)
+	if nf < 2 || nb < 4096 {
+		t.Fatalf("vacuous scan: %d files, %d bytes", nf, nb)
+	}
+
+	bdir := filepath.Join(f.root, "backups")
+	if err := os.MkdirAll(bdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bpath, err := BackupWithAudit(ctx, f.st, filepath.Join(bdir, "rollback.db"), s3Actor, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nf, _ := scanTree(t, "backup after rollback", bdir, needles); nf != 1 {
+		t.Fatalf("expected exactly the backup file, got %d", nf)
+	}
+	scanTree(t, "data dir after backup (no staging leftovers)", dataDir, needles)
+	_ = bpath
+
+	if err := f.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	scanTree(t, "data dir after rollback + checkpoint (close)", dataDir, needles)
+}
+
+// TestAtRest_RenameDoesNotBreakDecryption renames both the project and the
+// environment a secret lives in, and proves (a) GetValue still succeeds
+// through the new slugs, (b) the old slugs no longer resolve, and (c) the
+// stored ciphertext+nonce bytes are byte-for-byte identical before and after
+// -- proving no re-seal occurred, which is only possible if the AAD binds to
+// the project/environment/secret IDs (stable across a rename) and never to
+// their human-readable slugs.
+func TestAtRest_RenameDoesNotBreakDecryption(t *testing.T) {
+	f := newS3Fixture(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const secret = "rename-decrypt/target"
+	must(f.svc.CreateSecret(ctx, "beta", "prod", secret, []byte(s3RenameValue), s3Actor, ""))
+
+	if got := mustGet(t, f.env, "beta", "prod", secret, 0); got != s3RenameValue {
+		t.Fatalf("pre-rename read mismatch: %q", got)
+	}
+	before := fetchRawVersion(t, f.dbPath, secret, 1)
+
+	must(f.svc.RenameProject(ctx, "beta", "beta-renamed", "Beta Renamed", s3Actor))
+	must(f.svc.RenameEnvironment(ctx, "beta-renamed", "prod", "prod-renamed", "Prod Renamed", s3Actor))
+
+	after := fetchRawVersion(t, f.dbPath, secret, 1)
+	if !bytes.Equal(before.ciphertext, after.ciphertext) {
+		t.Error("ciphertext changed across rename: a rename must never re-seal a version")
+	}
+	if !bytes.Equal(before.nonce, after.nonce) {
+		t.Error("nonce changed across rename: a rename must never re-seal a version")
+	}
+
+	if got := mustGet(t, f.env, "beta-renamed", "prod-renamed", secret, 0); got != s3RenameValue {
+		t.Fatalf("post-rename read mismatch: %q", got)
+	}
+	if _, err := f.svc.GetValue(ctx, "beta", "prod", secret, 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old project/environment slug must no longer resolve, got %v", err)
+	}
+	needles := append(valueNeedles(), renameNeedles()...)
+	scanTree(t, "data dir after rename", filepath.Dir(f.dbPath), needles)
+}
+
+// TestAtRest_HistoricalVersionsImmutableAfterRollback proves versions 1..N-1
+// are byte-for-byte unchanged (same ciphertext and nonce) after a rollback
+// appends version N: RollbackSecret must never touch an existing row.
+func TestAtRest_HistoricalVersionsImmutableAfterRollback(t *testing.T) {
+	e := setup(t)
+	e.project(t, "p1", "env1")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(e.svc.CreateSecret(ctx, "p1", "env1", "s1", []byte(s3RollbackOld), "alice", ""))
+	if v, err := e.svc.AddVersion(ctx, "p1", "env1", "s1", []byte(s3RollbackNew), "alice", ""); err != nil || v != 2 {
+		t.Fatalf("v2=%d %v", v, err)
+	}
+	before1 := fetchRawVersion(t, e.dbPath, "s1", 1)
+	before2 := fetchRawVersion(t, e.dbPath, "s1", 2)
+
+	newV, err := e.svc.RollbackSecret(ctx, "p1", "env1", "s1", 1, "bob", "")
+	must(err)
+	if newV != 3 {
+		t.Fatalf("expected new version 3, got %d", newV)
+	}
+
+	after1 := fetchRawVersion(t, e.dbPath, "s1", 1)
+	after2 := fetchRawVersion(t, e.dbPath, "s1", 2)
+	if !bytes.Equal(before1.ciphertext, after1.ciphertext) || !bytes.Equal(before1.nonce, after1.nonce) {
+		t.Error("version 1 ciphertext/nonce changed after rollback appended version 3")
+	}
+	if !bytes.Equal(before2.ciphertext, after2.ciphertext) || !bytes.Equal(before2.nonce, after2.nonce) {
+		t.Error("version 2 ciphertext/nonce changed after rollback appended version 3")
+	}
+}
+
+// TestAtRest_AuditChainConsistentAfterNewEventTypes performs a rollback, a
+// project rename, an environment rename, an environment delete and a project
+// delete, then verifies the hash-chained audit log still verifies end to end
+// and that each new event type is actually represented in the chain being
+// verified (otherwise the test would vacuously pass on a chain that never
+// exercised the new event types).
+func TestAtRest_AuditChainConsistentAfterNewEventTypes(t *testing.T) {
+	e := setup(t)
+	e.project(t, "p1", "env1", "env2")
+	e.project(t, "p2") // emptied below, purely to exercise DeleteProject
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(e.svc.CreateSecret(ctx, "p1", "env1", "s1", []byte(s3RollbackOld), "alice", ""))
+	if _, err := e.svc.AddVersion(ctx, "p1", "env1", "s1", []byte(s3RollbackNew), "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RollbackSecret(ctx, "p1", "env1", "s1", 1, "bob", ""); err != nil {
+		t.Fatal(err)
+	}
+	must(e.svc.RenameProject(ctx, "p1", "p1-renamed", "P1 Renamed", "alice"))
+	must(e.svc.RenameEnvironment(ctx, "p1-renamed", "env2", "env2-renamed", "Env2 Renamed", "alice"))
+	must(e.svc.DeleteEnvironment(ctx, "p1-renamed", "env2-renamed", "alice")) // env2 never held a secret: deletable
+	must(e.svc.DeleteProject(ctx, "p2", "alice"))                             // p2 has no environments: deletable
+
+	r := sqlite.VerifyAuditLog(ctx, e.dbPath)
+	if r.Status != sqlite.AuditVerified {
+		t.Fatalf("audit chain after rollback/rename/delete events: %+v", r)
+	}
+	for _, typ := range []store.AuditEventType{
+		store.AuditSecretRollback, store.AuditProjectRename, store.AuditEnvironmentRename,
+		store.AuditEnvironmentDelete, store.AuditProjectDelete,
+	} {
+		if len(eventsOfType(t, e.st, typ)) == 0 {
+			t.Errorf("expected at least one %s event in the verified chain", typ)
+		}
+	}
+}
+
+// TestAtRest_FailedRollbackTransactionLeavesNoPartialState injects a failure
+// into RollbackSecret's shared transaction using the existing
+// failingAuditStore/failingAuditTx fault-injection wrapper (audit_test.go):
+// the business mutation (AddVersion) runs for real inside the transaction,
+// but the paired AppendAuditEvent fails, which must roll the whole
+// transaction back. No new version row may survive and no SUCCESS (or any)
+// AuditSecretRollback event may land in the real underlying store.
+func TestAtRest_FailedRollbackTransactionLeavesNoPartialState(t *testing.T) {
+	e := setup(t)
+	e.project(t, "p1", "env1")
+	if err := e.svc.CreateSecret(ctx, "p1", "env1", "s1", []byte(s3RollbackOld), "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := e.svc.ListVersions(ctx, "p1", "env1", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(failingAuditStore{Store: e.st}, e.svc.keys, zap.NewNop())
+	if _, err := svc.RollbackSecret(ctx, "p1", "env1", "s1", 1, "bob", "doomed"); err == nil {
+		t.Fatal("expected RollbackSecret to fail when its paired audit write fails")
+	}
+
+	after, err := e.svc.ListVersions(ctx, "p1", "env1", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a version row survived a transaction whose audit write failed: before=%d after=%d", len(before), len(after))
+	}
+	if got := eventsOfType(t, e.st, store.AuditSecretRollback); len(got) != 0 {
+		t.Fatalf("no AuditSecretRollback event (success or failure) should have reached the real store when the audit store is wholly unavailable, got %+v", got)
+	}
+	needles := append(valueNeedles(), rollbackNeedles()...)
+	scanTree(t, "data dir after failed rollback transaction", filepath.Dir(e.dbPath), needles)
+}
+
+// TestBackupRestore_PreservesRolledBackVersionHistory backs up a store after a
+// rollback, restores into a fresh directory, and confirms every version
+// (including the one the rollback appended) and its plaintext survive
+// identically.
+func TestBackupRestore_PreservesRolledBackVersionHistory(t *testing.T) {
+	f := newS3RollbackFixture(t)
+	want := takeSnapshot(t, f.svc, f.st)
+
+	bpath := f.backupTo(t, "rollback-rt.db")
+	if err := f.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, res, err := restoreFresh(t, bpath, f.keyPath)
+	if err != nil {
+		t.Fatalf("restore into fresh dir: %v", err)
+	}
+	if res.RestoreEventID == "" {
+		t.Error("restore did not record its audit event")
+	}
+	svc, st := openSvc(t, db, f.keyPath)
+	got := takeSnapshot(t, svc, st)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatal("restored state differs from source after a rollback")
+	}
+
+	vs, err := svc.ListVersions(ctx, f.project, f.env, f.secret)
+	if err != nil || len(vs) != 3 {
+		t.Fatalf("expected 3 versions after restore, got %d (%v)", len(vs), err)
+	}
+	for v, want := range map[int]string{1: s3RollbackOld, 2: s3RollbackNew, 3: s3RollbackOld} {
+		val, err := svc.GetValue(ctx, f.project, f.env, f.secret, v)
+		if err != nil || string(val.Plaintext) != want {
+			t.Fatalf("version %d after restore: got %q, err %v (want %q)", v, val.Plaintext, err, want)
+		}
+	}
+	assertModes(t, filepath.Dir(filepath.Dir(db)), "after restore of rolled-back history")
+}
+
+// TestBackupRestore_PreservesRenamedIdentity backs up a store after a project
+// and environment rename, restores into a fresh directory, and confirms the
+// NEW slug/name identity is what comes back -- never the pre-rename one.
+func TestBackupRestore_PreservesRenamedIdentity(t *testing.T) {
+	f := newS3RenameFixture(t)
+	want := takeSnapshot(t, f.svc, f.st)
+
+	bpath := f.backupTo(t, "rename-rt.db")
+	if err := f.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, _, err := restoreFresh(t, bpath, f.keyPath)
+	if err != nil {
+		t.Fatalf("restore into fresh dir: %v", err)
+	}
+	svc, st := openSvc(t, db, f.keyPath)
+	got := takeSnapshot(t, svc, st)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatal("restored state differs from source after a rename")
+	}
+
+	projects, err := svc.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawNewProject, sawOldProject bool
+	for _, p := range projects {
+		if p.Slug == f.newProjectSlug {
+			sawNewProject = true
+			if p.Name != "Beta Renamed" {
+				t.Errorf("restored project name = %q, want %q", p.Name, "Beta Renamed")
+			}
+		}
+		if p.Slug == f.oldProjectSlug {
+			sawOldProject = true
+		}
+	}
+	if !sawNewProject || sawOldProject {
+		t.Fatalf("expected only the renamed project slug %q to be present (old=%v new=%v)", f.newProjectSlug, sawOldProject, sawNewProject)
+	}
+	envs, err := svc.ListEnvironments(ctx, f.newProjectSlug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawNewEnv bool
+	for _, e := range envs {
+		if e.Slug == f.newEnvSlug {
+			sawNewEnv = true
+			if e.Name != "Prod Renamed" {
+				t.Errorf("restored environment name = %q, want %q", e.Name, "Prod Renamed")
+			}
+		}
+		if e.Slug == f.oldEnvSlug {
+			t.Errorf("old environment slug %q survived restore", f.oldEnvSlug)
+		}
+	}
+	if !sawNewEnv {
+		t.Fatalf("expected renamed environment slug %q to be present", f.newEnvSlug)
+	}
+	val, err := svc.GetValue(ctx, f.newProjectSlug, f.newEnvSlug, f.secret, 0)
+	if err != nil || string(val.Plaintext) != s3RenameValue {
+		t.Fatalf("post-restore read through the new identity: %q, %v", val.Plaintext, err)
+	}
+}
+
+// TestBackupRestore_DeletedProjectStaysDeletedAfterRestore deletes an
+// (emptied) project before taking the backup, restores into a fresh
+// directory, and confirms the deleted project does not reappear.
+func TestBackupRestore_DeletedProjectStaysDeletedAfterRestore(t *testing.T) {
+	f := newS3Fixture(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.project(t, "gamma", "temp-env")
+	must(f.svc.DeleteEnvironment(ctx, "gamma", "temp-env", s3Actor))
+	must(f.svc.DeleteProject(ctx, "gamma", s3Actor))
+	if _, err := f.svc.ListEnvironments(ctx, "gamma"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected gamma gone before backup, got %v", err)
+	}
+
+	bpath := f.backupTo(t, "deleted-rt.db")
+	if err := f.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, _, err := restoreFresh(t, bpath, f.keyPath)
+	if err != nil {
+		t.Fatalf("restore into fresh dir: %v", err)
+	}
+	svc, _ := openSvc(t, db, f.keyPath)
+	ps, err := svc.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ps {
+		if p.Slug == "gamma" {
+			t.Fatalf("deleted project %q reappeared after restore", p.Slug)
+		}
+	}
+}
+
+// TestAtRest_WrongKeyFailsClosedOnRolledBackSecret confirms the existing
+// wrong-key fail-closed guarantee (GetValue returns an error, never
+// plaintext) still holds for a version a rollback appended, not just for an
+// originally-created version.
+func TestAtRest_WrongKeyFailsClosedOnRolledBackSecret(t *testing.T) {
+	f := newS3RollbackFixture(t)
+	other := filepath.Join(f.root, "otherkeys", "root.key")
+	if _, err := crypto.InstallKeyFile(other); err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := crypto.NewFileKeyProvider(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSvc := New(f.st, wrong, zap.NewNop())
+	val, err := wrongSvc.GetValue(ctx, f.project, f.env, f.secret, f.newVersion)
+	if err == nil || len(val.Plaintext) != 0 {
+		t.Fatalf("wrong key must not decrypt the rolled-back version: err=%v, plaintext len=%d", err, len(val.Plaintext))
+	}
+	needles := append(valueNeedles(), rollbackNeedles()...)
+	if lbl, hit := containsAny(err.Error(), needles); hit {
+		t.Errorf("wrong-key error leaks %s: %v", lbl, err)
+	}
+}
+
+// TestAtRest_PermissionsUnchangedAfterLifecycleOps confirms db/key file and
+// directory modes are byte-for-byte identical (as a mode map, ignoring
+// content) before and after a rollback, a project rename, an environment
+// rename, an environment delete and a project delete.
+func TestAtRest_PermissionsUnchangedAfterLifecycleOps(t *testing.T) {
+	f := newS3Fixture(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(f.svc.CreateSecret(ctx, "alpha", "stage", "perm/rollback-target", []byte(s3RollbackOld), s3Actor, ""))
+	if _, err := f.svc.AddVersion(ctx, "alpha", "stage", "perm/rollback-target", []byte(s3RollbackNew), s3Actor, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.project(t, "gamma", "temp-env")
+	must(f.svc.DeleteEnvironment(ctx, "gamma", "temp-env", s3Actor))
+
+	before := modeState(t, f.root)
+
+	if _, err := f.svc.RollbackSecret(ctx, "alpha", "stage", "perm/rollback-target", 1, s3Actor, ""); err != nil {
+		t.Fatal(err)
+	}
+	must(f.svc.RenameProject(ctx, "gamma", "gamma-renamed", "Gamma Renamed", s3Actor))
+	must(f.svc.RenameEnvironment(ctx, "alpha", "stage", "stage-renamed", "Stage Renamed", s3Actor))
+	must(f.svc.DeleteProject(ctx, "gamma-renamed", s3Actor))
+
+	after := modeState(t, f.root)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("file/dir modes changed by rollback/rename/delete lifecycle operations\nbefore: %v\nafter:  %v", before, after)
+	}
+	assertModes(t, f.root, "after rollback/rename/delete lifecycle operations")
 }
