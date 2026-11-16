@@ -120,6 +120,49 @@ func (rc *RotationChecks) run(ctx context.Context) []DoctorCheck {
 		rc.checkProxyHostPortConflicts(ctx),
 		rc.checkSecretDestinations(),
 		rc.checkUnownedManagedContainers(ctx),
+		rc.checkLedger(status, statusErr),
+	}
+}
+
+// DSO-DOCTOR-024: the applied-version ledger is available to the running agent.
+//
+// The state is the live agent's own (StatusResponse.Ledger): the ledger holds a
+// lock and the doctor must never open or modify it, so there is no offline
+// probe. A disabled ledger is not an outage -- rotation continues and the
+// agent adopts each secret's first observation without rotating -- but durable
+// version tracking is gone, so a provider change made while the agent was down
+// may go undetected. That is a WARN with the cause and the supported fix.
+func (rc *RotationChecks) checkLedger(status *api.StatusResponse, statusErr error) DoctorCheck {
+	const id = "DSO-DOCTOR-024"
+	const name = "Applied-version ledger"
+	const desc = "The running agent should have its durable applied-version ledger available"
+
+	if statusErr != nil {
+		return infoCheck(id, name, desc,
+			"agent not reachable; ledger availability unknown: "+statusErr.Error(),
+			DoctorCatRotation,
+		)
+	}
+	l := status.Ledger
+	switch l.State {
+	case api.LedgerActive:
+		return passCheck(id, name, desc, "ledger: active", DoctorCatRotation)
+	case api.LedgerNotConfigured:
+		return infoCheck(id, name, desc, "ledger: not configured (legacy behaviour, no durable version tracking)", DoctorCatRotation)
+	case api.LedgerDisabled:
+		recovery := []string{}
+		if l.Remediation != "" {
+			recovery = append(recovery, l.Remediation)
+		}
+		recovery = append(recovery, "Check the agent log for the one-time \"ledger DISABLED\" warning, fix the cause, then restart dso-agent")
+		return warnCheck(id, name, desc,
+			fmt.Sprintf("ledger: disabled (%s): %s", l.Code, l.Message),
+			l.Degraded,
+			DoctorCatRotation,
+			recovery...,
+		)
+	default:
+		return infoCheck(id, name, desc, "the running agent does not report ledger availability (older build)", DoctorCatRotation)
 	}
 }
 

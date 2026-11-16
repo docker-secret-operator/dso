@@ -117,6 +117,18 @@ type RotationStatus struct {
 	Pending int `json:"pending"`
 }
 
+// LedgerStatus reports the applied-version ledger's availability as the agent
+// sees it: state is "active", "disabled", "not_configured" or "unknown" (an
+// agent that predates the field). Disabled carries the cause code and the
+// supported remediation; it never carries key material or secret values.
+type LedgerStatus struct {
+	State       string `json:"state"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Remediation string `json:"remediation,omitempty"`
+	Degraded    string `json:"degraded_behaviour,omitempty"`
+}
+
 type SystemStatus struct {
 	Runtime      RuntimeStatus    `json:"runtime"`
 	AgentReached bool             `json:"agent_reached"`
@@ -125,6 +137,7 @@ type SystemStatus struct {
 	Cache        CacheStatus      `json:"cache"`
 	Rotations    RotationStatus   `json:"rotations"`
 	DegradedSvcs int              `json:"degraded_services"`
+	Ledger       LedgerStatus     `json:"ledger"`
 	State        string           `json:"state"`
 	Health       string           `json:"health"`
 }
@@ -227,6 +240,11 @@ func (s *Status) gatherStatus() SystemStatus {
 	status.Cache = CacheStatus{Entries: resp.CacheEntries}
 	status.Rotations = RotationStatus{Pending: resp.PendingRotations}
 	status.DegradedSvcs = len(resp.DegradedServices)
+	status.Ledger = LedgerStatus{State: resp.Ledger.State, Code: resp.Ledger.Code, Message: resp.Ledger.Message,
+		Remediation: resp.Ledger.Remediation, Degraded: resp.Ledger.Degraded}
+	if status.Ledger.State == "" {
+		status.Ledger.State = "unknown" // an agent that predates the ledger status field
+	}
 
 	unhealthy := false
 	for _, p := range resp.Providers {
@@ -383,6 +401,22 @@ func (s *Status) printText(status SystemStatus) error {
 	line(fmt.Sprintf("└─ Pending:  %d", status.Rotations.Pending))
 	line("")
 
+	if status.AgentReached {
+		line("LEDGER")
+		line("└─ State:  " + status.Ledger.State + ledgerCodeSuffix(status.Ledger))
+		if status.Ledger.State == "disabled" {
+			for _, f := range [][2]string{{"Cause", status.Ledger.Message}, {"Degraded", status.Ledger.Degraded}, {"Fix", status.Ledger.Remediation}} {
+				for i, l := range wrapWords(f[0]+": "+f[1], statusInnerWidth-8) {
+					if i > 0 {
+						l = "  " + l
+					}
+					line("   " + l)
+				}
+			}
+		}
+		line("")
+	}
+
 	if status.DegradedSvcs > 0 {
 		line(fmt.Sprintf("DEGRADED SERVICES: %d", status.DegradedSvcs))
 		line("")
@@ -393,6 +427,36 @@ func (s *Status) printText(status SystemStatus) error {
 	fmt.Fprintln(w)
 
 	return nil
+}
+
+// wrapWords breaks text into lines of at most width runes at spaces (a word
+// longer than width gets its own line, which boxRow then ellipsises).
+func wrapWords(text string, width int) []string {
+	var lines []string
+	cur := ""
+	for _, w := range strings.Fields(text) {
+		if cur != "" && len([]rune(cur))+1+len([]rune(w)) > width {
+			lines = append(lines, cur)
+			cur = w
+			continue
+		}
+		if cur == "" {
+			cur = w
+		} else {
+			cur += " " + w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+func ledgerCodeSuffix(l LedgerStatus) string {
+	if l.State == "disabled" && l.Code != "" {
+		return " (" + l.Code + ")"
+	}
+	return ""
 }
 
 func (s *Status) printJSON(status SystemStatus) error {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/ledger"
 	"github.com/docker-secret-operator/dso/internal/watcher"
+	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 )
 
@@ -52,8 +56,10 @@ const (
 type ledgerWiring struct {
 	mode   ledgerMode
 	reason string
-	store  *ledger.Store
-	v      *ledger.Versions
+	// diag classifies why the ledger is disabled (ledgerDisabled only).
+	diag  ledgerDiagnosis
+	store *ledger.Store
+	v     *ledger.Versions
 	// liveFn replaces the Docker live-set inspection (tests only).
 	liveFn func(providerName, secretName string) (map[ledger.Key][]ledger.LiveReplica, error)
 }
@@ -104,7 +110,8 @@ type ledgerVerdict struct {
 func (t *TriggerEngine) openLedger(dir string) {
 	kp, err := ledger.NewFileKeyProvider(dir)
 	if err != nil {
-		t.disableLedger(fmt.Sprintf("the ledger directory %s is refused: %v", dir, err))
+		t.disableLedgerDiag(classifyLedgerError(dir, err, defaultLedgerInspector()),
+			fmt.Sprintf("the ledger directory %s is refused: %v", dir, err))
 		return
 	}
 	t.openLedgerWith(dir, kp, ledger.Config{Keys: kp})
@@ -117,27 +124,37 @@ func (t *TriggerEngine) openLedgerWith(dir string, km ledger.KeyMaterialSource, 
 	if cfg.Events == nil {
 		cfg.Events = t.logLedgerEvent
 	}
+	insp := defaultLedgerInspector()
 	s, res, err := ledger.Open(dir, cfg)
 	if err != nil {
-		t.disableLedger(fmt.Sprintf("opening the ledger in %s failed: %v", dir, err))
+		t.disableLedgerDiag(classifyLedgerError(dir, err, insp), fmt.Sprintf("opening the ledger in %s failed: %v", dir, err))
 		return
 	}
 	if res.Mode != ledger.ModeDurable {
 		_ = s.Close()
-		t.disableLedger(fmt.Sprintf("the ledger in %s is not durable (%s: %s)", dir, res.Reason, res.Detail))
+		// A key reason carries only a text; the typed key error (lost, unsafe,
+		// corrupt) is what tells them apart, so ask the key source for it.
+		var kerr error
+		if res.Reason == ledger.ReasonKeyUnsafe || res.Reason == ledger.ReasonKeyMalformed {
+			_, key, e := km.KeyMaterial()
+			clear(key)
+			kerr = e
+		}
+		t.disableLedgerDiag(classifyLedgerOpen(dir, res, kerr, insp),
+			fmt.Sprintf("the ledger in %s is not durable (%s: %s)", dir, res.Reason, res.Detail))
 		return
 	}
 	_, key, kerr := km.KeyMaterial()
 	clear(key)
 	if kerr != nil {
 		_ = s.Close()
-		t.disableLedger(fmt.Sprintf("the ledger key in %s is unusable: %v", dir, kerr))
+		t.disableLedgerDiag(classifyLedgerError(dir, kerr, insp), fmt.Sprintf("the ledger key in %s is unusable: %v", dir, kerr))
 		return
 	}
 	v, err := ledger.NewVersions(s, km)
 	if err != nil {
 		_ = s.Close()
-		t.disableLedger(err.Error())
+		t.disableLedgerDiag(ledgerDiagnosis{code: LedgerCodeUnavailable, detail: "the version identity could not be initialised"}, err.Error())
 		return
 	}
 	t.ledger = &ledgerWiring{mode: ledgerEnabled, store: s, v: v}
@@ -152,12 +169,54 @@ func (t *TriggerEngine) openLedgerWith(dir string, km ledger.KeyMaterialSource, 
 	}
 }
 
+// disableLedger disables the ledger with an unclassified reason (kept for the
+// callers that have no typed cause).
 func (t *TriggerEngine) disableLedger(reason string) {
-	t.ledger = &ledgerWiring{mode: ledgerDisabled, reason: reason}
-	t.Logger.Warn("Applied-version ledger DISABLED for this process; rotation continues without it. "+
+	t.disableLedgerDiag(ledgerDiagnosis{code: LedgerCodeUnavailable, detail: reason}, reason)
+}
+
+// disableLedgerDiag disables the ledger for this process and emits the ONE
+// operator-visible warning (it runs once, at engine start). The warning names
+// the cause code, the unsafe path with its actual and expected owner/mode when
+// that is the cause, the supported remediation, and the degraded behaviour that
+// applies meanwhile. It never contains secret values or key material: only
+// paths, modes, uids and static reasons.
+func (t *TriggerEngine) disableLedgerDiag(d ledgerDiagnosis, reason string) {
+	t.ledger = &ledgerWiring{mode: ledgerDisabled, reason: reason, diag: d}
+	fields := []zap.Field{zap.String("code", d.code), zap.String("reason", d.detail)}
+	if d.path != "" {
+		fields = append(fields, zap.String("path", d.path))
+	}
+	if d.actual != "" {
+		fields = append(fields, zap.String("actual", d.actual))
+	}
+	if d.expected != "" {
+		fields = append(fields, zap.String("expected", d.expected))
+	}
+	fields = append(fields, zap.String("remediation", d.remediation), zap.String("degraded_behaviour", ledgerDegradedBehaviour))
+	t.Logger.Warn("Applied-version ledger DISABLED for this process: durable version tracking is unavailable. "+
 		"The first observation of each secret in this process is adopted without rotating (no mass rotation); "+
-		"a provider change made while the agent was down is not detected until the next change",
-		zap.String("reason", reason))
+		"a provider change made while the agent was down may go undetected until the next change of that secret; "+
+		"rotation otherwise continues", fields...)
+}
+
+// LedgerStatus reports the ledger availability for the existing status RPC
+// (and so for `docker dso status` and `docker dso doctor`).
+func (t *TriggerEngine) LedgerStatus() api.LedgerStatusInfo {
+	if t == nil || t.ledger == nil {
+		return api.LedgerStatusInfo{State: api.LedgerNotConfigured, Code: LedgerCodeNotConfigured,
+			Message: "the applied-version ledger is not configured in this engine"}
+	}
+	if t.ledger.enabled() {
+		return api.LedgerStatusInfo{State: api.LedgerActive, Code: LedgerCodeActive, Message: "durable version tracking is active"}
+	}
+	d := t.ledger.diag
+	msg := d.detail
+	if d.path != "" && d.actual != "" {
+		msg = fmt.Sprintf("%s: %s (actual %s, expected %s)", d.path, d.detail, d.actual, d.expected)
+	}
+	return api.LedgerStatusInfo{State: api.LedgerDisabled, Code: d.code, Message: msg,
+		Remediation: d.remediation, Degraded: ledgerDegradedBehaviour}
 }
 
 func (t *TriggerEngine) logLedgerEvent(ev ledger.Event) {
@@ -433,4 +492,255 @@ func (t *TriggerEngine) reconcileLedgerAtStartup() {
 				zap.String("rotation_id", c.RotationID), zap.String("rule", c.Rule))
 		}
 	}
+}
+
+// ============================================================ diagnostics
+
+// Ledger availability cause codes (also carried by api.LedgerStatusInfo.Code).
+const (
+	LedgerCodeActive            = "active"
+	LedgerCodeNotConfigured     = "not_configured"
+	LedgerCodeUnsafePermissions = "unsafe_permissions"
+	LedgerCodeKeyLost           = "key_lost"
+	LedgerCodeCorruptState      = "corrupt_state"
+	LedgerCodeUnsupportedSchema = "unsupported_schema"
+	LedgerCodeLockHeld          = "lock_held"
+	LedgerCodeUnsupportedOS     = "unsupported_platform"
+	LedgerCodeInvalidDir        = "invalid_directory"
+	LedgerCodeUnavailable       = "unavailable"
+)
+
+// ledgerDegradedBehaviour is what the operator gets while the ledger is
+// disabled (X3, O-5): the in-process rule of commitObservation.
+const ledgerDegradedBehaviour = "durable version tracking is unavailable: the first observation of each secret in this process is " +
+	"adopted without rotating; a provider change made while the agent was down may go undetected until the next change of that secret; " +
+	"no mass rotation; the rotation journal and operation guard are unaffected"
+
+// ledgerStateDir is the persistent-state directory that contains the ledger.
+var ledgerStateDir = filepath.Dir(defaultLedgerDir)
+
+// ledgerDiagnosis classifies one disabled ledger. No field ever holds a secret
+// value, key bytes or a version identity.
+type ledgerDiagnosis struct {
+	code        string
+	path        string // the offending path, when identified
+	actual      string // actual owner/mode of path
+	expected    string // expected owner/mode of path
+	detail      string // static cause text
+	remediation string
+}
+
+// ledgerInspector is the read-only filesystem view the diagnosis uses.
+type ledgerInspector struct {
+	stat func(string) (os.FileInfo, error)
+	euid func() int
+}
+
+func defaultLedgerInspector() ledgerInspector {
+	return ledgerInspector{stat: os.Stat, euid: os.Geteuid}
+}
+
+// classifyLedgerError maps a typed key error (or an open error) to a diagnosis.
+func classifyLedgerError(dir string, err error, in ledgerInspector) ledgerDiagnosis {
+	detail := keyReason(err)
+	switch {
+	case errors.Is(err, ledger.ErrKeyLost):
+		return diagKeyLost(dir, detail)
+	case errors.Is(err, ledger.ErrKeyCorrupt):
+		return diagCorrupt(dir, detail)
+	case errors.Is(err, ledger.ErrKeyUnsupported):
+		return diagUnsupportedOS(detail)
+	case errors.Is(err, ledger.ErrKeyDirectory):
+		return ledgerDiagnosis{code: LedgerCodeInvalidDir, path: dir, detail: detail,
+			remediation: "the ledger directory must be an absolute, persistent path (default " + defaultLedgerDir + "), never under /run/dso; correct the configuration"}
+	case errors.Is(err, ledger.ErrKeyUnsafe):
+		return diagUnsafe(dir, detail, in)
+	}
+	return ledgerDiagnosis{code: LedgerCodeUnavailable, path: dir, detail: detail,
+		remediation: "see the agent log for the underlying error; durable tracking resumes at the next agent start once the cause is fixed"}
+}
+
+// classifyLedgerOpen maps a memory-only ledger.OpenResult (kerr is the typed
+// key error for the key reasons, nil otherwise) to a diagnosis.
+func classifyLedgerOpen(dir string, res ledger.OpenResult, kerr error, in ledgerInspector) ledgerDiagnosis {
+	switch res.Reason {
+	case ledger.ReasonUnsafeDir:
+		return diagUnsafe(dir, res.Detail, in)
+	case ledger.ReasonKeyUnsafe, ledger.ReasonKeyMalformed:
+		if kerr != nil {
+			return classifyLedgerError(dir, kerr, in)
+		}
+		if res.Reason == ledger.ReasonKeyMalformed {
+			return diagCorrupt(dir, res.Detail)
+		}
+		return diagUnsafe(dir, res.Detail, in)
+	case ledger.ReasonKeyMissing:
+		return diagKeyLost(dir, res.Detail)
+	case ledger.ReasonNewerSchema:
+		return ledgerDiagnosis{code: LedgerCodeUnsupportedSchema, path: filepath.Join(dir, "ledger.json"), detail: "the ledger was written by a newer DSO schema; it is left untouched",
+			remediation: "run the dso version that wrote this ledger (upgrade the dso binary); do not delete or edit ledger.json"}
+	case ledger.ReasonLocked:
+		return ledgerDiagnosis{code: LedgerCodeLockHeld, path: dir, detail: "another process holds the ledger lock",
+			remediation: "stop the other dso agent instance that uses " + dir + "; the lock is released when it exits, then restart this agent"}
+	case ledger.ReasonUnsupportedPlatform:
+		return diagUnsupportedOS(res.Detail)
+	case ledger.ReasonCorrupt, ledger.ReasonLedgerUnreadable, ledger.ReasonTooLarge, ledger.ReasonPreserveFailed, ledger.ReasonKeyMismatch:
+		return diagCorrupt(dir, res.Detail)
+	}
+	return ledgerDiagnosis{code: LedgerCodeUnavailable, path: dir, detail: string(res.Reason) + ": " + res.Detail,
+		remediation: "see the agent log; durable tracking resumes at the next agent start once the cause is fixed"}
+}
+
+func diagKeyLost(dir, detail string) ledgerDiagnosis {
+	return ledgerDiagnosis{code: LedgerCodeKeyLost, path: filepath.Join(dir, "ledger.key"), detail: detail,
+		remediation: "restore ledger.key (root-owned, mode 0400) into " + dir + " from a backup; the agent never regenerates a lost key. " +
+			"If the ledger is unrecoverable, move its files aside deliberately and restart: every secret is then re-adopted with an unknown applied version"}
+}
+
+func diagCorrupt(dir, detail string) ledgerDiagnosis {
+	return ledgerDiagnosis{code: LedgerCodeCorruptState, path: dir, detail: detail,
+		remediation: "inspect the ledger files in " + dir + " (the agent never deletes or rewrites them); restore from a backup or move them aside deliberately and restart"}
+}
+
+func diagUnsupportedOS(detail string) ledgerDiagnosis {
+	return ledgerDiagnosis{code: LedgerCodeUnsupportedOS, detail: detail,
+		remediation: "none: this platform cannot verify directory ownership and modes, so the durable ledger is never enabled here"}
+}
+
+// diagUnsafe builds the unsafe_permissions diagnosis: it names the first unsafe
+// path of the chain with its actual and expected owner/mode.
+func diagUnsafe(dir, detail string, in ledgerInspector) ledgerDiagnosis {
+	d := ledgerDiagnosis{code: LedgerCodeUnsafePermissions, path: dir, detail: detail}
+	if up, ok := findUnsafeLedgerPath(dir, in); ok {
+		d.path, d.actual, d.expected = up.path, up.actual, up.expected
+		if d.detail == "" || strings.Contains(d.detail, "chain is unsafe") {
+			d.detail = up.problem
+		}
+		d.remediation = unsafeRemediation(up.path)
+		return d
+	}
+	d.remediation = "make " + dir + " and every directory above it owned by root and not writable by group or others (a non-recursive chmod/chown of those directories only; never -R)"
+	return d
+}
+
+// unsafeRemediation is the supported fix for one unsafe path. /var/lib/dso is
+// re-applied by `bootstrap agent` (its permission step is a non-recursive
+// chown/chmod of the four DSO directories); the manual equivalent is the same
+// two non-recursive commands. Nothing recursive is ever advised.
+func unsafeRemediation(path string) string {
+	if path == ledgerStateDir {
+		return "re-apply the DSO directory permissions with `sudo docker dso bootstrap agent` (it sets " + ledgerStateDir +
+			" to root:dso 0750 non-recursively and rewrites dso.yaml, so review it), or only this directory by hand: " +
+			"`sudo chown root:dso " + ledgerStateDir + " && sudo chmod 0750 " + ledgerStateDir + "` (no -R: nothing inside is changed), then restart the agent"
+	}
+	if filepath.Base(path) == "ledger.key" {
+		return "restore the key file's ownership and mode by hand: `sudo chown root " + path + " && sudo chmod 0400 " + path + "` (the key itself is never regenerated), then restart the agent"
+	}
+	return "fix this directory only, not recursively: `sudo chown root " + path + " && sudo chmod go-w " + path + "` (the ledger directory itself must be 0700), then restart the agent"
+}
+
+type unsafeLedgerPath struct {
+	path, actual, expected, problem string
+}
+
+// findUnsafeLedgerPath walks dir top-down with the key provider's rules and
+// returns the first directory that is not owned by root (or the agent user) or
+// is group/other-writable (a sticky directory is tolerated as an ancestor
+// only), or a ledger file with an unsafe mode. Read-only.
+func findUnsafeLedgerPath(dir string, in ledgerInspector) (unsafeLedgerPath, bool) {
+	abs, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return unsafeLedgerPath{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(abs, string(filepath.Separator)), string(filepath.Separator))
+	cur := string(filepath.Separator)
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		fi, err := in.stat(cur)
+		if err != nil {
+			return unsafeLedgerPath{}, false
+		}
+		last := i == len(parts)-1
+		uid, gid, known := ownerOf(fi)
+		perm := fi.Mode().Perm()
+		sticky := fi.Mode()&os.ModeSticky != 0
+		expected := expectedDirSpec(cur, abs)
+		switch {
+		case known && uid != 0 && int(uid) != in.euid():
+			return unsafeLedgerPath{cur, ownerModeText(uid, gid, perm), expected, "directory is owned by neither root nor the agent user"}, true
+		case perm&0o022 != 0 && (last || !sticky):
+			return unsafeLedgerPath{cur, ownerModeText(uid, gid, perm), expected, "directory is writable by group or others"}, true
+		}
+	}
+	for _, name := range []string{"ledger.key", "ledger.json"} {
+		p := filepath.Join(abs, name)
+		fi, err := in.stat(p)
+		if err != nil {
+			continue
+		}
+		perm := fi.Mode().Perm()
+		uid, gid, known := ownerOf(fi)
+		want, bad := "root, mode 0600 or stricter (private)", perm&^0o600 != 0
+		if name == "ledger.key" {
+			want, bad = "root, mode 0400 or 0600", perm&^0o600 != 0 || perm&0o400 == 0
+		}
+		if known && uid != 0 && int(uid) != in.euid() {
+			return unsafeLedgerPath{p, ownerModeText(uid, gid, perm), want, "file is owned by neither root nor the agent user"}, true
+		}
+		if bad {
+			return unsafeLedgerPath{p, ownerModeText(uid, gid, perm), want, "file mode is not private"}, true
+		}
+	}
+	return unsafeLedgerPath{}, false
+}
+
+// expectedDirSpec states what the contract requires of one directory.
+func expectedDirSpec(path, ledgerDir string) string {
+	switch path {
+	case ledgerStateDir:
+		return "root:dso, mode 0750"
+	case ledgerDir:
+		return "root, mode 0700 (private)"
+	}
+	return "owned by root (or the agent user), not writable by group or others"
+}
+
+func ownerModeText(uid, gid uint32, perm os.FileMode) string {
+	return fmt.Sprintf("uid %d gid %d, mode %04o", uid, gid, perm)
+}
+
+// ownerOf extracts the numeric owner from a FileInfo without a platform build
+// tag: *syscall.Stat_t (linux, darwin) exposes Uid and Gid; anything else
+// reports unknown.
+func ownerOf(fi os.FileInfo) (uid, gid uint32, ok bool) {
+	v := reflect.ValueOf(fi.Sys())
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return 0, 0, false
+	}
+	u, g := v.FieldByName("Uid"), v.FieldByName("Gid")
+	if !u.IsValid() || !g.IsValid() || !u.CanUint() || !g.CanUint() {
+		return 0, 0, false
+	}
+	return uint32(u.Uint()), uint32(g.Uint()), true // #nosec G115 -- uid/gid are 32-bit
+}
+
+// keyReason returns the static reason of a typed key error, never key bytes.
+func keyReason(err error) string {
+	var ke *ledger.KeyError
+	if errors.As(err, &ke) && ke.Reason != "" {
+		if ke.Err != nil {
+			return ke.Reason + ": " + ke.Err.Error()
+		}
+		return ke.Reason
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

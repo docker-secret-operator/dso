@@ -1130,3 +1130,414 @@ func TestLedgerWiring_UsesTheBridge(t *testing.T) {
 		}
 	}
 }
+
+// Ledger-disabled diagnostics (M1 acceptance prompt section 8-9): a ledger that
+// opens disabled is never silent. These tests pin the classification (unsafe
+// permissions / key lost / corrupt key / newer schema / lock held / not
+// configured), the exact warning content, the status exposure and that the
+// remediation never advises a recursive chmod/chown. The engine tests use the
+// production opener (openLedger) on temporary directories.
+
+type fakeFI struct {
+	mode os.FileMode
+	uid  uint32
+	gid  uint32
+}
+
+func (f fakeFI) Name() string       { return "x" }
+func (f fakeFI) Size() int64        { return 0 }
+func (f fakeFI) Mode() os.FileMode  { return f.mode | os.ModeDir }
+func (f fakeFI) ModTime() time.Time { return time.Time{} }
+func (f fakeFI) IsDir() bool        { return true }
+func (f fakeFI) Sys() any           { return &struct{ Uid, Gid uint32 }{f.uid, f.gid} }
+
+func TestLedgerDiag_UnsafeStateDirectory_NamesPathActualExpectedAndSupportedFix(t *testing.T) {
+	// The upgraded installation: /var/lib/dso root:dso 0770, ledger dir 0700 root.
+	infos := map[string]fakeFI{
+		"/var":                {0o755, 0, 0},
+		"/var/lib":            {0o755, 0, 0},
+		"/var/lib/dso":        {0o770, 0, 1001},
+		"/var/lib/dso/ledger": {0o700, 0, 0},
+	}
+	in := ledgerInspector{
+		stat: func(p string) (os.FileInfo, error) {
+			if fi, ok := infos[p]; ok {
+				return fi, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		euid: func() int { return 0 },
+	}
+	d := classifyLedgerOpen("/var/lib/dso/ledger", ledger.OpenResult{Reason: ledger.ReasonUnsafeDir, Detail: "securefs: directory chain"}, nil, in)
+	if d.code != LedgerCodeUnsafePermissions || d.path != "/var/lib/dso" {
+		t.Fatalf("diagnosis %+v", d)
+	}
+	if !strings.Contains(d.actual, "uid 0 gid 1001, mode 0770") || d.expected != "root:dso, mode 0750" {
+		t.Fatalf("actual %q expected %q", d.actual, d.expected)
+	}
+	for _, want := range []string{"sudo docker dso bootstrap agent", "sudo chown root:dso /var/lib/dso", "sudo chmod 0750 /var/lib/dso", "no -R"} {
+		if !strings.Contains(d.remediation, want) {
+			t.Errorf("remediation lacks %q: %s", want, d.remediation)
+		}
+	}
+}
+
+func TestLedgerDiag_RemediationNeverRecursive(t *testing.T) {
+	in := defaultLedgerInspector()
+	all := []ledgerDiagnosis{
+		diagKeyLost("/d", "x"), diagCorrupt("/d", "x"), diagUnsupportedOS("x"), diagUnsafe("/d", "x", in),
+		{remediation: unsafeRemediation(ledgerStateDir)}, {remediation: unsafeRemediation("/var/lib/dso/ledger")},
+		{remediation: unsafeRemediation("/var/lib/dso/ledger/ledger.key")},
+		classifyLedgerOpen("/d", ledger.OpenResult{Reason: ledger.ReasonLocked}, nil, in),
+		classifyLedgerOpen("/d", ledger.OpenResult{Reason: ledger.ReasonNewerSchema}, nil, in),
+		classifyLedgerError("/run/dso/x", fmt.Errorf("wrapped: %w", &ledger.KeyError{Kind: ledger.ErrKeyDirectory, Reason: "x"}), in),
+	}
+	for _, d := range all {
+		for _, bad := range []string{" -R", "-R ", "--recursive", "chmod -r", "chown -r"} {
+			if strings.Contains(d.remediation, bad) && !strings.Contains(d.remediation, "no -R") && !strings.Contains(d.remediation, "never -R") {
+				t.Errorf("remediation advises recursion (%q): %s", bad, d.remediation)
+			}
+		}
+		if d.remediation == "" {
+			t.Errorf("empty remediation for %+v", d)
+		}
+	}
+}
+
+func TestLedgerDiag_Classification(t *testing.T) {
+	in := defaultLedgerInspector()
+	for name, tc := range map[string]struct {
+		res  ledger.OpenResult
+		kerr error
+		want string
+	}{
+		"unsafe dir":      {ledger.OpenResult{Reason: ledger.ReasonUnsafeDir}, nil, LedgerCodeUnsafePermissions},
+		"key unsafe":      {ledger.OpenResult{Reason: ledger.ReasonKeyUnsafe}, &ledger.KeyError{Kind: ledger.ErrKeyUnsafe, Reason: "mode 0644"}, LedgerCodeUnsafePermissions},
+		"key lost":        {ledger.OpenResult{Reason: ledger.ReasonKeyUnsafe}, &ledger.KeyError{Kind: ledger.ErrKeyLost, Reason: "missing"}, LedgerCodeKeyLost},
+		"key malformed":   {ledger.OpenResult{Reason: ledger.ReasonKeyMalformed}, &ledger.KeyError{Kind: ledger.ErrKeyCorrupt, Reason: "size"}, LedgerCodeCorruptState},
+		"newer schema":    {ledger.OpenResult{Reason: ledger.ReasonNewerSchema}, nil, LedgerCodeUnsupportedSchema},
+		"locked":          {ledger.OpenResult{Reason: ledger.ReasonLocked}, nil, LedgerCodeLockHeld},
+		"unsupported":     {ledger.OpenResult{Reason: ledger.ReasonUnsupportedPlatform}, nil, LedgerCodeUnsupportedOS},
+		"ledger corrupt":  {ledger.OpenResult{Reason: ledger.ReasonCorrupt}, nil, LedgerCodeCorruptState},
+		"too large":       {ledger.OpenResult{Reason: ledger.ReasonTooLarge}, nil, LedgerCodeCorruptState},
+		"unreadable":      {ledger.OpenResult{Reason: ledger.ReasonLedgerUnreadable}, nil, LedgerCodeCorruptState},
+		"preserve failed": {ledger.OpenResult{Reason: ledger.ReasonPreserveFailed}, nil, LedgerCodeCorruptState},
+		"keygen failed":   {ledger.OpenResult{Reason: ledger.ReasonKeyGenerateFailed}, nil, LedgerCodeUnavailable},
+	} {
+		if got := classifyLedgerOpen("/d", tc.res, tc.kerr, in).code; got != tc.want {
+			t.Errorf("%s: code %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// disabledEngine runs the engine with the production opener on dir and returns
+// the harness (first poll not awaited).
+func disabledEngine(t *testing.T, h *engHarness, dir string) {
+	t.Helper()
+	h.open = func(te *TriggerEngine) { te.openLedger(dir) }
+	h.setProvider("one")
+	h.start(true)
+	if h.te.ledger == nil || h.te.ledger.mode != ledgerDisabled {
+		t.Fatalf("ledger not disabled: %+v", h.te.ledger)
+	}
+	h.waitFirstDecision() // let the first poll finish before the test tears the directories down
+}
+
+func disabledWarning(t *testing.T, h *engHarness) map[string]any {
+	t.Helper()
+	logs := h.logs.FilterMessageSnippet("ledger DISABLED").All()
+	if len(logs) != 1 {
+		t.Fatalf("the DISABLED warning must be emitted exactly once at engine start, got %d", len(logs))
+	}
+	m := logs[0].ContextMap()
+	msg := logs[0].Message
+	for _, want := range []string{"durable version tracking is unavailable", "adopted without rotating", "no mass rotation", "may go undetected"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("warning lacks %q: %s", want, msg)
+		}
+	}
+	for _, k := range []string{"code", "remediation", "degraded_behaviour", "reason"} {
+		if m[k] == nil || m[k] == "" {
+			t.Errorf("warning field %q missing: %v", k, m)
+		}
+	}
+	return m
+}
+
+func TestLedgerDiag_Engine_UnsafeParent0770_WarnsOnceAndExposesStatus(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	parent := filepath.Join(h.ldir, "lib")
+	dir := filepath.Join(parent, "ledger")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o770); err != nil { // the pre-upgrade /var/lib/dso
+		t.Fatal(err)
+	}
+	disabledEngine(t, h, dir)
+	m := disabledWarning(t, h)
+	if m["code"] != LedgerCodeUnsafePermissions || m["path"] != parent {
+		t.Fatalf("warning fields %v", m)
+	}
+	if a, _ := m["actual"].(string); !strings.Contains(a, "mode 0770") {
+		t.Errorf("actual %q", a)
+	}
+	if e, _ := m["expected"].(string); e == "" {
+		t.Errorf("expected missing: %v", m)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("files were written under an unsafe parent: %v", ents)
+	}
+	st := h.te.LedgerStatus()
+	if st.State != api.LedgerDisabled || st.Code != LedgerCodeUnsafePermissions || st.Remediation == "" || st.Degraded == "" || !strings.Contains(st.Message, "0770") {
+		t.Fatalf("status %+v", st)
+	}
+	if d := h.waitFirstDecision(); d != RotationLedgerDegraded {
+		t.Fatalf("decision %s", d)
+	}
+	h.assertNoDispatch("unsafe parent")
+	if n := h.logs.FilterMessageSnippet("ledger DISABLED").Len(); n != 1 {
+		t.Fatalf("the warning repeated: %d", n)
+	}
+}
+
+func TestLedgerDiag_Engine_KeyLost_NeverRegenerated(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(true)
+	h.waitFirstDecision()
+	h.stop()
+	if err := os.Remove(filepath.Join(h.ldir, "ledger.key")); err != nil {
+		t.Fatal(err)
+	}
+	h.start(true)
+	if h.te.ledger.mode != ledgerDisabled {
+		t.Fatalf("ledger %+v", h.te.ledger)
+	}
+	h.waitFirstDecision()
+	m := disabledWarning(t, h)
+	if m["code"] != LedgerCodeKeyLost {
+		t.Fatalf("code %v", m["code"])
+	}
+	if _, err := os.Stat(filepath.Join(h.ldir, "ledger.key")); !os.IsNotExist(err) {
+		t.Fatal("a lost key was regenerated")
+	}
+	if !strings.Contains(m["remediation"].(string), "never regenerates") {
+		t.Errorf("remediation %v", m["remediation"])
+	}
+}
+
+func TestLedgerDiag_Engine_CorruptKey(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	if err := os.WriteFile(filepath.Join(h.ldir, "ledger.key"), []byte("short"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	disabledEngine(t, h, h.ldir)
+	if m := disabledWarning(t, h); m["code"] != LedgerCodeCorruptState {
+		t.Fatalf("fields %v", m)
+	}
+	if b, _ := os.ReadFile(filepath.Join(h.ldir, "ledger.key")); string(b) != "short" {
+		t.Fatal("the corrupt key was modified")
+	}
+}
+
+func TestLedgerDiag_Engine_NewerSchema_Untouched(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	kp, err := ledger.NewFileKeyProvider(h.ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kp.EnsureKey(); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(fmt.Sprintf(`{"schema_version": %d}`, ledger.SchemaVersion+5))
+	if err := os.WriteFile(filepath.Join(h.ldir, "ledger.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	disabledEngine(t, h, h.ldir)
+	if m := disabledWarning(t, h); m["code"] != LedgerCodeUnsupportedSchema {
+		t.Fatalf("fields %v", m)
+	}
+	if b, _ := os.ReadFile(filepath.Join(h.ldir, "ledger.json")); string(b) != string(body) {
+		t.Fatal("a newer-schema ledger was modified")
+	}
+}
+
+func TestLedgerDiag_Engine_LockHeld(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	kp, err := ledger.NewFileKeyProvider(h.ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, res, err := ledger.Open(h.ldir, ledger.Config{Keys: kp})
+	if err != nil || res.Mode != ledger.ModeDurable {
+		t.Fatalf("holder open: %v %+v", err, res)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	disabledEngine(t, h, h.ldir)
+	if m := disabledWarning(t, h); m["code"] != LedgerCodeLockHeld {
+		t.Fatalf("fields %v", m)
+	}
+}
+
+func TestLedgerDiag_Status_ActiveAndNotConfigured(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h.setProvider("one")
+	h.start(true)
+	if st := h.te.LedgerStatus(); st.State != api.LedgerActive || st.Code != LedgerCodeActive {
+		t.Fatalf("active status %+v", st)
+	}
+	if h.logs.FilterMessageSnippet("ledger DISABLED").Len() != 0 {
+		t.Fatal("an enabled ledger warned")
+	}
+	h.waitFirstDecision()
+	h.stop()
+
+	h2 := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	h2.ldir = ""
+	h2.setProvider("one")
+	h2.start(true)
+	if st := h2.te.LedgerStatus(); st.State != api.LedgerNotConfigured || st.Code != LedgerCodeNotConfigured {
+		t.Fatalf("not-configured status %+v", st)
+	}
+	h2.waitFirstDecision()
+}
+
+func TestLedgerDiag_NoSecretOrKeyMaterialInDiagnostics(t *testing.T) {
+	// Texts are built from paths, modes, uids and static reasons only. Feed a
+	// key error whose Err mimics a leaky system error and check nothing but the
+	// static reason is carried for the key-state diagnoses.
+	const sentinel = "S3CR3T-SENTINEL-VALUE"
+	err := &ledger.KeyError{Kind: ledger.ErrKeyCorrupt, KeyID: "k-0011223344556677", Reason: "has 3 bytes, want 59"}
+	for _, d := range []ledgerDiagnosis{classifyLedgerError("/d", err, defaultLedgerInspector())} {
+		blob := fmt.Sprintf("%+v", d)
+		if strings.Contains(blob, sentinel) || strings.Contains(blob, "k-0011223344556677") {
+			t.Fatalf("diagnosis leaks: %s", blob)
+		}
+	}
+}
+
+// ============================================================ first-poll matrix gaps
+
+// New ledger + an existing workload: desired = V, applied = UNKNOWN, every
+// replica adoption unknown; never applied = V (O-5).
+func TestLedgerEngine_FirstStart_RecordsDesiredNeverApplied(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1", "a2"}})
+	h.setProvider("one")
+	h.start(true)
+	if d := h.waitFirstDecision(); d != RotationAdopted {
+		t.Fatalf("decision %s", d)
+	}
+	h.assertNoDispatch("first start")
+	e := h.entry("app")
+	if e.Desired == nil || ledger.Compare(*e.Desired, h.ver("one")) != ledger.Same {
+		t.Fatalf("desired is not V: %+v", e.Desired)
+	}
+	if e.Applied != nil {
+		t.Fatalf("applied must be UNKNOWN (nil) for a new ledger and an existing workload, got %+v", e.Applied)
+	}
+	for _, r := range e.Replicas {
+		if r.Adoption != ledger.AdoptionUnknown || r.Adoption == ledger.AdoptionVerified {
+			t.Fatalf("replica adoption %q, want unknown", r.Adoption)
+		}
+	}
+}
+
+// The fix path: the ledger opens disabled under a 0770 state directory; after
+// the (non-recursive) permission repair the next start opens it durably, adopts
+// the existing workload without rotating, and a later change rotates once.
+func TestLedgerEngine_AvailableAfterRepair(t *testing.T) {
+	h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+	parent := filepath.Join(h.ldir, "lib")
+	dir := filepath.Join(parent, "ledger")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	disabledEngine(t, h, dir)
+	if d := h.waitFirstDecision(); d != RotationLedgerDegraded {
+		t.Fatalf("decision while disabled: %s", d)
+	}
+	h.stop()
+
+	if err := os.Chmod(parent, 0o750); err != nil { // the repair: this directory only
+		t.Fatal(err)
+	}
+	h.start(true)
+	if !h.te.ledger.enabled() {
+		t.Fatalf("the ledger stayed disabled after the repair: %+v", h.te.ledger)
+	}
+	if h.logs.FilterMessageSnippet("ledger DISABLED").Len() != 0 {
+		t.Fatal("a repaired ledger still warned DISABLED")
+	}
+	if d := h.waitFirstDecision(); d != RotationAdopted {
+		t.Fatalf("first poll after the repair: %s, want adopted", d)
+	}
+	h.assertNoDispatch("after the repair")
+	if e := h.entry("app"); e.Applied != nil || e.Desired == nil {
+		t.Fatalf("entry %+v", e)
+	}
+	if st := h.te.LedgerStatus(); st.State != api.LedgerActive {
+		t.Fatalf("status %+v", st)
+	}
+	if d := h.decide("two"); d != RotationDispatched {
+		t.Fatalf("a change after the repair: %s", d)
+	}
+	h.waitCalls(1)
+}
+
+// Provider unavailable at RESTART with an existing ledger: nothing is recorded
+// or rotated during the outage; when the provider returns, an unchanged value
+// is unchanged and a changed one rotates exactly once.
+func TestLedgerEngine_ProviderUnavailableAtRestart(t *testing.T) {
+	for name, after := range map[string]string{"unchanged_after_outage": "one", "changed_during_outage": "two"} {
+		t.Run(name, func(t *testing.T) {
+			h := newEngHarness(t, "restart", map[string][]string{"app": {"a1"}})
+			h.setProvider("one")
+			h.start(true)
+			if d := h.waitFirstDecision(); d != RotationAdopted {
+				t.Fatalf("decision %s", d)
+			}
+			one := h.ver("one")
+			h.stop()
+			if err := os.Remove(filepath.Join(h.pdir, lbSecret+".json")); err != nil {
+				t.Fatal(err)
+			}
+			h.start(true) // the provider has nothing: every fetch fails
+			deadline := time.Now().Add(10 * time.Second)
+			for h.logs.FilterMessage("Secret fetch failed, will retry").Len() < 2 {
+				if time.Now().After(deadline) {
+					t.Fatal("the poller did not retry")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			h.assertNoDispatch("outage at restart")
+			e := h.entry("app")
+			if e.Desired == nil || ledger.Compare(*e.Desired, one) != ledger.Same {
+				t.Fatalf("the outage changed the recorded desired version: %+v", e.Desired)
+			}
+			gen := h.te.ledger.store.Health().Generation
+			h.setProvider(after)
+			d := h.waitFirstDecision()
+			if after == "one" {
+				if d != RotationUnchanged {
+					t.Fatalf("decision %s, want unchanged", d)
+				}
+				h.assertNoDispatch("unchanged after the outage")
+				if g := h.te.ledger.store.Health().Generation; g != gen {
+					t.Fatalf("an unchanged value wrote the ledger: %d -> %d", gen, g)
+				}
+				return
+			}
+			if d != RotationDispatched {
+				t.Fatalf("decision %s, want dispatched", d)
+			}
+			h.waitCalls(1)
+			if n := len(h.runs()); n != 1 {
+				t.Fatalf("%d rotations, want exactly 1", n)
+			}
+		})
+	}
+}

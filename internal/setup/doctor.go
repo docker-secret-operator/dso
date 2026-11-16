@@ -100,6 +100,9 @@ type DoctorOptions struct {
 	// DockerSocket, which is the Docker daemon's) -- used by the Phase 7
 	// rotation/degraded-service checks to query the live running agent.
 	SocketPath string
+	// StateDir overrides the persistent-state directory checked by
+	// DSO-DOCTOR-025 (default /var/lib/dso, agent mode only).
+	StateDir string
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
@@ -115,6 +118,7 @@ type Doctor struct {
 	runtime  *RuntimeChecks
 	service  *ServiceChecks
 	rotation *RotationChecks
+	state    *StateDirChecks
 }
 
 // NewDoctor constructs a Doctor wired to real OS hooks.
@@ -150,6 +154,7 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 		runtime:  newRuntimeChecks(opts.RuntimeDir),
 		service:  newServiceChecks(),
 		rotation: newRotationChecks(opts.SocketPath, opts.ConfigPath),
+		state:    newStateDirChecks(opts.Mode, opts.StateDir),
 	}
 }
 
@@ -164,6 +169,7 @@ func (d *Doctor) Run(ctx context.Context) *DoctorResult {
 	checks = append(checks, d.runtime.run(ctx)...)
 	checks = append(checks, d.service.run(ctx)...)
 	checks = append(checks, d.rotation.run(ctx)...)
+	checks = append(checks, d.state.run(ctx)...)
 
 	return &DoctorResult{
 		OverallStatus: doctorComputeOverall(checks),

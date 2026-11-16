@@ -371,16 +371,17 @@ func TestRotationCheck_023_ConfigLoadFailure_Info(t *testing.T) {
 
 // --- RotationChecks.run() ----------------------------------------------------
 
-func TestRotationChecks_run_Returns6Checks(t *testing.T) {
+func TestRotationChecks_run_Returns7Checks(t *testing.T) {
 	rc := newTestRotationChecks()
 	checks := rc.run(context.Background())
 
-	if len(checks) != 6 {
-		t.Fatalf("expected 6 checks, got %d", len(checks))
+	if len(checks) != 7 {
+		t.Fatalf("expected 7 checks, got %d", len(checks))
 	}
 	wantIDs := map[string]bool{
 		"DSO-DOCTOR-018": true, "DSO-DOCTOR-019": true, "DSO-DOCTOR-020": true,
 		"DSO-DOCTOR-021": true, "DSO-DOCTOR-022": true, "DSO-DOCTOR-023": true,
+		"DSO-DOCTOR-024": true,
 	}
 	for _, c := range checks {
 		if !wantIDs[c.ID] {

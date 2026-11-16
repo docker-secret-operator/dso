@@ -18,13 +18,20 @@ import (
 type PermissionManager struct {
 	logger Logger
 	dryRun bool
+
+	// Test seams. Production values are set by NewPermissionManager. Nothing
+	// here is ever recursive: each call touches exactly one directory.
+	mkdirAll func(path string, perm os.FileMode) error
+	applyDir ApplyDirFunc
 }
 
 // NewPermissionManager creates a new permission manager
 func NewPermissionManager(logger Logger, dryRun bool) *PermissionManager {
 	return &PermissionManager{
-		logger: logger,
-		dryRun: dryRun,
+		logger:   logger,
+		dryRun:   dryRun,
+		mkdirAll: os.MkdirAll,
+		applyDir: ApplyDirectoryNoFollow,
 	}
 }
 
@@ -251,12 +258,43 @@ type dsoDirSpec struct {
 	strict bool
 }
 
+// dirConsequence says what a mode deviation costs for the directories where it
+// matters beyond the deviation itself ("" otherwise).
+func dirConsequence(path string) string {
+	if path == StateDirPath {
+		return "the applied-version ledger cannot open while this directory is group- or world-writable (durable version tracking is disabled)"
+	}
+	return ""
+}
+
+// DSO persistent-state directory contract (docs/design/m1-ledger-reconciliation.md,
+// "Directory contract"). Every writer of these directories (bootstrap
+// permissions, the setup doctor/repair state-directory check, the agent's
+// runtime-directory enforcement and the ledger key provider) must agree with
+// this table; internal/bootstrap/permissions_contract_test.go pins it.
+//
+//	/etc/dso            root:dso 0775  bootstrap
+//	/var/lib/dso        root:dso 0750  bootstrap (this plan); agent writes as root
+//	/var/run|/run/dso   root:dso 0750  systemd RuntimeDirectory + agent (strict)
+//	/var/log/dso        root:dso 0770  bootstrap
+//	/var/lib/dso/ledger root 0700      ledger key provider (not created here)
+const (
+	// StateDirPath is the persistent-state root. The ledger key provider and the
+	// plugin trust checks refuse a group- or world-writable ancestor, so it must
+	// stay 0750 (accepted change b360128).
+	StateDirPath = "/var/lib/dso"
+	// StateDirMode is the exact mode of StateDirPath.
+	StateDirMode os.FileMode = 0750
+)
+
 // dsoDirectoryPlan is the single source of truth for the DSO directories'
 // ownership (root:dso) and modes, shared by setup and verification.
 func dsoDirectoryPlan() []dsoDirSpec {
 	return []dsoDirSpec{
-		{"/etc/dso", 0775, false},     // root:dso, rw for group so dso members can operate without sudo
-		{"/var/lib/dso", 0750, false}, // root:dso, group read-only: only the root agent writes state/locks/ledger, and the ledger key and plugin trust checks refuse a group-writable ancestor
+		{"/etc/dso", 0775, false}, // root:dso, rw for group so dso members can operate without sudo
+		// root:dso, group read-only: only the root agent writes state/locks/ledger,
+		// and the ledger key and plugin trust checks refuse a group-writable ancestor.
+		{StateDirPath, StateDirMode, false},
 		// Runtime directory: group may traverse (connect to the socket) but never
 		// write, and others have no access. Applying a wider mode here would undo
 		// the agent's own enforcement (internal/runtimedir) on a live service,
@@ -266,39 +304,85 @@ func dsoDirectoryPlan() []dsoDirSpec {
 	}
 }
 
+// ApplyDirFunc sets the owner (uid, gid; a negative value leaves that id as is)
+// and the exact mode of ONE directory and reports whether anything changed.
+type ApplyDirFunc func(path string, perm os.FileMode, uid, gid int) (changed bool, err error)
+
+// ApplyDirectoryNoFollow is the production ApplyDirFunc. It opens the path with
+// O_NOFOLLOW|O_DIRECTORY (a symlink or non-directory is refused) and applies
+// fchown/fchmod to the open descriptor, so the change lands on exactly that
+// directory. It is deliberately not recursive: files and subdirectories inside
+// (plugins, databases, keys, user content) are never visited. It is idempotent:
+// a directory that already matches is not touched.
+func ApplyDirectoryNoFollow(path string, perm os.FileMode, uid, gid int) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0) // #nosec G304 -- a fixed DSO directory path; O_NOFOLLOW|O_DIRECTORY refuses a symlink and the change is made on the descriptor
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+			return false, fmt.Errorf("refusing to change %s: it is a symlink or not a directory", path)
+		}
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }() // read-only descriptor
+	fi, err := f.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, fmt.Errorf("cannot determine ownership of %s", path)
+	}
+	changed := false
+	if (uid >= 0 && int(st.Uid) != uid) || (gid >= 0 && int(st.Gid) != gid) {
+		if err := f.Chown(uid, gid); err != nil {
+			return false, fmt.Errorf("failed to chown %s: %w", path, err)
+		}
+		changed = true
+	}
+	const modeBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	if fi.Mode()&modeBits != perm || changed { // chown may clear setuid/setgid: always re-assert the mode
+		if err := f.Chmod(perm); err != nil {
+			return changed, fmt.Errorf("failed to chmod %s: %w", path, err)
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
 // setupDSODirectories configures permissions on DSO directories
 func (pm *PermissionManager) setupDSODirectories(dsoGID int) error {
-	directories := dsoDirectoryPlan()
+	return pm.setupDirectories(dsoDirectoryPlan(), dsoGID)
+}
 
+// setupDirectories creates each planned directory when missing and sets its
+// owner (root:dso) and exact mode. Each entry is handled on its own: nothing is
+// recursive, and nothing inside a directory (plugins, databases, keys, user
+// content) is read, chmod'ed or chown'ed. A symlink at a planned path is
+// refused before and again at the descriptor level.
+func (pm *PermissionManager) setupDirectories(directories []dsoDirSpec, dsoGID int) error {
 	for _, dir := range directories {
-		// Reject a symlink at this path BEFORE MkdirAll/Chmod/Chown, all of
-		// which follow symlinks and would otherwise operate on whatever the
-		// link points at rather than on dir.path itself.
+		// Reject a symlink at this path BEFORE creating or changing anything:
+		// chmod/chown follow symlinks and would otherwise operate on whatever
+		// the link points at rather than on dir.path itself.
 		if err := rejectSymlink(dir.path); err != nil {
 			return err
 		}
 
 		// Create directory if it doesn't exist
-		if err := os.MkdirAll(dir.path, dir.perm); err != nil {
+		if err := pm.mkdirAll(dir.path, dir.perm); err != nil {
 			// If it exists, try to change permissions only
 			if !os.IsExist(err) {
 				return fmt.Errorf("failed to create directory %s: %w", dir.path, err)
 			}
 		}
 
-		// Set permissions
-		if err := os.Chmod(dir.path, dir.perm); err != nil {
-			return fmt.Errorf("failed to chmod %s: %w", dir.path, err)
+		// Mode and ownership (root:dso), on the open descriptor, not recursive.
+		changed, err := pm.applyDir(dir.path, dir.perm, 0, dsoGID)
+		if err != nil {
+			return err
 		}
 
-		// Set ownership to root:dso
-		if err := os.Chown(dir.path, 0, dsoGID); err != nil {
-			return fmt.Errorf("failed to chown %s: %w", dir.path, err)
-		}
-
-		pm.logger.Info("Directory configured", "path", dir.path, "perm", fmt.Sprintf("%o", dir.perm))
+		pm.logger.Info("Directory configured", "path", dir.path, "perm", fmt.Sprintf("%o", dir.perm), "changed", changed)
 	}
-
 	return nil
 }
 
@@ -486,8 +570,9 @@ func (pm *PermissionManager) verifyDirectories(plan []dsoDirSpec, dsoGID int, ow
 		if actualPerm != dir.perm {
 			pm.logger.Warn("Directory permissions differ",
 				"path", dir.path,
-				"expected", fmt.Sprintf("%o", dir.perm),
-				"actual", fmt.Sprintf("%o", actualPerm))
+				"expected", fmt.Sprintf("%04o", dir.perm),
+				"actual", fmt.Sprintf("%04o", actualPerm),
+				"consequence", dirConsequence(dir.path))
 			if dir.strict {
 				violations = append(violations, fmt.Sprintf("%s has mode %04o, expected exactly %04o", dir.path, actualPerm, dir.perm))
 			}
@@ -572,8 +657,11 @@ After bootstrap, the following permission structure is in place:
    - Users in 'dso' group can read configuration; changing it requires root (sudo)
 
 3. State Directory
-   - /var/lib/dso: 0750 (root:dso) - Owner writes; group can read
-   - Users in 'dso' group can write state and logs
+   - /var/lib/dso: 0750 (root:dso) - only root (the agent) writes; the dso group
+     can traverse and read, never create, replace or remove anything. The ledger
+     key provider and the plugin trust checks refuse a group- or world-writable
+     /var/lib/dso, so this directory must not be widened
+   - /var/lib/dso/ledger is created by the agent (root, 0700), not by bootstrap
 
 4. Runtime Directory
    - /var/run/dso (/run/dso): 0750 (root:dso) - Owner read/write/traverse, group
@@ -585,7 +673,7 @@ After bootstrap, the following permission structure is in place:
 
 5. Log Directory
    - /var/log/dso: 0770 (root:dso) - Owner and group can read/write
-   - Users in 'dso' group can read logs
+   - Users in 'dso' group can read and write logs
 
 To enable non-root CLI usage after bootstrap:
 

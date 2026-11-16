@@ -3,6 +3,7 @@
 package setup
 
 import (
+	"os"
 	"os/user"
 	"strconv"
 	"syscall"
@@ -30,4 +31,13 @@ func ownerOfPath(path string) (string, error) {
 		return u.Username + ":", nil
 	}
 	return u.Username + ":" + g.Name, nil
+}
+
+// statOwner returns the numeric owner of a FileInfo (ok=false when unknown).
+func statOwner(fi os.FileInfo) (uid, gid uint32, ok bool) {
+	st, isStat := fi.Sys().(*syscall.Stat_t)
+	if !isStat {
+		return 0, 0, false
+	}
+	return st.Uid, st.Gid, true
 }

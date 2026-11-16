@@ -167,6 +167,12 @@ func (s *AgentServer) GetStatus(_ *api.StatusRequest, resp *api.StatusResponse) 
 		}
 	}
 
+	// Applied-version ledger availability (active / disabled with a cause code and
+	// remediation / not configured) through the same status RPC.
+	if s.Trigger != nil {
+		resp.Ledger = s.Trigger.LedgerStatus()
+	}
+
 	for name := range s.Config.Providers {
 		info := api.ProviderStatusInfo{Name: name}
 		healthy, known := s.Store.Health(name)
