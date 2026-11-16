@@ -530,6 +530,35 @@ func (o ops) ListProjects(ctx context.Context) ([]store.Project, error) {
 	return out, rows.Err()
 }
 
+func (o ops) RenameProject(ctx context.Context, projectID, newSlug, newName string) error {
+	res, err := o.q.ExecContext(ctx, `UPDATE projects SET slug = ?, name = ? WHERE id = ?`, newSlug, newName, projectID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (o ops) DeleteProject(ctx context.Context, projectID string) error {
+	envs, err := o.ListEnvironments(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if len(envs) > 0 {
+		return store.ErrConflict
+	}
+	res, err := o.q.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, projectID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (o ops) CreateEnvironment(ctx context.Context, e store.Environment) error {
 	if e.ID == "" || e.ProjectID == "" || e.Slug == "" {
 		return store.ErrInvalid

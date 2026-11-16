@@ -104,7 +104,7 @@ type NewSecret struct {
 // row is inserted; it must be fast and must not call the store.
 type SealFunc func(version int) (ciphertext, nonce []byte, dekVersion int, err error)
 
-// Operations is the set of 19 data and metadata operations. Store offers them as
+// Operations is the set of 23 data and metadata operations. Store offers them as
 // standalone calls (each with its own, unchanged, transactional behaviour); Tx
 // offers the same set inside one transaction opened by Store.WithTx.
 type Operations interface {
@@ -112,6 +112,12 @@ type Operations interface {
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
 	ListProjects(ctx context.Context) ([]Project, error)
+	// RenameProject changes a project's slug and name; ErrConflict if the new
+	// slug collides with another project, ErrNotFound if projectID does not exist.
+	RenameProject(ctx context.Context, projectID, newSlug, newName string) error
+	// DeleteProject removes a project; ErrConflict if it still has environments,
+	// ErrNotFound if projectID does not exist.
+	DeleteProject(ctx context.Context, projectID string) error
 
 	CreateEnvironment(ctx context.Context, e Environment) error
 	GetEnvironmentBySlug(ctx context.Context, projectID, slug string) (Environment, error)

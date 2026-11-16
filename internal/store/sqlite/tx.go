@@ -114,6 +114,20 @@ func (s *Store) ListProjects(ctx context.Context) ([]store.Project, error) {
 	return s.ops().ListProjects(ctx)
 }
 
+func (s *Store) RenameProject(ctx context.Context, projectID, newSlug, newName string) error {
+	if err := s.guard(ctx); err != nil {
+		return err
+	}
+	return s.ops().RenameProject(ctx, projectID, newSlug, newName)
+}
+
+func (s *Store) DeleteProject(ctx context.Context, projectID string) error {
+	if err := s.guard(ctx); err != nil {
+		return err
+	}
+	return s.ops().DeleteProject(ctx, projectID)
+}
+
 func (s *Store) CreateEnvironment(ctx context.Context, e store.Environment) error {
 	if err := s.guard(ctx); err != nil {
 		return err

@@ -221,6 +221,8 @@ func standaloneCalls() map[string]func(s *Store, c context.Context) error {
 		"GetProjectBySlug": func(s *Store, c context.Context) error { _, e := s.GetProjectBySlug(c, "proj"); return e },
 		"GetProject":       func(s *Store, c context.Context) error { _, e := s.GetProject(c, "p1"); return e },
 		"ListProjects":     func(s *Store, c context.Context) error { _, e := s.ListProjects(c); return e },
+		"RenameProject":    func(s *Store, c context.Context) error { return s.RenameProject(c, "p1", "px-renamed", "Px Renamed") },
+		"DeleteProject":    func(s *Store, c context.Context) error { return s.DeleteProject(c, "px-empty") },
 		"CreateEnvironment": func(s *Store, c context.Context) error {
 			return s.CreateEnvironment(c, store.Environment{ID: "ex", ProjectID: "p1", Slug: "ex"})
 		},
@@ -253,9 +255,10 @@ func standaloneCalls() map[string]func(s *Store, c context.Context) error {
 }
 
 // TestStandaloneCallTableCoversExactlyTheNineteenOperations: the name predates
-// the Phase 2 Step 5.3 audit-chain addition (AppendAuditEvent, ListAuditEvents),
-// which brought the total to 21; kept unrenamed to avoid unrelated churn in a
-// test whose assertions (not its name) are what actually enforce coverage.
+// the Phase 2 Step 5.3 audit-chain addition (AppendAuditEvent, ListAuditEvents)
+// and the M2 RenameProject/DeleteProject addition, which brought the total to
+// 23; kept unrenamed to avoid unrelated churn in a test whose assertions (not
+// its name) are what actually enforce coverage.
 func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	var want []string
 	ot := reflect.TypeOf((*store.Operations)(nil)).Elem()
@@ -268,15 +271,15 @@ func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	}
 	sort.Strings(want)
 	sort.Strings(got)
-	if len(want) != 21 || !reflect.DeepEqual(want, got) {
+	if len(want) != 23 || !reflect.DeepEqual(want, got) {
 		t.Fatalf("operations %v (%d) vs table %v", want, len(want), got)
 	}
 	// Tx offers the same set, and Store offers it plus WithTx/SchemaVersion/Close only.
-	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 21 {
+	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 23 {
 		t.Fatalf("Tx has %d methods", tt.NumMethod())
 	}
-	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 24 {
-		t.Fatalf("Store has %d methods, want 21 + WithTx + SchemaVersion + Close", st.NumMethod())
+	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 26 {
+		t.Fatalf("Store has %d methods, want 23 + WithTx + SchemaVersion + Close", st.NumMethod())
 	}
 }
 
