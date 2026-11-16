@@ -55,6 +55,15 @@ type RotationState struct {
 	Seq                   int      `json:"seq,omitempty"`
 	OperationState        string   `json:"operation_state,omitempty"` // named condition, e.g. partially_published
 	ManualRecovery        bool     `json:"manual_recovery,omitempty"`
+	// N19 managed file delivery (all omitempty: journals written before it load
+	// unchanged, with GatedDelivery false = the legacy rule). GatedDelivery is set when
+	// the CURRENT candidate was created with the startup gate; DeliveryVerified only by
+	// secrets_delivered (every file delivered and probed). While GatedDelivery is true a
+	// candidate is verified only if DeliveryVerified too (see recordCandidateVerified).
+	// DeliveredVersions are keyed identities (hmac:<key id>:<mac>), never plaintext.
+	GatedDelivery     bool     `json:"gated_delivery,omitempty"`
+	DeliveryVerified  bool     `json:"delivery_verified,omitempty"`
+	DeliveredVersions []string `json:"delivered_versions,omitempty"`
 	// DispatchTargets is the number of containers the engine's dispatch covers
 	// (0 = not recorded: a record written before M1 or by a strategy on its own).
 	// DispatchFinalized is set only by the engine's CompleteRotationID, i.e. after
@@ -86,6 +95,7 @@ func (r *RotationState) clone() *RotationState {
 	c := *r
 	c.OriginalContainerIDs = append([]string(nil), r.OriginalContainerIDs...)
 	c.CandidateContainerIDs = append([]string(nil), r.CandidateContainerIDs...)
+	c.DeliveredVersions = append([]string(nil), r.DeliveredVersions...)
 	return &c
 }
 
@@ -769,6 +779,13 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	if e.OwnerID != "" && state.OwnerID != "" && state.OwnerID != e.OwnerID {
 		return fmt.Errorf("journal event for rotation %q from owner %q refused: the record belongs to another owner", e.RotationID, e.OwnerID)
 	}
+	// N19: a version recorded for delivered values must be a keyed identity, never a
+	// plaintext or an unkeyed hash. Refused BEFORE anything below is merged.
+	for _, v := range e.DeliveredVersions {
+		if !validJournalHMACVersion(v) {
+			return errors.New("journal delivered version must be a keyed HMAC identity (hmac:<key id>:<mac>)")
+		}
+	}
 	if e.ServiceID != "" {
 		state.ServiceID = e.ServiceID
 	}
@@ -800,6 +817,18 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	}
 	if e.ManualRecovery {
 		state.ManualRecovery = true
+	}
+	switch e.Transition {
+	case rotation.TrIntentCreateCandidate:
+		// A new candidate: nothing about an earlier candidate's delivery carries over.
+		state.GatedDelivery, state.DeliveryVerified, state.DeliveredVersions = false, false, nil
+	case rotation.TrCandidateCreated:
+		if e.Gated {
+			state.GatedDelivery, state.DeliveryVerified, state.DeliveredVersions = true, false, nil
+		}
+	case rotation.TrSecretsDelivered:
+		state.DeliveryVerified = true
+		state.DeliveredVersions = append([]string(nil), e.DeliveredVersions...)
 	}
 	state.Seq++
 	state.Transition, state.Phase = e.Transition, e.Transition

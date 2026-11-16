@@ -61,7 +61,10 @@ func rollbackTransition(tr string) bool {
 	switch tr {
 	case rotation.TrIntentRenameOriginal, rotation.TrIntentCreateCandidate, rotation.TrCandidateCreated,
 		rotation.TrIntentStopOriginal, rotation.TrOriginalStopped,
-		rotation.TrIntentStartReplacement, rotation.TrReplacementStarted, rotation.TrIntentRollback:
+		rotation.TrIntentStartReplacement, rotation.TrReplacementStarted, rotation.TrIntentRollback,
+		// N19 managed delivery phases: all strictly before candidate_ready.
+		rotation.TrGateStarted, rotation.TrIntentDeliverSecrets, rotation.TrDeliveryPartial,
+		rotation.TrSecretsDelivered, rotation.TrIntentReleaseGate, rotation.TrGateReleased:
 		return true
 	}
 	return false
@@ -222,7 +225,7 @@ func (ar *AutomaticRecovery) planRollback(ctx context.Context, rec *RotationStat
 			return nil, true, "the live proxy routes traffic to the unverified candidate"
 		}
 	}
-	if candidateVerified(rec.Transition) {
+	if recordCandidateVerified(rec) {
 		return nil, true, "the candidate was acknowledged ready: it is not rolled back automatically"
 	}
 	return plan, true, ""

@@ -429,12 +429,19 @@ var lbTransitions = map[string]bool{
 	rotation.TrOriginalStopped:        false,
 	rotation.TrIntentStartReplacement: false,
 	rotation.TrReplacementStarted:     false,
-	rotation.TrIntentSignalPublish:    false,
-	rotation.TrSignalPublished:        false,
-	rotation.TrIntentSignalReload:     false,
-	rotation.TrSignalReloadSent:       false,
-	rotation.TrSignalDone:             false, // signal evidence, not a verified candidate
-	rotation.TrSignalFailed:           false,
+	// N19 managed delivery phases: all before candidate_ready, never evidence alone.
+	rotation.TrGateStarted:          false,
+	rotation.TrIntentDeliverSecrets: false,
+	rotation.TrDeliveryPartial:      false,
+	rotation.TrSecretsDelivered:     false,
+	rotation.TrIntentReleaseGate:    false,
+	rotation.TrGateReleased:         false,
+	rotation.TrIntentSignalPublish:  false,
+	rotation.TrSignalPublished:      false,
+	rotation.TrIntentSignalReload:   false,
+	rotation.TrSignalReloadSent:     false,
+	rotation.TrSignalDone:           false, // signal evidence, not a verified candidate
+	rotation.TrSignalFailed:         false,
 }
 
 // rotationTransitionConstants parses internal/rotation/journal.go and returns
@@ -2015,5 +2022,126 @@ func TestN21Rollback_LedgerPreviousSourceRules(t *testing.T) {
 	if (ledgerPreviousSource{}).PreviousDeliveredKnown(rec, labels) ||
 		(ledgerPreviousSource{lw: &ledgerWiring{mode: ledgerDisabled}}).PreviousDeliveredKnown(rec, labels) {
 		t.Fatal("a missing or disabled ledger can never show the previous version")
+	}
+}
+
+// ---- N19 managed delivery: ledger evidence (helpers gatedRestartSteps/n19Version are in
+// recovery_n19_test.go; this file is the allowlisted ledger importer) ----
+
+func gatedLedgerFlow(r *lbRig, rid string, fl lbFlow, ver ledger.Version, skipDelivery bool, upTo string) {
+	r.t.Helper()
+	ctx := rotation.WithRotationID(context.Background(), rid)
+	for _, tr := range gatedRestartSteps {
+		if skipDelivery && (tr == rotation.TrSecretsDelivered || tr == rotation.TrIntentDeliverSecrets || tr == rotation.TrGateStarted) {
+			continue
+		}
+		ev := rotation.JournalEvent{RotationID: rid, Strategy: "restart", Transition: tr, CandidateIDs: []string{fl.cand}}
+		switch tr {
+		case rotation.TrIntentRenameOriginal:
+			ev.ServiceID, ev.OriginalIDs = lbService, []string{fl.orig}
+			ev.SecretVersion = FormatJournalSecretVersion(ver)
+			ev.CandidateIDs = nil
+		case rotation.TrCandidateCreated:
+			ev.Gated = true
+		case rotation.TrSecretsDelivered:
+			ev.DeliveredVersions = []string{FormatJournalSecretVersion(ver)}
+		}
+		if err := r.st.Record(ctx, ev); err != nil {
+			r.t.Fatal(err)
+		}
+		if tr == upTo {
+			return
+		}
+	}
+}
+
+// "ledger delivery verified" only with complete delivery evidence: a gated record that
+// reached candidate_ready/completed WITHOUT secrets_delivered, and every pre-ready
+// delivery phase, are refused; the complete chain advances the applied version.
+func TestN19Ledger_DeliveryEvidenceRule(t *testing.T) {
+	t.Run("complete chain is delivery evidence", func(t *testing.T) {
+		r := newLBRig(t, nil)
+		r.baseline(true)
+		d2 := r.ver("two")
+		r.observe(d2, lbLive("o1"))
+		fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+		if err := r.correlate("rot-g1", d2, r.journalStart("rot-g1", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedLedgerFlow(r, "rot-g1", fl, d2, false, rotation.TrCompleted)
+		r.finishOK(fl)
+		res, err := r.terminal("rot-g1", &d2, fl)
+		if err != nil || res.Outcome != OutcomeDeliveryVerified {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+		if e := r.entry(); !appliedIs(e, d2) {
+			t.Fatalf("entry %+v", e)
+		}
+	})
+	t.Run("ready without delivery evidence is refused", func(t *testing.T) {
+		r := newLBRig(t, nil)
+		d1 := r.baseline(true)
+		d2 := r.ver("two")
+		r.observe(d2, lbLive("o1"))
+		fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+		if err := r.correlate("rot-g2", d2, r.journalStart("rot-g2", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedLedgerFlow(r, "rot-g2", fl, d2, true, rotation.TrCompleted)
+		r.finishOK(fl)
+		if refusal := journalDeliveryRefusal(r.record("rot-g2")); refusal == nil {
+			t.Fatal("the bridge accepted a gated record without secrets_delivered")
+		}
+		if res, err := r.terminal("rot-g2", &d2, fl); err == nil && res.Outcome == OutcomeDeliveryVerified {
+			t.Fatalf("delivery verified without evidence: %+v", res)
+		}
+		if e := r.entry(); !appliedIs(e, d1) {
+			t.Fatalf("applied advanced without delivery evidence: %+v", e)
+		}
+	})
+	for _, phase := range []string{rotation.TrGateStarted, rotation.TrIntentDeliverSecrets, rotation.TrSecretsDelivered, rotation.TrIntentReleaseGate, rotation.TrGateReleased} {
+		t.Run("pre-ready "+phase+" is never evidence", func(t *testing.T) {
+			r := newLBRig(t, nil)
+			r.baseline(true)
+			d2 := r.ver("two")
+			r.observe(d2, lbLive("o1"))
+			fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+			if err := r.correlate("rot-g3", d2, r.journalStart("rot-g3", fl)); err != nil {
+				t.Fatal(err)
+			}
+			gatedLedgerFlow(r, "rot-g3", fl, d2, false, phase)
+			if journalDeliveryRefusal(r.record("rot-g3")) == nil {
+				t.Fatalf("%s accepted as delivery evidence", phase)
+			}
+		})
+	}
+}
+
+// Interrupted ledger reconciliation: the gated operation completed in the journal and
+// the process died before the ledger was updated; reconcile applies the delivered
+// version from the journal (W6) and a second reconcile writes nothing.
+func TestN19Ledger_InterruptedReconciliation_AppliesFromTheJournal(t *testing.T) {
+	d := newFakeDaemon(n19Candidate("healthy", true))
+	r := newLBRig(t, d)
+	r.baseline(true)
+	d2 := r.ver("two")
+	r.observe(d2, lbLive("o1"))
+	fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+	if err := r.correlate("rot-g4", d2, r.journalStart("rot-g4", fl)); err != nil {
+		t.Fatal(err)
+	}
+	gatedLedgerFlow(r, "rot-g4", fl, d2, false, rotation.TrCompleted)
+	r.finishOK(fl)
+	r.crash() // the terminal ledger update never ran
+	r.recover()
+	if len(d.removed)+len(d.started)+len(d.stopped) != 0 {
+		t.Fatalf("a completed rotation must not be reopened: %+v", d)
+	}
+	rep := r.reconcileTwice()
+	if got := rules(rep); len(got) != 1 || got[0] != "W6" {
+		t.Fatalf("rules %v", got)
+	}
+	if e := r.entry(); !appliedIs(e, d2) || e.State != ledger.EntryIdle {
+		t.Fatalf("applied must be D2 from the journal: %+v", e)
 	}
 }

@@ -457,6 +457,23 @@ func candidateVerified(transition string) bool {
 	return false
 }
 
+// recordCandidateVerified is candidateVerified applied to a journal RECORD. For a
+// candidate created with the N19 startup gate the transition alone is not enough:
+// delivery must also have been verified (secrets_delivered, durable before the gate
+// release). A gated record that reached candidate_ready or later without it (a crash
+// between writes cannot produce this, so it can only mean a damaged or forged record)
+// is NOT verified. Records without the gate flag (all journals written before N19,
+// env-only rotations) keep the plain rule.
+func recordCandidateVerified(rec *RotationState) bool {
+	if rec == nil || !candidateVerified(rec.Transition) {
+		return false
+	}
+	if rec.GatedDelivery && !rec.DeliveryVerified {
+		return false
+	}
+	return true
+}
+
 // unverifiedCandidate reports whether container id is, according to an unfinished
 // journal record, a candidate (by journalled ID or rotation label) that has not been
 // acknowledged ready, and the record's last transition. A record that already reached a
@@ -470,7 +487,7 @@ func (ar *AutomaticRecovery) unverifiedCandidate(id string, labels map[string]st
 			continue
 		}
 		isCandidate := idIn(r.CandidateContainerIDs, id) || (r.RotationID != "" && labels[rotation.LabelRotationID] == r.RotationID)
-		if isCandidate && !candidateVerified(r.Transition) {
+		if isCandidate && !recordCandidateVerified(r) {
 			return r.Transition, true
 		}
 	}
@@ -617,7 +634,7 @@ func (ar *AutomaticRecovery) journalPermits(ctx context.Context, artifactID stri
 		if !holderIsCandidate {
 			return "the healthy name holder is not the journalled candidate", false
 		}
-		if !candidateVerified(rec.Transition) {
+		if !recordCandidateVerified(rec) {
 			return "the journalled candidate never reached candidate_ready (journal at " + rec.Transition + "): secret delivery not verified", false
 		}
 		if rec.ExpectedProxyTarget != "" {

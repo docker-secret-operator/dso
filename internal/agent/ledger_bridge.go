@@ -73,11 +73,11 @@ func journalEvidenceKind(rec *RotationState) ledger.EvidenceKind {
 	}
 	switch rec.Strategy {
 	case "restart":
-		if candidateVerified(rec.Transition) {
+		if recordCandidateVerified(rec) {
 			return ledger.EvidenceRestartVerified
 		}
 	case "rolling":
-		if candidateVerified(rec.Transition) {
+		if recordCandidateVerified(rec) {
 			return ledger.EvidenceRollingVerified
 		}
 	case "signal":
@@ -210,7 +210,7 @@ func JournalRecordFor(rec *RotationState) ledger.JournalRecord {
 	}
 	// A multi-target dispatch that was never finalised is not evidence (item g):
 	// the ledger sees a record before candidate_ready, whatever one target wrote.
-	verified, committed, signalDone := candidateVerified(rec.Transition), rec.Committed, rec.Transition == rotation.TrSignalDone
+	verified, committed, signalDone := recordCandidateVerified(rec), rec.Committed, rec.Transition == rotation.TrSignalDone
 	if dispatchUnfinished(rec) {
 		verified, committed, signalDone = false, false, false
 	}

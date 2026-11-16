@@ -207,6 +207,18 @@ func (t *TriggerEngine) openLedgerWith(dir string, km ledger.KeyMaterialSource, 
 		return
 	}
 	t.ledger = &ledgerWiring{mode: ledgerEnabled, store: s, v: v}
+	// N19: managed file delivery journals the keyed identity of the exact values it
+	// delivers (hmac:<key id>:<mac>, never plaintext or an unkeyed hash). Without an
+	// enabled ledger the function stays nil and no delivered version is recorded.
+	if t.Reloader != nil {
+		t.Reloader.DeliveredVersion = func(prov, sec string, data map[string]string) string {
+			ver, err := v.NewVersion(prov, sec, data)
+			if err != nil {
+				return ""
+			}
+			return FormatJournalSecretVersion(ver)
+		}
+	}
 	switch {
 	case res.Preserved != "":
 		t.Logger.Warn("Applied-version ledger was not usable and was preserved aside; a fresh ledger was started: every secret is re-adopted with an unknown applied version and nothing is rotated because of it",
