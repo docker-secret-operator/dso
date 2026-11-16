@@ -133,7 +133,7 @@ A durable `OperationGuard` is consulted inside `ReloaderController.TriggerReload
 
 **Rule now.** `TrCandidateReady` (and any later step: `intent_handoff`, `handoff_done`, `intent_swap`, `swap_committed`, `intent_cleanup`, `completed`) is the only acknowledgement that delivery plus health plus probe passed. A container the journal names as a candidate (journalled ID or `dso.rotation.id` label) of an unfinished record whose LAST transition is not one of those is never a verified holder (`unverifiedCandidate`, applied inside `holderState`, so recovery, orphan cleanup and the committed-rotation check all inherit it; `journalPermits` repeats it as defence in depth). Everything is preserved and the rotation is flagged `critical_error` (manual recovery). Unknown or future transition names are treated as unverified. The primary restart branch now journals `candidate_ready` BEFORE the proxy `SwapBackend` (it was after the swap and the old container's stop), so a verified replacement that took traffic is not misclassified. Rolling (candidate stays under `_dso_new_` until `intent_swap`, which follows `candidate_ready`) and the restart fallback were already ordered correctly; signal rotation has no candidate and never auto-recovers.
 
-**Deliberately not done:** automatic rollback (stop/remove the candidate, rename and start the original). It would be a new destructive recovery action that contradicts the M0 "preserve, escalate" contract for these layouts; it needs an owner decision. Consequence: after such a crash the service may be running the unverified replacement (or nothing, if it never started) until an operator acts.
+**Automatic rollback:** originally not done (it contradicted the M0 "preserve, escalate" contract and needed an owner decision). The owner has since authorised a CONTROLLED automatic rollback under positively established safety conditions; see section 6. Without those conditions the preserve-and-escalate behaviour above is unchanged.
 
 ### N21 acceptance matrix
 
@@ -154,3 +154,40 @@ A durable `OperationGuard` is consulted inside `ReloaderController.TriggerReload
 | 13 | Proxy-managed restart | pre-ready, both running | both left running, critical | `TestN21_ProxiedRestart_*` |
 
 Ledger rule for the future slice: a secret version may be recorded as applied only from a journal record whose last transition is `candidate_ready`+ (restart/rolling: preferably `swap_committed`/`completed`); `critical_error`, `rolled_back`, signal `signal_done` (adoption unverified) and any pre-ready record never qualify. Real Docker behaviour (copy-to-container atomicity, exec probe semantics, container start timing) was NOT verified by these tests.
+
+## 6. N21 controlled automatic rollback (owner decision)
+
+**Not a new subsystem.** One extra step of `recoverSingleRotation` (`internal/agent/recovery_rollback.go`) on the same rotation-ID journal record, the same ownership rules, `journalRecordFor` (F-B1), `holderState`/`candidateVerified`, `RoutingVerifier` and the same journal write path. Enabled by `AutomaticRecovery.AutomaticRollback` (set by the production startup path `performAutomaticRecovery`; the zero value keeps pure preserve-and-escalate, which is what the unchanged pre-existing N21 tests exercise).
+
+**Scope:** restart (recreation) strategy, record `in_progress` or `rollback_required`, last transition before `candidate_ready` (`intent_rename_original` .. `replacement_started`, plus `intent_rollback` to resume), exactly one original container. Rolling, signal, multi-container records, a candidate at `candidate_ready`+, a crash inside the swap and any record already `critical_error` keep the existing rules.
+
+**Automatic rollback happens ONLY when all hold** (anything else falls through to preserve + `critical_error`, the reason is appended to the error message): (1) rotation ID and journal sequence known; (2) the original is positively identified (journalled ID, inspectable, not dead, named `<service>_old_<digits>`); (3) ownership verified (agent owner id non-empty; original and candidate carry it; the record's owner matches; a candidate carrying another rotation's label is refused); (4) the original is untouched and recoverable; (5) no unresolved sibling record and no NEWER operation names the same service/containers (older RotationID never rolls back a newer one's containers), and `journalRecordFor` selects this record for the original; (6) for a proxied operation the `RoutingVerifier` must know routing and the unverified candidate must not receive traffic; (7) the candidate is unverified by the journal (never a known-good workload), at most one candidate matches, nothing else holds the real name; (8) the intent is journalled first (a failed write aborts before any change) and the outcome is journalled.
+
+**Action:** journal `intent_rollback`; stop the candidate and rename it `<service>_dso_new_<ts>` (moved aside, NEVER deleted by this code; the existing orphan-sweep rule retires it later only because the verified original holds the name); rename the original back to the real name; start it if stopped (a running, serving original is neither stopped nor restarted); verify it holds the name healthy. A failed action is undone best-effort and escalated; a restored original that is not healthy is escalated with nothing deleted. Outcome: journal `rolled_back`.
+
+**Container recovery is not secret delivery is not application recovery.** DSO never assumes the old container's external credentials are still valid. The outcome is recorded precisely: `operation_state` `rollback_container_restored_application_unverified` (previous delivered version known to the ledger: status `recovered`, ledger sees rolled back, never applied) or `rollback_container_restored_previous_secret_unavailable` (the journal/ledger cannot show the previous version, or no source is wired: status `critical_error`, `manual_recovery`, the service stays blocked, and later starts do NOT re-resolve it). The notify event is `recovery_failed` carrying the same text (there is no "partially recovered" event type); journal detail says "secret delivery was NOT rolled back or re-verified; application recovery is UNVERIFIED".
+
+### Decision table (policy -> behaviour -> test, `recovery_rollback_test.go`, `ledger_bridge_test.go`)
+
+| Policy row | Behaviour | Test |
+|---|---|---|
+| original healthy + serving | preserved, not stopped/restarted | `OriginalHealthyServingIsPreserved`, `EveryEligibleLayout` (serving original) |
+| replacement exists, delivery unverified | never promoted (never started by recovery) | `SafeRollback`, `EveryEligibleLayout` |
+| replacement failed/unverified, original recoverable | controlled rollback, nothing deleted | `SafeRollback`, `EveryEligibleLayout` (incl. partial/failed delivery) |
+| candidate verified | not rolled back; original retired as before | `VerifiedCandidateIsNotRolledBack` |
+| original missing | no invented target, critical | `BlockedWhenSafetyCannotBeEstablished/original missing` |
+| ownership ambiguous (owner mismatch, two candidates, foreign rotation label, stranger holds the name) | block, no mutation | `BlockedWhenSafetyCannotBeEstablished`, `OriginalWithForeignNameIsNotATarget` |
+| journal corrupt / unknown transition | fail closed | `CorruptJournalFailsClosed`, `UnknownTransitionIsIneligible` |
+| previous secret version unavailable | container restored, application rollback NOT claimed, critical, not re-resolved | `PreviousSecretUnavailable_ContainerRestoredApplicationNotClaimed` |
+| routing cannot be verified | no destructive handoff | `ProxiedRoutingMustBeVerified` |
+| unresolved critical_error | never rolled back, never downgraded by a sibling, stays blocked | `CriticalErrorStaysBlockedAndIsNotDowngraded` |
+| stale operation | older RotationID / unresolved sibling cannot act | `StaleOperationCannotRollBackANewerOperationsContainers` |
+| repeated recovery | second run (and a restart) is a no-op | `RepeatedRecoveryIsIdempotent`, `ResumesAfterACrashInsideTheRollback` |
+| map/list order | outcome independent of order | `OrderIndependent` |
+| restored original unhealthy | escalate, nothing deleted | `OriginalNotHealthyAfterRestore_Escalates` |
+| ledger | rolled back / failed, never applied; guard unchanged | `LedgerReconcileNeverRecordsApplied`, `LedgerPreviousSourceRules` |
+| default | off without the flag | `DisabledByDefault` |
+
+N21 acceptance matrix rows 1-3, 6, 7, 9, 12, 13 now: with the production wiring, rollback where all conditions hold (rows 1-3, 6, 7), preserve + escalate otherwise (9, 12, 13 unless routing is verified). Row 8 (crash after journal commit, before ledger reconciliation) stays covered by the ledger slice (`TestLedgerBridge_TW6_*`).
+
+**Limits.** Real Docker is unverified (rename of a running container, port release after stop, start timing); the in-process fake daemon models them. Application-level recovery is never verified. Multi-container records, rolling swap crashes and signal rotations still require an operator. A `critical_error` record produced by the ordinary path can still be moved to `recovered` at a later start when Docker proves a verified holder (existing behaviour, unchanged). N19 (managed file delivery) is a separate workstream; the rollback does not redesign delivery.
