@@ -225,6 +225,11 @@ func (ar *AutomaticRecovery) planRollback(ctx context.Context, rec *RotationStat
 			return nil, true, "the live proxy routes traffic to the unverified candidate"
 		}
 	}
+	// Invariant: recordCandidateVerified can never return true here. planRollback is only
+	// reached when rollbackTransition(rec.Transition) held, and that transition set is
+	// disjoint from candidateVerified's (TrCandidateReady and later) -- so this call's own
+	// !candidateVerified(...) check already forces false, regardless of legacyFileUnverified
+	// or any other flag recordCandidateVerified may also consult.
 	if recordCandidateVerified(rec) {
 		return nil, true, "the candidate was acknowledged ready: it is not rolled back automatically"
 	}

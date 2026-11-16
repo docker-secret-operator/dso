@@ -204,11 +204,25 @@ rotation lock nor the OperationGuard.
 | 9 | unresolved journal operation for the same workload | not consulted | the OperationGuard refuses; the gate stays closed; retried by the next pass |
 | 10 | unregistered / foreign-owned container | warn only | unchanged (skipped, gate closed); another agent's container is never touched |
 
-Mechanics: `ReconcileGatedContainers` is ONE `ContainerList` (label `dso.gate`, at most `maxGateScan` = 128 examined) per pass. A running container goes through `redeliverGated`; an exited one is only
-diagnosed. `RequestGateReconcile` coalesces any number of triggers (startup, reconnect/periodic reconciliation, cache writes while something waits) into ONE worker; `NotifyCacheWarm` costs nothing
-when no container waits. `redeliverGated` (also the Docker `start` handler): takes the same per-service lock `TriggerReload` takes (never waits; a busy service is retried by the next pass), asks the
+Mechanics: `ReconcileGatedContainers` is ONE `ContainerList` (label `dso.gate`, `All: true`) per pass. RUNNING containers and exited (gate-timed-out) artifacts each get their OWN bounded budget of at
+most `maxGateScan` = 128 examined, so exited rotation shadows/artifacts (listed via `All: true` so the exit-75 diagnostic can see them) can never crowd out a running container waiting at its gate --
+that running-container budget is served first and is what actually keeps an application from starting. Fairness across repeated passes: the running-container scan resumes just after the container ID
+it examined last (`gateScanCursor`, wrapping around the sorted ID space) rather than always re-scanning the same lexicographic prefix, so with more than `maxGateScan` running gated containers every
+one of them is eventually examined, not only the first `maxGateScan` forever. A running container goes through `redeliverGated`; an exited one is only diagnosed. `gateWaiting` bookkeeping (which
+containers are still owed a re-delivery) is derived from the full running set the single `ContainerList` call already returned, not from what the bounded scan reached this pass, so it converges every
+pass regardless of truncation. `RequestGateReconcile` coalesces any number of triggers (startup, reconnect/periodic reconciliation, cache writes while something waits) into ONE worker; `NotifyCacheWarm`
+costs nothing when no container waits. `redeliverGated` (also the Docker `start` handler): takes the same per-service lock `TriggerReload` takes (never waits; a busy service is retried by the next pass), asks the
 same OperationGuard, re-checks the rotation ownership markers after taking them, resolves the cached specs (private copies), skips a gate whose release flag already exists (idempotent), verifies
 identity/gate/tmpfs/file-set (`VerifyRunningGate`) and delivers. It never starts a stopped container, never retries a failed delivery in a loop and never fetches from a provider.
+
+**The one goroutine (`RequestGateReconcile`), ratified as an intentional exception.** The N19 follow-up plan (`docs/superpowers/plans/2026-11-16-n19-restart-ledger-followups.md`) states a constraint of "no new goroutines"; `RequestGateReconcile` starts one anyway, reviewed and
+accepted by the controller as justified. What it does: a single CAS-gated (`gateScanBusy`) coalescing worker that runs `ReconcileGatedContainers` passes in a loop, draining `gateScanPending` each
+time, and exits once no further request arrived while it ran (the "coalesce any number of triggers into one worker" behaviour above). Why it exists: the cache-warm-after-restart gap. The three fixed
+call sites that invoke reconciliation synchronously (startup after recovery settles, a Docker reconnect, and the periodic reconciliation tick) cannot reach a container whose secret becomes cacheable
+strictly BETWEEN those calls -- `NotifyCacheWarm` fires from the cache-write path itself, at an arbitrary point in time none of the three fixed call sites can predict or block on, so a background
+worker is the only way to serve that container promptly without the cache-write path blocking on a full reconciliation pass. Why it is safe: it is bounded and coalescing -- at most one pass in flight
+at a time (`gateScanBusy.CompareAndSwap`), any number of concurrent requests while a pass runs collapse into exactly one further pass (`gateScanPending`), so triggers never accumulate goroutines or
+Docker calls; `TestN19Reconcile_BoundedAndCoalesced` exercises 50 concurrent requests and asserts at most 2 passes result, and the full `internal/watcher` suite is verified clean under `go test -race`.
 
 **Timed-out gate, no restart policy.** DSO does not restart a stopped container automatically: an operator's stop must stand, and exit status 75 cannot be told apart from an application's own status
 with certainty. The warning (once per container exit, from the `die` event or the pass) names the recovery: once the secret provider is reachable run `docker start <container>`; the running agent
@@ -240,8 +254,9 @@ re-delivery of a newer cached value to one replica before its rotation is a deli
 
 Actual behaviour found: a record without `GatedDelivery` took the plain transition rule, so an unresolved legacy file-mode record at `candidate_ready` or a committed swap counted as delivery evidence (recovery
 retired the original, the ledger advanced applied). Defect: **yes** (the archive upload it implies was never verified to reach a tmpfs). Fix: the tracker derives, when it hands a record out (`StateTracker.view`),
-`legacyFileUnverified` for an UNRESOLVED (`in_progress`, `rollback_required`, `critical_error`) restart/rolling record without the gate flag whose secret is file-delivered per the CURRENT configuration
-(`StateTracker.FileModeSecret`, wired by the trigger engine); `recordCandidateVerified` is then false, so recovery preserves every workload and the evidence, does not promote the candidate or retire the
+`legacyFileUnverified` for an UNRESOLVED restart/rolling record without the gate flag whose secret is file-delivered per the CURRENT configuration (`StateTracker.FileModeSecret`, wired by the trigger engine).
+"Unresolved" here is the conservative check `view()` actually runs: any status OTHER THAN `completed`/`recovered` -- which includes the three named failure/in-flight statuses (`in_progress`,
+`rollback_required`, `critical_error`) but also an empty or otherwise unrecognized status, treated as unresolved rather than assumed safe. `recordCandidateVerified` is then false, so recovery preserves every workload and the evidence, does not promote the candidate or retire the
 original, escalates to `critical_error` (the OperationGuard keeps the service blocked) and the ledger bridge/reconcile do not advance applied. Old records keep loading; completed/recovered historical records
 stay valid (not flagged); env-mode secrets and bare trackers keep the plain rule. Limitation: a secret switched from env to file since the legacy record was written is judged by today's configuration
 (conservative: the operation stays blocked for an operator). A fallback candidate never inherits another candidate's evidence (`intent_create_candidate` resets the verdict fields; per-candidate identities are

@@ -108,14 +108,18 @@ type DoctorOptions struct {
 	// through DSO-DOCTOR-031, the central-store root-key/database custody
 	// checks. The central store has no persisted configuration of its own --
 	// every `dso central` invocation takes --db/--key-file/--key-provider
-	// explicitly -- so these checks only run when both CentralDB and
-	// CentralKeyFile are set (wired from `dso doctor`'s own
-	// --central-db/--central-key-file/--central-key-provider flags);
-	// otherwise CentralChecks reports a single informational "skipped, not
-	// configured" check. CentralKeyProvider is "file" or "passphrase" (see
-	// internal/cli/central.go's --key-provider); when "passphrase", the
-	// CentralKeyFile path is checked as the KDF-parameter file rather than a
-	// raw key file.
+	// explicitly -- so these checks are opt-in (wired from `dso doctor`'s own
+	// --central-db/--central-key-file/--central-key-provider flags) and are
+	// skipped only when NEITHER CentralDB nor CentralKeyFile is set (a single
+	// informational "skipped, not configured" check is reported instead).
+	// CentralDB and CentralKeyFile are otherwise checked INDEPENDENTLY of each
+	// other: the key-file/key-dir checks run whenever CentralKeyFile != "",
+	// and the db-file/db-dir checks run whenever CentralDB != "", so
+	// configuring only one of the two still gets that one's checks (the
+	// co-location check is the only one that needs both). CentralKeyProvider
+	// is "file" or "passphrase" (see internal/cli/central.go's
+	// --key-provider); when "passphrase", the CentralKeyFile path is checked
+	// as the KDF-parameter file rather than a raw key file.
 	CentralDB          string
 	CentralKeyFile     string
 	CentralKeyProvider string

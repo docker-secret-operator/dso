@@ -71,12 +71,14 @@ external importability cannot be disproved, nothing under `pkg/` is deleted on i
   `docs/design/n19-managed-delivery.md` section 1 states no managed path calls it; it remains for N19
   diagnostic scenarios G-I (`test/docker`) and tests. No non-test production caller was found by grep.
   Retained as diagnostic/test support.
-- `InjectedSecretSync` (same file, `tar_streamer.go:111`) is a one-line wrapper with zero callers anywhere
-  (`grep -rn InjectedSecretSync --include=*.go .`: definition only). It is clearly obsolete internal code and a
+- `InjectedSecretSync` (same file, `tar_streamer.go:111`) was a one-line wrapper with zero callers anywhere
+  (`grep -rn InjectedSecretSync --include=*.go .`: definition only). It was clearly obsolete internal code and a
   safe removal candidate (also proposed in `docs/superpowers/plans/2026-11-16-g024-dead-code-disposition.md`).
-  It was NOT removed here because `internal/rotation` is under concurrent edit by another workstream.
-  Follow-up: delete it in a change coordinated with that work; `go build ./... && go vet ./...` should stay green.
+  It has since been removed, in a change coordinated with the concurrent `internal/rotation` workstream
+  (commit `a3b2089`, "chore(rotation): remove InjectedSecretSync, a zero-caller dead wrapper (G024)");
+  `go build ./... && go vet ./...` stayed green.
 
 ## 3. Verification (this change)
-`go build ./...`, `go vet` and `go test -short` for `internal/polling` and `pkg/backend` pass; only doc
-comments were added.
+`go build ./...`, `go vet` and `go test -short` for `internal/polling` and `pkg/backend` pass; doc comments
+were added, and (per §2.5, as a coordinated follow-up) `InjectedSecretSync` was subsequently removed from
+`internal/rotation/tar_streamer.go` as a zero-caller dead wrapper (commit `a3b2089`).
