@@ -74,6 +74,23 @@
 
 RBAC/SSO/SCIM, approval workflows, multi-host coordination, Kubernetes, dynamic-secret issuing, policy engine, hosted control plane, remote API for `dso central`. Each was evaluated against ADR-001; each either duplicates what the upstream secret manager already provides or breaks the single-host, single-maintainer model. Consuming dynamic-secret *leases* from a provider may be revisited after v1.
 
+## ADR-011: Narrow local-only `dso central` lifecycle expansion (amends ADR-002)
+
+Status: ACCEPTED.
+
+Scope: local-only, no network, no new identity system. Extends the frozen
+`dso central` (ADR-002) with: immutable secret-version rollback, explicit
+historical-version retrieval, safe project/environment rename, safe
+non-cascading project/environment deletion, central CLI completion
+(JSON output, exit codes), root-key custody doctor diagnostics, and
+backup/restore/encryption regression coverage for all of the above.
+
+Not authorized by this ADR: permanent purge of secret versions, any HTTP
+or network vault API, remote authentication/authorization, RBAC, SSO,
+multi-tenancy, or any change to the central-store M2 identity/audit
+architecture. ADR-010's exclusion of a remote API for `dso central`
+remains unchanged and unamended by this decision.
+
 ---
 
 ## Owner decision table
