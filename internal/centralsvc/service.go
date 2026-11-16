@@ -421,6 +421,107 @@ func (s *Service) AddVersion(ctx context.Context, projectSlug, envSlug, name str
 	return v, nil
 }
 
+// RollbackSecret creates a brand-new, immutable version whose plaintext
+// equals an existing version's (toVersion): it is never an in-place revert,
+// and the version being rolled back from is never modified or removed.
+//
+// toVersion must resolve through the same path GetValue uses for an explicit
+// version number: store.Tx.GetVersion. That call already fails closed with
+// store.ErrVersionDisabled for a disabled source version, so rollback from a
+// disabled version is rejected with nothing appended (Review Focus #1) with
+// no extra check needed here. Rolling back from the current latest (enabled)
+// version succeeds exactly like any other source version (Review Focus #2):
+// GetVersion applies no "latest" special-casing (that rule lives only in
+// GetLatestVersion, which this method never calls).
+//
+// The historical plaintext is decrypted using exactly the sequence GetValue
+// uses (unwrapDEK + crypto.SecretAAD keyed on the OLD version's own number
+// and DEK version + crypto.Open) and re-sealed using exactly the sequence
+// AddVersion uses (the same tx.AddVersion call, whose SealFunc builds
+// crypto.SecretAAD keyed on the NEW version's number and the project's
+// current DEK version, then crypto.Seal) -- both run inside one
+// s.store.WithTx so the read, the re-seal, the append and the audit event
+// commit or roll back together. The decrypted plaintext is never returned,
+// logged, or left un-zeroed: it exists only inside this method's
+// transaction closure and is zeroed before the closure returns.
+func (s *Service) RollbackSecret(ctx context.Context, projectSlug, envSlug, name string, toVersion int, actor, comment string) (int, error) {
+	if err := s.Bind(ctx); err != nil {
+		return 0, err
+	}
+	fail := func(err error) error {
+		s.appendAuditBestEffort(ctx, store.AuditEvent{
+			EventType: store.AuditSecretRollback, Outcome: store.AuditFailure,
+			ReasonCategory: reasonCategory(err), ActorLabel: actor,
+			ProjectSlug: projectSlug, EnvironmentSlug: envSlug, SecretName: name, Version: toVersion,
+		})
+		return err
+	}
+	sc, sec, err := s.lookup(ctx, projectSlug, envSlug, name)
+	if err != nil {
+		return 0, fail(err)
+	}
+	dek, err := s.unwrapDEK(ctx, sc.project)
+	if err != nil {
+		return 0, fail(err)
+	}
+	defer crypto.Zero(dek)
+	evID, err := newID()
+	if err != nil {
+		return 0, err
+	}
+	var v int
+	// RollbackSecret runs the read of the old version, the re-seal, the new
+	// version's append, and its success audit event all inside one
+	// transaction (Gate 2/§7.1 pattern, as for CreateSecret/AddVersion/
+	// DisableVersion/DeleteSecret): a failure at any step leaves nothing
+	// behind, including no partially-applied rollback.
+	txErr := s.store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		// Mirrors GetValue's exact decrypt sequence for an explicit version
+		// number (never GetLatestVersion: rollback always names its source
+		// version explicitly).
+		rec, err := tx.GetVersion(ctx, sec.ID, toVersion)
+		if err != nil {
+			return err
+		}
+		aad, err := crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, rec.Version, rec.DEKVersion)
+		if err != nil {
+			return fmt.Errorf("building secret context: %w", err)
+		}
+		pt, err := crypto.Open(dek, rec.Nonce, rec.Ciphertext, aad)
+		if err != nil {
+			s.log.Warn("secret failed integrity verification", zap.String("project", projectSlug),
+				zap.String("environment", envSlug), zap.String("secret", name), zap.Int("version", rec.Version))
+			return ErrIntegrity
+		}
+		defer crypto.Zero(pt)
+		// Mirrors AddVersion's exact seal/append sequence: same tx.AddVersion
+		// call, same AAD construction, just the new version's own number.
+		ver, err := tx.AddVersion(ctx, sec.ID, actor, comment, func(version int) ([]byte, []byte, int, error) {
+			aad, err := crypto.SecretAAD(sc.project.ID, sc.env.ID, sec.ID, name, version, sc.project.DEKVersion)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("building secret context: %w", err)
+			}
+			nonce, ct, err := crypto.Seal(dek, pt, aad)
+			return ct, nonce, sc.project.DEKVersion, err
+		})
+		if err != nil {
+			return err
+		}
+		v = ver
+		_, err = tx.AppendAuditEvent(ctx, store.AuditEvent{
+			ID: evID, EventType: store.AuditSecretRollback, Outcome: store.AuditSuccess,
+			ActorLabel: actor, ProjectSlug: projectSlug, EnvironmentSlug: envSlug, SecretName: name, Version: ver,
+		})
+		return err
+	})
+	if txErr != nil {
+		return 0, fail(txErr)
+	}
+	s.log.Info("secret version rolled back", zap.String("project", projectSlug), zap.String("environment", envSlug),
+		zap.String("secret", name), zap.Int("from_version", toVersion), zap.Int("new_version", v), zap.String("actor", actor))
+	return v, nil
+}
+
 func (s *Service) lookup(ctx context.Context, projectSlug, envSlug, name string) (scope, store.SecretMeta, error) {
 	sc, err := s.resolve(ctx, projectSlug, envSlug)
 	if err != nil {

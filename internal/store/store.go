@@ -227,6 +227,13 @@ const (
 	AuditSecretGetReveal      AuditEventType = "secret_get_reveal"
 	AuditSecretDisableVersion AuditEventType = "secret_disable_version"
 	AuditSecretDelete         AuditEventType = "secret_delete"
+	// AuditSecretRollback records a RollbackSecret call: a new, immutable
+	// version was appended whose plaintext equals an earlier version's. It is
+	// never an in-place revert and it never carries the secret value -- only
+	// the metadata every other mutator's audit event already carries (actor,
+	// scope, and the Version field, which for this event is the NEW version
+	// number created, matching the convention AddVersion's own event uses).
+	AuditSecretRollback AuditEventType = "secret_rollback"
 	// AuditRestore records a successful `dso central restore` (Phase 2 Step
 	// 5.4, approved design/decision-resolution). It is appended, forward-only,
 	// to the RESTORED chain after the active database has been replaced and
