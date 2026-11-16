@@ -251,7 +251,8 @@ docker dso config validate
 sudo docker dso config validate
 # If errors, fix and validate again
 
-# 2. Check permissions
+# 2. Check permissions (contract: /var/lib/dso and /run/dso are root:dso 0750;
+#    /etc/dso 0775; /var/log/dso 0770 -- see docs/design/m1-ledger-reconciliation.md)
 ls -la /etc/dso /var/lib/dso /run/dso
 
 # 3. Check disk space
@@ -554,3 +555,22 @@ fi
 For runtime details, see [runtime.md](runtime.md).
 For system architecture, see [architecture.md](architecture.md).
 For CLI reference, see [cli.md](cli.md).
+
+---
+
+## Ledger disabled after an upgrade (`/var/lib/dso` is 0770)
+
+Earlier builds created `/var/lib/dso` as `root:dso` `0770`. The applied-version ledger (and the plugin trust checks) refuse a group-writable parent, so on such a host the ledger opens **disabled**. This is never silent:
+
+- the agent logs one warning at start: `Applied-version ledger DISABLED for this process` with `code=unsafe_permissions`, the unsafe `path`, `actual` and `expected` owner/mode, the `remediation` and the `degraded_behaviour`;
+- `docker dso status` shows a `LEDGER` block (`active`, `disabled (<code>)` or `not_configured`) and `docker dso doctor` reports `DSO-DOCTOR-024` (live ledger state) and `DSO-DOCTOR-025` (state-directory owner and mode);
+- while it is disabled the first observation of each secret per process is adopted without rotating (no mass rotation) and a provider change made while the agent was down may go undetected until that secret changes again. Rotation otherwise works and the rotation journal is unaffected.
+
+Fix (this one directory only; never `chown -R` / `chmod -R`):
+
+```bash
+sudo chown root:dso /var/lib/dso && sudo chmod 0750 /var/lib/dso
+sudo systemctl restart dso-agent
+```
+
+`sudo docker dso bootstrap agent` applies the same non-recursive change (it also rewrites `dso.yaml`, so review it); the setup repair engine has the equivalent action `REPAIR-STATE-001` (library only, no CLI command exposes it today). A lost key (`key_lost`) is never regenerated: restore `ledger.key` from a backup. Other codes: `corrupt_state`, `unsupported_schema` (a newer DSO wrote the ledger; upgrade the binary), `lock_held` (another agent uses the directory).

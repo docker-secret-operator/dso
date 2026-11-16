@@ -404,3 +404,35 @@ S3 does **not** depend on S4 and can start now (it still needs its own prior app
 ## 13. Limits of this note
 
 Source-verified (read in this session): the structure and ordering claims about `trigger.go`, `state_tracker.go`, `recovery.go`, `operation_guard.go`, `journal.go`, `controller.go` and `internal/ledger`. Not runtime-verified: the first-poll "dispatch every start" behaviour (read from code, not exercised), the real Docker behaviour of every window, and any timing figure. No test was run and no code changed. Rev 6.3 lives outside git and is read, not edited; pinning it into `docs/` remains the owner's call.
+
+## 14. Directory contract
+
+Every writer of the persistent-state tree must agree with this table. It is pinned by `internal/bootstrap/permissions_contract_test.go`, `internal/ledger/key_contract_linux_test.go` and the setup doctor/repair tests.
+
+| Path | Owner | Mode | Writer component |
+|---|---|---|---|
+| `/etc/dso` | `root:dso` | 0775 | bootstrap permission step (`dsoDirectoryPlan`) |
+| `/var/lib/dso` | `root:dso` (`root:root` if no `dso` group) | 0750 (accepted change b360128; was 0770) | bootstrap; setup repair `REPAIR-STATE-001`; the root agent writes inside |
+| `/var/run/dso` = `/run/dso` | `root:dso` | exactly 0750, strict | systemd `RuntimeDirectory`, the agent (`runtimedir`), bootstrap (strict verification) |
+| `/var/log/dso` | `root:dso` | 0770 | bootstrap |
+| `/var/lib/dso/state`, `/var/lib/dso/locks` | root | agent-created | rotation journal and locks (agent) |
+| `/var/lib/dso/ledger` (`ledger.DefaultKeyDir`) | root | 0700, private | ledger key provider (not bootstrap) |
+| `ledger/ledger.key` | root | 0400 (0600 accepted) | ledger key provider; never regenerated over a lost, unsafe or corrupt key |
+| `ledger/ledger.json`, `ledger.lock` | root | 0600, private | ledger store |
+| `/usr/local/lib/dso/plugins` | root | root-owned, no group/world write (0755) | bootstrap provider-plugin installer |
+
+Rules that follow from it: the ledger key provider and the plugin trust checks refuse a group- or world-writable ancestor, so `/var/lib/dso` must stay 0750; nothing under `/run/dso` is durable. Permission repair is non-recursive by construction: `bootstrap.ApplyDirectoryNoFollow` opens the one directory with `O_NOFOLLOW|O_DIRECTORY`, applies `fchown`/`fchmod` on the descriptor, refuses a symlink or non-directory, touches nothing already correct, and never visits files inside (plugins, databases, keys, user content). No code path runs a recursive chmod/chown, and none regenerates a lost key.
+
+An installation upgraded from an earlier build still has `/var/lib/dso` at 0770; the ledger then opens disabled (code `unsafe_permissions`). The agent logs one warning at start, `docker dso status` shows a `LEDGER` block, `docker dso doctor` reports `DSO-DOCTOR-024`/`-025`, and the supported fix is `sudo chown root:dso /var/lib/dso && sudo chmod 0750 /var/lib/dso` (or `sudo docker dso bootstrap agent`, which also rewrites `dso.yaml`) followed by an agent restart.
+
+## 15. Guarantees and degraded mode
+
+**Failure model.** Single host, one agent process, crash-stop (power loss, SIGKILL, OOM) with durable local files. Provider reads, Docker operations and the two durable stores (rotation journal and ledger) are separate files with no cross-file atomicity (section 4.1). No consensus, no clock assumption, no byzantine behaviour.
+
+**What is guaranteed.**
+- The rotation journal (M0) is the only rotation authority. The ledger is advisory: it decides whether the engine *wants* a rotation; every dispatch still goes through the journal and the per-target operation guard, and the ledger never bypasses either.
+- Rotation is **at-least-once** with journal/ledger reconciliation, not exactly-once. After a crash between the journal's terminal write and the ledger update, the startup reconcile converges the ledger from the journal-carried version (O-2); a crash before the journal start leaves nothing to reconcile and the next poll decides again. Where the journal cannot prove delivery (a record deleted, a claim the journal does not support) the ledger keeps `applied` unknown rather than inventing it, and a re-rotation is possible. There is **no distributed exactly-once guarantee**: a rotation can be repeated after a crash, and consumers must tolerate the same secret version being applied twice.
+- A new or recovered ledger with an existing workload records `desired = V` and `applied = UNKNOWN` with every replica adoption unknown; it never records `applied = V` without a verified delivery. A signal reload is delivery-verified but adoption **unverified**, never adoption-verified (N19, file mode likewise).
+- An unusable ledger (unsafe permissions, lost or corrupt key, newer schema, lock held, unsupported platform) never causes a rotation, never deletes or rewrites the evidence, and never regenerates a lost key.
+
+**Degraded mode (ledger disabled).** Durable version tracking is unavailable for that process. The first observation of each secret in the process is adopted as the in-memory baseline without rotating (no mass rotation); a later change in the same process rotates as before. **Limitation:** a provider change made *while the agent was down* is not detected on restart, because there is no durable baseline to compare against; it is picked up only at the next change of that secret. The same applies to a rotation interrupted by a crash: the journal still recovers it, but the ledger cannot reconcile or suppress a repeat. The state is announced once at start (warning with code, path, actual versus expected, remediation, degraded behaviour), in `docker dso status` and in `DSO-DOCTOR-024`; it is never silent.
