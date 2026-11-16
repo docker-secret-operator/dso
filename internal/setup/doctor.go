@@ -103,6 +103,22 @@ type DoctorOptions struct {
 	// StateDir overrides the persistent-state directory checked by
 	// DSO-DOCTOR-025 (default /var/lib/dso, agent mode only).
 	StateDir string
+
+	// CentralDB, CentralKeyFile and CentralKeyProvider drive DSO-DOCTOR-026
+	// through DSO-DOCTOR-031, the central-store root-key/database custody
+	// checks. The central store has no persisted configuration of its own --
+	// every `dso central` invocation takes --db/--key-file/--key-provider
+	// explicitly -- so these checks only run when both CentralDB and
+	// CentralKeyFile are set (wired from `dso doctor`'s own
+	// --central-db/--central-key-file/--central-key-provider flags);
+	// otherwise CentralChecks reports a single informational "skipped, not
+	// configured" check. CentralKeyProvider is "file" or "passphrase" (see
+	// internal/cli/central.go's --key-provider); when "passphrase", the
+	// CentralKeyFile path is checked as the KDF-parameter file rather than a
+	// raw key file.
+	CentralDB          string
+	CentralKeyFile     string
+	CentralKeyProvider string
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
@@ -119,6 +135,7 @@ type Doctor struct {
 	service  *ServiceChecks
 	rotation *RotationChecks
 	state    *StateDirChecks
+	central  *CentralChecks
 }
 
 // NewDoctor constructs a Doctor wired to real OS hooks.
@@ -155,6 +172,7 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 		service:  newServiceChecks(),
 		rotation: newRotationChecks(opts.SocketPath, opts.ConfigPath),
 		state:    newStateDirChecks(opts.Mode, opts.StateDir),
+		central:  newCentralChecks(opts),
 	}
 }
 
@@ -170,6 +188,7 @@ func (d *Doctor) Run(ctx context.Context) *DoctorResult {
 	checks = append(checks, d.service.run(ctx)...)
 	checks = append(checks, d.rotation.run(ctx)...)
 	checks = append(checks, d.state.run(ctx)...)
+	checks = append(checks, d.central.run(ctx)...)
 
 	return &DoctorResult{
 		OverallStatus: doctorComputeOverall(checks),

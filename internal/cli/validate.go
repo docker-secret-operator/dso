@@ -88,7 +88,7 @@ func runValidate(ctx context.Context, jsonOut bool, composeFlag string) error {
 	// checks are deliberately excluded: those are doctor's environment
 	// concerns, not this project's configuration correctness.
 	var checks []setup.DoctorCheck
-	for _, c := range runEnvironmentChecks(ctx, setupMode, cfgPath, providerNames) {
+	for _, c := range runEnvironmentChecks(ctx, setupMode, cfgPath, providerNames, "", "", "") {
 		if c.Category == setup.DoctorCatConfiguration || c.Category == setup.DoctorCatProvider {
 			checks = append(checks, c)
 		}

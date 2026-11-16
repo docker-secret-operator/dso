@@ -24,6 +24,7 @@ import (
 	"github.com/docker-secret-operator/dso/internal/centralsvc"
 	"github.com/docker-secret-operator/dso/internal/crypto"
 	"github.com/docker-secret-operator/dso/internal/securefs"
+	"github.com/docker-secret-operator/dso/internal/setup"
 	"github.com/docker-secret-operator/dso/internal/store"
 	"github.com/docker-secret-operator/dso/internal/store/sqlite"
 )
@@ -279,7 +280,11 @@ database files this run created are removed; fix the cause and re-run with
 					return fmt.Errorf("refusing to initialise: %w", err)
 				}
 			}
-			if sameDir(dbDir, keyDir) && !allowColocated {
+			colocated, err := setup.SameDirectory(dbDir, keyDir)
+			if err != nil {
+				return fmt.Errorf("refusing to initialise: %w", err)
+			}
+			if colocated && !allowColocated {
 				return errors.New("the key file is in the same directory as the database; a copy of that directory (backup, snapshot) would contain both. " +
 					"Store the key in a different directory (ideally on separate storage -- DSO cannot verify that), or pass --allow-colocated-key to accept this for testing")
 			}
@@ -310,7 +315,6 @@ database files this run created are removed; fix the cause and re-run with
 
 			// ---- key ----
 			var kp crypto.KeyProvider
-			var err error
 			if keyExists {
 				if kp, err = f.keyProvider(cmd); err != nil { // validates it loads, with the passphrase if applicable
 					return fmt.Errorf("existing key cannot be used: %w", err)
@@ -412,18 +416,6 @@ func keptKeyError(keyFile string, err error) error {
 	return fmt.Errorf("%w\n\nThe root key at %s was NOT deleted or changed. No usable database exists yet. "+
 		"After fixing the cause, re-run `dso central init ... --use-existing-key` to continue with the same key. "+
 		"Do not delete the key unless you are certain no database was ever created with it", err, keyFile)
-}
-
-// sameDir compares directories after resolving symbolic links, so a symlink
-// cannot be used to put both files in one place while appearing separate.
-func sameDir(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	if errA != nil || errB != nil {
-		ra, _ = filepath.Abs(a)
-		rb, _ = filepath.Abs(b)
-	}
-	return ra == rb
 }
 
 func tabs(cmd *cobra.Command) *tabwriter.Writer {

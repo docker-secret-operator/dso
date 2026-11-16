@@ -58,7 +58,7 @@ func TestDoctorJSON_SingleDocumentNoANSINoSecretsAndExitMatchesStatus(t *testing
 func TestDoctorAndValidate_WriterFailuresArePropagated(t *testing.T) {
 	isolatedDoctorEnv(t)
 	for _, asJSON := range []bool{true, false} {
-		if err := runDoctorTo(context.Background(), statusFailWriter{}, "default", asJSON); err == nil || !strings.Contains(err.Error(), "synthetic write failure") {
+		if err := runDoctorTo(context.Background(), statusFailWriter{}, "default", asJSON, "", "", ""); err == nil || !strings.Contains(err.Error(), "synthetic write failure") {
 			// a FAIL result is also an error; the write failure must come first
 			t.Errorf("doctor json=%v: writer failure not propagated, got %v", asJSON, err)
 		}
