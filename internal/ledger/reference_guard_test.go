@@ -38,6 +38,7 @@ var ledgerImportAllowlist = map[string]bool{
 	"internal/agent/ledger_wiring.go":         true, // S6 trigger-engine wiring (design 12.5 step 6): the only production user
 	"internal/agent/ledger_wiring_test.go":    true, // S6 engine tests (real Store + real StateTracker, Docker-free)
 	"internal/agent/managed_rotation_test.go": true, // M1 managed-operation boundary tests (manual/automatic/partial delivery) on the S6 harness
+	"internal/agent/n19_convergence_test.go":  true, // N19 re-delivery convergence tests on the S6 harness (test-only importer)
 }
 
 // forbiddenOutsideNames may not be referenced (as a selector) by any file
