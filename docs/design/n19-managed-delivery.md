@@ -1,6 +1,6 @@
 # N19: managed file delivery through a startup gate (design and implementation note)
 
-Status: implemented on `feature/m2-development`, uncommitted at the time of writing. **N19 is NOT closed.**
+Status: **IMPLEMENTED — REAL DOCKER QUALIFICATION DEFERRED** on `feature/m2-development`, uncommitted at the time of writing. **N19 is NOT closed.**
 The premise (Docker's archive endpoint may write into a created container's persistent writable layer instead of
 the tmpfs) is **RUNTIME-UNVERIFIED**; this change removes the archive endpoint from the managed path and makes the
 replacement fail closed. Real Docker qualification is deferred (no approved isolated Docker environment).
@@ -80,7 +80,7 @@ The wait polls `sleep 0.1`, falling back to `sleep 1` ticks if fractional sleep 
 **Health checks and restart policies.** Docker's first HEALTHCHECK probe runs one `interval` after start; delivery normally finishes
 in well under a second, so no probe observes the gate. If delivery hangs, the container may report unhealthy and `WaitReady` rejects
 it; the candidate is discarded. A candidate cloned with `always`/`unless-stopped`/`on-failure` that exits at the gate timeout is
-restarted by the daemon and the gate re-arms on an empty tmpfs: the Docker `start` event handler (`redeliverGated`, section 10) re-delivers from the cache. [U]
+restarted by the daemon and the gate re-arms on an empty tmpfs: the Docker `start` event handler and the bounded reconciliation pass (`redeliverGated` / `ReconcileGatedContainers`, sections 10 and 11) re-deliver from the cache. [U]
 
 ## 4. Verifying the running container and the mount before delivery
 
@@ -127,7 +127,7 @@ journal and ledger (only keyed `hmac:` identities and counts; file names and val
 introduced by delivery (none; file secrets are excluded from `Config.Env` as before); command-line arguments (gate args hold only paths,
 counts and the timeout; the injector passes the secret on stdin); generated startup scripts (the gate script is a constant); logs and
 metrics (error values carry exit reasons, never content). The candidate's `docker inspect` shows the wrapped ENTRYPOINT (paths only).
-Residual: `docker inspect` of a promoted container keeps the wrapper; the probe checks existence/non-empty, not readability by the app uid. [T for the constant script, create body, journal; U for runtime]
+Residual: `docker inspect` of a promoted container keeps the wrapper; the probe checks existence, non-empty and (section 11) readability by the user the probe execs as; for a root container that last check is trivially true. [T for the constant script, create body, journal; U for runtime]
 
 ## 7. Strategy differences and honest downtime
 
@@ -153,7 +153,7 @@ recovery. Rolling candidates (`_dso_new_`) are retired by the existing `retireSa
 
 Ledger "delivery verified" only for a record that passes `recordCandidateVerified`, so a gated operation needs the complete chain (`secrets_delivered` before
 `candidate_ready`). `RecordRotationOutcome`/startup reconcile are unchanged (`startManagedOperation`/`finishRotation`, the evidence rule is strengthened, not weakened).
-`DeliveredVersions` are recorded for audit and cross-checking; the ledger still applies the dispatch's own `SecretVersion` (O-2). Interrupted reconciliation converges
+`DeliveredVersions` are recorded and, since section 11 (B), CROSS-CHECKED: the ledger applies the dispatch's own `SecretVersion` (O-2) only when the journal's per-candidate delivery evidence names that version for every delivering candidate. Interrupted reconciliation converges
 (W6) from the journal exactly as before [T]. The per-spec identity is computed from the exact map handed to the injector with the ledger's key
 (`ReloaderController.DeliveredVersion`, wired in `openLedgerWith`); with no ledger the field is empty and the ledger cannot apply a version (existing behaviour).
 
@@ -175,12 +175,84 @@ post-readiness probe of **every** delivered file in all three paths. Regression 
 - Existing journals load unchanged; records without the new fields keep the legacy rule. A journal written by this version and read by an older binary would not know the
   new transitions (older recovery preserves unknown transitions: fail closed).
 - **Re-delivery after a later restart of a promoted gated container** (restart policy, `docker restart`, host reboot): the gate re-arms on an empty tmpfs.
-  `ReloaderController.redeliverGated` (Docker `start` event, label `dso.gate`) resolves the cached values (`resolveFileSpecs`), verifies identity/gate/tmpfs
-  (`VerifyRunningGate`), skips when the release flag already exists, skips candidates a rotation owns (`gateOwned`/proxy-pending: it must never release a gate
-  before that rotation's evidence is durable), delivers and releases. It is a re-delivery, not a rotation: **no journal record, no ledger claim**. Any failure
-  (cache empty after an agent restart, not a registered target, delivery error) leaves the gate closed; the gate exits 75 after its bound and the restart policy
-  retries. After an agent restart the cache is empty until the next provider fetch, so a container restarted in that window stays down (fail closed) until the cache is
-  warm. [T for the handler decisions; U at runtime]
+  Details, the guards it now takes and the agent-start reconciliation are in section 11 (A, C). It is a re-delivery, not a rotation: **no journal record, no ledger claim**.
 - **Not implemented (remaining work):** (1) real Docker qualification (every [U] fact, including the premise itself); (2) shell-less image support (static helper
   binary, design alternative F4, not authorised); (3) a per-config gate timeout (`DefaultGateTimeout` is a constant); (4) an application-level "started" signal
-  (phase 7 stays folded into "released"); (5) provider fetch on re-delivery when the cache is empty.
+  (phase 7 stays folded into "released"); (5) provider fetch on re-delivery when the cache is empty (deliberately not done: the cache-warm trigger of section 11 delivers as soon as the
+  normal poll caches a value; there is no extra provider request).
+
+## 11. Owner-approved follow-ups (restart re-delivery, version identity, legacy records)
+
+Same status: **IMPLEMENTED — REAL DOCKER QUALIFICATION DEFERRED**. Everything below is [S]/[T]; every behaviour that depends on Docker's runtime is [U]. No new daemon, sidecar, journal,
+shell-less helper or plaintext fallback was added.
+
+### A. Restart re-delivery reliability (code: `internal/watcher/managed_delivery.go`)
+
+Actual behaviour BEFORE the change (read from source): the only trigger was the Docker `start` event, and the handler needed a warm cache and a registered target; it took neither the per-service
+rotation lock nor the OperationGuard.
+
+| # | Case | Before | Now |
+|---|---|---|---|
+| 1 | `docker start` before the agent subscribes | never served until the gate exited 75 and a restart policy produced a new start event | the startup pass (after recovery settled) and every reconnect/10-minute reconciliation serve it |
+| 2 | agent starts with an empty cache | start event: fail closed, no retry | container is remembered as waiting; the first cache write (`writeCache` -> `NotifyCacheWarm`) triggers one coalesced pass that delivers |
+| 3 | provider temporarily unavailable | same as 2 | same as 2; the pass reads the cache only, never the provider; the normal poll's own backoff is unchanged |
+| 4 | gate times out (120 s, exit 75) before the first fetch | stopped/restarted by the daemon only | restart policy: the daemon restarts it and the start event re-delivers. No policy: **not restarted by DSO** (see below) |
+| 5 | no restart policy | stays stopped silently | stays stopped; ONE warning per exit names the recovery command (below) |
+| 6 | repeated restarts while the provider is down | each start event logged an error | same, no provider request, no goroutine per event; waiting entries are one per container |
+| 7 | agent restarts while a promoted container waits at the gate | not served (no event) | served by the startup pass |
+| 8 | rotation-owned candidate waiting at the gate | protected only by in-memory markers (empty after an agent restart) | in-memory markers + rotation artifact names + the OperationGuard (an unresolved/critical record, or recovery not settled, blocks the service) + the service lock |
+| 9 | unresolved journal operation for the same workload | not consulted | the OperationGuard refuses; the gate stays closed; retried by the next pass |
+| 10 | unregistered / foreign-owned container | warn only | unchanged (skipped, gate closed); another agent's container is never touched |
+
+Mechanics: `ReconcileGatedContainers` is ONE `ContainerList` (label `dso.gate`, at most `maxGateScan` = 128 examined) per pass. A running container goes through `redeliverGated`; an exited one is only
+diagnosed. `RequestGateReconcile` coalesces any number of triggers (startup, reconnect/periodic reconciliation, cache writes while something waits) into ONE worker; `NotifyCacheWarm` costs nothing
+when no container waits. `redeliverGated` (also the Docker `start` handler): takes the same per-service lock `TriggerReload` takes (never waits; a busy service is retried by the next pass), asks the
+same OperationGuard, re-checks the rotation ownership markers after taking them, resolves the cached specs (private copies), skips a gate whose release flag already exists (idempotent), verifies
+identity/gate/tmpfs/file-set (`VerifyRunningGate`) and delivers. It never starts a stopped container, never retries a failed delivery in a loop and never fetches from a provider.
+
+**Timed-out gate, no restart policy.** DSO does not restart a stopped container automatically: an operator's stop must stand, and exit status 75 cannot be told apart from an application's own status
+with certainty. The warning (once per container exit, from the `die` event or the pass) names the recovery: once the secret provider is reachable run `docker start <container>`; the running agent
+then delivers the cached secrets and releases the gate. (There is no `dso` command for this.) Remaining limitation: with an empty cache a container restarted by policy may exhaust several 120 s gate
+cycles before the first successful provider fetch; it is served at the first cache write after that.
+
+### B. Dispatch identity vs actual delivery (code: `ledger_bridge.go`, `state_tracker.go`)
+
+Actual behaviour found: the dispatch version (journal `SecretVersion`, from the value observed at dispatch) and the delivered values were NOT bound. The strategies resolve their delivery specs from the
+cache inside `TriggerReload`, after the observation; a newer observation in between (cache moved V2 -> V3) delivered V3 while the ledger recorded V2, because the bridge used `SecretVersion`/hint and only
+stored `DeliveredVersions`. Defect: **yes**. (Within one `TriggerReload` the injector map, `FileSecretSpec.Data` copy and `Version` are one value: the identity is computed from the exact copy handed to
+the injector.)
+
+Fix: the journal keeps the keyed identities per delivering candidate (`DeliveredByCandidate`, never reset by a later candidate; additive, omitempty) and the bridge (`deliveredEvidenceMatches`, used by
+`EvidenceForRotation` and `JournalRecordFor`) accepts a version as delivered only if EVERY delivering candidate's evidence names it. A mismatch, or a gated delivery that named no identity, is "no evidence":
+applied never advances and the entry stays unresolved (the next observation redelivers the desired version through the managed path). A newly fetched value is never used to prove an earlier delivery;
+partial delivery (`delivery_partial`) never sets `DeliveryVerified`. Recovery's own notion (`recordCandidateVerified`) is unchanged: a candidate that delivered V3 is still a healthy, verified workload.
+
+### C. Re-delivery vs the ledger
+
+A re-delivery makes no journal record and no ledger claim (the watcher has no ledger handle). Safe behaviour under the M1 ledger contract, by case: same verified version: nothing to record, applied
+stays valid. A different currently-cached version (observed, its rotation pending/deferred): the restarted container receives it, the ledger's applied version stays at the older verified one (stale, never
+ahead), `NeedsRotation` keeps the desired version pending and the next managed operation replaces and records it. Applied version unknown: unchanged (unknown never means changed). Partial multi-target / multi-replica:
+each replica is served on its own start/pass with the then-cached copy; the ledger never advances from a re-delivery. The focused correction: a re-delivery used to run beside a rotation and beside an unresolved
+operation; it now holds the service lock and honours the OperationGuard (section 11 A), so a different version is never delivered while a managed operation or an unresolved one owns the service. Limitation: a
+re-delivery of a newer cached value to one replica before its rotation is a delivery the ledger does not see; the entry remains "applied < desired" until the managed rotation runs.
+
+### D. Legacy (pre-N19) journal records
+
+Actual behaviour found: a record without `GatedDelivery` took the plain transition rule, so an unresolved legacy file-mode record at `candidate_ready` or a committed swap counted as delivery evidence (recovery
+retired the original, the ledger advanced applied). Defect: **yes** (the archive upload it implies was never verified to reach a tmpfs). Fix: the tracker derives, when it hands a record out (`StateTracker.view`),
+`legacyFileUnverified` for an UNRESOLVED (`in_progress`, `rollback_required`, `critical_error`) restart/rolling record without the gate flag whose secret is file-delivered per the CURRENT configuration
+(`StateTracker.FileModeSecret`, wired by the trigger engine); `recordCandidateVerified` is then false, so recovery preserves every workload and the evidence, does not promote the candidate or retire the
+original, escalates to `critical_error` (the OperationGuard keeps the service blocked) and the ledger bridge/reconcile do not advance applied. Old records keep loading; completed/recovered historical records
+stay valid (not flagged); env-mode secrets and bare trackers keep the plain rule. Limitation: a secret switched from env to file since the legacy record was written is judged by today's configuration
+(conservative: the operation stays blocked for an operator). A fallback candidate never inherits another candidate's evidence (`intent_create_candidate` resets the verdict fields; per-candidate identities are
+kept only for the section-B cross-check).
+
+### Bounded checks
+
+Release marker vs user file: `.dso-gate-release` is reserved (`ValidateFileSecretSpecs`). Stale marker: the gate also waits for every file, the flag path must equal the one this delivery writes, and (new)
+every file the gate waits for must be written by this delivery (`VerifyRunningGate`). Exact container identity and rotation label are checked before any byte is written (re-delivery has no rotation
+label to check; identity, `dso.gate`, shell PID 1 and the tmpfs are). All destination files are probed before the flag is written; the flag is written only after `secrets_delivered` is durable (rotation) or
+after probing (re-delivery has no journal). Ownership: files are `0400`, written as the container user, chown to `inject.uid` only when that user can; a numeric non-root user must equal `inject.uid` (checked
+before any change); the probe now also requires readability by the probing user (meaningful for a non-root app user, trivially true for root); never world-readable (injector `umask 077` + `chmod 0400` before
+publish). A gate cannot be released by a concurrent unrelated operation: the service lock and OperationGuard are held/consulted, and rotation candidates are marked in memory and by name. Repeated recovery and
+repeated passes are idempotent (an existing release flag ends the attempt).

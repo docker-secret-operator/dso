@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,6 +115,15 @@ type ReloaderController struct {
 	// gateOwned holds candidate IDs whose delivery a rotation is running (see
 	// markGateOwned).
 	gateOwned sync.Map
+
+	// Bounded gated-container reconciliation (managed_delivery.go): gateWaiting holds the
+	// IDs of running gated containers that could not be served yet (values unavailable,
+	// service busy or blocked); gateScanBusy/gateScanPending coalesce triggers into one
+	// worker; gateDiag de-duplicates the timed-out-gate diagnostic.
+	gateWaiting     sync.Map
+	gateScanBusy    atomic.Bool
+	gateScanPending atomic.Bool
+	gateDiag        sync.Map
 
 	// deliveryOps, when set (tests only), replaces the real managed-delivery
 	// operations (hardened exec injector, probe, inspect).
@@ -507,6 +517,11 @@ func (r *ReloaderController) reconcileRuntimeState(ctx context.Context) {
 		}
 	}
 
+	// N19: containers already waiting at their startup gate (agent restart, reconnect,
+	// missed start event) are served by ONE coalesced bounded pass, not only by a future
+	// start event. Cache + service lock + operation guard only.
+	r.RequestGateReconcile(ctx)
+
 	r.Logger.Info("Runtime reconciliation complete",
 		zap.Int("total_targets", targetCount),
 		zap.Int("orphaned", orphanedCount),
@@ -682,6 +697,11 @@ func (r *ReloaderController) handleContainerEvent(ctx context.Context, msg event
 		}
 		if r.ProxyManager != nil {
 			r.ProxyManager.DeregisterContainer(msg.Actor.ID)
+		}
+		// N19: the gate's own timeout status (75) on a promoted container: report the
+		// recovery command when no restart policy will bring it back (never restarted here).
+		if msg.Action == "die" && msg.Actor.Attributes[rotation.GateLabel] != "" && msg.Actor.Attributes["exitCode"] == strconv.Itoa(rotation.GateExitTimeout) {
+			r.diagnoseTimedOutGate(ctx, msg.Actor.ID, strings.TrimPrefix(msg.Actor.Attributes["name"], "/"), msg.Actor.Attributes)
 		}
 	}
 	return nil
