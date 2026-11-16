@@ -293,4 +293,4 @@ A promoted gated container that restarts is re-delivered whatever the cache curr
 - Multi-replica: the entry is per service and applied moves only in `ledgerTerminal` after a verified managed operation. A replica that received the newer value through re-delivery does not make the workload report it as applied.
 - Two paths intentionally keep the hash: a rotation that reached no targets (`ErrNoTargetsRotated`, the ledger records a block cleared by a configuration change) and the "another operation holds the entry" skip (not reachable as a successful-but-unrecorded dispatch because the per-service lock defers the second operation).
 
-Re-delivery is never treated as application adoption. Deterministic tests: `internal/agent/n19_convergence_test.go`.
+Re-delivery is never treated as application adoption. Deterministic tests: `TestConvergence_*` in `internal/agent/ledger_bridge_test.go`.
