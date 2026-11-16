@@ -2,9 +2,24 @@
 
 package docker
 
+// SECTION 2: GATED-DELIVERY FUNCTIONAL (see the section map in n19_diag_helpers_test.go).
+//
 // N19 diagnostic scenarios K, L, M: the REAL managed rotation (the production
 // ReloaderController: label discovery, ownership gate, rolling / restart
 // strategies, health gate, file probes) of a FILE-mode secret.
+//
+// What the production path does now, and so what a real run is expected to show IF the
+// design's premise holds (all of it is RUNTIME-UNVERIFIED until this has been run against
+// an approved isolated daemon; compiling is not executing):
+//
+//	candidate created with its ENTRYPOINT wrapped by the startup gate, tmpfs declared
+//	-> started; the gate (not the application) is PID 1 and the application has NOT run
+//	-> inspect verifies identity, rotation label, gate, tmpfs at every destination
+//	-> secret delivered through the exec injector (stdin, atomic, RequireTmpfs), probed
+//	-> delivery evidence journalled, THEN the release flag is written, THEN the application
+//	   starts and readiness/handoff proceed. A candidate never runs without its secret.
+//	Expected evidence: the canary is in the RUNNING tmpfs of the replacement and of the
+//	promoted container, never in the writable layer (that is scenario I's question).
 //
 // How they are driven (same as test/docker/scenarios_test.go S3 and
 // signal_rotation_test.go): a plain labelled container (dso.reloader, dso.owner,
@@ -12,16 +27,18 @@ package docker
 // a real ReloaderController started in-process against the guarded daemon, its
 // cache supplied through fakeCache, and TriggerReload. No agent, Vault or Compose
 // is needed to drive the code paths:
-//   K: strategy "rolling"  -> rotation.RollingStrategy.Execute (rolling_strategy.go,
-//      step 3.5 StreamSecretToContainer before ContainerStart, step 5.5 ExecProbeFiles).
-//   L: strategy "restart"  -> the controller's recreation branch
-//      (controller.go ~1679: StreamSecretToContainer on the created replacement,
-//      ~1762: ExecProbe after start).
-// LIMITATION (documented, not hidden): controller.go ~2394 (executeSimpleRestart)
-// is unexported and is reached only as the FALLBACK of a rolling failure that is
-// NOT health-class (a probe rejection wraps ErrUnhealthy and skips it), so it is
-// not driven here; the Compose-project recreation (ComposePath != "") and the root
-// agent are not driven either: that needs a compose file plus the agent process.
+//   K: strategy "rolling"  -> rotation.RollingStrategy.Execute (gated candidate, step
+//      delivery via rotation.Delivery, post-readiness probe of every delivered file).
+//   L: strategy "restart"  -> the controller's recreation branch (gated replacement,
+//      deliverGatedRestart, probeSpecs after start).
+//   M: readiness gate with an application that never reads the file.
+// LIMITATION (documented, not hidden): executeSimpleRestart (the rolling FALLBACK) is
+// unexported and is reached only as the FALLBACK of a rolling failure that is NOT
+// health-class or delivery-refusal, so it is not driven here; the Compose-project
+// recreation (ComposePath != "") and the root agent are not driven either: that needs a
+// compose file plus the agent process. Re-delivery after a daemon restart, the
+// agent-start reconciliation, crash points inside the gated phases and dispatch-vs-delivered
+// identity have NO scenario here (sections 4-6 of the map): they are Docker-free tests only.
 //
 // While the rotation runs, a poller observes every NEW container of the scenario
 // (the shadow / replacement) directly: its file state inside the running tmpfs, its
@@ -318,7 +335,7 @@ func TestN19Diag_K_ManagedRollingFileRotation(t *testing.T) {
 }
 
 // L: managed RECREATE (strategy "restart") rotation of a file-mode secret: the
-// controller's own create -> StreamSecretToContainer -> start -> probe path.
+// controller's own gated create -> start -> verify -> exec delivery -> release -> probe path.
 func TestN19Diag_L_ManagedRecreateFileRotation(t *testing.T) {
 	lv := n19Begin(t, "L")
 	rot := n19ManagedRotation(t, "L", lv, "restart", n19App, false)

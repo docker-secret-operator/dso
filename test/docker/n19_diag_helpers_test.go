@@ -4,11 +4,39 @@ package docker
 
 // N19 DIAGNOSTIC helpers (docs/audit/42-N19-DIAGNOSTIC-PLAN.md).
 //
-// Finding N19: file-mode managed delivery uses rotation.StreamSecretToContainer
+// Finding N19: file-mode managed delivery USED rotation.StreamSecretToContainer
 // (the Docker archive endpoint) on CREATED-NOT-STARTED containers whose
 // /run/secrets/dso is a declared tmpfs. Daemon source suggests the archive lands
 // in the writable layer and is hidden once the tmpfs mounts at start. This file
 // holds the shared machinery of the TestN19Diag_* scenarios.
+//
+// STATUS OF THE PRODUCT PATH (docs/design/n19-managed-delivery.md): the managed
+// rotation paths NO LONGER call the archive endpoint. They create the candidate with a
+// startup gate, verify it, deliver through the hardened exec injector (RequireTmpfs),
+// probe, journal the evidence and only then release the gate. That replacement is
+// IMPLEMENTED BUT RUNTIME-UNVERIFIED: nothing below has been run against a real daemon
+// for it, and compiling these files (go vet -tags dockerint) is not execution.
+//
+// SECTION MAP (the 14 scenarios and their names are unchanged; run-all.sh lists them):
+//
+//	1 LEGACY ARCHIVE-BEHAVIOUR DIAGNOSTICS   A B C D E F H I J and the minimal reproducer R
+//	  (what the Docker archive endpoint does to a created container; these keep answering the
+//	  premise question and are NOT a test of the managed path)
+//	2 GATED-DELIVERY FUNCTIONAL              K L M (n19_diag_managed_test.go): the real
+//	  ReloaderController rotation with the gated candidate + exec delivery
+//	3 RUNTIME MOUNT VERIFICATION             D (tmpfs mounted at start) and G (exec injector,
+//	  RequireTmpfs) are the recorded runtime facts the gate's inspect/tmpfs checks rely on
+//	4 CRASH/RECOVERY                         test/docker/crash_recovery_test.go (TestCrash*,
+//	  -tags 'dockerint dsofault'); no gated-phase crash scenario is driven against a real
+//	  daemon yet (the Docker-free journal/recovery tests cover the phases)
+//	5 RESTART RE-DELIVERY                    NO guarded scenario yet: re-delivery after a
+//	  daemon restart, agent-start reconciliation and the exit-75 diagnostic are covered by
+//	  Docker-free tests only (internal/watcher n19_reconcile_test.go); still [U] at runtime
+//	6 SECRET-VERSION RECONCILIATION          NO guarded scenario yet: dispatch-vs-delivered
+//	  identity and legacy-record handling are covered by Docker-free tests only
+//	  (internal/agent n19_followup_test.go)
+//
+// A section with no guarded scenario must not be reported as executed or qualified.
 //
 // These are DIAGNOSTICS, not assertions of the hoped-for behaviour: they RECORD
 // what the daemon does, one structured evidence line per observation:

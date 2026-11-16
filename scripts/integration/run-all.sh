@@ -71,6 +71,12 @@ INJECT_TESTS=(TestInjectSecurity_01_ManagedContainerVerifiedTmpfs TestInjectSecu
   TestInjectSecurity_15_RepeatedInjection TestInjectSecurity_16_NoPlaintextInPersistentLocations
   TestInjectSecurity_17_NoSecretInLogsOrMetadata TestInjectSecurity_18_PatchedEngineNormalBehaviour)
 # N19 diagnostic (test/docker/n19_diag_*_test.go; docs/audit/42): every one must RUN (not skip) and record evidence.
+# Sections (see the map in test/docker/n19_diag_helpers_test.go): LEGACY ARCHIVE-BEHAVIOUR diagnostics A B C D E F H I J R
+# (the Docker archive endpoint; the managed path no longer uses it), GATED-DELIVERY FUNCTIONAL K L M (the real gated
+# lifecycle: gate, exec delivery, journalled evidence, release), RUNTIME MOUNT VERIFICATION D G. Crash/recovery,
+# restart re-delivery and secret-version reconciliation have NO guarded scenario here (Docker-free tests only). All 14 are
+# kept; vetting them (-tags dockerint) compiles them and proves nothing about execution. The N19 premise stays UNVERIFIED
+# until this step has really run.
 # The tests record observations, they do not assert the hoped-for outcome: a demonstrated N19 failure is a PASSING
 # diagnostic; the verdict (n19_verdict) is computed from the evidence by m0_n19_verdict.
 N19_DIAG_TESTS=(TestN19Diag_A_CreatedNotStartedWithTmpfs TestN19Diag_B_ArchiveInjectBeforeStart TestN19Diag_C_LayerInspectionWithoutStart

@@ -2,9 +2,19 @@
 
 package docker
 
-// N19 diagnostic scenarios A-J and R (see n19_diag_helpers_test.go for the
-// contract: RECORD, never assert the hoped-for outcome). Scenarios K-M (managed
-// rotation through the real controller) are in n19_diag_managed_test.go.
+// SECTION 1 / 3 (see the section map in n19_diag_helpers_test.go).
+//
+// LEGACY ARCHIVE-BEHAVIOUR DIAGNOSTICS: scenarios A-F, H-J and R exercise the Docker
+// ARCHIVE endpoint (rotation.StreamSecretToContainer, `docker cp`) on created and running
+// containers. The managed rotation no longer uses that endpoint; these scenarios stay
+// because they are the only runtime evidence about the premise (archive uploads into a
+// created container's writable layer vs the tmpfs) and they must keep answering it. They
+// RECORD, never assert the hoped-for outcome (see n19_diag_helpers_test.go for the
+// contract). Scenarios D and G also belong to RUNTIME MOUNT VERIFICATION: D records how the
+// declared tmpfs appears at start (the fact VerifyRunningGate relies on) and G records the
+// hardened exec injector with RequireTmpfs (the delivery primitive of the gated path).
+// Scenarios K-M (managed rotation through the real controller, gated delivery) are in
+// n19_diag_managed_test.go. Compiled by `go vet -tags dockerint`; NOT executed by it.
 
 import (
 	"context"
@@ -362,7 +372,7 @@ func TestN19Diag_J_RemovalAndScopedCleanup(t *testing.T) {
 	n19Emit(t, o)
 }
 
-// R: minimal pure-Docker reproducer. NO DSO code: docker create + docker cp (tar on
+// R: LEGACY ARCHIVE-BEHAVIOUR reproducer (section 1). Minimal pure-Docker reproducer. NO DSO code: docker create + docker cp (tar on
 // stdin, same absolute header name production builds) + docker start, through the
 // guarded endpoint. It supplements the production-path scenarios; it does not
 // replace them and does not feed the n19_verdict.
