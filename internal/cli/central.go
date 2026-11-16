@@ -674,6 +674,30 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 		},
 	}
 
+	var rollbackComment string
+	rollback := &cobra.Command{
+		Use: "rollback <project> <environment> <name> <version>", Args: cobra.ExactArgs(4),
+		Short: "Create a new version whose value equals an older version's (never an in-place revert)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n, err := strconv.Atoi(args[3])
+			if err != nil || n < 1 {
+				return errors.New("version must be a positive integer")
+			}
+			svc, closeFn, err := f.open(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeFn()
+			newVersion, err := svc.RollbackSecret(cmd.Context(), args[0], args[1], args[2], n, actorName(), rollbackComment)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Rolled back %s to version %d (created version %d)\n", args[2], n, newVersion)
+			return nil
+		},
+	}
+	rollback.Flags().StringVar(&rollbackComment, "comment", "", "free-text note stored with the new version (not secret)")
+
 	del := &cobra.Command{
 		Use: "delete <project> <environment> <name>", Args: cobra.ExactArgs(3), Short: "Soft-delete a secret (versions retained)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -692,7 +716,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 
 	parent.AddCommand(valueCmd("create", "Create a secret (value from a hidden prompt or stdin)", false),
 		valueCmd("add-version", "Add a new immutable version (value from a hidden prompt or stdin)", true),
-		get, list, versions, disable, del)
+		get, list, versions, disable, rollback, del)
 	return parent
 }
 
