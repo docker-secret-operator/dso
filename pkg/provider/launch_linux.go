@@ -68,7 +68,7 @@ func prepareVerifiedLaunch(manifestPath, pluginPath string) (*launchTarget, erro
 	if err != nil {
 		return nil, fmt.Errorf("memfd_create unavailable, cannot launch verified plugin: %w", err)
 	}
-	wf := os.NewFile(uintptr(mfd), "memfd:dso-plugin")
+	wf := os.NewFile(uintptr(mfd), "memfd:dso-plugin") // #nosec G115 -- mfd is a small non-negative descriptor returned by memfd_create
 	defer func() { _ = wf.Close() }()
 
 	h := sha256.New()

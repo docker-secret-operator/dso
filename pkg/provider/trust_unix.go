@@ -21,7 +21,7 @@ var trustedOwner = func(uid uint32) bool {
 // (O_NOFOLLOW). O_NONBLOCK keeps a FIFO planted at the path from hanging the
 // daemon; the regular-file check that follows rejects it.
 func openNoFollow(path string) (*os.File, error) {
-	// #nosec G304 -- path is the validated plugin or manifest path
+	// #nosec G304 G703 -- path is the validated plugin or manifest path; the descriptor is fstat-checked afterwards
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 }
 
@@ -65,7 +65,7 @@ func checkDirChainTrust(dir string) error {
 		return fmt.Errorf("cannot resolve directory %s: %w", dir, err)
 	}
 	for cur, first := real, true; ; first = false {
-		fi, err := os.Stat(cur)
+		fi, err := os.Stat(cur) // #nosec G703 -- cur walks the symlink-resolved plugin directory chain; nothing is read or written
 		if err != nil {
 			return fmt.Errorf("cannot stat directory %s: %w", cur, err)
 		}

@@ -185,11 +185,12 @@ func (d *Dir) OpenRegular(name string, flags int, perm os.FileMode, fp FilePolic
 	}
 
 	// A validated regular file: restore blocking semantics, keeping O_APPEND.
+	// #nosec G115 -- fd is a small non-negative descriptor from open(2)
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&unix.O_APPEND); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("runtimedir: clear O_NONBLOCK on %s: %w", full, err)
 	}
-	return os.NewFile(uintptr(fd), full), nil
+	return os.NewFile(uintptr(fd), full), nil // #nosec G115 -- fd is a small non-negative descriptor from open(2)
 }
 
 // fileProblem returns why st describes an untrustworthy file, or "".
