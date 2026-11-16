@@ -253,6 +253,25 @@ const (
 	// and verified; the backup file itself never contains an event describing
 	// its own creation.
 	AuditBackup AuditEventType = "backup"
+	// AuditProjectRename records a successful or failed RenameProject call.
+	// ProjectSlug carries the slug the project was known by when the request
+	// was resolved (not the new slug): this matches every other mutator's
+	// audit event, which always records the identifying scope the caller
+	// supplied, not a result value.
+	AuditProjectRename AuditEventType = "project_rename"
+	// AuditEnvironmentRename records a successful or failed RenameEnvironment
+	// call. ProjectSlug/EnvironmentSlug carry the scope the request resolved,
+	// not the new slug.
+	AuditEnvironmentRename AuditEventType = "environment_rename"
+	// AuditProjectDelete records a successful or failed DeleteProject call.
+	// Failure includes the non-empty-project rejection (ErrConflict), which
+	// this event type makes auditable even though nothing was removed.
+	AuditProjectDelete AuditEventType = "project_delete"
+	// AuditEnvironmentDelete records a successful or failed DeleteEnvironment
+	// call. Failure includes the non-empty-environment rejection
+	// (ErrConflict), which this event type makes auditable even though
+	// nothing was removed.
+	AuditEnvironmentDelete AuditEventType = "environment_delete"
 )
 
 // Fixed reason categories for backup/restore audit events. These are the only

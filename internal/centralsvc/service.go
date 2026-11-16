@@ -747,3 +747,178 @@ func (s *Service) ListEnvironments(ctx context.Context, projectSlug string) ([]s
 	}
 	return s.store.ListEnvironments(ctx, p.ID)
 }
+
+// RenameProject changes a project's slug and name. It resolves projectSlug to
+// an id first (the same pattern every other mutator uses), then wraps the
+// store's RenameProject in s.store.WithTx together with its success audit
+// event (Gate 2 pattern). A slug collision comes back from the store as
+// store.ErrConflict (internal/store/sqlite's mapErr already keeps the raw
+// SQLite unique-constraint text out of it); reasonCategory's existing
+// errors.Is(err, store.ErrConflict) case turns that into the "conflict"
+// category here, so no SQLite-flavored message ever reaches the caller.
+func (s *Service) RenameProject(ctx context.Context, projectSlug, newSlug, newName, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		s.appendAuditBestEffort(ctx, store.AuditEvent{
+			EventType: store.AuditProjectRename, Outcome: store.AuditFailure,
+			ReasonCategory: reasonCategory(err), ActorLabel: actor, ProjectSlug: projectSlug,
+		})
+		return err
+	}
+	p, err := s.store.GetProjectBySlug(ctx, projectSlug)
+	if err != nil {
+		return fail(err)
+	}
+	evID, err := newID()
+	if err != nil {
+		return err
+	}
+	txErr := s.store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.RenameProject(ctx, p.ID, newSlug, newName); err != nil {
+			return err
+		}
+		_, err := tx.AppendAuditEvent(ctx, store.AuditEvent{
+			ID: evID, EventType: store.AuditProjectRename, Outcome: store.AuditSuccess,
+			ActorLabel: actor, ProjectSlug: projectSlug,
+		})
+		return err
+	})
+	if txErr != nil {
+		return fail(txErr)
+	}
+	s.log.Info("project renamed", zap.String("project", projectSlug), zap.String("new_slug", newSlug), zap.String("actor", actor))
+	return nil
+}
+
+// RenameEnvironment changes an environment's slug and name, scoped to
+// projectSlug. It resolves both to ids first via s.resolve (the same
+// resolver AddVersion/DisableVersion/DeleteSecret use), then wraps the
+// store's RenameEnvironment in s.store.WithTx together with its success
+// audit event. A same-project slug collision surfaces as store.ErrConflict,
+// mapped to the "conflict" reasonCategory exactly as RenameProject's does.
+func (s *Service) RenameEnvironment(ctx context.Context, projectSlug, envSlug, newSlug, newName, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		s.appendAuditBestEffort(ctx, store.AuditEvent{
+			EventType: store.AuditEnvironmentRename, Outcome: store.AuditFailure,
+			ReasonCategory: reasonCategory(err), ActorLabel: actor,
+			ProjectSlug: projectSlug, EnvironmentSlug: envSlug,
+		})
+		return err
+	}
+	sc, err := s.resolve(ctx, projectSlug, envSlug)
+	if err != nil {
+		return fail(err)
+	}
+	evID, err := newID()
+	if err != nil {
+		return err
+	}
+	txErr := s.store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.RenameEnvironment(ctx, sc.env.ID, newSlug, newName); err != nil {
+			return err
+		}
+		_, err := tx.AppendAuditEvent(ctx, store.AuditEvent{
+			ID: evID, EventType: store.AuditEnvironmentRename, Outcome: store.AuditSuccess,
+			ActorLabel: actor, ProjectSlug: projectSlug, EnvironmentSlug: envSlug,
+		})
+		return err
+	})
+	if txErr != nil {
+		return fail(txErr)
+	}
+	s.log.Info("environment renamed", zap.String("project", projectSlug), zap.String("environment", envSlug),
+		zap.String("new_slug", newSlug), zap.String("actor", actor))
+	return nil
+}
+
+// DeleteProject removes a project. It resolves projectSlug to an id first,
+// then wraps the store's DeleteProject in s.store.WithTx together with its
+// success audit event. The store rejects a non-empty project with
+// store.ErrConflict; that rejection is itself audited here as a FAILURE
+// event (ReasonCategory "conflict") even though nothing was removed, so a
+// delete attempt against a project that still has environments leaves a
+// record.
+func (s *Service) DeleteProject(ctx context.Context, projectSlug, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		s.appendAuditBestEffort(ctx, store.AuditEvent{
+			EventType: store.AuditProjectDelete, Outcome: store.AuditFailure,
+			ReasonCategory: reasonCategory(err), ActorLabel: actor, ProjectSlug: projectSlug,
+		})
+		return err
+	}
+	p, err := s.store.GetProjectBySlug(ctx, projectSlug)
+	if err != nil {
+		return fail(err)
+	}
+	evID, err := newID()
+	if err != nil {
+		return err
+	}
+	txErr := s.store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.DeleteProject(ctx, p.ID); err != nil {
+			return err
+		}
+		_, err := tx.AppendAuditEvent(ctx, store.AuditEvent{
+			ID: evID, EventType: store.AuditProjectDelete, Outcome: store.AuditSuccess,
+			ActorLabel: actor, ProjectSlug: projectSlug,
+		})
+		return err
+	})
+	if txErr != nil {
+		return fail(txErr)
+	}
+	s.log.Info("project deleted", zap.String("project", projectSlug), zap.String("actor", actor))
+	return nil
+}
+
+// DeleteEnvironment removes an environment, scoped to projectSlug. It
+// resolves both to ids first via s.resolve, then wraps the store's
+// DeleteEnvironment in s.store.WithTx together with its success audit event.
+// The store rejects a non-empty environment (including one with only
+// soft-deleted secrets still referencing it) with store.ErrConflict; that
+// rejection is audited as a FAILURE event (ReasonCategory "conflict") even
+// though nothing was removed.
+func (s *Service) DeleteEnvironment(ctx context.Context, projectSlug, envSlug, actor string) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		s.appendAuditBestEffort(ctx, store.AuditEvent{
+			EventType: store.AuditEnvironmentDelete, Outcome: store.AuditFailure,
+			ReasonCategory: reasonCategory(err), ActorLabel: actor,
+			ProjectSlug: projectSlug, EnvironmentSlug: envSlug,
+		})
+		return err
+	}
+	sc, err := s.resolve(ctx, projectSlug, envSlug)
+	if err != nil {
+		return fail(err)
+	}
+	evID, err := newID()
+	if err != nil {
+		return err
+	}
+	txErr := s.store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.DeleteEnvironment(ctx, sc.env.ID); err != nil {
+			return err
+		}
+		_, err := tx.AppendAuditEvent(ctx, store.AuditEvent{
+			ID: evID, EventType: store.AuditEnvironmentDelete, Outcome: store.AuditSuccess,
+			ActorLabel: actor, ProjectSlug: projectSlug, EnvironmentSlug: envSlug,
+		})
+		return err
+	})
+	if txErr != nil {
+		return fail(txErr)
+	}
+	s.log.Info("environment deleted", zap.String("project", projectSlug), zap.String("environment", envSlug), zap.String("actor", actor))
+	return nil
+}
