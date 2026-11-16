@@ -80,6 +80,9 @@ type lbRig struct {
 	res   ledger.OpenResult
 	st    *StateTracker
 	f     *recFixture // set when a fake daemon runs the real AutomaticRecovery
+	// lastRID is the rotation id of the most recent journalStart: the engine
+	// finishes a dispatch by ITS rotation id (F-S6-1), not by provider:secret:ids.
+	lastRID string
 }
 
 func lbLedgerDir(t *testing.T) string {
@@ -294,6 +297,7 @@ func lbSteps(strategy string) []string {
 
 // journalStart is step 3: StartRotationWithID through the real tracker.
 func (r *lbRig) journalStart(rid string, fl lbFlow) error {
+	r.lastRID = rid
 	return r.st.StartRotationWithID(rid, lbProvider, lbSecret, fl.orig, "")
 }
 
@@ -335,7 +339,7 @@ func (r *lbRig) correlate(rid string, ver ledger.Version, startErr error) error 
 // finishOK is step 6 on success (finishRotation -> CompleteRotation).
 func (r *lbRig) finishOK(fl lbFlow) {
 	r.t.Helper()
-	if err := r.st.CompleteRotation(lbProvider, lbSecret, fl.orig); err != nil {
+	if err := r.st.CompleteRotationID(r.lastRID); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -872,15 +876,16 @@ func TestLedgerBridge_TW2_CrashAfterJournalStartBeforeCorrelate(t *testing.T) {
 	}
 }
 
-// FINDING (W2 with a same-key predecessor): StartRotationWithID upserts by
-// provider:secret:originalIDs, so a dispatch whose original container ids equal
-// the previous successful dispatch's (signal keeps its containers) REPLACES the
-// previous completed record. A crash before Correlate then leaves the ledger
-// citing a rotation the journal no longer holds; it is recent, so rule R-B
-// downgrades the verified D1 claim to unknown. The engine still wants exactly
-// the one rotation it wanted anyway (D2 observed), so no extra rotation, but
-// the applied D1 fact is lost until the next verified delivery.
-func TestLedgerBridge_TW2_SameJournalKeyPredecessor_Finding(t *testing.T) {
+// F-B2 (fixed by F-S6-1): this test used to pin the DEFECT. StartRotationWithID
+// upserted by provider:secret:originalIDs, so a dispatch whose original container
+// ids equal the previous successful dispatch's (signal keeps its containers)
+// REPLACED the previous completed record; a crash before Correlate then left the
+// ledger citing a rotation the journal no longer held, and rule R-B downgraded
+// the verified D1 claim to unknown. Records are now keyed by rotation identity, so
+// the completed predecessor stays in the journal (bounded by the 7-day retention),
+// the D1 claim stays supported (no R-B), and the engine still dispatches exactly the
+// one wanted rotation.
+func TestLedgerBridge_TW2_SameContainerIDsPredecessorRetained_FB2(t *testing.T) {
 	r := newLBRig(t, nil)
 	d1 := r.ver("one")
 	r.observe(d1, lbLive("o1"))
@@ -891,18 +896,17 @@ func TestLedgerBridge_TW2_SameJournalKeyPredecessor_Finding(t *testing.T) {
 	if err := r.journalStart("rot-s1", sig); err != nil {
 		t.Fatal(err)
 	}
-	if r.record("rot-s0") != nil {
-		t.Fatal("expected the same-key upsert to replace the predecessor record")
+	if rec := r.record("rot-s0"); rec == nil || rec.Status != "completed" || rec.Transition != rotation.TrSignalDone {
+		t.Fatalf("the completed predecessor must be retained with its evidence: %+v", rec)
 	}
 	r.crash()
 	_ = r.st.MarkRecoveredRecord(r.record("rot-s1"))
 	rep := r.reconcileTwice()
-	if !hasRule(rep, "R-B") {
-		t.Fatalf("rules %v", rules(rep))
+	if hasRule(rep, "R-B") {
+		t.Fatalf("the D1 claim is still supported by the retained predecessor, rules %v", rules(rep))
 	}
-	e := r.entry()
-	if e.Applied != nil || e.State != ledger.EntryFailed {
-		t.Fatalf("the unconfirmed D1 claim is downgraded to unknown: %+v", e)
+	if e := r.entry(); !appliedIs(e, d1) {
+		t.Fatalf("the verified D1 claim must survive: %+v", e)
 	}
 	if !r.wouldDispatch() {
 		t.Fatal("the wanted rotation is still dispatched exactly once")

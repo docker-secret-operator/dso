@@ -277,17 +277,14 @@ func InterruptCauseFor(rec *RotationState) ledger.InterruptCause {
 	return ledger.CauseUnresolved
 }
 
-// JournalRecordByID returns a copy of the journal record of rotationID, or nil.
+// JournalRecordByID returns a copy of the journal record of rotationID, or nil. The
+// record is looked up by operation identity; an identity that is ambiguous in a
+// migrated legacy journal yields nil (never an arbitrary one of several records).
 func JournalRecordByID(st *StateTracker, rotationID string) *RotationState {
 	if st == nil || rotationID == "" {
 		return nil
 	}
-	for _, r := range st.snapshotRecords() {
-		if r.RotationID == rotationID {
-			return r
-		}
-	}
-	return nil
+	return st.recordByID(rotationID)
 }
 
 // CorrelateAfterJournalStart writes the ledger's delivery-requested hint for a

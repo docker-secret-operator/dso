@@ -73,7 +73,8 @@ func sentence(s string) string {
 func (st *StateTracker) unresolvedFor(keys []string) *RotationState {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
-	for k, r := range st.states {
+	for _, k := range st.sortedKeys() {
+		r := st.states[k]
 		if r.Status != "critical_error" && !(r.Status == "in_progress" && st.inherited[k]) {
 			continue
 		}

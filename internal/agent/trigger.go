@@ -642,7 +642,7 @@ func (t *TriggerEngine) ExecuteRotationDecision(providerName, secretName string,
 					// citation). The value is retried on the next poll. The
 					// non-durable record is dropped from memory (F-B3).
 					t.rollbackHash(cacheKey, newHash)
-					_ = t.StateTracker.DeleteState(providerName, secretName, originalContainerIDs)
+					_ = t.StateTracker.DeleteStateID(rotationID)
 					t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, 0, fmt.Errorf("rotation not started: the journal could not record it: %w", err))
 					return
 				}
@@ -683,7 +683,7 @@ func (t *TriggerEngine) ExecuteRotationDecision(providerName, secretName string,
 			// of treating this failed attempt as a successful "no change" baseline.
 			t.rollbackHash(cacheKey, newHash)
 			if t.StateTracker != nil {
-				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
+				_ = t.StateTracker.MarkRollbackID(rotationID)
 			}
 			t.ledgerTerminal(outcome.plan, rotationID)
 			t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), err)
@@ -727,7 +727,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 			// Nothing to recover: the busy targets were never touched and any
 			// others finished their own rotation. Leaving "in_progress" would
 			// make crash recovery treat this as an interrupted rotation.
-			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
+			_ = t.StateTracker.DeleteStateID(o.rotationID)
 		}
 		t.ledgerTerminal(o.plan, o.rotationID)
 		if t.Server != nil {
@@ -740,7 +740,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		t.Logger.Warn("No matched container was rotated (no rotating strategy); not reporting success",
 			zap.String("secret", o.secretName))
 		if t.StateTracker != nil {
-			_ = t.StateTracker.DeleteState(o.providerName, o.secretName, o.containerIDs)
+			_ = t.StateTracker.DeleteStateID(o.rotationID)
 		}
 		t.ledgerTerminal(o.plan, o.rotationID)
 		return
@@ -748,7 +748,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		t.Logger.Warn("Rotation failed after async completion", zap.String("secret", o.secretName), zap.Error(asyncErr))
 		t.rollbackHash(o.cacheKey, o.newHash)
 		if t.StateTracker != nil {
-			_ = t.StateTracker.MarkRollback(o.providerName, o.secretName, o.containerIDs)
+			_ = t.StateTracker.MarkRollbackID(o.rotationID)
 		}
 		t.ledgerTerminal(o.plan, o.rotationID)
 		// Notification is emitted AFTER the authoritative state
@@ -758,7 +758,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		return
 	}
 	if t.StateTracker != nil {
-		if err := t.StateTracker.CompleteRotation(o.providerName, o.secretName, o.containerIDs); err != nil {
+		if err := t.StateTracker.CompleteRotationID(o.rotationID); err != nil {
 			t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
 		}
 	}

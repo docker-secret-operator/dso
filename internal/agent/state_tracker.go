@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,12 @@ type RotationState struct {
 	StartTime             time.Time `json:"start_time"`
 	LastUpdate            time.Time `json:"last_update"`
 	ErrorMessage          string    `json:"error_message,omitempty"` // For critical_error status
+
+	// key is the record's slot in StateTracker.states. It is never persisted: it is
+	// derived from the record's identity on load (see normalizeLoaded) so that a
+	// stale or cloned snapshot can address exactly the record it was taken from,
+	// including preserved legacy records that are not addressable by RotationID.
+	key string
 }
 
 // clone returns a deep copy. The tracker hands out clones, never its live records:
@@ -109,6 +117,10 @@ type StateTracker struct {
 	// one is working on them. The operation guard treats such a record as an
 	// unresolved operation until recovery resolves it.
 	inherited map[string]bool
+
+	// migrationLegacy holds the exact bytes of a legacy-shaped rotations.json until
+	// the migrated file has replaced it (see backupLegacyJournal).
+	migrationLegacy []byte
 }
 
 // Corrupt reports whether the persisted state could not be read at startup, and
@@ -139,6 +151,77 @@ func NewStateTracker(stateDir string, logger *zap.Logger) (*StateTracker, error)
 	return st, nil
 }
 
+// Operation identity (F-S6-1).
+//
+// A journal record is one OPERATION and is identified by its RotationID, the
+// identity the trigger engine mints per dispatch and hands to the strategies through
+// the context. The record lives at opKey(RotationID); every completion, rollback,
+// recovery and delete call addresses it by that identity. The former
+// provider:secret:original-container-ids key is not an identity (two dispatches of
+// one secret share it, as do successive signal rotations, whose container ids never
+// change) and is never written any more; it only survives as the lookup rule of the
+// deprecated key-based wrappers below, which refuse to act when it is ambiguous.
+//
+// What stays out of the identity on purpose: the project, service, owner and
+// strategy are attributes OF the operation (ServiceID, OwnerID, Strategy), not part
+// of its identity, because one dispatch legitimately covers several services of the
+// same secret under one RotationID (see the ledger's delivery unit and the S6
+// report). The operation guard keeps matching on those attributes.
+const journalKeyPrefix = "journal:"
+
+func opKey(rotationID string) string { return journalKeyPrefix + rotationID }
+
+var (
+	// ErrRotationNotFound: no record carries this rotation identity.
+	ErrRotationNotFound = errors.New("rotation record not found")
+	// ErrRotationIDInUse: a record with this rotation identity already exists; a
+	// new operation never overwrites an existing one.
+	ErrRotationIDInUse = errors.New("rotation id is already in use")
+	// ErrRotationIdentityAmbiguous: the identity is shared by several preserved
+	// legacy records (or by a legacy record whose key contradicts its content).
+	// Nothing is modified; an operator must review the preserved records.
+	ErrRotationIdentityAmbiguous = errors.New("rotation identity is ambiguous in the journal; operator review required")
+)
+
+// byID returns the live record whose identity is rotationID, or nil. Only an
+// identity-sound record (stored at opKey(its own RotationID)) qualifies. The caller
+// must hold st.mu.
+func (st *StateTracker) byID(rotationID string) *RotationState {
+	if rotationID == "" {
+		return nil
+	}
+	if r := st.states[opKey(rotationID)]; r != nil && r.RotationID == rotationID {
+		return r
+	}
+	return nil
+}
+
+// lookupErr says why byID found nothing: the identity is unknown, or it exists only
+// in preserved, non-addressable legacy records (fail closed). The caller must hold
+// st.mu.
+func (st *StateTracker) lookupErr(rotationID string) error {
+	if rotationID == "" {
+		return fmt.Errorf("%w: empty rotation id", ErrRotationNotFound)
+	}
+	for _, r := range st.states {
+		if r.RotationID == rotationID {
+			return fmt.Errorf("%w: %q", ErrRotationIdentityAmbiguous, rotationID)
+		}
+	}
+	return fmt.Errorf("%w: %q", ErrRotationNotFound, rotationID)
+}
+
+// recordByID returns a copy of the record of rotationID, or nil (also nil when the
+// identity is ambiguous).
+func (st *StateTracker) recordByID(rotationID string) *RotationState {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	if r := st.byID(rotationID); r != nil {
+		return r.clone()
+	}
+	return nil
+}
+
 // StartRotation marks a rotation as in progress
 func (st *StateTracker) StartRotation(providerName, secretName, originalContainerID, newContainerID string) error {
 	return st.StartRotationWithID("", providerName, secretName, originalContainerID, newContainerID)
@@ -159,6 +242,12 @@ func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName
 // in the FormatJournalSecretVersion encoding "hmac:<key id>:<mac>": never a
 // secret value, never an unkeyed hash. Anything else is refused and nothing is
 // recorded. Older journals without the field load unchanged (omitempty).
+//
+// The new record is stored under its own rotation identity and NEVER replaces any
+// other record: not an in-flight operation of the same secret, not a completed
+// predecessor whose evidence the ledger or recovery still needs (F-B2), not an
+// unresolved one. A rotation id that is already present is refused (nothing is
+// modified).
 func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion string) error {
 	if secretVersion != "" && !validJournalHMACVersion(secretVersion) {
 		return errors.New("journal secret version must be a keyed HMAC identity (hmac:<key id>:<mac>)")
@@ -168,9 +257,15 @@ func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secre
 	if rotationID == "" {
 		rotationID = newRotationID()
 	}
+	if st.byID(rotationID) != nil {
+		return fmt.Errorf("%w: %q", ErrRotationIDInUse, rotationID)
+	}
+	if err := st.lookupErr(rotationID); errors.Is(err, ErrRotationIdentityAmbiguous) {
+		return err
+	}
 
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	state := &RotationState{
+	key := opKey(rotationID)
+	st.states[key] = &RotationState{
 		ProviderName:         providerName,
 		SecretName:           secretName,
 		OriginalContainerID:  originalContainerID,
@@ -182,62 +277,170 @@ func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secre
 		Status:               "in_progress",
 		StartTime:            time.Now(),
 		LastUpdate:           time.Now(),
+		key:                  key,
 	}
-
-	// Never overwrite an UNRESOLVED record (critical_error, or in_progress inherited
-	// from a previous process): it is the durable evidence the operation guard
-	// blocks on and that the operator needs. Re-key it under its own identity so the
-	// new dispatch gets a fresh slot (and the key-based finishRotation of a dispatch
-	// the guard refuses cannot delete it).
-	if old, ok := st.states[key]; ok && (old.Status == "critical_error" || (old.Status == "in_progress" && st.inherited[key])) {
-		keepKey := "journal:" + old.RotationID
-		if old.RotationID == "" {
-			keepKey = fmt.Sprintf("preserved:%s:%d", key, time.Now().UnixNano())
-		}
-		st.states[keepKey] = old
-		if st.inherited[key] {
-			delete(st.inherited, key)
-			st.inherited[keepKey] = true
-		}
-	}
-	st.states[key] = state
 	return st.persistState()
 }
 
-// CompleteRotation marks a rotation as completed
+// CompleteRotationID marks the rotation rotationID completed. It touches only that
+// record: a stale completion of an older operation cannot complete a newer one. An
+// operator-required critical_error is never turned into "completed" by this call.
+func (st *StateTracker) CompleteRotationID(rotationID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state := st.byID(rotationID)
+	if state == nil {
+		return st.lookupErr(rotationID)
+	}
+	return st.completeLocked(state)
+}
+
+func (st *StateTracker) completeLocked(state *RotationState) error {
+	if state.Status == "critical_error" {
+		return nil
+	}
+	state.Status = "completed"
+	state.Phase = "completed"
+	state.LastUpdate = time.Now()
+	return st.persistState()
+}
+
+// MarkRollbackID marks the rotation rotationID as requiring rollback. The engine
+// calls this for ANY dispatch error, after the strategy has already journalled its
+// own verdict. A critical_error (an operator is required, e.g. a partially published
+// signal rotation) must never be downgraded to an ordinary, non-blocking failed
+// attempt: that would silently lift the guard.
+func (st *StateTracker) MarkRollbackID(rotationID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state := st.byID(rotationID)
+	if state == nil {
+		return st.lookupErr(rotationID)
+	}
+	return st.rollbackLocked(state)
+}
+
+func (st *StateTracker) rollbackLocked(state *RotationState) error {
+	if state.Status == "critical_error" {
+		return nil
+	}
+	state.Status = "rollback_required"
+	state.LastUpdate = time.Now()
+	return st.persistState()
+}
+
+// DeleteStateID removes the record of rotationID (a dispatch that never ran: its
+// targets were busy, blocked or absent, or its start could not be recorded durably).
+// It removes only that record and refuses to remove an operator-required
+// critical_error record, which is durable evidence.
+func (st *StateTracker) DeleteStateID(rotationID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state := st.byID(rotationID)
+	if state == nil {
+		return st.lookupErr(rotationID)
+	}
+	return st.deleteLocked(state)
+}
+
+func (st *StateTracker) deleteLocked(state *RotationState) error {
+	if state.Status == "critical_error" {
+		return fmt.Errorf("rotation %q is critical_error and is not deleted: it is evidence an operator needs", state.RotationID)
+	}
+	delete(st.states, state.key)
+	delete(st.inherited, state.key)
+	return st.persistState()
+}
+
+// MarkRecoveredID / MarkCriticalErrorID update the record of rotationID.
+func (st *StateTracker) MarkRecoveredID(rotationID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state := st.byID(rotationID)
+	if state == nil {
+		return st.lookupErr(rotationID)
+	}
+	state.Status = "recovered"
+	state.LastUpdate = time.Now()
+	return st.persistState()
+}
+
+func (st *StateTracker) MarkCriticalErrorID(rotationID, errorMsg string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state := st.byID(rotationID)
+	if state == nil {
+		return st.lookupErr(rotationID)
+	}
+	state.Status = "critical_error"
+	state.ErrorMessage = errorMsg
+	state.LastUpdate = time.Now()
+	return st.persistState()
+}
+
+// resolveLegacy maps the deprecated (provider, secret, original container ids)
+// triple to exactly one record, or fails closed. Candidates are the records whose
+// own fields carry that triple (never a map key). Among them the OPEN ones
+// (in_progress of this process, rollback_required, and with includeUnresolved also
+// critical_error and inherited in_progress) are the only valid targets of a
+// transition; if exactly one is open it is the target, if several are open the call
+// is ambiguous and nothing is modified. With none open, a single remaining candidate
+// is the target, several are ambiguous. Not found is (nil, nil), as before. The
+// caller must hold st.mu.
+func (st *StateTracker) resolveLegacy(providerName, secretName, originalContainerID string, includeUnresolved bool) (*RotationState, error) {
+	var all, open []*RotationState
+	for k, r := range st.states {
+		if r.ProviderName != providerName || r.SecretName != secretName || r.OriginalContainerID != originalContainerID {
+			continue
+		}
+		unresolved := r.Status == "critical_error" || (r.Status == "in_progress" && st.inherited[k])
+		if unresolved && !includeUnresolved {
+			continue
+		}
+		all = append(all, r)
+		if unresolved || r.Status == "in_progress" || r.Status == "rollback_required" {
+			open = append(open, r)
+		}
+	}
+	switch {
+	case len(open) == 1:
+		return open[0], nil
+	case len(open) > 1:
+		return nil, fmt.Errorf("%w: %d open operations of %s:%s", ErrRotationIdentityAmbiguous, len(open), providerName, secretName)
+	case len(all) == 1:
+		return all[0], nil
+	case len(all) > 1:
+		return nil, fmt.Errorf("%w: %d operations of %s:%s", ErrRotationIdentityAmbiguous, len(all), providerName, secretName)
+	}
+	return nil, nil
+}
+
+// CompleteRotation marks a rotation as completed.
+//
+// Deprecated: identifies the operation by (provider, secret, container ids), which is
+// not an identity. Use CompleteRotationID. Acts only when the triple resolves to
+// exactly one record.
 func (st *StateTracker) CompleteRotation(providerName, secretName, originalContainerID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	if state, ok := st.states[key]; ok {
-		state.Status = "completed"
-		state.Phase = "completed"
-		state.LastUpdate = time.Now()
-		return st.persistState()
+	state, err := st.resolveLegacy(providerName, secretName, originalContainerID, false)
+	if state == nil {
+		return err
 	}
-	return nil
+	return st.completeLocked(state)
 }
 
-// MarkRollback marks a rotation as requiring rollback
+// MarkRollback marks a rotation as requiring rollback.
+//
+// Deprecated: use MarkRollbackID (see CompleteRotation).
 func (st *StateTracker) MarkRollback(providerName, secretName, originalContainerID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	if state, ok := st.states[key]; ok {
-		// The engine calls this for ANY dispatch error, after the strategy has already
-		// journalled its own verdict. A critical_error (an operator is required, e.g. a
-		// partially published signal rotation) must never be downgraded to an
-		// ordinary, non-blocking failed attempt: that would silently lift the guard.
-		if state.Status == "critical_error" {
-			return nil
-		}
-		state.Status = "rollback_required"
-		state.LastUpdate = time.Now()
-		return st.persistState()
+	state, err := st.resolveLegacy(providerName, secretName, originalContainerID, false)
+	if state == nil {
+		return err
 	}
-	return nil
+	return st.rollbackLocked(state)
 }
 
 // GetPendingRotations returns all rotations that require recovery
@@ -247,7 +450,8 @@ func (st *StateTracker) GetPendingRotations() []*RotationState {
 
 	var pending []*RotationState
 	now := time.Now()
-	for _, state := range st.states {
+	for _, key := range st.sortedKeys() {
+		state := st.states[key]
 		// Include in_progress rotations older than 5 minutes (assume crashed)
 		if state.Status == "in_progress" && now.Sub(state.LastUpdate) > 5*time.Minute {
 			pending = append(pending, state.clone())
@@ -269,7 +473,8 @@ func (st *StateTracker) GetUnfinishedRotationsAtStartup() []*RotationState {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	var out []*RotationState
-	for _, state := range st.states {
+	for _, key := range st.sortedKeys() {
+		state := st.states[key]
 		switch state.Status {
 		case "in_progress", "rollback_required", "critical_error":
 			out = append(out, state.clone())
@@ -306,15 +511,17 @@ func (st *StateTracker) CleanupOldStates(retentionPeriod time.Duration) error {
 	return nil
 }
 
-// MarkRecoveredRecord / MarkCriticalRecord update a record by identity rather than
-// by its provider:secret:ids key, which journal-only records (rotations not
-// started by the trigger engine) do not share.
+// MarkRecoveredRecord / MarkCriticalRecord update a record by identity (see
+// liveRecord). They are compare-and-set against the snapshot they were given: when
+// the live record has moved on since the snapshot was taken (a different Status or
+// Seq, e.g. it completed in between) the call is refused and nothing is modified, so
+// a stale snapshot can never resolve, escalate or overwrite a newer state.
 func (st *StateTracker) MarkRecoveredRecord(rec *RotationState) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	live := st.liveRecord(rec)
-	if live == nil {
-		return fmt.Errorf("rotation record %q not found in the journal", rec.RotationID)
+	live, err := st.liveFor(rec)
+	if err != nil {
+		return err
 	}
 	now := time.Now()
 	live.Status, live.LastUpdate = "recovered", now
@@ -325,9 +532,9 @@ func (st *StateTracker) MarkRecoveredRecord(rec *RotationState) error {
 func (st *StateTracker) MarkCriticalRecord(rec *RotationState, msg string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	live := st.liveRecord(rec)
-	if live == nil {
-		return fmt.Errorf("rotation record %q not found in the journal", rec.RotationID)
+	live, err := st.liveFor(rec)
+	if err != nil {
+		return err
 	}
 	now := time.Now()
 	live.Status, live.ErrorMessage, live.LastUpdate = "critical_error", msg, now
@@ -335,25 +542,42 @@ func (st *StateTracker) MarkCriticalRecord(rec *RotationState, msg string) error
 	return st.persistState()
 }
 
+// liveFor resolves rec to the live record and checks it is still what rec saw.
+func (st *StateTracker) liveFor(rec *RotationState) (*RotationState, error) {
+	live := st.liveRecord(rec)
+	if live == nil {
+		return nil, fmt.Errorf("rotation record %q not found in the journal", rec.RotationID)
+	}
+	if live != rec && (live.Status != rec.Status || live.Seq != rec.Seq) {
+		return nil, fmt.Errorf("rotation record %q changed since the snapshot (%s seq %d, now %s seq %d): stale snapshot refused",
+			rec.RotationID, rec.Status, rec.Seq, live.Status, live.Seq)
+	}
+	return live, nil
+}
+
 // liveRecord resolves a (possibly cloned) record to the tracker's own record by
-// identity: the RotationID when present, else provider/secret/original/start time.
-// The caller must hold st.mu.
+// identity, never by secret name: the record's own slot when the clone still names
+// the same operation there (this is what addresses a preserved legacy record that
+// is not reachable by RotationID), else the RotationID, else - for records without
+// one, written by older releases - provider/secret/original/start time. A
+// RotationID that is ambiguous resolves to nothing. The caller must hold st.mu.
 func (st *StateTracker) liveRecord(rec *RotationState) *RotationState {
 	for _, s := range st.states {
 		if s == rec {
 			return s
 		}
 	}
-	if rec.RotationID != "" {
-		for _, s := range st.states {
-			if s.RotationID == rec.RotationID {
-				return s
-			}
+	if rec.key != "" {
+		if s := st.states[rec.key]; s != nil && s.RotationID == rec.RotationID && s.StartTime.Equal(rec.StartTime) {
+			return s
 		}
-		return nil
 	}
-	for _, s := range st.states {
-		if s.ProviderName == rec.ProviderName && s.SecretName == rec.SecretName &&
+	if rec.RotationID != "" {
+		return st.byID(rec.RotationID)
+	}
+	for _, key := range st.sortedKeys() {
+		s := st.states[key]
+		if s.RotationID == "" && s.ProviderName == rec.ProviderName && s.SecretName == rec.SecretName &&
 			s.OriginalContainerID == rec.OriginalContainerID && s.StartTime.Equal(rec.StartTime) {
 			return s
 		}
@@ -361,57 +585,89 @@ func (st *StateTracker) liveRecord(rec *RotationState) *RotationState {
 	return nil
 }
 
-// snapshotRecords returns the current records (read-only use by recovery).
+// sortedKeys returns the record slots in a fixed order, so every reader that
+// iterates the journal (recovery, the ledger snapshot, the guard) sees the same
+// order regardless of Go's randomised map iteration. The caller must hold st.mu.
+func (st *StateTracker) sortedKeys() []string {
+	keys := make([]string, 0, len(st.states))
+	for k := range st.states {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// snapshotRecords returns the current records in a deterministic order (read-only
+// use by recovery).
 func (st *StateTracker) snapshotRecords() []*RotationState {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	out := make([]*RotationState, 0, len(st.states))
-	for _, s := range st.states {
-		out = append(out, s.clone())
+	for _, k := range st.sortedKeys() {
+		out = append(out, st.states[k].clone())
 	}
 	return out
 }
 
-// MarkRecovered marks a rotation as recovered after automatic recovery completed
+// MarkRecovered marks a rotation as recovered after automatic recovery completed.
+//
+// Deprecated: use MarkRecoveredID (see CompleteRotation).
 func (st *StateTracker) MarkRecovered(providerName, secretName, originalContainerID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	if state, ok := st.states[key]; ok {
-		state.Status = "recovered"
-		state.LastUpdate = time.Now()
-		return st.persistState()
+	state, err := st.resolveLegacy(providerName, secretName, originalContainerID, true)
+	if state == nil {
+		return err
 	}
-	return nil
-}
-
-// MarkCriticalError marks a rotation as having a critical error that requires operator intervention
-func (st *StateTracker) MarkCriticalError(providerName, secretName, originalContainerID, errorMsg string) error {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	if state, ok := st.states[key]; ok {
-		state.Status = "critical_error"
-		state.ErrorMessage = errorMsg
-		state.LastUpdate = time.Now()
-		return st.persistState()
-	}
-	return nil
-}
-
-// DeleteState removes a completed rotation from tracking
-func (st *StateTracker) DeleteState(providerName, secretName, originalContainerID string) error {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s:%s", providerName, secretName, originalContainerID)
-	delete(st.states, key)
+	state.Status = "recovered"
+	state.LastUpdate = time.Now()
 	return st.persistState()
 }
 
+// MarkCriticalError marks a rotation as having a critical error that requires operator intervention.
+//
+// Deprecated: use MarkCriticalErrorID (see CompleteRotation).
+func (st *StateTracker) MarkCriticalError(providerName, secretName, originalContainerID, errorMsg string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state, err := st.resolveLegacy(providerName, secretName, originalContainerID, true)
+	if state == nil {
+		return err
+	}
+	state.Status = "critical_error"
+	state.ErrorMessage = errorMsg
+	state.LastUpdate = time.Now()
+	return st.persistState()
+}
+
+// DeleteState removes a completed rotation from tracking.
+//
+// Deprecated: use DeleteStateID (see CompleteRotation). Never removes an unresolved
+// record, and acts only when the triple resolves to exactly one record.
+func (st *StateTracker) DeleteState(providerName, secretName, originalContainerID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state, err := st.resolveLegacy(providerName, secretName, originalContainerID, false)
+	if state == nil {
+		return err
+	}
+	return st.deleteLocked(state)
+}
+
 func (st *StateTracker) persistState() error {
+	if st.migrationLegacy != nil {
+		// The file on disk still has the legacy shape: never replace it before its
+		// bytes are preserved. A failure here refuses every journal write (callers
+		// fail closed) and is retried by the next write.
+		if err := st.backupLegacyJournal(st.migrationLegacy); err != nil {
+			return fmt.Errorf("legacy rotation journal could not be preserved, refusing to rewrite it: %w", err)
+		}
+		if migrationFault != nil {
+			if err := migrationFault("after_backup"); err != nil {
+				return err
+			}
+		}
+	}
 	stateFile := filepath.Join(st.stateDir, "rotations.json")
 	data, err := json.MarshalIndent(st.states, "", "  ")
 	if err != nil {
@@ -441,9 +697,15 @@ func (st *StateTracker) persistState() error {
 		return fmt.Errorf("failed to close state file: %w", err)
 	}
 	faultinject.Hit("state:before_persist_rename")
+	if st.migrationLegacy != nil && migrationFault != nil {
+		if err := migrationFault("before_persist"); err != nil {
+			return err
+		}
+	}
 	if err := os.Rename(tmpFile, stateFile); err != nil {
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
+	st.migrationLegacy = nil
 	faultinject.Hit("state:after_persist_rename")
 	if d, err := os.Open(st.stateDir); err == nil { // #nosec G304 -- agent state dir
 		_ = d.Sync()
@@ -463,18 +725,24 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	var state *RotationState
-	for _, s := range st.states {
-		if s.RotationID == e.RotationID {
-			state = s
-			break
-		}
-	}
+	state := st.byID(e.RotationID)
 	if state == nil {
-		state = &RotationState{
-			RotationID: e.RotationID, Status: "in_progress", StartTime: time.Now(),
+		// Unknown identity: a journal-only record (a rotation not started by the
+		// trigger engine). An identity that exists only in preserved ambiguous
+		// legacy records fails closed instead: no event may attach to a record that
+		// cannot be told apart from another operation.
+		if err := st.lookupErr(e.RotationID); errors.Is(err, ErrRotationIdentityAmbiguous) {
+			return err
 		}
-		st.states["journal:"+e.RotationID] = state
+		state = &RotationState{
+			RotationID: e.RotationID, Status: "in_progress", StartTime: time.Now(), key: opKey(e.RotationID),
+		}
+		st.states[state.key] = state
+	}
+	// One operation has one owner. An event from a different owner is a foreign
+	// writer: refuse it before anything is merged (fail closed).
+	if e.OwnerID != "" && state.OwnerID != "" && state.OwnerID != e.OwnerID {
+		return fmt.Errorf("journal event for rotation %q from owner %q refused: the record belongs to another owner", e.RotationID, e.OwnerID)
 	}
 	if e.ServiceID != "" {
 		state.ServiceID = e.ServiceID
@@ -589,8 +857,8 @@ func (st *StateTracker) loadStates() error {
 		return err
 	}
 
-	states := make(map[string]*RotationState)
-	if err := json.Unmarshal(data, &states); err != nil {
+	raw := make(map[string]*RotationState)
+	if err := json.Unmarshal(data, &raw); err != nil {
 		// Keep the unreadable file as evidence and fail safe: recovery will do
 		// nothing automatic while the persisted state is unknown.
 		quarantined := fmt.Sprintf("%s.corrupt-%d", stateFile, time.Now().Unix())
@@ -601,6 +869,7 @@ func (st *StateTracker) loadStates() error {
 		return fmt.Errorf("failed to unmarshal state (preserved at %s; automatic recovery disabled): %w", quarantined, err)
 	}
 
+	states, report := normalizeLoaded(raw)
 	st.states = states
 	st.inherited = make(map[string]bool)
 	for k, r := range states {
@@ -609,6 +878,228 @@ func (st *StateTracker) loadStates() error {
 		}
 	}
 	st.logger.Info("Loaded rotation states", zap.Int("count", len(states)))
+	for _, n := range report.notes {
+		st.logger.Warn("Rotation journal migration: " + n)
+	}
+	if report.changed {
+		// The persisted file still has the legacy shape. It is rewritten by the next
+		// persist, but never before its exact bytes are preserved aside.
+		st.migrationLegacy = data
+		st.logger.Info("Migrating the rotation journal to operation-identity keys",
+			zap.Int("rekeyed", report.rekeyed), zap.Int("duplicates_dropped", report.dropped),
+			zap.Int("conflicting_preserved", report.conflicts), zap.Int("ambiguous_preserved", report.ambiguous))
+		return st.persistState()
+	}
+	return nil
+}
+
+// Persisted key shapes.
+//
+//	journal:<RotationID>      the operation record (current format; also the format
+//	                          of journal-only records of earlier releases)
+//	<provider>:<secret>:<ids> legacy trigger-engine record (releases before F-S6-1)
+//	preserved:...             legacy record re-keyed to protect it (no RotationID)
+//	dup:<RotationID>:<hash>   one of several DIFFERENT records that claim the same
+//	                          RotationID; none of them is addressable by that id
+//	ambiguous:<old key>       a record whose key contradicts its own content
+//
+// Only journal:<RotationID> is addressable by RotationID. Every other shape is kept
+// verbatim, is visible to recovery (by container ids and rotation label) and to the
+// operation guard, and is resolved only by its own slot (recovery) or by an operator.
+type migrationReport struct {
+	changed   bool
+	rekeyed   int // legacy records moved to their operation key
+	dropped   int // byte-identical duplicates folded into one record
+	conflicts int // different records claiming one RotationID, preserved as dup:
+	ambiguous int // records whose key contradicts their content, preserved as ambiguous:
+	notes     []string
+}
+
+// normalizeLoaded maps a persisted journal onto operation-identity keys without
+// losing or reinterpreting any record. It is a pure function: the same input always
+// yields the same output (inputs are processed in sorted key order), and applying it
+// to its own output changes nothing (idempotent).
+func normalizeLoaded(raw map[string]*RotationState) (map[string]*RotationState, migrationReport) {
+	var rep migrationReport
+	out := make(map[string]*RotationState, len(raw))
+	canon := func(r *RotationState) string {
+		c := *r
+		c.key = ""
+		b, _ := json.Marshal(&c)
+		return string(b)
+	}
+	put := func(key string, r *RotationState) {
+		r.key = key
+		out[key] = r
+	}
+
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	groups := map[string][]string{} // RotationID -> original keys of identity candidates
+	for _, k := range keys {
+		r := raw[k]
+		switch {
+		case r == nil:
+			rep.changed = true
+			rep.notes = append(rep.notes, fmt.Sprintf("record %q is null and was dropped (the pre-migration file is preserved)", k))
+			continue
+		case r.RotationID == "":
+			// Written by a release without rotation ids: nothing to re-identify.
+			put(k, r)
+		case strings.HasPrefix(k, "dup:") || strings.HasPrefix(k, "ambiguous:"):
+			put(k, r) // already marked by an earlier migration
+		case strings.HasPrefix(k, journalKeyPrefix):
+			if k == opKey(r.RotationID) {
+				groups[r.RotationID] = append(groups[r.RotationID], k)
+			} else {
+				rep.ambiguousRecord(out, put, k, r, "key names another rotation id")
+			}
+		case strings.HasPrefix(k, "preserved:"):
+			rep.ambiguousRecord(out, put, k, r, "preserved record carries a rotation id")
+		default:
+			if k == fmt.Sprintf("%s:%s:%s", r.ProviderName, r.SecretName, r.OriginalContainerID) {
+				groups[r.RotationID] = append(groups[r.RotationID], k)
+			} else {
+				rep.ambiguousRecord(out, put, k, r, "legacy key does not match the record")
+			}
+		}
+	}
+
+	rids := make([]string, 0, len(groups))
+	for rid := range groups {
+		rids = append(rids, rid)
+	}
+	sort.Strings(rids)
+	for _, rid := range rids {
+		members := groups[rid] // sorted: keys were sorted
+		first := canon(raw[members[0]])
+		identical := true
+		for _, k := range members[1:] {
+			if canon(raw[k]) != first {
+				identical = false
+				break
+			}
+		}
+		switch {
+		case len(members) == 1 || identical:
+			// One operation (a byte-identical duplicate is the same record).
+			r := raw[members[0]]
+			for _, k := range members {
+				if k == opKey(rid) {
+					r = raw[k]
+				}
+			}
+			put(opKey(rid), r)
+			if len(members) > 1 {
+				rep.dropped += len(members) - 1
+			}
+			if members[0] != opKey(rid) || len(members) > 1 {
+				rep.changed = true
+			}
+			if members[0] != opKey(rid) && len(members) == 1 {
+				rep.rekeyed++
+			}
+		default:
+			// Different records claiming one identity: which one is "the" operation is
+			// not decidable. Preserve every one, address none by the id.
+			rep.changed = true
+			seen := map[string]bool{}
+			for _, k := range members {
+				r := raw[k]
+				sum := sha256.Sum256([]byte(canon(r)))
+				dk := "dup:" + rid + ":" + hex.EncodeToString(sum[:6])
+				if seen[dk] {
+					rep.dropped++
+					continue
+				}
+				seen[dk] = true
+				r.Detail = appendDetail(r.Detail, "rotation identity "+rid+" is claimed by several different journal records; none was assumed to be the operation (operator review required)")
+				put(dk, r)
+				rep.conflicts++
+			}
+			rep.notes = append(rep.notes, fmt.Sprintf("rotation id %q is claimed by %d different records: all preserved, none addressable by that id", rid, len(members)))
+		}
+	}
+	return out, rep
+}
+
+func (rep *migrationReport) ambiguousRecord(out map[string]*RotationState, put func(string, *RotationState), key string, r *RotationState, why string) {
+	r.Detail = appendDetail(r.Detail, "journal key "+key+" contradicts the record ("+why+"); preserved unchanged, not addressable by rotation id (operator review required)")
+	put("ambiguous:"+key, r)
+	rep.changed = true
+	rep.ambiguous++
+	rep.notes = append(rep.notes, fmt.Sprintf("record %q: %s: preserved as ambiguous", key, why))
+}
+
+func appendDetail(have, add string) string {
+	if have == "" {
+		return add
+	}
+	if strings.Contains(have, add) {
+		return have
+	}
+	return have + "; " + add
+}
+
+// migrationFault is a test seam for the interruption points of the legacy-journal
+// migration ("after_backup", "before_persist"); nil in production. A non-nil error
+// aborts the migration at that point, as a crash there would.
+var migrationFault func(point string) error
+
+// backupLegacyJournal preserves the exact pre-migration bytes of rotations.json as
+// rotations.json.legacy-<unix ts> (0600, written to a temp file, fsynced and renamed,
+// then the directory fsynced). An existing backup with identical bytes is reused, so
+// an interrupted migration that is retried (or repeated startups) never multiplies
+// backups. It never overwrites an existing, different file.
+func (st *StateTracker) backupLegacyJournal(data []byte) error {
+	stateFile := filepath.Join(st.stateDir, "rotations.json")
+	want := sha256.Sum256(data)
+	if matches, _ := filepath.Glob(stateFile + ".legacy-*"); len(matches) > 0 {
+		for _, m := range matches {
+			// #nosec G304 -- glob under the fixed agent state dir
+			if have, err := os.ReadFile(m); err == nil && sha256.Sum256(have) == want {
+				return nil
+			}
+		}
+	}
+	base := fmt.Sprintf("%s.legacy-%d", stateFile, time.Now().Unix())
+	dest := base
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(dest); os.IsNotExist(err) {
+			break
+		}
+		if i > 1000 {
+			return errors.New("no free name for the legacy journal backup")
+		}
+		dest = fmt.Sprintf("%s-%d", base, i)
+	}
+	tmp := dest + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) // #nosec G304 -- fixed name under the agent state dir
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		return err
+	}
+	if d, err := os.Open(st.stateDir); err == nil { // #nosec G304 -- agent state dir
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
 
