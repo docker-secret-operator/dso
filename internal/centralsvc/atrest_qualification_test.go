@@ -185,6 +185,11 @@ func newS3RenameFixture(t *testing.T) *s3RenameFixture {
 // prove byte-for-byte that an operation did or did not re-seal a version.
 type rawVersionBytes struct{ ciphertext, nonce []byte }
 
+// fetchRawVersion selects by secrets.name only, unscoped by project or
+// environment: every caller in this file uses a secret name that is unique
+// across the whole fixture database, so this is safe today. A caller adding
+// a same-named secret in a second project/environment would need to scope
+// this query (join through environments/projects) to stay correct.
 func fetchRawVersion(t *testing.T, dbPath, secretName string, version int) rawVersionBytes {
 	t.Helper()
 	db := rawOpen(t, dbPath)
@@ -1350,8 +1355,21 @@ func TestAtRest_FailedRollbackTransactionLeavesNoPartialState(t *testing.T) {
 	}
 
 	svc := New(failingAuditStore{Store: e.st}, e.svc.keys, zap.NewNop())
-	if _, err := svc.RollbackSecret(ctx, "p1", "env1", "s1", 1, "bob", "doomed"); err == nil {
+	_, err = svc.RollbackSecret(ctx, "p1", "env1", "s1", 1, "bob", "doomed")
+	if err == nil {
 		t.Fatal("expected RollbackSecret to fail when its paired audit write fails")
+	}
+	// Pin the failure to the injected AppendAuditEvent error specifically
+	// (failingAuditTx.AppendAuditEvent's exact text, audit_test.go), not just
+	// "any error": this proves the failure genuinely occurred AFTER a real
+	// tx.AddVersion ran inside the transaction (the audit append is the last
+	// step RollbackSecret takes before committing), so the test exercises
+	// transaction-rollback behavior and cannot be satisfied by some earlier,
+	// unrelated bailout (e.g. at lookup, DEK unwrap, or tx.GetVersion) that
+	// would leave this test passing while no longer proving anything about
+	// partial-state rollback.
+	if !strings.Contains(err.Error(), "synthetic audit-store failure") {
+		t.Fatalf("expected the injected audit-store failure, got a different error (possible early bailout before AddVersion ever ran): %v", err)
 	}
 
 	after, err := e.svc.ListVersions(ctx, "p1", "env1", "s1")
@@ -1501,6 +1519,12 @@ func TestBackupRestore_DeletedProjectStaysDeletedAfterRestore(t *testing.T) {
 	ps, err := svc.ListProjects(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Positive anchor: exactly the base fixture's two projects (alpha, beta)
+	// must survive, so this isn't vacuously true of an empty or wrongly
+	// restored database -- gamma specifically must be the one missing.
+	if len(ps) != 2 {
+		t.Fatalf("expected exactly 2 projects (alpha, beta) after restore, got %d: %+v", len(ps), ps)
 	}
 	for _, p := range ps {
 		if p.Slug == "gamma" {
