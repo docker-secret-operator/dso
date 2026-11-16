@@ -816,11 +816,17 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 		state.CleanupStatus = "intent"
 	case rotation.TrCompleted:
 		state.CleanupStatus = "done"
-		state.Status = "completed"
+		// A critical_error set by another target of the same dispatch record is
+		// operator evidence and is never downgraded by a sibling's success.
+		if state.Status != "critical_error" {
+			state.Status = "completed"
+		}
 	case rotation.TrSignalDone:
 		// Terminal. The record keeps OperationState (reload requested, adoption NOT
 		// verified): "completed" never means the application loaded the secret.
-		state.Status = "completed"
+		if state.Status != "critical_error" {
+			state.Status = "completed"
+		}
 	case rotation.TrSignalFailed:
 		if e.ManualRecovery {
 			state.Status = "critical_error"
@@ -830,7 +836,9 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 		}
 	case rotation.TrRolledBack:
 		// The candidate was discarded and the original never touched: terminal.
-		state.Status = "recovered"
+		if state.Status != "critical_error" {
+			state.Status = "recovered"
+		}
 	}
 	// A later rotation of the same service that reached a clean terminal state
 	// supersedes earlier manual-recovery records of that service, so a restart does

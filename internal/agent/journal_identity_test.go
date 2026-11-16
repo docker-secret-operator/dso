@@ -429,3 +429,29 @@ func TestIdentity_ConcurrentJournalAndLedgerSnapshot(t *testing.T) {
 		}
 	}
 }
+
+// A critical_error set by one target of a dispatch record is operator evidence: a
+// sibling target's clean terminal transition on the same record must not turn it
+// into completed/recovered (which would lift the guard block).
+func TestIdentity_CriticalErrorNotDowngradedBySiblingTerminal(t *testing.T) {
+	for _, term := range []string{rotation.TrCompleted, rotation.TrSignalDone, rotation.TrRolledBack} {
+		t.Run(term, func(t *testing.T) {
+			st, _ := newIDTracker(t)
+			_ = st.StartRotationWithID("op-1", "vault", "db", "ctr", "")
+			rec(t, st, "op-1", "svc", "signal", []string{"ctr"}, rotation.TrIntentSignalPublish)
+			if err := st.Record(context.Background(), rotation.JournalEvent{
+				RotationID: "op-1", ServiceID: "svc", Strategy: "signal", Transition: rotation.TrSignalFailed,
+				State: "partially_published", ManualRecovery: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rec(t, st, "op-1", "svc", "rolling", []string{"ctr"}, term)
+			if got := statusOf(st, "op-1"); got != "critical_error" {
+				t.Fatalf("after sibling %s status = %s, want critical_error", term, got)
+			}
+			if _, blocked := newJournalGuard(st).RotationBlocked("svc"); !blocked {
+				t.Fatal("the guard block was lifted")
+			}
+		})
+	}
+}
