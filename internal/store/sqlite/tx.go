@@ -149,6 +149,20 @@ func (s *Store) ListEnvironments(ctx context.Context, projectID string) ([]store
 	return s.ops().ListEnvironments(ctx, projectID)
 }
 
+func (s *Store) RenameEnvironment(ctx context.Context, environmentID, newSlug, newName string) error {
+	if err := s.guard(ctx); err != nil {
+		return err
+	}
+	return s.ops().RenameEnvironment(ctx, environmentID, newSlug, newName)
+}
+
+func (s *Store) DeleteEnvironment(ctx context.Context, environmentID string) error {
+	if err := s.guard(ctx); err != nil {
+		return err
+	}
+	return s.ops().DeleteEnvironment(ctx, environmentID)
+}
+
 func (s *Store) GetSecret(ctx context.Context, environmentID, name string) (store.SecretMeta, error) {
 	if err := s.guard(ctx); err != nil {
 		return store.SecretMeta{}, err

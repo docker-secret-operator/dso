@@ -600,6 +600,47 @@ func (o ops) ListEnvironments(ctx context.Context, projectID string) ([]store.En
 	return out, rows.Err()
 }
 
+func (o ops) RenameEnvironment(ctx context.Context, environmentID, newSlug, newName string) error {
+	res, err := o.q.ExecContext(ctx, `UPDATE environments SET slug = ?, name = ? WHERE id = ?`, newSlug, newName, environmentID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (o ops) DeleteEnvironment(ctx context.Context, environmentID string) error {
+	n, err := o.countAllSecrets(ctx, environmentID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return store.ErrConflict
+	}
+	res, err := o.q.ExecContext(ctx, `DELETE FROM environments WHERE id = ?`, environmentID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// countAllSecrets counts every secret row in an environment regardless of
+// soft-delete state. Unlike ListSecrets (which filters deleted_at IS NULL for
+// its public "live secrets" contract), deletion-eligibility for an
+// environment must treat a soft-deleted secret as still occupying it: its
+// versions are retained and still reference the environment until a later,
+// explicit, audited purge operation exists.
+func (o ops) countAllSecrets(ctx context.Context, environmentID string) (int, error) {
+	var n int
+	err := o.q.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE environment_id = ?`, environmentID).Scan(&n)
+	return n, err
+}
+
 // ---- secrets ----------------------------------------------------------------
 
 // validNewSecret is checked before any transaction is begun (standalone) and

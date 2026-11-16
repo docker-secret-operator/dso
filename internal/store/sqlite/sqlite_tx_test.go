@@ -228,6 +228,8 @@ func standaloneCalls() map[string]func(s *Store, c context.Context) error {
 		},
 		"GetEnvironmentBySlug": func(s *Store, c context.Context) error { _, e := s.GetEnvironmentBySlug(c, "p1", "prod"); return e },
 		"ListEnvironments":     func(s *Store, c context.Context) error { _, e := s.ListEnvironments(c, "p1"); return e },
+		"RenameEnvironment":    func(s *Store, c context.Context) error { return s.RenameEnvironment(c, "e1", "ex-renamed", "Ex Renamed") },
+		"DeleteEnvironment":    func(s *Store, c context.Context) error { return s.DeleteEnvironment(c, "ex-empty") },
 		"CreateSecret":         func(s *Store, c context.Context) error { return s.CreateSecret(c, newSecret("sx", "X")) },
 		"GetSecret":            func(s *Store, c context.Context) error { _, e := s.GetSecret(c, "e1", "A"); return e },
 		"ListSecrets":          func(s *Store, c context.Context) error { _, e := s.ListSecrets(c, "e1"); return e },
@@ -255,10 +257,11 @@ func standaloneCalls() map[string]func(s *Store, c context.Context) error {
 }
 
 // TestStandaloneCallTableCoversExactlyTheNineteenOperations: the name predates
-// the Phase 2 Step 5.3 audit-chain addition (AppendAuditEvent, ListAuditEvents)
-// and the M2 RenameProject/DeleteProject addition, which brought the total to
-// 23; kept unrenamed to avoid unrelated churn in a test whose assertions (not
-// its name) are what actually enforce coverage.
+// the Phase 2 Step 5.3 audit-chain addition (AppendAuditEvent, ListAuditEvents),
+// the M2 RenameProject/DeleteProject addition, and the M2 RenameEnvironment/
+// DeleteEnvironment addition, which brought the total to 25; kept unrenamed to
+// avoid unrelated churn in a test whose assertions (not its name) are what
+// actually enforce coverage.
 func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	var want []string
 	ot := reflect.TypeOf((*store.Operations)(nil)).Elem()
@@ -271,15 +274,15 @@ func TestStandaloneCallTableCoversExactlyTheNineteenOperations(t *testing.T) {
 	}
 	sort.Strings(want)
 	sort.Strings(got)
-	if len(want) != 23 || !reflect.DeepEqual(want, got) {
+	if len(want) != 25 || !reflect.DeepEqual(want, got) {
 		t.Fatalf("operations %v (%d) vs table %v", want, len(want), got)
 	}
 	// Tx offers the same set, and Store offers it plus WithTx/SchemaVersion/Close only.
-	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 23 {
+	if tt := reflect.TypeOf((*store.Tx)(nil)).Elem(); tt.NumMethod() != 25 {
 		t.Fatalf("Tx has %d methods", tt.NumMethod())
 	}
-	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 26 {
-		t.Fatalf("Store has %d methods, want 23 + WithTx + SchemaVersion + Close", st.NumMethod())
+	if st := reflect.TypeOf((*store.Store)(nil)).Elem(); st.NumMethod() != 28 {
+		t.Fatalf("Store has %d methods, want 25 + WithTx + SchemaVersion + Close", st.NumMethod())
 	}
 }
 
