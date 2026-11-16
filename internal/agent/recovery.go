@@ -471,6 +471,13 @@ func recordCandidateVerified(rec *RotationState) bool {
 	if rec.GatedDelivery && !rec.DeliveryVerified {
 		return false
 	}
+	// Legacy (pre-N19) record of a secret that is a FILE secret today, still unresolved:
+	// its archive-upload delivery was never verified (tmpfs vs writable layer), so the
+	// old format alone is not delivery evidence. Completed/recovered historical records
+	// are not affected (the tracker only flags unresolved ones).
+	if rec.legacyFileUnverified {
+		return false
+	}
 	return true
 }
 

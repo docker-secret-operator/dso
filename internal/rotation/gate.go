@@ -110,6 +110,16 @@ func splitGated(ep []string) (orig []string, wrapped bool) {
 	return ep[gatePrefixLen+3+n:], true
 }
 
+// gateExpectedFiles returns the secret file paths the gate in ep waits for (nil when ep
+// is not a gate produced by ArmGate).
+func gateExpectedFiles(ep []string) []string {
+	if _, ok := splitGated(ep); !ok {
+		return nil
+	}
+	n, _ := strconv.Atoi(ep[gatePrefixLen+2])
+	return append([]string(nil), ep[gatePrefixLen+3:gatePrefixLen+3+n]...)
+}
+
 // GateFlagPath is the release-flag path used for specs (the first sorted directory).
 func GateFlagPath(specs []FileSecretSpec) string {
 	dirs := specDirs(specs)

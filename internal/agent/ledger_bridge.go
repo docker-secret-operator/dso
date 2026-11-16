@@ -214,6 +214,11 @@ func JournalRecordFor(rec *RotationState) ledger.JournalRecord {
 	if dispatchUnfinished(rec) {
 		verified, committed, signalDone = false, false, false
 	}
+	jver := parseJournalSecretVersion(rec.SecretVersion)
+	if verified && jver != nil && !deliveredEvidenceMatches(rec, *jver) {
+		// The delivered values are not the ones the operation was dispatched for.
+		verified = false
+	}
 	return ledger.JournalRecord{
 		RotationID:        rec.RotationID,
 		Strategy:          rec.Strategy,
@@ -222,7 +227,7 @@ func JournalRecordFor(rec *RotationState) ledger.JournalRecord {
 		Seq:               seq,
 		CandidateVerified: verified,
 		SignalDone:        signalDone,
-		Version:           parseJournalSecretVersion(rec.SecretVersion),
+		Version:           jver,
 		UpdatedAt:         rec.LastUpdate,
 	}
 }
@@ -255,6 +260,47 @@ func deliveredVersion(rec *RotationState, hint *ledger.Version) (ledger.Version,
 	return ledger.Version{}, ErrBridgeNoVersion
 }
 
+// deliveredEvidenceMatches is the identity-binding rule of N19 managed file delivery: the
+// ledger may only record version ver as delivered when the journal's own per-candidate
+// delivery evidence (secrets_delivered, the keyed identity of the exact values handed to
+// the hardened injector and probed) names ver for EVERY candidate that delivered. The
+// dispatch version (journal SecretVersion / correlated hint) is the value observed when
+// the operation was dispatched; the strategies resolve their delivery specs later from the
+// cache, so a newer observation in between would otherwise be delivered while the ledger
+// recorded the older identity. A mismatch, or a gated record whose delivery named no
+// identity at all, proves nothing: the caller refuses the evidence (applied never
+// advances, the entry stays unresolved). Records with no delivery evidence of any kind
+// and no gate (env-only rotations, signal, pre-N19) make no file-delivery claim and keep
+// the plain rule. A newly fetched value is never used to prove an earlier delivery.
+func deliveredEvidenceMatches(rec *RotationState, ver ledger.Version) bool {
+	if rec == nil {
+		return false
+	}
+	var sets [][]string
+	for _, v := range rec.DeliveredByCandidate {
+		sets = append(sets, v)
+	}
+	if len(sets) == 0 && len(rec.DeliveredVersions) > 0 {
+		sets = append(sets, rec.DeliveredVersions)
+	}
+	if len(sets) == 0 {
+		return !rec.GatedDelivery
+	}
+	for _, set := range sets {
+		found := false
+		for _, s := range set {
+			if dv := parseJournalSecretVersion(s); dv != nil && ledger.Compare(*dv, ver) == ledger.Same {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // EvidenceForRotation returns the delivery Evidence a journal record proves,
 // for RecordDeliveryVerified. It refuses (an error wrapping ledger.ErrNoEvidence)
 // every record that is not a successful delivery by the rule of design 4.2, and
@@ -268,6 +314,9 @@ func EvidenceForRotation(rec *RotationState, hint *ledger.Version, fileMode bool
 	ver, err := deliveredVersion(rec, hint)
 	if err != nil {
 		return ledger.Evidence{}, err
+	}
+	if !deliveredEvidenceMatches(rec, ver) {
+		return ledger.Evidence{}, fmt.Errorf("%w: the version the operation was dispatched for is not the version the journal shows as delivered and verified on every candidate; applied state is not advanced", ledger.ErrNoEvidence)
 	}
 	return journalEvidence(rec, ver, fileMode, live), nil
 }

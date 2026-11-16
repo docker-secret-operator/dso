@@ -2145,3 +2145,209 @@ func TestN19Ledger_InterruptedReconciliation_AppliesFromTheJournal(t *testing.T)
 		t.Fatalf("applied must be D2 from the journal: %+v", e)
 	}
 }
+
+// ---- N19 follow-up (B: dispatch identity vs delivery; D: legacy file-mode records) ----
+// The journal-only halves of D live in n19_followup_test.go.
+
+// n19Delivery states which keyed identity each candidate delivered, in journal order.
+type n19Delivery struct {
+	cand     string
+	versions []ledger.Version
+}
+
+// gatedFlowDelivering journals a gated restart operation to completion whose DISPATCH
+// version is dispatch while each candidate in deliveries delivered the stated versions.
+func gatedFlowDelivering(t *testing.T, r *lbRig, rid string, fl lbFlow, dispatch ledger.Version, deliveries []n19Delivery) {
+	t.Helper()
+	ctx := rotation.WithRotationID(context.Background(), rid)
+	rec := func(ev rotation.JournalEvent) {
+		t.Helper()
+		ev.RotationID = rid
+		if err := r.st.Record(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec(rotation.JournalEvent{Strategy: "restart", Transition: rotation.TrIntentRenameOriginal, ServiceID: lbService,
+		OriginalIDs: []string{fl.orig}, SecretVersion: FormatJournalSecretVersion(dispatch)})
+	for _, d := range deliveries {
+		rec(rotation.JournalEvent{Transition: rotation.TrIntentCreateCandidate, CandidateIDs: []string{d.cand}})
+		rec(rotation.JournalEvent{Transition: rotation.TrCandidateCreated, CandidateIDs: []string{d.cand}, Gated: true})
+		rec(rotation.JournalEvent{Transition: rotation.TrGateStarted, CandidateIDs: []string{d.cand}})
+		rec(rotation.JournalEvent{Transition: rotation.TrIntentDeliverSecrets, CandidateIDs: []string{d.cand}})
+		var vs []string
+		for _, v := range d.versions {
+			vs = append(vs, FormatJournalSecretVersion(v))
+		}
+		rec(rotation.JournalEvent{Transition: rotation.TrSecretsDelivered, CandidateIDs: []string{d.cand}, DeliveredVersions: vs})
+		rec(rotation.JournalEvent{Transition: rotation.TrIntentReleaseGate, CandidateIDs: []string{d.cand}})
+		rec(rotation.JournalEvent{Transition: rotation.TrGateReleased, CandidateIDs: []string{d.cand}})
+	}
+	last := deliveries[len(deliveries)-1].cand
+	for _, tr := range []string{rotation.TrCandidateReady, rotation.TrIntentCleanup, rotation.TrCompleted} {
+		rec(rotation.JournalEvent{Transition: tr, CandidateIDs: []string{last}})
+	}
+}
+
+// B. Observe V2, dispatch for V2, the provider/cache moves to V3 BEFORE the delivery specs
+// are resolved, V3 is delivered and verified, the operation completes. The journal's
+// SecretVersion is V2 (the dispatch), DeliveredVersions is V3 (what was handed to the
+// injector). The ledger must NOT record V2 (nor V3, which was never the dispatched
+// version): applied stays at the previous version and the entry stays unresolved.
+func TestN19Ledger_B_DispatchedV2_DeliveredV3_NeverRecordsV2(t *testing.T) {
+	newRig := func(t *testing.T) (*lbRig, ledger.Version, ledger.Version, ledger.Version) {
+		d := newFakeDaemon(n19Candidate("healthy", true))
+		r := newLBRig(t, d)
+		d1 := r.baseline(true)
+		d2, d3 := r.ver("two"), r.ver("three")
+		r.observe(d2, lbLive("o1"))
+		return r, d1, d2, d3
+	}
+	fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+
+	t.Run("in-process terminal step", func(t *testing.T) {
+		r, d1, d2, d3 := newRig(t)
+		if err := r.correlate("rot-b1", d2, r.journalStart("rot-b1", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b1", fl, d2, []n19Delivery{{"c1", []ledger.Version{d3}}})
+		r.finishOK(fl)
+		if journalDeliveryRefusal(r.record("rot-b1")) != nil {
+			t.Fatal("precondition: the plain journal rule accepts this record; only the identity binding can refuse it")
+		}
+		res, err := r.terminal("rot-b1", &d2, fl)
+		if err == nil && res.Outcome == OutcomeDeliveryVerified {
+			t.Fatalf("the ledger recorded a delivery of %v although V3 was delivered: %+v", d2.ID, res)
+		}
+		if e := r.entry(); !appliedIs(e, d1) || appliedIs(e, d2) || appliedIs(e, d3) {
+			t.Fatalf("applied advanced on a mismatching delivery: %+v", e)
+		}
+	})
+
+	t.Run("startup reconcile from the journal", func(t *testing.T) {
+		r, d1, d2, d3 := newRig(t)
+		if err := r.correlate("rot-b2", d2, r.journalStart("rot-b2", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b2", fl, d2, []n19Delivery{{"c1", []ledger.Version{d3}}})
+		r.finishOK(fl)
+		r.crash() // the terminal ledger update never ran
+		r.recover()
+		r.reconcileTwice()
+		if e := r.entry(); !appliedIs(e, d1) || appliedIs(e, d2) || appliedIs(e, d3) {
+			t.Fatalf("reconcile advanced applied from a mismatching journal: %+v", e)
+		}
+	})
+
+	t.Run("matching identity still advances", func(t *testing.T) {
+		r, _, d2, _ := newRig(t)
+		if err := r.correlate("rot-b3", d2, r.journalStart("rot-b3", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b3", fl, d2, []n19Delivery{{"c1", []ledger.Version{d2}}})
+		r.finishOK(fl)
+		if res, err := r.terminal("rot-b3", &d2, fl); err != nil || res.Outcome != OutcomeDeliveryVerified {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+		if e := r.entry(); !appliedIs(e, d2) {
+			t.Fatalf("entry %+v", e)
+		}
+	})
+
+	t.Run("a gated delivery that named no identity proves nothing", func(t *testing.T) {
+		r, d1, d2, _ := newRig(t)
+		if err := r.correlate("rot-b4", d2, r.journalStart("rot-b4", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b4", fl, d2, []n19Delivery{{"c1", nil}})
+		r.finishOK(fl)
+		if res, err := r.terminal("rot-b4", &d2, fl); err == nil && res.Outcome == OutcomeDeliveryVerified {
+			t.Fatalf("verified without a delivered identity: %+v", res)
+		}
+		if e := r.entry(); !appliedIs(e, d1) {
+			t.Fatalf("entry %+v", e)
+		}
+	})
+
+	// per-target/per-replica evidence: a record is shared by every target of a dispatch and
+	// DeliveredVersions is last-writer only. Replica 1 got V3, replica 2 (last) got V2: the
+	// last writer matches the dispatch, the first replica does not: nothing is recorded.
+	t.Run("one replica delivered a different version", func(t *testing.T) {
+		r, d1, d2, d3 := newRig(t)
+		if err := r.correlate("rot-b5", d2, r.journalStart("rot-b5", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b5", fl, d2, []n19Delivery{{"c1", []ledger.Version{d3}}, {"c2", []ledger.Version{d2}}})
+		r.finishOK(fl)
+		rec := r.record("rot-b5")
+		if len(rec.DeliveredVersions) != 1 || rec.DeliveredVersions[0] != FormatJournalSecretVersion(d2) {
+			t.Fatalf("precondition: the last writer carries the dispatch version: %v", rec.DeliveredVersions)
+		}
+		if res, err := r.terminal("rot-b5", &d2, fl); err == nil && res.Outcome == OutcomeDeliveryVerified {
+			t.Fatalf("a replica that received another version was covered by the last writer's evidence: %+v", res)
+		}
+		if e := r.entry(); !appliedIs(e, d1) {
+			t.Fatalf("entry %+v", e)
+		}
+	})
+
+	t.Run("every replica delivered the dispatched version", func(t *testing.T) {
+		r, _, d2, _ := newRig(t)
+		if err := r.correlate("rot-b6", d2, r.journalStart("rot-b6", fl)); err != nil {
+			t.Fatal(err)
+		}
+		gatedFlowDelivering(t, r, "rot-b6", fl, d2, []n19Delivery{{"c1", []ledger.Version{d2}}, {"c2", []ledger.Version{d2}}})
+		r.finishOK(fl)
+		if res, err := r.terminal("rot-b6", &d2, fl); err != nil || res.Outcome != OutcomeDeliveryVerified {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+	})
+}
+
+// D. The ledger: an unresolved legacy file-mode record that shows a committed swap was
+// accepted by the plain rule; now it is not evidence (applied never advances). A COMPLETED
+// historical record stays valid (the tracker only flags unresolved records), and old
+// records keep loading.
+func TestN19Legacy_LedgerNeverAdvancesFromAnUnresolvedLegacyFileRecord(t *testing.T) {
+	rolling := lbFlow{strategy: "rolling", orig: "o1", cand: "c1", o2: true}
+	run := func(t *testing.T, fileMode func(string, string) bool, finish bool) (*lbRig, ledger.Version, ledger.Version, BridgeResult, error) {
+		r := newLBRig(t, nil)
+		d1 := r.baseline(true)
+		d2 := r.ver("two")
+		r.observe(d2, lbLive("o1"))
+		r.st.FileModeSecret = fileMode
+		if err := r.correlate("rot-l1", d2, r.journalStart("rot-l1", rolling)); err != nil {
+			t.Fatal(err)
+		}
+		r.journalTo("rot-l1", rolling, d2, rotation.TrSwapCommitted) // committed, in_progress, ungated
+		if finish {
+			r.journalTo("rot-l1", rolling, d2, rotation.TrCompleted)
+			r.finishOK(rolling)
+		}
+		res, err := r.terminal("rot-l1", &d2, rolling)
+		return r, d1, d2, res, err
+	}
+	t.Run("control: without the file-mode knowledge the plain rule accepts it", func(t *testing.T) {
+		r, _, d2, res, err := run(t, nil, false)
+		if err != nil || res.Outcome != OutcomeDeliveryVerified || !appliedIs(r.entry(), d2) {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+	})
+	t.Run("unresolved legacy file-mode record is refused", func(t *testing.T) {
+		r, d1, _, res, err := run(t, func(string, string) bool { return true }, false)
+		if err == nil && res.Outcome == OutcomeDeliveryVerified {
+			t.Fatalf("applied advanced from a legacy record: %+v", res)
+		}
+		if e := r.entry(); !appliedIs(e, d1) {
+			t.Fatalf("entry %+v", e)
+		}
+		if journalDeliveryRefusal(r.record("rot-l1")) == nil {
+			t.Fatal("the journal rule accepted the record")
+		}
+	})
+	t.Run("completed historical legacy record stays valid", func(t *testing.T) {
+		r, _, d2, res, err := run(t, func(string, string) bool { return true }, true)
+		if err != nil || res.Outcome != OutcomeDeliveryVerified || !appliedIs(r.entry(), d2) {
+			t.Fatalf("res=%+v err=%v", res, err)
+		}
+	})
+}

@@ -64,6 +64,13 @@ type RotationState struct {
 	GatedDelivery     bool     `json:"gated_delivery,omitempty"`
 	DeliveryVerified  bool     `json:"delivery_verified,omitempty"`
 	DeliveredVersions []string `json:"delivered_versions,omitempty"`
+	// DeliveredByCandidate keeps the keyed identities of EVERY candidate that reached
+	// secrets_delivered in this record (key: candidate container ID), never reset by a
+	// later candidate. Several targets of one dispatch share one record, so the single
+	// DeliveredVersions slice is last-writer only; this map is the per-target/per-replica
+	// evidence the ledger bridge cross-checks against the dispatch's version (an applied
+	// version is never recorded unless EVERY delivered candidate carried it).
+	DeliveredByCandidate map[string][]string `json:"delivered_by_candidate,omitempty"`
 	// DispatchTargets is the number of containers the engine's dispatch covers
 	// (0 = not recorded: a record written before M1 or by a strategy on its own).
 	// DispatchFinalized is set only by the engine's CompleteRotationID, i.e. after
@@ -86,6 +93,14 @@ type RotationState struct {
 	// stale or cloned snapshot can address exactly the record it was taken from,
 	// including preserved legacy records that are not addressable by RotationID.
 	key string
+
+	// legacyFileUnverified is derived (never persisted) by the tracker when it hands a
+	// record out (StateTracker.view): the record is an UNRESOLVED restart/rolling record
+	// written before N19 (no gate flag) for a secret that is delivered as a file TODAY.
+	// Its delivery was an archive upload whose target (tmpfs vs writable layer) was never
+	// verified, so the legacy format alone does not establish required file delivery
+	// (recordCandidateVerified).
+	legacyFileUnverified bool
 }
 
 // clone returns a deep copy. The tracker hands out clones, never its live records:
@@ -96,7 +111,26 @@ func (r *RotationState) clone() *RotationState {
 	c.OriginalContainerIDs = append([]string(nil), r.OriginalContainerIDs...)
 	c.CandidateContainerIDs = append([]string(nil), r.CandidateContainerIDs...)
 	c.DeliveredVersions = append([]string(nil), r.DeliveredVersions...)
+	if r.DeliveredByCandidate != nil {
+		c.DeliveredByCandidate = make(map[string][]string, len(r.DeliveredByCandidate))
+		for k, v := range r.DeliveredByCandidate {
+			c.DeliveredByCandidate[k] = append([]string(nil), v...)
+		}
+	}
 	return &c
+}
+
+// view is the single place the tracker hands a record out: a deep copy decorated with
+// the derived legacy-file flag. The caller must hold st.mu (read or write).
+func (st *StateTracker) view(r *RotationState) *RotationState {
+	c := r.clone()
+	if st.FileModeSecret != nil && r.Seq > 0 && !r.GatedDelivery &&
+		(r.Strategy == "restart" || r.Strategy == "rolling") &&
+		r.Status != "completed" && r.Status != "recovered" &&
+		r.ProviderName != "" && r.SecretName != "" && st.FileModeSecret(r.ProviderName, r.SecretName) {
+		c.legacyFileUnverified = true
+	}
+	return c
 }
 
 // OriginalIDs returns the container IDs of this rotation as a slice, from the
@@ -142,6 +176,12 @@ type StateTracker struct {
 	// migrationLegacy holds the exact bytes of a legacy-shaped rotations.json until
 	// the migrated file has replaced it (see backupLegacyJournal).
 	migrationLegacy []byte
+
+	// FileModeSecret, when set (the trigger engine wires it from the configuration, before
+	// any record is read), says whether a secret is delivered as a file. It lets the
+	// tracker flag unresolved pre-N19 file-mode records (see RotationState.legacyFileUnverified).
+	// nil: no record is flagged (bare test trackers, env-only deployments).
+	FileModeSecret func(provider, secret string) bool
 }
 
 // Corrupt reports whether the persisted state could not be read at startup, and
@@ -238,7 +278,7 @@ func (st *StateTracker) recordByID(rotationID string) *RotationState {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	if r := st.byID(rotationID); r != nil {
-		return r.clone()
+		return st.view(r)
 	}
 	return nil
 }
@@ -489,11 +529,11 @@ func (st *StateTracker) GetPendingRotations() []*RotationState {
 		state := st.states[key]
 		// Include in_progress rotations older than 5 minutes (assume crashed)
 		if state.Status == "in_progress" && now.Sub(state.LastUpdate) > 5*time.Minute {
-			pending = append(pending, state.clone())
+			pending = append(pending, st.view(state))
 		}
 		// Include explicit rollback_required or critical_error states
 		if state.Status == "rollback_required" || state.Status == "critical_error" {
-			pending = append(pending, state.clone())
+			pending = append(pending, st.view(state))
 		}
 	}
 	return pending
@@ -512,7 +552,7 @@ func (st *StateTracker) GetUnfinishedRotationsAtStartup() []*RotationState {
 		state := st.states[key]
 		switch state.Status {
 		case "in_progress", "rollback_required", "critical_error":
-			out = append(out, state.clone())
+			out = append(out, st.view(state))
 		}
 	}
 	return out
@@ -639,7 +679,7 @@ func (st *StateTracker) snapshotRecords() []*RotationState {
 	defer st.mu.RUnlock()
 	out := make([]*RotationState, 0, len(st.states))
 	for _, k := range st.sortedKeys() {
-		out = append(out, st.states[k].clone())
+		out = append(out, st.view(st.states[k]))
 	}
 	return out
 }
@@ -829,6 +869,15 @@ func (st *StateTracker) Record(ctx context.Context, e rotation.JournalEvent) err
 	case rotation.TrSecretsDelivered:
 		state.DeliveryVerified = true
 		state.DeliveredVersions = append([]string(nil), e.DeliveredVersions...)
+		if state.DeliveredByCandidate == nil {
+			state.DeliveredByCandidate = map[string][]string{}
+		}
+		if len(e.CandidateIDs) == 0 {
+			state.DeliveredByCandidate[""] = append([]string(nil), e.DeliveredVersions...)
+		}
+		for _, id := range e.CandidateIDs {
+			state.DeliveredByCandidate[id] = append([]string(nil), e.DeliveredVersions...)
+		}
 	}
 	state.Seq++
 	state.Transition, state.Phase = e.Transition, e.Transition

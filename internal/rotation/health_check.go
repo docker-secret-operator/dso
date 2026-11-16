@@ -120,18 +120,22 @@ func WaitReady(ctx context.Context, cli *client.Client, containerID string, time
 
 // probeScript succeeds only for a regular, non-empty file, or for a directory that
 // contains at least one entry where EVERY regular file is non-empty and no entry is
-// a leftover temporary (.inject.*) file. A missing path, an empty file, an empty
+// a leftover temporary (.inject.*) file. Every file must also be READABLE by the user the
+// probe runs as (the container's configured user): for a non-root application user that is
+// the real "can the application read its secret" check; for root it is trivially true (root
+// reads anything), which is why delivery separately refuses a numeric non-root user that
+// differs from inject.uid. A missing path, an empty file, an empty
 // directory or a directory holding only subdirectories fails. (The old probe ran
 // `test -s <dir>`, which is true for any directory because directories have a
 // non-zero size.)
 const probeScript = `p=$1
-if [ -f "$p" ]; then [ -s "$p" ]; exit $?; fi
+if [ -f "$p" ]; then [ -s "$p" ] && [ -r "$p" ]; exit $?; fi
 [ -d "$p" ] || exit 2
 n=0
 for f in "$p"/* "$p"/.[!.]*; do
   [ -e "$f" ] || continue
   case "$f" in */.inject.*) exit 3;; esac
-  if [ -f "$f" ]; then [ -s "$f" ] || exit 4; n=$((n+1)); fi
+  if [ -f "$f" ]; then [ -s "$f" ] && [ -r "$f" ] || exit 4; n=$((n+1)); fi
 done
 [ "$n" -gt 0 ] || exit 5
 `

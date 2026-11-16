@@ -147,6 +147,18 @@ func VerifyRunningGate(insp container.InspectResponse, id, rotationID string, sp
 	if want := GateFlagPath(specs); len(insp.Config.Entrypoint) > gatePrefixLen+1 && insp.Config.Entrypoint[gatePrefixLen+1] != want {
 		return fmt.Errorf("%w: the gate waits for a different release flag than this delivery will write", ErrDeliveryRefused)
 	}
+	// Every file the gate waits for must be one this delivery writes: a gate armed for a
+	// different file set (configuration changed since the container was created) would
+	// never open, or open on files this delivery did not verify.
+	writes := map[string]bool{}
+	for _, f := range gateFiles(specs) {
+		writes[f] = true
+	}
+	for _, f := range gateExpectedFiles(insp.Config.Entrypoint) {
+		if !writes[f] {
+			return fmt.Errorf("%w: the gate waits for %s, which this delivery does not write (the container was armed for a different secret file set)", ErrDeliveryRefused, f)
+		}
+	}
 	for _, dir := range specDirs(specs) {
 		best, bestType, bestRW := -1, mount.Type(""), true
 		for _, m := range insp.Mounts {

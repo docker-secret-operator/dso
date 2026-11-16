@@ -233,6 +233,25 @@ func NewTriggerEngineWithDirs(cache *SecretCache, storeManager *providers.Secret
 		}
 	}
 
+	// D: tell the journal which secrets are file-delivered today, so an unresolved
+	// pre-N19 (ungated) restart/rolling record of such a secret is never accepted as
+	// delivery evidence (recordCandidateVerified). Configuration is read per call.
+	if stateTracker != nil && cfg != nil {
+		stateTracker.FileModeSecret = func(provider, secret string) bool {
+			for _, sec := range cfg.Secrets {
+				if sec.Name != secret || (sec.Provider != "" && provider != "" && sec.Provider != provider) {
+					continue
+				}
+				typ := sec.Inject.Type
+				if typ == "" {
+					typ = cfg.Defaults.Inject.Type
+				}
+				return typ == "file"
+			}
+			return false
+		}
+	}
+
 	guard := newJournalGuard(stateTracker)
 	if rw != nil {
 		rw.Guard = guard
@@ -369,6 +388,14 @@ func (t *TriggerEngine) StartAll() error {
 	// CRITICAL: Perform automatic recovery from any crashed rotations before starting normal operations
 	// This ensures orphaned containers are cleaned up and state is consistent.
 	t.performAutomaticRecovery()
+
+	// N19: recovery has settled (the operation guard now only refuses services with an
+	// unresolved operation): serve containers that are already waiting at their startup
+	// gate, once values are available. One coalesced, bounded pass; cache values arriving
+	// later trigger further passes (writeCache -> NotifyCacheWarm).
+	if t.Reloader != nil {
+		t.Reloader.RequestGateReconcile(t.ctx)
+	}
 
 	// Clean up old completed/recovered rotations from state file
 	if t.StateTracker != nil {
@@ -543,10 +570,20 @@ func (t *TriggerEngine) writeCache(cacheKey, secretName, newHash string, secretD
 			t.rollbackHash(cacheKey, newHash)
 			return false
 		}
+		t.notifyCacheWarm()
 		return true
 	}
 	t.Cache.Set(cacheKey, secretData)
+	t.notifyCacheWarm()
 	return true
+}
+
+// notifyCacheWarm lets the reloader serve running gated containers that wait for a value
+// (no-op when none waits).
+func (t *TriggerEngine) notifyCacheWarm() {
+	if t.Reloader != nil {
+		t.Reloader.NotifyCacheWarm(t.ctx)
+	}
 }
 
 // triggerReload is Reloader.TriggerReload, or the test seam.
