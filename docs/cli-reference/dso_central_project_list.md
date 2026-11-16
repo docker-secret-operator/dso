@@ -10,6 +10,7 @@ dso central project list [flags]
 
 ```
   -h, --help   help for list
+      --json   print the result as one JSON document
 ```
 
 ### Options inherited from parent commands

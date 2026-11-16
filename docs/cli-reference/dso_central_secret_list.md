@@ -10,6 +10,7 @@ dso central secret list <project> <environment> [flags]
 
 ```
   -h, --help   help for list
+      --json   print the result as one JSON document (never includes a value)
 ```
 
 ### Options inherited from parent commands

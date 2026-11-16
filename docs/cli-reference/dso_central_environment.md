@@ -27,5 +27,7 @@ dso central environment [flags]
 
 * [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso central environment create](dso_central_environment_create.md)	 - Create an environment
+* [dso central environment delete](dso_central_environment_delete.md)	 - Delete an environment (it must have no secrets)
 * [dso central environment list](dso_central_environment_list.md)	 - List environments
+* [dso central environment rename](dso_central_environment_rename.md)	 - Rename an environment's slug and/or display name
 

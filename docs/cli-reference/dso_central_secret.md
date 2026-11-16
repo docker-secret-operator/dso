@@ -32,5 +32,6 @@ dso central secret [flags]
 * [dso central secret disable-version](dso_central_secret_disable-version.md)	 - Disable a version (kept, but no longer readable)
 * [dso central secret get](dso_central_secret_get.md)	 - Print a secret value (requires --reveal)
 * [dso central secret list](dso_central_secret_list.md)	 - List secret names and metadata (no values)
+* [dso central secret rollback](dso_central_secret_rollback.md)	 - Create a new version whose value equals an older version's (never an in-place revert)
 * [dso central secret versions](dso_central_secret_versions.md)	 - List version metadata (no values)
 

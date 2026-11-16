@@ -27,5 +27,7 @@ dso central project [flags]
 
 * [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso central project create](dso_central_project_create.md)	 - Create a project (generates its data key)
+* [dso central project delete](dso_central_project_delete.md)	 - Delete a project (it must have no environments)
 * [dso central project list](dso_central_project_list.md)	 - List projects
+* [dso central project rename](dso_central_project_rename.md)	 - Rename a project's slug and/or display name
 
