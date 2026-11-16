@@ -430,6 +430,50 @@ func tabs(cmd *cobra.Command) *tabwriter.Writer {
 	return tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 }
 
+// writeCentralJSON writes v to cmd's stdout as exactly one JSON document,
+// indented and with non-printable characters escaped exactly like `central
+// audit verify --json` already does -- so every `--json` output under
+// `central` shares one encoding, and a database-derived value (a slug, a
+// name) can never inject terminal control sequences or break the
+// single-document-on-stdout contract documented in docs/cli-conventions.md.
+// Callers are responsible for never putting a secret value into v.
+func writeCentralJSON(cmd *cobra.Command, v any) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	_, err := cmd.OutOrStdout().Write(escapeJSONNonPrintable(buf.Bytes()))
+	return err
+}
+
+// projectJSON is the stable --json document for one project, used by both
+// `project list` and `project rename`. CreatedAt is omitted by rename (it
+// does not look the row back up) rather than guessed.
+type projectJSON struct {
+	Slug      string     `json:"slug"`
+	Name      string     `json:"name"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+}
+
+// projectRenameJSON is the stable --json document of `project rename`.
+type projectRenameJSON struct {
+	PreviousSlug string `json:"previous_slug"`
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+}
+
+// projectDeleteJSON is the stable --json document of `project delete`. Error
+// is populated, and Deleted is false, exactly when the delete was rejected
+// (for example a non-empty project); the document is still written to
+// stdout in that case, per the documented --json contract.
+type projectDeleteJSON struct {
+	Slug    string `json:"slug"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error,omitempty"`
+}
+
 func centralProjectCmd(f *centralFlags) *cobra.Command {
 	parent := &cobra.Command{Use: "project", Short: "Manage projects"}
 	var name string
@@ -450,6 +494,8 @@ func centralProjectCmd(f *centralFlags) *cobra.Command {
 		},
 	}
 	create.Flags().StringVar(&name, "name", "", "display name")
+
+	var listJSON bool
 	list := &cobra.Command{
 		Use: "list", Short: "List projects", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -462,6 +508,14 @@ func centralProjectCmd(f *centralFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if listJSON {
+				docs := make([]projectJSON, 0, len(ps))
+				for _, p := range ps {
+					created := p.CreatedAt
+					docs = append(docs, projectJSON{Slug: p.Slug, Name: p.Name, CreatedAt: &created})
+				}
+				return writeCentralJSON(cmd, docs)
+			}
 			w := tabs(cmd)
 			fmt.Fprintln(w, "SLUG\tNAME\tCREATED")
 			for _, p := range ps {
@@ -470,8 +524,117 @@ func centralProjectCmd(f *centralFlags) *cobra.Command {
 			return w.Flush()
 		},
 	}
-	parent.AddCommand(create, list)
+	list.Flags().BoolVar(&listJSON, "json", false, "print the result as one JSON document")
+
+	var renameName string
+	var renameJSON bool
+	rename := &cobra.Command{
+		Use: "rename <project> <new-slug>", Args: cobra.ExactArgs(2), Short: "Rename a project's slug and/or display name",
+		Long: `Renames a project. --name is optional: when it is omitted, the project's
+current display name is kept (the underlying store call always sets both
+fields together, so the CLI looks the current name up first rather than
+risk clearing it).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, closeFn, err := f.open(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeFn()
+			newName := renameName
+			if !cmd.Flags().Changed("name") {
+				ps, err := svc.ListProjects(cmd.Context())
+				if err != nil {
+					return err
+				}
+				found := false
+				for _, p := range ps {
+					if p.Slug == args[0] {
+						newName, found = p.Name, true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("project %s not found", quoteUntrusted(args[0]))
+				}
+			}
+			renameErr := svc.RenameProject(cmd.Context(), args[0], args[1], newName, actorName())
+			if renameErr != nil && errors.Is(renameErr, store.ErrConflict) {
+				renameErr = fmt.Errorf("slug %s is already in use by another project", quoteUntrusted(args[1]))
+			}
+			if renameErr != nil {
+				return renameErr
+			}
+			if renameJSON {
+				return writeCentralJSON(cmd, projectRenameJSON{PreviousSlug: args[0], Slug: args[1], Name: newName})
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Renamed project %s to %s\n", args[0], args[1])
+			return nil
+		},
+	}
+	rename.Flags().StringVar(&renameName, "name", "", "new display name (default: keep the current name)")
+	rename.Flags().BoolVar(&renameJSON, "json", false, "print the result as one JSON document")
+
+	var deleteJSON bool
+	del := &cobra.Command{
+		Use: "delete <project>", Args: cobra.ExactArgs(1), Short: "Delete a project (it must have no environments)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, closeFn, err := f.open(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeFn()
+			delErr := svc.DeleteProject(cmd.Context(), args[0], actorName())
+			if delErr != nil && errors.Is(delErr, store.ErrConflict) {
+				delErr = fmt.Errorf("project %s is not empty: delete its environments first", quoteUntrusted(args[0]))
+			}
+			if deleteJSON {
+				doc := projectDeleteJSON{Slug: args[0], Deleted: delErr == nil}
+				if delErr != nil {
+					doc.Error = printableUntrusted(delErr.Error())
+				}
+				if err := writeCentralJSON(cmd, doc); err != nil {
+					return err
+				}
+				return delErr
+			}
+			if delErr != nil {
+				return delErr
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %s\n", args[0])
+			return nil
+		},
+	}
+	del.Flags().BoolVar(&deleteJSON, "json", false, "print the result as one JSON document (also on failure)")
+
+	parent.AddCommand(create, list, rename, del)
 	return parent
+}
+
+// environmentJSON is the stable --json document for one environment, used by
+// `environment list`.
+type environmentJSON struct {
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// environmentRenameJSON is the stable --json document of `environment rename`.
+type environmentRenameJSON struct {
+	Project      string `json:"project"`
+	PreviousSlug string `json:"previous_slug"`
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+}
+
+// environmentDeleteJSON is the stable --json document of `environment
+// delete`. Error is populated, and Deleted is false, exactly when the delete
+// was rejected (for example a non-empty environment); the document is still
+// written to stdout in that case, per the documented --json contract.
+type environmentDeleteJSON struct {
+	Project string `json:"project"`
+	Slug    string `json:"slug"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error,omitempty"`
 }
 
 func centralEnvCmd(f *centralFlags) *cobra.Command {
@@ -494,6 +657,8 @@ func centralEnvCmd(f *centralFlags) *cobra.Command {
 		},
 	}
 	create.Flags().StringVar(&name, "name", "", "display name")
+
+	var listJSON bool
 	list := &cobra.Command{
 		Use: "list <project>", Args: cobra.ExactArgs(1), Short: "List environments",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -506,6 +671,13 @@ func centralEnvCmd(f *centralFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if listJSON {
+				docs := make([]environmentJSON, 0, len(es))
+				for _, e := range es {
+					docs = append(docs, environmentJSON{Slug: e.Slug, Name: e.Name, CreatedAt: e.CreatedAt})
+				}
+				return writeCentralJSON(cmd, docs)
+			}
 			w := tabs(cmd)
 			fmt.Fprintln(w, "SLUG\tNAME")
 			for _, e := range es {
@@ -514,7 +686,89 @@ func centralEnvCmd(f *centralFlags) *cobra.Command {
 			return w.Flush()
 		},
 	}
-	parent.AddCommand(create, list)
+	list.Flags().BoolVar(&listJSON, "json", false, "print the result as one JSON document")
+
+	var renameName string
+	var renameJSON bool
+	rename := &cobra.Command{
+		Use: "rename <project> <environment> <new-slug>", Args: cobra.ExactArgs(3), Short: "Rename an environment's slug and/or display name",
+		Long: `Renames an environment. --name is optional: when it is omitted, the
+environment's current display name is kept (the underlying store call always
+sets both fields together, so the CLI looks the current name up first rather
+than risk clearing it).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, closeFn, err := f.open(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeFn()
+			newName := renameName
+			if !cmd.Flags().Changed("name") {
+				es, err := svc.ListEnvironments(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				found := false
+				for _, e := range es {
+					if e.Slug == args[1] {
+						newName, found = e.Name, true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("environment %s/%s not found", quoteUntrusted(args[0]), quoteUntrusted(args[1]))
+				}
+			}
+			renameErr := svc.RenameEnvironment(cmd.Context(), args[0], args[1], args[2], newName, actorName())
+			if renameErr != nil && errors.Is(renameErr, store.ErrConflict) {
+				renameErr = fmt.Errorf("slug %s is already in use by another environment in project %s", quoteUntrusted(args[2]), quoteUntrusted(args[0]))
+			}
+			if renameErr != nil {
+				return renameErr
+			}
+			if renameJSON {
+				return writeCentralJSON(cmd, environmentRenameJSON{Project: args[0], PreviousSlug: args[1], Slug: args[2], Name: newName})
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Renamed environment %s/%s to %s\n", args[0], args[1], args[2])
+			return nil
+		},
+	}
+	rename.Flags().StringVar(&renameName, "name", "", "new display name (default: keep the current name)")
+	rename.Flags().BoolVar(&renameJSON, "json", false, "print the result as one JSON document")
+
+	var deleteJSON bool
+	del := &cobra.Command{
+		Use: "delete <project> <environment>", Args: cobra.ExactArgs(2), Short: "Delete an environment (it must have no secrets)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, closeFn, err := f.open(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeFn()
+			delErr := svc.DeleteEnvironment(cmd.Context(), args[0], args[1], actorName())
+			if delErr != nil && errors.Is(delErr, store.ErrConflict) {
+				delErr = fmt.Errorf("environment %s is not empty: delete its secrets first", quoteUntrusted(args[1]))
+			}
+			if deleteJSON {
+				doc := environmentDeleteJSON{Project: args[0], Slug: args[1], Deleted: delErr == nil}
+				if delErr != nil {
+					doc.Error = printableUntrusted(delErr.Error())
+				}
+				if err := writeCentralJSON(cmd, doc); err != nil {
+					return err
+				}
+				return delErr
+			}
+			if delErr != nil {
+				return delErr
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted environment %s/%s\n", args[0], args[1])
+			return nil
+		},
+	}
+	del.Flags().BoolVar(&deleteJSON, "json", false, "print the result as one JSON document (also on failure)")
+
+	parent.AddCommand(create, list, rename, del)
 	return parent
 }
 
@@ -534,6 +788,40 @@ func readValue(cmd *cobra.Command, fromStdin bool) ([]byte, error) {
 		return nil, fmt.Errorf("%w (or pass --value-stdin)", err)
 	}
 	return b, nil
+}
+
+// secretMetaJSON is the stable --json document for one entry of `secret
+// list`. It never carries a value, by construction: store.SecretMeta itself
+// has no value field.
+type secretMetaJSON struct {
+	Name                  string    `json:"name"`
+	LatestVersion         int       `json:"latest_version"`
+	LatestVersionDisabled bool      `json:"latest_version_disabled"`
+	VersionCount          int       `json:"version_count"`
+	CreatedBy             string    `json:"created_by"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+// versionMetaJSON is the stable --json document for one entry of `secret
+// versions`. It never carries a value, by construction: store.VersionMeta
+// itself has no value field.
+type versionMetaJSON struct {
+	Version   int       `json:"version"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	Disabled  bool      `json:"disabled"`
+	Comment   string    `json:"comment,omitempty"`
+}
+
+// secretRollbackJSON is the stable --json document of `secret rollback`. It
+// never carries a value: rollback copies ciphertext inside the service and
+// the CLI only ever sees version numbers.
+type secretRollbackJSON struct {
+	Project     string `json:"project"`
+	Environment string `json:"environment"`
+	Name        string `json:"name"`
+	FromVersion int    `json:"from_version"`
+	NewVersion  int    `json:"new_version"`
 }
 
 func centralSecretCmd(f *centralFlags) *cobra.Command {
@@ -604,6 +892,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 	get.Flags().IntVar(&version, "version", 0, "version number (default: the newest version; fails if it is disabled)")
 	get.Flags().BoolVar(&reveal, "reveal", false, "print the plaintext value")
 
+	var listJSON bool
 	list := &cobra.Command{
 		Use: "list <project> <environment>", Args: cobra.ExactArgs(2), Short: "List secret names and metadata (no values)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -615,6 +904,16 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			ms, err := svc.ListSecrets(cmd.Context(), args[0], args[1])
 			if err != nil {
 				return err
+			}
+			if listJSON {
+				docs := make([]secretMetaJSON, 0, len(ms))
+				for _, m := range ms {
+					docs = append(docs, secretMetaJSON{
+						Name: m.Name, LatestVersion: m.LatestVersion, LatestVersionDisabled: m.LatestVersionDisabled,
+						VersionCount: m.VersionCount, CreatedBy: m.CreatedBy, CreatedAt: m.CreatedAt,
+					})
+				}
+				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
 			fmt.Fprintln(w, "NAME\tLATEST\tVERSIONS\tCREATED BY\tCREATED")
@@ -628,7 +927,9 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			return w.Flush()
 		},
 	}
+	list.Flags().BoolVar(&listJSON, "json", false, "print the result as one JSON document (never includes a value)")
 
+	var versionsJSON bool
 	versions := &cobra.Command{
 		Use: "versions <project> <environment> <name>", Args: cobra.ExactArgs(3), Short: "List version metadata (no values)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -640,6 +941,16 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			vs, err := svc.ListVersions(cmd.Context(), args[0], args[1], args[2])
 			if err != nil {
 				return err
+			}
+			if versionsJSON {
+				docs := make([]versionMetaJSON, 0, len(vs))
+				for _, v := range vs {
+					docs = append(docs, versionMetaJSON{
+						Version: v.Version, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt,
+						Disabled: v.DisabledAt != nil, Comment: v.Comment,
+					})
+				}
+				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
 			fmt.Fprintln(w, "VERSION\tCREATED BY\tCREATED\tSTATE\tCOMMENT")
@@ -653,6 +964,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			return w.Flush()
 		},
 	}
+	versions.Flags().BoolVar(&versionsJSON, "json", false, "print the result as one JSON document (never includes a value)")
 
 	disable := &cobra.Command{
 		Use: "disable-version <project> <environment> <name> <version>", Args: cobra.ExactArgs(4), Short: "Disable a version (kept, but no longer readable)",
@@ -675,6 +987,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 	}
 
 	var rollbackComment string
+	var rollbackJSON bool
 	rollback := &cobra.Command{
 		Use: "rollback <project> <environment> <name> <version>", Args: cobra.ExactArgs(4),
 		Short: "Create a new version whose value equals an older version's (never an in-place revert)",
@@ -692,11 +1005,17 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if rollbackJSON {
+				return writeCentralJSON(cmd, secretRollbackJSON{
+					Project: args[0], Environment: args[1], Name: args[2], FromVersion: n, NewVersion: newVersion,
+				})
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Rolled back %s to version %d (created version %d)\n", args[2], n, newVersion)
 			return nil
 		},
 	}
 	rollback.Flags().StringVar(&rollbackComment, "comment", "", "free-text note stored with the new version (not secret)")
+	rollback.Flags().BoolVar(&rollbackJSON, "json", false, "print the result as one JSON document (never includes a value)")
 
 	del := &cobra.Command{
 		Use: "delete <project> <environment> <name>", Args: cobra.ExactArgs(3), Short: "Soft-delete a secret (versions retained)",
@@ -1116,13 +1435,7 @@ authorization, and not a tamper-proof guarantee.`,
 			}
 			out := cmd.OutOrStdout()
 			if asJSON {
-				var buf bytes.Buffer
-				enc := json.NewEncoder(&buf)
-				enc.SetIndent("", "  ")
-				if err := enc.Encode(doc); err != nil {
-					return err
-				}
-				if _, err := out.Write(escapeJSONNonPrintable(buf.Bytes())); err != nil {
+				if err := writeCentralJSON(cmd, doc); err != nil {
 					return err
 				}
 				return failure

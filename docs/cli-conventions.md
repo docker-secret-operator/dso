@@ -81,6 +81,49 @@ never appear, and a non-zero exit still carries the document. `status` keys:
 omitted, not guessed. `status -q` prints nothing; use the exit code.
 `--no-color` / `NO_COLOR` strip ANSI colour from `watch` and `logs`.
 
+### `dso central` lifecycle commands and `--json`
+
+`dso central` also has `--json`, sharing one encoder (`writeCentralJSON` in
+`internal/cli/central.go`) across every command below plus `central audit
+verify` (documented separately above): a single indented JSON document,
+non-printable characters escaped, written to stdout, with the same contract —
+stdout is exactly one document, diagnostics stay on stderr, secret values
+never appear, and a non-zero exit still carries the document. No new exit
+codes were added for any of these: they reuse 0 (success) and 1 (usage error
+or any other failure), since no script needs to tell their failures apart
+from a generic one.
+
+New mutating commands (Task 5's `Service.RenameProject`,
+`RenameEnvironment`, `DeleteProject`, `DeleteEnvironment`):
+
+* `central project rename <project> <new-slug> [--name NAME]` — renames a
+  project's slug and/or display name. `--name` is optional: when omitted, the
+  CLI looks up and keeps the project's current display name (the store call
+  itself always sets both fields together, so passing an empty name would
+  otherwise clear it). A slug collision is reported as a clean "slug ... is
+  already in use" error, never the raw store conflict text. `--json` prints
+  `{previous_slug, slug, name}` on success.
+* `central project delete <project>` — deletes a project; the store rejects a
+  non-empty one (it still has environments) with a clean "is not empty"
+  error, and nothing is changed. `--json` prints `{slug, deleted, error?}` —
+  `error` is populated and `deleted` is `false` on a rejected delete, and the
+  document is still written even though the command exits 1.
+* `central environment rename <project> <env> <new-slug> [--name NAME]` and
+  `central environment delete <project> <env>` — the same two behaviours,
+  scoped to one environment. `--json` documents:
+  `{project, previous_slug, slug, name}` for rename,
+  `{project, slug, deleted, error?}` for delete.
+
+`--json` was also added to `secret rollback` (`{project, environment, name,
+from_version, new_version}`, no value) and, to prove the same helper
+generalizes to existing read commands, to `project list`, `environment
+list`, `secret list` and `secret versions` — each printing a JSON array of
+the same metadata already shown in their tabular output, never a secret
+value. `secret get` deliberately keeps no `--json` mode: its purpose is
+printing a revealed plaintext value, which would break the "no --json output
+ever contains a secret value" invariant that holds for every other `--json`
+command in this file.
+
 ### Failure behaviour of configuration files
 
 | Situation | Behaviour |
