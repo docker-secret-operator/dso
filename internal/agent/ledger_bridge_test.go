@@ -1937,3 +1937,83 @@ func TestLedgerBridge_ProductionCallersOnlyInWiring(t *testing.T) {
 		t.Fatalf("only %d files scanned", scanned)
 	}
 }
+
+// N21 controlled automatic rollback x ledger (kept here: only the bridge tests may import the ledger).
+// POLICY: the ledger reconciliation after a rollback records rolled back / failed,
+// never applied; the guard rule is unchanged (recovered unblocks, critical blocks).
+func TestN21Rollback_LedgerReconcileNeverRecordsApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		composeLabel bool // makes the previous version known to the ledger source
+		wantStatus   string
+	}{
+		{"previous version known", true, "recovered"},
+		{"previous version unavailable", false, "critical_error"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			o := n21Original(false)
+			if tc.composeLabel {
+				o.labels = map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "app"}
+			}
+			d := newFakeDaemon(o, n21Candidate(true, "healthy"))
+			r := newLBRig(t, d)
+			d1 := r.baseline(true)
+			d2 := r.ver("two")
+			r.observe(d2, lbLive("o1"))
+			fl := lbFlow{strategy: "restart", orig: "o1", cand: "c1", o2: true}
+			if err := r.correlate(n21RID, d2, r.journalStart(n21RID, fl)); err != nil {
+				t.Fatal(err)
+			}
+			r.journalTo(n21RID, fl, d2, rotation.TrReplacementStarted)
+			r.crash()
+			r.f.ar.AutomaticRollback = true
+			r.f.ar.PreviousVersion = ledgerPreviousSource{lw: &ledgerWiring{mode: ledgerEnabled, v: r.v}}
+			r.recover()
+			rbAssertRolledBack(t, d, true)
+			if s := r.record(n21RID).Status; s != tc.wantStatus {
+				t.Fatalf("journal status %s, want %s", s, tc.wantStatus)
+			}
+			r.reconcileTwice()
+			e := r.entry()
+			if !appliedIs(e, d1) {
+				t.Fatalf("applied must stay at the previous version: %+v", e)
+			}
+			for _, rp := range e.Replicas {
+				if rp.Applied != nil && ledger.Compare(*rp.Applied, d2) == ledger.Same {
+					t.Fatal("the rolled-back version must never be recorded as applied")
+				}
+			}
+			t.Logf("ledger entry after rollback+reconcile: state=%s last=%+v", e.State, e.LastOutcome)
+			if tc.wantStatus == "critical_error" && !r.blocked() {
+				t.Fatal("an unconfirmed application state must keep the guard blocked")
+			}
+			if tc.wantStatus == "recovered" && r.blocked() {
+				t.Fatal("a recovered rollback must not block the service")
+			}
+		})
+	}
+}
+
+func TestN21Rollback_LedgerPreviousSourceRules(t *testing.T) {
+	d := newFakeDaemon()
+	r := newLBRig(t, d)
+	labels := map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "app"}
+	src := ledgerPreviousSource{lw: &ledgerWiring{mode: ledgerEnabled, v: r.v}}
+	rec := &RotationState{ProviderName: lbProvider, SecretName: lbSecret, ServiceID: lbService}
+	if src.PreviousDeliveredKnown(rec, labels) {
+		t.Fatal("no ledger entry: the previous version is unknown")
+	}
+	d1 := r.baseline(true)
+	if !src.PreviousDeliveredKnown(rec, labels) {
+		t.Fatal("an applied version exists: known")
+	}
+	rec.SecretVersion = FormatJournalSecretVersion(d1)
+	if src.PreviousDeliveredKnown(rec, labels) {
+		t.Fatal("the applied version equals the attempted one: nothing distinguishes previous from attempted")
+	}
+	if (ledgerPreviousSource{}).PreviousDeliveredKnown(rec, labels) ||
+		(ledgerPreviousSource{lw: &ledgerWiring{mode: ledgerDisabled}}).PreviousDeliveredKnown(rec, labels) {
+		t.Fatal("a missing or disabled ledger can never show the previous version")
+	}
+}

@@ -274,6 +274,12 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
 	ar.Dispatcher = t.Dispatcher
 	ar.Routing = t.Routing
+	// N21: controlled automatic rollback (recovery_rollback.go); every safety
+	// condition must still be positively established per operation.
+	ar.AutomaticRollback = true
+	if t.ledger.enabled() {
+		ar.PreviousVersion = ledgerPreviousSource{lw: t.ledger}
+	}
 	if t.Config != nil {
 		ar.OwnerID = t.Config.Agent.OwnerID
 	}

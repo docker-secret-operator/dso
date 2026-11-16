@@ -925,3 +925,29 @@ func keyReason(err error) string {
 	}
 	return err.Error()
 }
+
+// N21: the ledger answers whether the version delivered before an interrupted
+// operation is known (recovery_rollback.go). Kept here because this file is the
+// only production caller of the bridge.
+// ledgerPreviousSource answers from the applied-version ledger: the previous version
+// is known when the ledger holds an applied version for the entry that differs from
+// the version the interrupted operation tried to deliver.
+type ledgerPreviousSource struct{ lw *ledgerWiring }
+
+func (s ledgerPreviousSource) PreviousDeliveredKnown(rec *RotationState, labels map[string]string) bool {
+	if s.lw == nil || !s.lw.enabled() || s.lw.v == nil || rec == nil {
+		return false
+	}
+	k := ledger.Key{Provider: rec.ProviderName, Secret: rec.SecretName, Service: rec.ServiceID}
+	if svc := labels["com.docker.compose.service"]; svc != "" {
+		k.Project, k.Service = labels["com.docker.compose.project"], svc
+	}
+	e, ok := s.lw.v.Get(k)
+	if !ok || e.Applied == nil {
+		return false
+	}
+	if attempted := parseJournalSecretVersion(rec.SecretVersion); attempted != nil && ledger.Compare(*e.Applied, *attempted) == ledger.Same {
+		return false // the "previous" version is the attempted one: nothing distinguishes them
+	}
+	return true
+}

@@ -105,6 +105,19 @@ type AutomaticRecovery struct {
 	// services. Nil means routing is unknown, in which case recovery preserves
 	// every workload of a proxied rotation (fail closed).
 	Routing RoutingVerifier
+
+	// AutomaticRollback enables the N21 controlled automatic rollback (see
+	// recovery_rollback.go): a restart-strategy operation that never reached
+	// candidate_ready is rolled back to its original container ONLY when every safety
+	// condition is positively established; otherwise the preserve-and-escalate rules
+	// below apply unchanged. The production startup path enables it; the zero value
+	// keeps the pure preserve behaviour.
+	AutomaticRollback bool
+
+	// PreviousVersion tells the rollback whether the previously delivered secret
+	// version can be shown. nil means "cannot be shown" (the rollback then never claims
+	// an application-level recovery and leaves the record blocked).
+	PreviousVersion PreviousVersionSource
 }
 
 // SetOwnerID wires this agent's dso.owner identity into the recovery/cleanup
@@ -239,12 +252,31 @@ func (ar *AutomaticRecovery) recoverSingleRotation(ctx context.Context, rotation
 		return
 	}
 
+	// A record this agent's rollback left blocked for operator confirmation (container
+	// restored, previous secret version unavailable) is never re-resolved by startup
+	// recovery: only an operator releases it.
+	if rotation.Status == "critical_error" && isRollbackOperatorState(rotation.OperationState) {
+		logger.Warn("Rotation stays blocked: an earlier automatic rollback restored the container but application recovery needs operator confirmation",
+			zap.String("operation_state", rotation.OperationState))
+		return
+	}
+
 	ids := rotation.OriginalIDs()
 	if len(ids) == 0 {
 		// Nothing identifies the workload: we cannot tell artifacts of this
 		// rotation from anything else. Preserve everything.
 		manual("rotation record has no container identity", nil)
 		return
+	}
+
+	// N21: controlled automatic rollback, only under positively established safety.
+	handled, note := ar.tryControlledRollback(ctx, logger, rotation)
+	if handled {
+		return
+	}
+	if note != "" {
+		inner := manual
+		manual = func(reason string, preserved []string) { inner(reason+"; "+note, preserved) }
 	}
 
 	var preserved []string
