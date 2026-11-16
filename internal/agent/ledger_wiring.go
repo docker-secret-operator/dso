@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -62,6 +63,53 @@ type ledgerWiring struct {
 	v     *ledger.Versions
 	// liveFn replaces the Docker live-set inspection (tests only).
 	liveFn func(providerName, secretName string) (map[ledger.Key][]ledger.LiveReplica, error)
+	// kindFn replaces the strategy classification of the live targets (tests
+	// only). nil derives it from liveFn's Eligible flag or, in production, from
+	// the reloader's targets.
+	kindFn func(providerName, secretName string) map[ledger.Key]ledgerKeyKinds
+
+	// inflight maps a ledger entry to the rotation id whose delivery request it
+	// currently holds (set by ledgerCorrelate, cleared by ledgerTerminal). A
+	// second operation never takes over an entry another operation is still
+	// delivering (see ledgerCorrelate).
+	inflightMu sync.Mutex
+	inflight   map[ledger.Key]inflightHold
+}
+
+type inflightHold struct {
+	rotationID string
+	at         time.Time
+}
+
+// ledgerHoldStale bounds how long an unreleased hold blocks other operations from
+// correlating the entry (a hold is released when its operation's outcome is
+// recorded; this only bounds a lost release).
+const ledgerHoldStale = time.Hour
+
+// ledgerKeyKinds says what the targets of one ledger entry do with a dispatch.
+type ledgerKeyKinds struct {
+	// signal: a target reloads by signal (delivery verified, adoption never).
+	signal bool
+	// rotating: a target is recreated by restart/rolling (adoption verifiable).
+	rotating bool
+	// inert: a target's strategy rotates nothing (none or unrecognised): a
+	// dispatch does not deliver to it.
+	inert bool
+}
+
+// classifyStrategy maps a target's declared strategy to its kind.
+func classifyStrategy(strategy string) ledgerKeyKinds {
+	switch strategy {
+	case "signal":
+		return ledgerKeyKinds{signal: true}
+	case "restart", "rolling", "auto", "":
+		return ledgerKeyKinds{rotating: true}
+	}
+	return ledgerKeyKinds{inert: true}
+}
+
+func (a ledgerKeyKinds) merge(b ledgerKeyKinds) ledgerKeyKinds {
+	return ledgerKeyKinds{signal: a.signal || b.signal, rotating: a.rotating || b.rotating, inert: a.inert || b.inert}
 }
 
 func (lw *ledgerWiring) enabled() bool { return lw != nil && lw.mode == ledgerEnabled }
@@ -69,8 +117,9 @@ func (lw *ledgerWiring) enabled() bool { return lw != nil && lw.mode == ledgerEn
 // ledgerPlanKey is one ledger entry a dispatch targets, with the desired
 // sequence it observed.
 type ledgerPlanKey struct {
-	key ledger.Key
-	seq uint64
+	key  ledger.Key
+	seq  uint64
+	kind ledgerKeyKinds
 }
 
 // ledgerPlan is what one dispatch tells the ledger. It is built under the
@@ -255,11 +304,35 @@ func (t *TriggerEngine) secretFileMode(sec config.SecretMapping) bool {
 // identity. An inspection failure is returned (the caller then treats the
 // ledger as unusable for this observation).
 func (t *TriggerEngine) ledgerLiveSet(ctx context.Context, providerName, secretName string) (map[ledger.Key][]ledger.LiveReplica, error) {
+	live, _, err := t.ledgerLiveTargets(ctx, providerName, secretName)
+	return live, err
+}
+
+// ledgerLiveTargets is ledgerLiveSet that also classifies, per entry, what the
+// entry's targets do with a dispatch (signal / rotating / inert strategies).
+func (t *TriggerEngine) ledgerLiveTargets(ctx context.Context, providerName, secretName string) (map[ledger.Key][]ledger.LiveReplica, map[ledger.Key]ledgerKeyKinds, error) {
 	if t.ledger != nil && t.ledger.liveFn != nil {
-		return t.ledger.liveFn(providerName, secretName)
+		live, err := t.ledger.liveFn(providerName, secretName)
+		if err != nil {
+			return nil, nil, err
+		}
+		if t.ledger.kindFn != nil {
+			return live, t.ledger.kindFn(providerName, secretName), nil
+		}
+		kinds := map[ledger.Key]ledgerKeyKinds{}
+		for k, reps := range live {
+			for _, r := range reps {
+				if r.Eligible {
+					kinds[k] = kinds[k].merge(ledgerKeyKinds{rotating: true})
+				} else {
+					kinds[k] = kinds[k].merge(ledgerKeyKinds{inert: true})
+				}
+			}
+		}
+		return live, kinds, nil
 	}
 	if t.Reloader == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	type target struct{ id, strategy string }
 	var targets []target
@@ -274,19 +347,20 @@ func (t *TriggerEngine) ledgerLiveSet(ctx context.Context, providerName, secretN
 		return true
 	})
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if t.DockerClient == nil {
-		return nil, errors.New("no Docker client for the live-set inspection")
+		return nil, nil, errors.New("no Docker client for the live-set inspection")
 	}
 	out := map[ledger.Key][]ledger.LiveReplica{}
+	kinds := map[ledger.Key]ledgerKeyKinds{}
 	for _, tg := range targets {
 		insp, err := t.DockerClient.ContainerInspect(ctx, tg.id)
 		if err != nil {
-			return nil, fmt.Errorf("inspecting target %s: %w", tg.id, err)
+			return nil, nil, fmt.Errorf("inspecting target %s: %w", tg.id, err)
 		}
 		if insp.ContainerJSONBase == nil {
-			return nil, fmt.Errorf("inspecting target %s: no container data", tg.id)
+			return nil, nil, fmt.Errorf("inspecting target %s: no container data", tg.id)
 		}
 		name := strings.TrimPrefix(insp.Name, "/")
 		if name == "" || IsDSORotationArtifactName(name) {
@@ -306,6 +380,7 @@ func (t *TriggerEngine) ledgerLiveSet(ctx context.Context, providerName, secretN
 			Number: number, ContainerID: insp.ID, ContainerName: name, Created: insp.Created,
 			Eligible: tg.strategy != "none",
 		})
+		kinds[k] = kinds[k].merge(classifyStrategy(tg.strategy))
 	}
 	for k := range out {
 		reps := out[k]
@@ -316,7 +391,7 @@ func (t *TriggerEngine) ledgerLiveSet(ctx context.Context, providerName, secretN
 			return reps[i].ContainerName < reps[j].ContainerName
 		})
 	}
-	return out, nil
+	return out, kinds, nil
 }
 
 func decimalOrEmpty(s string) string {
@@ -360,7 +435,7 @@ func (t *TriggerEngine) ledgerObserve(providerName, secretName string, data map[
 		return ledgerVerdict{}
 	}
 	ctx, cancel := context.WithTimeout(t.ctx, ledgerObserveTimeout)
-	live, err := t.ledgerLiveSet(ctx, providerName, secretName)
+	live, kinds, err := t.ledgerLiveTargets(ctx, providerName, secretName)
 	cancel()
 	if err != nil {
 		t.Logger.Warn("Applied-version ledger: live targets could not be inspected; no ledger decision",
@@ -389,7 +464,7 @@ func (t *TriggerEngine) ledgerObserve(providerName, secretName string, data map[
 		}
 		t.Logger.Debug("Applied-version ledger decision", zap.String("secret", secretName), zap.String("service", k.Service),
 			zap.String("observe", string(res.Kind)), zap.String("decision", string(d.Kind)), zap.String("reason", string(d.Reason)))
-		plan.keys = append(plan.keys, ledgerPlanKey{key: k, seq: res.Entry.DesiredSeq})
+		plan.keys = append(plan.keys, ledgerPlanKey{key: k, seq: res.Entry.DesiredSeq, kind: kinds[k]})
 	}
 	v := ledgerVerdict{usable: true, rotate: rotate, adopted: adopted}
 	if rotate {
@@ -398,23 +473,106 @@ func (t *TriggerEngine) ledgerObserve(providerName, secretName string, data map[
 	return v
 }
 
+// ledgerManualPlan is the ledger plan of a MANUAL rotation. It delivers the cached
+// value, so its version is the keyed identity of that value (never a provider
+// re-fetch). It never observes (Observe, the sole writer of desired, runs only for
+// provider observations): an entry is planned only when the ledger already holds
+// exactly this version as its desired one, because the facade correlates a
+// delivery request only with the entry's desired version. A cached value that the
+// ledger does not hold as desired (a newer one was observed and not cached yet)
+// is delivered without a ledger claim; the next poll then rotates the desired
+// version, which is at most one redundant rotation and never a false "applied".
+// It returns nil without a usable ledger. Called under the observation mutex.
+func (t *TriggerEngine) ledgerManualPlan(providerName, secretName string, cached map[string]string, sec config.SecretMapping) *ledgerPlan {
+	lw := t.ledger
+	if !lw.enabled() {
+		return nil
+	}
+	ver, err := lw.v.NewVersion(providerName, secretName, cached)
+	if err != nil {
+		t.Logger.Warn("Applied-version ledger cannot identify the cached value (key material unavailable); the manual rotation runs without a ledger claim",
+			zap.String("provider", providerName), zap.String("secret", secretName), zap.Error(err))
+		return nil
+	}
+	plan := &ledgerPlan{version: ver, fileMode: t.secretFileMode(sec), provider: providerName, secret: secretName}
+	ctx, cancel := context.WithTimeout(t.ctx, ledgerObserveTimeout)
+	live, kinds, err := t.ledgerLiveTargets(ctx, providerName, secretName)
+	cancel()
+	if err != nil {
+		t.Logger.Warn("Applied-version ledger: live targets could not be inspected; the manual rotation runs without a ledger claim",
+			zap.String("provider", providerName), zap.String("secret", secretName), zap.Error(err))
+		return plan // the version is still journalled (O-2)
+	}
+	for _, k := range sortedLedgerKeys(live) {
+		e, ok := lw.v.Get(k)
+		if !ok || e.Desired == nil || ledger.Compare(*e.Desired, ver) != ledger.Same {
+			t.Logger.Info("Applied-version ledger: the delivered value is not the entry's desired version; no ledger claim for this entry",
+				zap.String("secret", secretName), zap.String("service", k.Service))
+			continue
+		}
+		plan.keys = append(plan.keys, ledgerPlanKey{key: k, seq: e.DesiredSeq, kind: kinds[k]})
+	}
+	return plan
+}
+
 // ledgerCorrelate writes delivery=requested for every planned entry (design 3
 // step 4), after StartRotationWithVersion returned nil and before
 // TriggerReload. A refusal (stale desired_seq because a newer value was
 // observed meanwhile, persistence) is logged and ignored: that entry is simply
 // not advanced by this dispatch.
+//
+// An entry whose delivery request another operation still holds (a manual and an
+// automatic rotation of one service overlap) is NOT taken over: the operation
+// guard and the per-service lock make the second operation defer, and its
+// never-ran resolution would erase the first operation's request, losing the
+// verified outcome of the rotation that really ran. The second operation is then
+// simply not recorded in the ledger (at most one redundant rotation later, never
+// a false "applied").
 func (t *TriggerEngine) ledgerCorrelate(p *ledgerPlan, rotationID string) {
 	if p == nil || !t.ledger.enabled() {
 		return
 	}
 	for _, pk := range p.keys {
+		if other := t.ledger.holder(pk.key); other != "" && other != rotationID {
+			t.Logger.Warn("Applied-version ledger: another operation is delivering this entry; this operation is not recorded in the ledger",
+				zap.String("secret", p.secret), zap.String("service", pk.key.Service), zap.String("rotation_id", rotationID))
+			continue
+		}
 		err := CorrelateAfterJournalStart(t.ledger.v, t.StateTracker, nil, pk.key, rotationID, pk.seq, p.version)
 		if err != nil && !errors.Is(err, ledger.ErrNoChange) {
 			t.Logger.Warn("Applied-version ledger: delivery request not recorded; this dispatch will not advance the entry",
 				zap.String("secret", p.secret), zap.String("service", pk.key.Service), zap.String("rotation_id", rotationID), zap.Error(err))
 			continue
 		}
+		t.ledger.hold(pk.key, rotationID)
 		p.correlated = append(p.correlated, pk.key)
+	}
+}
+
+func (lw *ledgerWiring) holder(k ledger.Key) string {
+	lw.inflightMu.Lock()
+	defer lw.inflightMu.Unlock()
+	h, ok := lw.inflight[k]
+	if !ok || time.Since(h.at) > ledgerHoldStale {
+		return ""
+	}
+	return h.rotationID
+}
+
+func (lw *ledgerWiring) hold(k ledger.Key, rotationID string) {
+	lw.inflightMu.Lock()
+	defer lw.inflightMu.Unlock()
+	if lw.inflight == nil {
+		lw.inflight = map[ledger.Key]inflightHold{}
+	}
+	lw.inflight[k] = inflightHold{rotationID: rotationID, at: time.Now()}
+}
+
+func (lw *ledgerWiring) release(k ledger.Key, rotationID string) {
+	lw.inflightMu.Lock()
+	defer lw.inflightMu.Unlock()
+	if lw.inflight[k].rotationID == rotationID {
+		delete(lw.inflight, k)
 	}
 }
 
@@ -423,18 +581,41 @@ func (t *TriggerEngine) ledgerCorrelate(p *ledgerPlan, rotationID string) {
 // applied (signal: adoption unverified), anything else resolves the request
 // with the journal's cause. A failure is logged; the startup reconcile
 // converges from the journal after a restart (W8).
+//
+// One dispatch can cover several targets (item g). The engine reaches a
+// delivery-verified outcome only when EVERY dispatched target succeeded (any
+// error, deferral or block is reported to finishRotation, which then marks the
+// journal rollback_required or removes it), so a partly failed dispatch never
+// reaches RecordDeliveryVerified. What the aggregate cannot say is which entry
+// each target belonged to: an entry none of whose targets rotates anything
+// (strategy none) was not delivered to, and an entry whose targets signalled is
+// judged by signal evidence whatever strategy wrote the shared record last.
 func (t *TriggerEngine) ledgerTerminal(p *ledgerPlan, rotationID string) {
 	if p == nil || len(p.correlated) == 0 || !t.ledger.enabled() || t.StateTracker == nil {
 		return
 	}
+	defer func() {
+		for _, k := range p.correlated {
+			t.ledger.release(k, rotationID)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(t.ctx, ledgerObserveTimeout)
 	live, lerr := t.ledgerLiveSet(ctx, p.provider, p.secret)
 	cancel()
 	if lerr != nil {
 		live = nil // replica identities are refreshed by the next observation
 	}
+	kinds := map[ledger.Key]ledgerKeyKinds{}
+	for _, pk := range p.keys {
+		kinds[pk.key] = pk.kind
+	}
 	for _, k := range p.correlated {
-		res, err := RecordRotationOutcome(t.ledger.v, t.StateTracker, k, rotationID, &p.version, p.fileMode, live[k])
+		kd := kinds[k]
+		opt := OutcomeOptions{NotTargeted: kd.inert}
+		if kd.signal {
+			opt.Strategy = "signal"
+		}
+		res, err := RecordRotationOutcomeFor(t.ledger.v, t.StateTracker, k, rotationID, &p.version, p.fileMode, live[k], opt)
 		if err != nil {
 			t.Logger.Warn("Applied-version ledger: rotation outcome not recorded (converges from the journal at the next start)",
 				zap.String("secret", p.secret), zap.String("service", k.Service), zap.String("rotation_id", rotationID), zap.Error(err))

@@ -620,75 +620,23 @@ func (t *TriggerEngine) ExecuteRotationDecision(providerName, secretName string,
 			defer t.LockManager.ReleaseLock(secretName)
 		}
 
-		// Collect the IDs of containers that will be rotated for this secret (H3).
-		// The Reloader's Targets map contains one entry per managed container.
-		// We join multiple IDs with a comma so a single StateTracker entry covers all
-		// containers rotating the same secret simultaneously.
-		originalContainerIDs := t.collectContainerIDsForSecret(secretName)
-
-		// One identity for this rotation: the state record created below and the
-		// transition journal written by the strategies are the same record.
-		rotationID := rotation.NewRotationID()
-		ctx = rotation.WithRotationID(ctx, rotationID)
-
-		// Record rotation start for crash recovery, with the target version
-		// (O-2) when the ledger supplied one.
-		if t.StateTracker != nil {
-			if err := t.StateTracker.StartRotationWithVersion(rotationID, providerName, secretName, originalContainerIDs, "", plan.journalVersion()); err != nil {
-				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
-				if t.ledger != nil {
-					// W14 / O-7: with the ledger wired, a dispatch the journal did
-					// not record durably is not run (no journal intent, no ledger
-					// citation). The value is retried on the next poll. The
-					// non-durable record is dropped from memory (F-B3).
-					t.rollbackHash(cacheKey, newHash)
-					_ = t.StateTracker.DeleteStateID(rotationID)
-					t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, 0, fmt.Errorf("rotation not started: the journal could not record it: %w", err))
-					return
-				}
-			} else {
-				// Design 3 step 4: delivery requested, after the journal start and
-				// before TriggerReload. A failure is logged and ignored.
-				t.ledgerCorrelate(plan, rotationID)
-			}
+		// The shared managed-operation boundary: journal start (with the delivered
+		// version, O-2), ledger correlation, dispatch through the reloader (the
+		// operation guard is asked per target) and finishRotation. A manual
+		// rotation (RotateSecretManually) runs the very same three steps.
+		ctx, outcome, err := t.startManagedOperation(ctx, managedOp{
+			origin: originAutomatic, providerName: providerName, secretName: secretName,
+			cacheKey: cacheKey, newHash: newHash, plan: plan,
+		})
+		if err != nil {
+			return
 		}
-
-		// Wall-clock start for the notification event's duration field.
-		// Measured here (not at poll time): this is where the reload
-		// actually begins.
-		rotationStart := time.Now()
-		outcome := rotationOutcome{
-			providerName: providerName,
-			secretName:   secretName,
-			cacheKey:     cacheKey,
-			newHash:      newHash,
-			containerIDs: originalContainerIDs,
-			start:        rotationStart,
-			rotationID:   rotationID,
-			plan:         plan,
-		}
-
 		// Note: The Reloader internally handles the strategy logic (restart/signal).
 		// Some strategies rotate containers in detached goroutines that outlive
 		// TriggerReload's return, so rotation state is only marked complete/failed
 		// once onComplete fires with the real, final outcome (REL-1 fix) rather
 		// than immediately after TriggerReload returns.
-		onComplete := func(asyncErr error) {
-			t.finishRotation(outcome, asyncErr)
-		}
-
-		if err := t.triggerReload(ctx, secretName, onComplete); err != nil {
-			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
-			// Remove the cached hash so the next poll retries the rotation instead
-			// of treating this failed attempt as a successful "no change" baseline.
-			t.rollbackHash(cacheKey, newHash)
-			if t.StateTracker != nil {
-				_ = t.StateTracker.MarkRollbackID(rotationID)
-			}
-			t.ledgerTerminal(outcome.plan, rotationID)
-			t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), err)
-			return
-		}
+		_ = t.dispatchManagedOperation(ctx, outcome, nil)
 	}()
 	return RotationDispatched
 }
@@ -704,6 +652,21 @@ type rotationOutcome struct {
 	rotationID   string
 	// plan is the ledger plan of the dispatch (nil without a usable ledger).
 	plan *ledgerPlan
+	// origin says which entry point started the operation. Only a manual one is
+	// special: it never forgets an observed hash (it made no observation).
+	origin rotationOrigin
+	// delivered is the hash of the value a manual rotation delivers (the cached
+	// one at dispatch); "" for an automatic dispatch.
+	deliveredHash string
+}
+
+// retryHash makes the next poll re-dispatch the value of a failed or deferred
+// AUTOMATIC dispatch. A manual rotation never touched the observation state, so
+// its failure leaves it alone.
+func (t *TriggerEngine) retryHash(o rotationOutcome) {
+	if o.origin != originManual {
+		t.rollbackHash(o.cacheKey, o.newHash)
+	}
 }
 
 // finishRotation records the final outcome of one TriggerReload dispatch.
@@ -722,7 +685,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		}
 		t.Logger.Warn(msg,
 			zap.String("secret", o.secretName), zap.Error(asyncErr))
-		t.rollbackHash(o.cacheKey, o.newHash)
+		t.retryHash(o)
 		if t.StateTracker != nil {
 			// Nothing to recover: the busy targets were never touched and any
 			// others finished their own rotation. Leaving "in_progress" would
@@ -746,7 +709,7 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 		return
 	case asyncErr != nil:
 		t.Logger.Warn("Rotation failed after async completion", zap.String("secret", o.secretName), zap.Error(asyncErr))
-		t.rollbackHash(o.cacheKey, o.newHash)
+		t.retryHash(o)
 		if t.StateTracker != nil {
 			_ = t.StateTracker.MarkRollbackID(o.rotationID)
 		}
@@ -764,7 +727,255 @@ func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
 	}
 	// Design 3 step 5: the ledger records the outcome the journal now states.
 	t.ledgerTerminal(o.plan, o.rotationID)
+	t.settleManualHash(o)
 	t.emitEvent(notify.RotationSucceeded, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), nil)
+}
+
+// rotationOrigin names the entry point of a managed rotation operation.
+type rotationOrigin string
+
+const (
+	// originAutomatic: provider polling, webhook and IPC reconcile (all reach the
+	// engine through ExecuteRotationDecision).
+	originAutomatic rotationOrigin = "automatic"
+	// originManual: an operator asked for the rotation (REST, Web UI) through
+	// RotateSecretManually.
+	originManual rotationOrigin = "manual"
+)
+
+// managedOp is one managed rotation operation entering the shared lifecycle.
+type managedOp struct {
+	origin       rotationOrigin
+	providerName string
+	secretName   string
+	// cacheKey/newHash: the observation an automatic dispatch retries on failure
+	// (empty for a manual rotation).
+	cacheKey string
+	newHash  string
+	plan     *ledgerPlan
+	actor    string
+	// deliveredHash is the hash of the value a manual rotation delivers.
+	deliveredHash string
+}
+
+// errManagedNotStarted: the journal could not record the operation durably, so
+// it was not run (W14, O-7).
+var errManagedNotStarted = errors.New("the rotation was not started: the journal could not record it")
+
+// startManagedOperation is the first half of the shared managed-operation
+// boundary. It collects the targets, mints the operation's identity, records the
+// operation in the journal with the version the operation delivers (the keyed
+// HMAC identity of the value at dispatch, O-2) and the number of targets, and
+// then, only when the journal recorded it durably, writes the ledger's delivery
+// request. The journal stays the authority on the operation's lifecycle; the
+// ledger only consumes its verified outcome (ledgerTerminal, from finishRotation).
+func (t *TriggerEngine) startManagedOperation(ctx context.Context, op managedOp) (context.Context, rotationOutcome, error) {
+	// Collect the IDs of containers that will be rotated for this secret (H3).
+	// The Reloader's Targets map contains one entry per managed container.
+	// We join multiple IDs with a comma so a single StateTracker entry covers all
+	// containers rotating the same secret simultaneously.
+	originalContainerIDs := t.collectContainerIDsForSecret(op.secretName)
+
+	// One identity for this rotation: the state record created below and the
+	// transition journal written by the strategies are the same record.
+	rotationID := rotation.NewRotationID()
+	ctx = rotation.WithRotationID(ctx, rotationID)
+
+	// Record rotation start for crash recovery, with the target version
+	// (O-2) when the ledger supplied one.
+	if t.StateTracker != nil {
+		targets := len(splitContainerIDs(originalContainerIDs))
+		if err := t.StateTracker.StartRotationForDispatch(rotationID, op.providerName, op.secretName, originalContainerIDs, "", op.plan.journalVersion(), targets); err != nil {
+			t.Logger.Warn("Failed to record rotation state", zap.Error(err))
+			if t.ledger != nil {
+				// W14 / O-7: with the ledger wired, a dispatch the journal did
+				// not record durably is not run (no journal intent, no ledger
+				// citation). The value is retried on the next poll. The
+				// non-durable record is dropped from memory (F-B3).
+				if op.origin == originAutomatic {
+					t.rollbackHash(op.cacheKey, op.newHash)
+				}
+				_ = t.StateTracker.DeleteStateID(rotationID)
+				t.emitEvent(notify.RotationFailed, op.providerName, op.secretName, originalContainerIDs, 0, fmt.Errorf("rotation not started: the journal could not record it: %w", err))
+				return ctx, rotationOutcome{}, fmt.Errorf("%w: %w", errManagedNotStarted, err)
+			}
+		} else {
+			// Design 3 step 4: delivery requested, after the journal start and
+			// before TriggerReload. A failure is logged and ignored.
+			t.ledgerCorrelate(op.plan, rotationID)
+		}
+	}
+	t.Logger.Info("Managed rotation operation started",
+		zap.String("origin", string(op.origin)), zap.String("actor", op.actor),
+		zap.String("secret", op.secretName), zap.String("rotation_id", rotationID))
+
+	// Wall-clock start for the notification event's duration field.
+	// Measured here (not at poll time): this is where the reload
+	// actually begins.
+	return ctx, rotationOutcome{
+		providerName:  op.providerName,
+		secretName:    op.secretName,
+		cacheKey:      op.cacheKey,
+		newHash:       op.newHash,
+		containerIDs:  originalContainerIDs,
+		start:         time.Now(),
+		rotationID:    rotationID,
+		plan:          op.plan,
+		origin:        op.origin,
+		deliveredHash: op.deliveredHash,
+	}, nil
+}
+
+// dispatchManagedOperation is the second half of the boundary: it hands the
+// operation to the reloader (where the operation guard is asked for every
+// target) and arranges for finishRotation to record the real, final outcome.
+// done, when non-nil, is called once with that outcome after finishRotation
+// (a caller's own observer, e.g. the REST handler releasing its context). When
+// the reloader refuses synchronously nothing was started, done never runs, and
+// the error is returned after the operation was closed out as a failed attempt.
+func (t *TriggerEngine) dispatchManagedOperation(ctx context.Context, o rotationOutcome, done func(error)) error {
+	onComplete := func(asyncErr error) {
+		t.finishRotation(o, asyncErr)
+		if done != nil {
+			done(asyncErr)
+		}
+	}
+	if err := t.triggerReload(ctx, o.secretName, onComplete); err != nil {
+		t.Logger.Warn("Reload trigger failed", zap.String("secret", o.secretName), zap.Error(err))
+		// Remove the cached hash so the next poll retries the rotation instead
+		// of treating this failed attempt as a successful "no change" baseline.
+		t.retryHash(o)
+		if t.StateTracker != nil {
+			_ = t.StateTracker.MarkRollbackID(o.rotationID)
+		}
+		t.ledgerTerminal(o.plan, o.rotationID)
+		t.emitEvent(notify.RotationFailed, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), err)
+		return err
+	}
+	return nil
+}
+
+var (
+	// ErrManualUnknownSecret: the name is not a configured secret.
+	ErrManualUnknownSecret = errors.New("unknown secret")
+	// ErrManualNoTargets: no managed container uses the secret; nothing started.
+	ErrManualNoTargets = errors.New("no managed containers use this secret")
+	// ErrManualBusy: another rotation of the secret holds its dispatch lock.
+	ErrManualBusy = errors.New("another rotation of this secret is being dispatched")
+)
+
+// resolveSecretProvider names the provider whose cache entry a manual rotation of
+// sec delivers: the secret's own provider, else the only configured one. "" means
+// it cannot be resolved (several providers and none named): such a rotation runs
+// without a ledger identity.
+func (t *TriggerEngine) resolveSecretProvider(sec config.SecretMapping) string {
+	if sec.Provider != "" {
+		return sec.Provider
+	}
+	if t.Config != nil && len(t.Config.Providers) == 1 {
+		for name := range t.Config.Providers {
+			return name
+		}
+	}
+	return ""
+}
+
+// RotateSecretManually is the managed entry point of an operator-requested
+// rotation (REST, Web UI): the same journal, operation guard, finishRotation and
+// ledger reconciliation as an automatic dispatch (startManagedOperation,
+// dispatchManagedOperation), with the manual semantics kept:
+//
+//   - it rotates when asked, even when the cached value equals the last one
+//     delivered (the ledger is advisory, O-3, and the hash/cooldown dedupe of
+//     the poller does not apply);
+//   - it delivers what the strategies read from the cache; the version it records
+//     is the keyed identity of the cached value at dispatch (never a provider
+//     re-fetch), and is correlated only with ledger entries whose desired
+//     version it is;
+//   - ctx is the caller's operation context (daemon-bound, bounded); it is passed
+//     on unchanged, with the operation's identity added;
+//   - the error is synchronous only for "nothing started" (ErrManualNoTargets,
+//     ErrManualBusy, ErrManualUnknownSecret, journal failure); the outcome is
+//     asynchronous and is reported to onComplete after the journal and the
+//     ledger recorded it.
+//
+// actor is the audit actor the caller derived (internal/server/audit_actor.go);
+// it is only logged here.
+func (t *TriggerEngine) RotateSecretManually(ctx context.Context, secretName, actor string, onComplete func(error)) error {
+	var sec *config.SecretMapping
+	if t.Config != nil {
+		for i := range t.Config.Secrets {
+			if t.Config.Secrets[i].Name == secretName {
+				sec = &t.Config.Secrets[i]
+				break
+			}
+		}
+	}
+	if sec == nil {
+		return ErrManualUnknownSecret
+	}
+	if t.collectContainerIDsForSecret(secretName) == "" {
+		return ErrManualNoTargets
+	}
+
+	op := managedOp{origin: originManual, secretName: secretName, actor: actor}
+	if pName := t.resolveSecretProvider(*sec); pName != "" {
+		op.providerName = pName
+		cacheKey := fmt.Sprintf("%s:%s", pName, secretName)
+		// Snapshot of the value this rotation delivers, under the same per-key
+		// mutex as the observation that wrote it.
+		mu := t.keyMutex(cacheKey)
+		mu.Lock()
+		if cached, ok := t.Cache.Get(cacheKey); ok {
+			op.deliveredHash = ComputeHash(cached)
+			op.plan = t.ledgerManualPlan(pName, secretName, cached, *sec)
+		}
+		mu.Unlock()
+	}
+
+	// Same per-secret dispatch lock as an automatic dispatch (held while the
+	// reloader selects and starts the targets).
+	if t.LockManager != nil {
+		if err := t.LockManager.AcquireLock(secretName, t.secretLockWait()); err != nil {
+			t.Logger.Warn("Manual rotation not started: the secret's dispatch lock is busy",
+				zap.String("secret", secretName), zap.Error(err))
+			return ErrManualBusy
+		}
+		defer t.LockManager.ReleaseLock(secretName)
+	}
+
+	ctx, outcome, err := t.startManagedOperation(ctx, op)
+	if err != nil {
+		return err
+	}
+	if err := t.dispatchManagedOperation(ctx, outcome, onComplete); err != nil {
+		// The only synchronous refusal of the reloader: no managed container.
+		return fmt.Errorf("%w: %v", ErrManualNoTargets, err)
+	}
+	return nil
+}
+
+// settleManualHash makes a SUCCESSFUL manual rotation count as the delivery of the
+// value it delivered for the poller's dedupe: when the engine's observation of
+// that value was forgotten (an earlier automatic attempt failed or was deferred)
+// and the cache still holds the delivered value, the next poll of the same value
+// is "unchanged" instead of a second rotation of the same version. It never
+// overwrites a newer observation.
+func (t *TriggerEngine) settleManualHash(o rotationOutcome) {
+	if o.origin != originManual || o.deliveredHash == "" || o.providerName == "" {
+		return
+	}
+	cacheKey := fmt.Sprintf("%s:%s", o.providerName, o.secretName)
+	mu := t.keyMutex(cacheKey)
+	mu.Lock()
+	defer mu.Unlock()
+	if _, seen := t.secretHashes.Load(cacheKey); seen {
+		return
+	}
+	if cached, ok := t.Cache.Get(cacheKey); ok && ComputeHash(cached) == o.deliveredHash {
+		t.secretHashes.Store(cacheKey, o.deliveredHash)
+		t.baselined.Store(cacheKey, true)
+	}
 }
 
 func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderConfig, sec config.SecretMapping, baseInterval time.Duration) error {

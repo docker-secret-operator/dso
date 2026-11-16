@@ -88,6 +88,18 @@ func journalEvidenceKind(rec *RotationState) ledger.EvidenceKind {
 	return ledger.EvidencePreReady
 }
 
+// dispatchUnfinished reports whether rec belongs to a dispatch of SEVERAL target
+// containers whose engine-side finalisation (CompleteRotationID after every
+// target succeeded) is missing. All targets of one dispatch share one record, and
+// the strategies' own "completed"/"committed" transitions are written by whichever
+// target gets there first, so such a record proves nothing about the other
+// targets (item g): it is never delivery evidence. A record that does not state
+// its target count (DispatchTargets 0: written before this rule or by a strategy
+// on its own) and a single-target dispatch keep the plain rule.
+func dispatchUnfinished(rec *RotationState) bool {
+	return rec != nil && rec.DispatchTargets > 1 && !rec.DispatchFinalized
+}
+
 // journalDeliveryRefusal applies the terminal status rule of design section 4.2
 // on top of journalEvidenceKind. It returns nil when the record proves a
 // successful delivery, else an error wrapping ledger.ErrNoEvidence.
@@ -103,6 +115,9 @@ func journalDeliveryRefusal(rec *RotationState) error {
 	}
 	if rec.Seq <= 0 {
 		return refuse("no strategy transition was journalled (Seq 0)")
+	}
+	if dispatchUnfinished(rec) {
+		return refuse("the dispatch of %d targets was not finalised: one target's transitions are not evidence for the others", rec.DispatchTargets)
 	}
 	kind := journalEvidenceKind(rec)
 	if kind == ledger.EvidencePreReady {
@@ -193,14 +208,20 @@ func JournalRecordFor(rec *RotationState) ledger.JournalRecord {
 	if rec.Seq > 0 {
 		seq = uint64(rec.Seq)
 	}
+	// A multi-target dispatch that was never finalised is not evidence (item g):
+	// the ledger sees a record before candidate_ready, whatever one target wrote.
+	verified, committed, signalDone := candidateVerified(rec.Transition), rec.Committed, rec.Transition == rotation.TrSignalDone
+	if dispatchUnfinished(rec) {
+		verified, committed, signalDone = false, false, false
+	}
 	return ledger.JournalRecord{
 		RotationID:        rec.RotationID,
 		Strategy:          rec.Strategy,
 		Status:            ledger.JournalStatus(rec.Status),
-		Committed:         rec.Committed,
+		Committed:         committed,
 		Seq:               seq,
-		CandidateVerified: candidateVerified(rec.Transition),
-		SignalDone:        rec.Transition == rotation.TrSignalDone,
+		CandidateVerified: verified,
+		SignalDone:        signalDone,
 		Version:           parseJournalSecretVersion(rec.SecretVersion),
 		UpdatedAt:         rec.LastUpdate,
 	}
@@ -326,6 +347,21 @@ type BridgeResult struct {
 	Unchanged bool
 }
 
+// OutcomeOptions refine RecordRotationOutcome for one ledger entry of a dispatch
+// that covered several targets (item g).
+type OutcomeOptions struct {
+	// Strategy, when set, is the strategy the entry's OWN targets used. The journal
+	// record carries only the last writer's strategy, so an entry whose targets
+	// all used the signal strategy is judged by signal evidence (delivery
+	// verified, adoption never verified, X5) even when another target's
+	// restart/rolling transitions were written last.
+	Strategy string
+	// NotTargeted says no target of this entry was rotated by the dispatch (its
+	// strategy does not rotate): the dispatch's success proves nothing about it,
+	// so its request is resolved as never ran and applied never advances.
+	NotTargeted bool
+}
+
 // RecordRotationOutcome is the in-process terminal step (design 3 step 5: from
 // finishRotation, after the journal's own terminal write). It reads the
 // journal record of rotationID and either records the verified delivery
@@ -335,11 +371,27 @@ type BridgeResult struct {
 // journal-carried version when the record has none (pre-O-2). A journal that proves delivery but
 // names no version leaves the replicas unknown (no advance).
 func RecordRotationOutcome(v *ledger.Versions, st *StateTracker, k ledger.Key, rotationID string, hint *ledger.Version, fileMode bool, live []ledger.LiveReplica) (BridgeResult, error) {
+	return RecordRotationOutcomeFor(v, st, k, rotationID, hint, fileMode, live, OutcomeOptions{})
+}
+
+// RecordRotationOutcomeFor is RecordRotationOutcome with per-entry options.
+func RecordRotationOutcomeFor(v *ledger.Versions, st *StateTracker, k ledger.Key, rotationID string, hint *ledger.Version, fileMode bool, live []ledger.LiveReplica, opt OutcomeOptions) (BridgeResult, error) {
 	if st == nil {
 		return BridgeResult{}, ErrBridgeNoTracker
 	}
 	rec := JournalRecordByID(st, rotationID)
-	ev, err := EvidenceForRotation(rec, hint, fileMode, live)
+	if opt.NotTargeted {
+		return resolveInterrupted(v, k, rotationID, ledger.CauseNeverRan)
+	}
+	evRec := rec
+	if opt.Strategy == "signal" && rec != nil && rec.Strategy != "signal" && rec.Status == journalStatusCompleted && rec.Seq > 0 {
+		// The entry's targets were signalled: a signal target's success is
+		// signal_done. Judge a derived view, never the stored record.
+		c := rec.clone()
+		c.Strategy, c.Transition = "signal", rotation.TrSignalDone
+		evRec = c
+	}
+	ev, err := EvidenceForRotation(evRec, hint, fileMode, live)
 	if err == nil {
 		res, derr := v.RecordDeliveryVerified(k, ev)
 		switch {
@@ -354,6 +406,10 @@ func RecordRotationOutcome(v *ledger.Versions, st *StateTracker, k ledger.Key, r
 	if errors.Is(err, ErrBridgeNoVersion) {
 		cause = ledger.CauseUnresolved
 	}
+	return resolveInterrupted(v, k, rotationID, cause)
+}
+
+func resolveInterrupted(v *ledger.Versions, k ledger.Key, rotationID string, cause ledger.InterruptCause) (BridgeResult, error) {
 	ierr := v.HandleInterrupted(k, rotationID, cause)
 	switch {
 	case errors.Is(ierr, ledger.ErrNoChange):

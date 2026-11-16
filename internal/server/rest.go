@@ -1128,13 +1128,20 @@ var manualRotationTimeout = 15 * time.Minute
 // outlives the HTTP request: derived from the daemon context, bounded by
 // manualRotationTimeout and cancelled when the asynchronous work completes (or
 // immediately if nothing was started).
-func (s *RESTServer) startManualRotation(secretName string) error {
+//
+// The rotation is started through the trigger engine's managed entry point
+// (TriggerEngine.RotateSecretManually): the same journal record, operation guard,
+// completion handling and applied-version ledger reconciliation as an automatic
+// rotation. This handler holds no journal or ledger logic of its own. A server
+// built without a trigger engine (struct-literal servers in tests only; the agent
+// always passes one) falls back to the reloader directly, with none of that.
+func (s *RESTServer) startManualRotation(secretName, actor string) error {
 	base := s.rotationBaseCtx
 	if base == nil {
 		base = context.Background()
 	}
 	rotCtx, cancel := context.WithTimeout(base, manualRotationTimeout)
-	err := s.Reloader.TriggerReload(rotCtx, secretName, func(rotErr error) {
+	done := func(rotErr error) {
 		cancel()
 		if rotErr != nil {
 			s.Logger.Warn("Manual rotation finished with an error",
@@ -1142,7 +1149,17 @@ func (s *RESTServer) startManualRotation(secretName string) error {
 			return
 		}
 		s.Logger.Info("Manual rotation finished", zap.String("secret", secretName))
-	})
+	}
+	var err error
+	if s.TriggerEngine != nil {
+		err = s.TriggerEngine.RotateSecretManually(rotCtx, secretName, actor, done)
+	} else {
+		s.Logger.Warn("Manual rotation without a trigger engine: the rotation is not journalled by the engine and the applied-version ledger is not updated",
+			zap.String("secret", secretName))
+		if err = s.Reloader.TriggerReload(rotCtx, secretName, done); err != nil {
+			err = fmt.Errorf("%w: %v", agent.ErrManualNoTargets, err) // its only synchronous refusal
+		}
+	}
 	if err != nil {
 		cancel() // nothing was started; onComplete will not run
 	}
@@ -1216,7 +1233,7 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 	// under the daemon context instead (cancelled on agent shutdown) bounded by
 	// manualRotationTimeout, and is released when the rotation finishes.
 	ctx := r.Context()
-	err := s.startManualRotation(name)
+	err := s.startManualRotation(name, actor)
 
 	status := "success"
 	if err != nil {
@@ -1226,7 +1243,14 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 
 	if err != nil {
 		s.Logger.Warn("Manual rotation request rejected", zap.String("secret", name), zap.Error(err))
-		http.Error(w, "No managed containers use this secret", http.StatusNotFound)
+		switch {
+		case errors.Is(err, agent.ErrManualBusy):
+			http.Error(w, "Another rotation of this secret is in progress; retry shortly", http.StatusConflict)
+		case errors.Is(err, agent.ErrManualNoTargets), errors.Is(err, agent.ErrManualUnknownSecret):
+			http.Error(w, "No managed containers use this secret", http.StatusNotFound)
+		default:
+			http.Error(w, "The rotation could not be started", http.StatusServiceUnavailable)
+		}
 		return
 	}
 

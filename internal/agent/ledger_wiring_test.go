@@ -76,6 +76,7 @@ type engHarness struct {
 	engineCalls int
 	completed   int
 	crashAt     string
+	failAt      string // the run fails (onComplete with an error) after this transition
 	crashed     chan string
 	hold        chan struct{}
 	svcLock     sync.Mutex
@@ -163,10 +164,15 @@ func (h *engHarness) refreshTargetsLocked() {
 	}
 }
 
+// manualMarker tags the context of a manual rotation so the fake reloader can
+// tell it from an automatic dispatch (both now carry a rotation id, because a
+// manual rotation enters through TriggerEngine.RotateSecretManually).
+type manualMarker struct{}
+
 // reload is the fake TriggerReload (see the file comment).
 func (h *engHarness) reload(ctx context.Context, secretName string, onComplete func(error)) error {
 	rid := rotation.RotationIDFrom(ctx)
-	manual := rid == ""
+	manual := ctx.Value(manualMarker{}) != nil
 	h.mu.Lock()
 	te := h.te
 	if te == nil {
@@ -199,12 +205,13 @@ func (h *engHarness) reload(ctx context.Context, secretName string, onComplete f
 		go done(fmt.Errorf("%w: 1 of 1 targets not rotated", watcher.ErrRotationDeferred))
 		return nil
 	}
-	if manual {
+	if rid == "" {
 		rid = rotation.NewRotationID()
 	}
 	h.mu.Lock()
 	hold := h.hold
 	crashAt := h.crashAt
+	failAt := h.failAt
 	h.mu.Unlock()
 	st := te.StateTracker
 	go func() {
@@ -253,6 +260,10 @@ func (h *engHarness) reload(ctx context.Context, secretName string, onComplete f
 				h.crashed <- rid
 				return // the process "dies": no onComplete, no finishRotation
 			}
+			if tr == failAt {
+				done(errors.New("simulated strategy failure"))
+				return
+			}
 		}
 		ver := ""
 		if rec := JournalRecordByID(st, rid); rec != nil {
@@ -266,9 +277,12 @@ func (h *engHarness) reload(ctx context.Context, secretName string, onComplete f
 	return nil
 }
 
+// manualRotate is the REST/Web UI rotation: the engine's managed entry point
+// RotateSecretManually, the method internal/server's handler calls.
 func (h *engHarness) manualRotate() chan error {
 	res := make(chan error, 1)
-	if err := h.reload(context.Background(), lbSecret, func(err error) { res <- err }); err != nil {
+	ctx := context.WithValue(context.Background(), manualMarker{}, true)
+	if err := h.te.RotateSecretManually(ctx, lbSecret, "test-actor", func(err error) { res <- err }); err != nil {
 		res <- err
 	}
 	return res
@@ -925,16 +939,24 @@ func TestLedgerEngine_Scenario09_ConcurrentManualAndAutomatic(t *testing.T) {
 		t.Fatalf("journal %+v, want only the manual operation", recs)
 	}
 	manualRID := recs[0].RotationID
+	// A manual rotation enters through the engine (RotateSecretManually), so the
+	// ledger holds ITS delivery request; the deferred automatic dispatch neither
+	// took the entry over nor left a claim of its own.
 	e := h.entry("app")
-	if e.Applied != nil || e.Replicas[0].Delivery != ledger.DeliveryNone {
-		t.Fatalf("the deferred dispatch left a ledger claim: %+v", e)
+	if e.Applied != nil || e.Replicas[0].Delivery != ledger.DeliveryRequested || e.Replicas[0].RotationID != manualRID {
+		t.Fatalf("the manual operation does not hold the request, or the deferred dispatch took it over: %+v", e)
 	}
 	close(hold)
 	if err := <-manual; err != nil {
 		t.Fatal(err)
 	}
-	if e := h.entry("app"); e.Applied != nil || e.Replicas[0].RotationID == manualRID {
-		t.Fatalf("the manual rotation was attributed to the ledger: %+v", e)
+	// The manual rotation delivered the cached value ("one"), not the newer
+	// desired one: applied is the DELIVERED version, desired stays the newest, so
+	// the next poll rotates exactly once.
+	e = h.entry("app")
+	if !appliedIs(e, h.ver("one")) || e.State != ledger.EntryPending || e.Replicas[0].RotationID != manualRID ||
+		e.Replicas[0].Delivery != ledger.DeliveryVerified {
+		t.Fatalf("the manual rotation was not recorded as the delivered version: %+v", e)
 	}
 	// The next poll retries (hash rolled back) and the ledger cites that one.
 	if d := h.decide("two"); d != RotationDispatched {
@@ -1124,7 +1146,7 @@ func TestLedgerWiring_UsesTheBridge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"CorrelateAfterJournalStart(", "RecordRotationOutcome(", "ReconcileLedgerFromTracker(", "FormatJournalSecretVersion("} {
+	for _, name := range []string{"CorrelateAfterJournalStart(", "RecordRotationOutcomeFor(", "ReconcileLedgerFromTracker(", "FormatJournalSecretVersion("} {
 		if !bytes.Contains(src, []byte(name)) {
 			t.Errorf("ledger_wiring.go does not call %s", name)
 		}

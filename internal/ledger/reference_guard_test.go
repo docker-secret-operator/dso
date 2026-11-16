@@ -33,10 +33,11 @@ const ledgerImportPath = "github.com/docker-secret-operator/dso/internal/ledger"
 // outside internal/ledger that may import it. Extend it explicitly when the
 // wiring slice lands; nothing else may.
 var ledgerImportAllowlist = map[string]bool{
-	"internal/agent/ledger_bridge.go":      true, // S4b bridge (design 12.5 step 4): journal -> ledger evidence
-	"internal/agent/ledger_bridge_test.go": true, // S4b bridge tests (real Store + real StateTracker)
-	"internal/agent/ledger_wiring.go":      true, // S6 trigger-engine wiring (design 12.5 step 6): the only production user
-	"internal/agent/ledger_wiring_test.go": true, // S6 engine tests (real Store + real StateTracker, Docker-free)
+	"internal/agent/ledger_bridge.go":         true, // S4b bridge (design 12.5 step 4): journal -> ledger evidence
+	"internal/agent/ledger_bridge_test.go":    true, // S4b bridge tests (real Store + real StateTracker)
+	"internal/agent/ledger_wiring.go":         true, // S6 trigger-engine wiring (design 12.5 step 6): the only production user
+	"internal/agent/ledger_wiring_test.go":    true, // S6 engine tests (real Store + real StateTracker, Docker-free)
+	"internal/agent/managed_rotation_test.go": true, // M1 managed-operation boundary tests (manual/automatic/partial delivery) on the S6 harness
 }
 
 // forbiddenOutsideNames may not be referenced (as a selector) by any file

@@ -41,25 +41,36 @@ type RotationState struct {
 	// Transition journal (see internal/rotation/journal.go). Written BEFORE each
 	// destructive step (intent_*) and after it; no plaintext secret value is ever
 	// stored, only an opaque version identifier.
-	ServiceID             string    `json:"service_id,omitempty"`
-	OwnerID               string    `json:"owner_id,omitempty"`
-	Strategy              string    `json:"strategy,omitempty"`
-	CandidateContainerIDs []string  `json:"candidate_container_ids,omitempty"`
-	SecretVersion         string    `json:"secret_version,omitempty"`
-	Transition            string    `json:"transition,omitempty"`
-	PendingIntent         string    `json:"pending_intent,omitempty"` // an intent_* with no acknowledgement yet
-	ExpectedProxyTarget   string    `json:"expected_proxy_target,omitempty"`
-	ObservedProxyTarget   string    `json:"observed_proxy_target,omitempty"`
-	Committed             bool      `json:"committed,omitempty"` // swap_committed acknowledged
-	CleanupStatus         string    `json:"cleanup_status,omitempty"`
-	Seq                   int       `json:"seq,omitempty"`
-	OperationState        string    `json:"operation_state,omitempty"` // named condition, e.g. partially_published
-	ManualRecovery        bool      `json:"manual_recovery,omitempty"`
-	Detail                string    `json:"detail,omitempty"`
-	Status                string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
-	StartTime             time.Time `json:"start_time"`
-	LastUpdate            time.Time `json:"last_update"`
-	ErrorMessage          string    `json:"error_message,omitempty"` // For critical_error status
+	ServiceID             string   `json:"service_id,omitempty"`
+	OwnerID               string   `json:"owner_id,omitempty"`
+	Strategy              string   `json:"strategy,omitempty"`
+	CandidateContainerIDs []string `json:"candidate_container_ids,omitempty"`
+	SecretVersion         string   `json:"secret_version,omitempty"`
+	Transition            string   `json:"transition,omitempty"`
+	PendingIntent         string   `json:"pending_intent,omitempty"` // an intent_* with no acknowledgement yet
+	ExpectedProxyTarget   string   `json:"expected_proxy_target,omitempty"`
+	ObservedProxyTarget   string   `json:"observed_proxy_target,omitempty"`
+	Committed             bool     `json:"committed,omitempty"` // swap_committed acknowledged
+	CleanupStatus         string   `json:"cleanup_status,omitempty"`
+	Seq                   int      `json:"seq,omitempty"`
+	OperationState        string   `json:"operation_state,omitempty"` // named condition, e.g. partially_published
+	ManualRecovery        bool     `json:"manual_recovery,omitempty"`
+	// DispatchTargets is the number of containers the engine's dispatch covers
+	// (0 = not recorded: a record written before M1 or by a strategy on its own).
+	// DispatchFinalized is set only by the engine's CompleteRotationID, i.e. after
+	// EVERY target of the dispatch finished without error. Several targets share
+	// ONE record, and the strategies' own "completed"/"committed" transitions are
+	// written by whichever target finishes first, so the record's status alone
+	// never proves that the whole dispatch was delivered (item g). The ledger
+	// bridge refuses delivery evidence from a multi-target record that is not
+	// finalised.
+	DispatchTargets   int       `json:"dispatch_targets,omitempty"`
+	DispatchFinalized bool      `json:"dispatch_finalized,omitempty"`
+	Detail            string    `json:"detail,omitempty"`
+	Status            string    `json:"status"` // in_progress, completed, rollback_required, recovered, critical_error
+	StartTime         time.Time `json:"start_time"`
+	LastUpdate        time.Time `json:"last_update"`
+	ErrorMessage      string    `json:"error_message,omitempty"` // For critical_error status
 
 	// key is the record's slot in StateTracker.states. It is never persisted: it is
 	// derived from the record's identity on load (see normalizeLoaded) so that a
@@ -249,6 +260,18 @@ func (st *StateTracker) StartRotationWithID(rotationID, providerName, secretName
 // unresolved one. A rotation id that is already present is refused (nothing is
 // modified).
 func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion string) error {
+	return st.startRotation(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion, 0)
+}
+
+// StartRotationForDispatch is StartRotationWithVersion for a managed dispatch
+// that also records how many target containers the dispatch covers
+// (DispatchTargets), so the ledger bridge can tell a fully finished dispatch from
+// one that only some of its targets completed.
+func (st *StateTracker) StartRotationForDispatch(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion string, targets int) error {
+	return st.startRotation(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion, targets)
+}
+
+func (st *StateTracker) startRotation(rotationID, providerName, secretName, originalContainerID, newContainerID, secretVersion string, targets int) error {
 	if secretVersion != "" && !validJournalHMACVersion(secretVersion) {
 		return errors.New("journal secret version must be a keyed HMAC identity (hmac:<key id>:<mac>)")
 	}
@@ -273,6 +296,7 @@ func (st *StateTracker) StartRotationWithVersion(rotationID, providerName, secre
 		NewContainerID:       newContainerID,
 		RotationID:           rotationID,
 		SecretVersion:        secretVersion,
+		DispatchTargets:      targets,
 		Phase:                "rotation_requested",
 		Status:               "in_progress",
 		StartTime:            time.Now(),
@@ -301,6 +325,7 @@ func (st *StateTracker) completeLocked(state *RotationState) error {
 	}
 	state.Status = "completed"
 	state.Phase = "completed"
+	state.DispatchFinalized = true
 	state.LastUpdate = time.Now()
 	return st.persistState()
 }
