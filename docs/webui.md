@@ -90,6 +90,16 @@ not implement a second copy of any of this logic.
   existing `/api/events/ws` stream, not a fabricated timer. This action
   never exposes, returns, or logs the secret's value — only its name and
   the rotation outcome.
+
+  Rotation only ever runs through the agent's managed rotation engine
+  (operation guard, rotation journal, applied-version ledger, audit
+  attribution, delivery verification). If the engine is not available
+  the endpoint **fails closed**: after authentication, the Origin/CSRF
+  check and input validation it answers `503 Service Unavailable` with
+  `{"error":"rotation_engine_unavailable","message":"..."}` and starts
+  nothing. There is no alternate engine-less rotation path. Other
+  refusals: `404` unknown secret or no managed container uses it, `409`
+  another rotation of the secret is in progress.
 - **Test notification** — `POST /api/integrations/notifications/test`,
   exposed from the `/integrations` page. Sends one real, synthetic test
   event through your already-configured notification destination(s), so

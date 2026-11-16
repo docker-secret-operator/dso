@@ -186,6 +186,7 @@ func rotationFixture(t *testing.T, createMode string) (*RESTServer, *httptest.Se
 	s := createTestRESTServer()
 	s.Config = cfg
 	s.Reloader = rc
+	wireEngine(t, s) // the only rotation path: the real managed engine
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 	return s, ts, calls

@@ -160,7 +160,8 @@ Go senders can use `server.WebhookSignature(secret, ts, body)`.
 | Timestamp earlier than the replay guard's start time (see "Lifecycle") | 401 |
 | Body over 64 KiB (declared or streamed) | 413 |
 | Valid signature already seen | 409 |
-| Valid | request is processed |
+| Valid, rotation engine unavailable | 503 `{"error":"rotation_engine_unavailable",...}` (fails closed, nothing rotated) |
+| Valid | request is processed (202 once the managed engine accepted it) |
 
 Checks run cheapest-first and no body is buffered until the headers pass; the
 body is read through a 64 KiB limit, and the MAC is compared in constant time.

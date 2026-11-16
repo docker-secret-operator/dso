@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -47,10 +48,49 @@ type WebhookPayload struct {
 	Timestamp  string `json:"timestamp"`
 }
 
+// RotationEngine is the smallest surface the REST layer needs from the managed
+// rotation engine. *agent.TriggerEngine implements it; tests supply a fake. There
+// is deliberately no other production implementation: the REST layer never
+// rotates by any other means.
+type RotationEngine interface {
+	RotateSecretManually(ctx context.Context, secretName, actor string, onComplete func(error)) error
+	HandleWebhook(providerName string, pCfg config.ProviderConfig, sec config.SecretMapping, timestamp string) error
+}
+
+var _ RotationEngine = (*agent.TriggerEngine)(nil)
+
+// rotationEngine returns the configured engine, or false when none is usable:
+// a nil interface and an interface holding a nil pointer (the typed-nil pitfall)
+// are both "unavailable".
+func (s *RESTServer) rotationEngine() (RotationEngine, bool) {
+	e := s.TriggerEngine
+	if e == nil {
+		return nil, false
+	}
+	if v := reflect.ValueOf(e); v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil, false
+	}
+	return e, true
+}
+
+// writeRotationUnavailable is the fail-closed answer of every rotation route when
+// the managed engine is not available: HTTP 503 with a stable JSON body. Nothing
+// was started, journalled or reloaded.
+func writeRotationUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":"rotation_engine_unavailable","message":"Rotation is unavailable: the managed rotation engine is not running on this agent"}` + "\n"))
+}
+
 // RESTServer handles administrative REST API requests
 type RESTServer struct {
-	Cache         *agent.SecretCache
-	TriggerEngine *agent.TriggerEngine
+	Cache *agent.SecretCache
+	// TriggerEngine is the managed rotation engine (production: the
+	// *agent.TriggerEngine of `dso agent`). It is the ONLY way this server
+	// executes a rotation. When it is nil (or a typed-nil pointer) every
+	// rotation route fails closed with HTTP 503 (see rotationEngine); read-only
+	// endpoints are unaffected.
+	TriggerEngine RotationEngine
 	Config        *config.Config
 	Logger        *zap.Logger
 	Hub           *Hub
@@ -640,7 +680,13 @@ func (s *RESTServer) handleSecretUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := s.TriggerEngine.HandleWebhook(pName, pCfg, *targetSecret, payload.Timestamp)
+	eng, ok := s.rotationEngine()
+	if !ok {
+		s.Logger.Error("Webhook rotation refused: the managed rotation engine is unavailable", zap.String("secret", targetSecret.Name))
+		writeRotationUnavailable(w)
+		return
+	}
+	err := eng.HandleWebhook(pName, pCfg, *targetSecret, payload.Timestamp)
 	if err != nil {
 		s.Logger.Error("Webhook execution failed", zap.Error(err), zap.String("secret", targetSecret.Name))
 		http.Error(w, "Internal rotation failure", http.StatusInternalServerError)
@@ -1113,7 +1159,7 @@ func (s *RESTServer) handleIntegrations(w http.ResponseWriter, r *http.Request) 
 // secretNamePattern bounds what a valid secret name may look like -- the
 // same conservative charset DSO's config already expects for Compose
 // secret/env names. Used only to reject obviously-malformed input before it
-// ever reaches TriggerReload; the authoritative existence check is still
+// ever reaches the rotation engine; the authoritative existence check is still
 // "is this name one of s.Config.Secrets" below.
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
 
@@ -1130,12 +1176,16 @@ var manualRotationTimeout = 15 * time.Minute
 // immediately if nothing was started).
 //
 // The rotation is started through the trigger engine's managed entry point
-// (TriggerEngine.RotateSecretManually): the same journal record, operation guard,
+// (RotationEngine.RotateSecretManually): the same journal record, operation guard,
 // completion handling and applied-version ledger reconciliation as an automatic
-// rotation. This handler holds no journal or ledger logic of its own. A server
-// built without a trigger engine (struct-literal servers in tests only; the agent
-// always passes one) falls back to the reloader directly, with none of that.
+// rotation. This handler holds no journal or ledger logic of its own and has no
+// fallback: without an engine it returns errRotationEngineUnavailable and starts
+// nothing.
 func (s *RESTServer) startManualRotation(secretName, actor string) error {
+	eng, ok := s.rotationEngine()
+	if !ok {
+		return errRotationEngineUnavailable
+	}
 	base := s.rotationBaseCtx
 	if base == nil {
 		base = context.Background()
@@ -1150,30 +1200,24 @@ func (s *RESTServer) startManualRotation(secretName, actor string) error {
 		}
 		s.Logger.Info("Manual rotation finished", zap.String("secret", secretName))
 	}
-	var err error
-	if s.TriggerEngine != nil {
-		err = s.TriggerEngine.RotateSecretManually(rotCtx, secretName, actor, done)
-	} else {
-		s.Logger.Warn("Manual rotation without a trigger engine: the rotation is not journalled by the engine and the applied-version ledger is not updated",
-			zap.String("secret", secretName))
-		if err = s.Reloader.TriggerReload(rotCtx, secretName, done); err != nil {
-			err = fmt.Errorf("%w: %v", agent.ErrManualNoTargets, err) // its only synchronous refusal
-		}
-	}
+	err := eng.RotateSecretManually(rotCtx, secretName, actor, done)
 	if err != nil {
 		cancel() // nothing was started; onComplete will not run
 	}
 	return err
 }
 
+// errRotationEngineUnavailable: no managed rotation engine is configured.
+var errRotationEngineUnavailable = errors.New("managed rotation engine unavailable")
+
 // handleSecretRotate implements POST /api/secrets/{name}/rotate -- the WebUI's
-// one manual-rotation entry point. It is a thin wrapper around the exact same
-// production rotation machinery used by `dso sync --secret NAME`:
-// ReloaderController.TriggerReload. No second rotation engine is created
-// here; rolling rotation, restart fallback, health validation, proxy
-// handoff, rollback/recovery, cleanup, concurrency (per-service rotation
-// locks), and failure handling are all unchanged -- this handler only
-// decides whether to call TriggerReload and how to report the outcome.
+// one manual-rotation entry point. It starts the rotation through the managed
+// trigger engine (RotationEngine.RotateSecretManually), the same lifecycle as
+// every automatic rotation. No second rotation engine exists here and there is no
+// engine-less fallback: without an engine the endpoint answers 503
+// (rotation_engine_unavailable) after the authentication/CSRF/Origin gates and
+// input validation, and starts nothing. This handler only decides whether to
+// call the engine and how to report the synchronous outcome.
 //
 // SECURITY: this handler never reads, logs, or returns a secret value -- it
 // only ever handles the secret's *name*, which is metadata, not the secret
@@ -1185,11 +1229,6 @@ func (s *RESTServer) startManualRotation(secretName, actor string) error {
 // watch those events rather than treat HTTP 200 here as "rotation done".
 func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.Reloader == nil {
-		http.Error(w, "Rotation is not available on this agent", http.StatusServiceUnavailable)
-		return
-	}
 
 	// Path is "/api/secrets/{name}/rotate".
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/secrets/")
@@ -1244,6 +1283,9 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		s.Logger.Warn("Manual rotation request rejected", zap.String("secret", name), zap.Error(err))
 		switch {
+		case errors.Is(err, errRotationEngineUnavailable):
+			s.Logger.Error("Manual rotation refused: the managed rotation engine is unavailable", zap.String("secret", name))
+			writeRotationUnavailable(w)
 		case errors.Is(err, agent.ErrManualBusy):
 			http.Error(w, "Another rotation of this secret is in progress; retry shortly", http.StatusConflict)
 		case errors.Is(err, agent.ErrManualNoTargets), errors.Is(err, agent.ErrManualUnknownSecret):
@@ -1513,7 +1555,7 @@ func StartRESTServerSupervised(ctx context.Context, addr string, cache *agent.Se
 
 	restServer := &RESTServer{
 		Cache:         cache,
-		TriggerEngine: triggerEngine,
+		TriggerEngine: engineOrNil(triggerEngine),
 		Config:        cfg,
 		Logger:        logger,
 		Hub:           hub,
@@ -1645,4 +1687,12 @@ func bindsPublic(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip == nil || !ip.IsLoopback()
+}
+
+// engineOrNil avoids storing a typed-nil *agent.TriggerEngine in the interface.
+func engineOrNil(e *agent.TriggerEngine) RotationEngine {
+	if e == nil {
+		return nil
+	}
+	return e
 }

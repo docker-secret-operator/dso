@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/auth"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -24,6 +25,9 @@ func restServerWithSecret(name string) *RESTServer {
 		{Name: name, Provider: "vault"},
 	}
 	server.Reloader = &watcher.ReloaderController{Logger: zap.NewNop()}
+	// Rotation only ever runs through the managed engine; a fake that, like a
+	// real engine with no managed containers, refuses synchronously.
+	server.TriggerEngine = &fakeRotationEngine{manualErr: agent.ErrManualNoTargets}
 	return server
 }
 
@@ -43,9 +47,8 @@ func TestHandleSecretRotate_UnauthenticatedRejected(t *testing.T) {
 }
 
 func TestHandleSecretRotate_AuthenticatedNoManagedContainers(t *testing.T) {
-	// No containers are registered in Reloader.Targets, so TriggerReload
-	// reports "no managed containers" -- proving the endpoint actually
-	// invokes the real TriggerReload path rather than always claiming success.
+	// The engine reports "no managed containers" -- proving the endpoint
+	// actually invokes the engine rather than always claiming success.
 	server := restServerWithSecret("db_password")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/secrets/db_password/rotate", nil)
@@ -96,17 +99,17 @@ func TestHandleSecretRotate_MalformedNameRejected(t *testing.T) {
 	}
 }
 
-func TestHandleSecretRotate_NoReloaderConfigured(t *testing.T) {
+func TestHandleSecretRotate_NoEngineConfigured(t *testing.T) {
 	server := createTestRESTServer()
 	server.Config.Secrets = []config.SecretMapping{{Name: "db_password", Provider: "vault"}}
-	// Reloader intentionally left nil.
+	// TriggerEngine intentionally left nil.
 
 	req := httptest.NewRequest(http.MethodPost, "/api/secrets/db_password/rotate", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when Reloader is nil, got %d", w.Code)
+		t.Fatalf("expected 503 when the engine is nil, got %d", w.Code)
 	}
 }
 

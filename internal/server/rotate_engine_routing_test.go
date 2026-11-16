@@ -22,6 +22,9 @@ import (
 // fixture's reloader, as `dso agent` wires them.
 func wireEngine(t *testing.T, s *RESTServer) *agent.TriggerEngine {
 	t.Helper()
+	if eng, ok := s.TriggerEngine.(*agent.TriggerEngine); ok && eng != nil {
+		return eng // already wired by rotationFixture
+	}
 	eng, err := agent.NewTriggerEngineWithDirs(s.Cache, nil, s.Reloader, zap.NewNop(), s.Config, nil, t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)

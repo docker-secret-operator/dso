@@ -11,8 +11,7 @@ import (
 
 // No independent ledger commit logic in the REST layer: internal/server never
 // imports the applied-version ledger, and the rotation handler reaches the
-// reloader only through the engine (the single legacy fallback is the
-// engine-less struct-literal server).
+// reloader only through the engine.
 func TestServer_DoesNotImportTheLedger(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -34,15 +33,32 @@ func TestServer_DoesNotImportTheLedger(t *testing.T) {
 	}
 }
 
-func TestManualRotate_ReloaderOnlyInEngineLessFallback(t *testing.T) {
+// The REST layer never reaches the reloader itself: rotation executes only through
+// the RotationEngine, and there is no engine-less fallback.
+func TestManualRotate_NoReloaderRotationFromRESTLayer(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, banned := range []string{".TriggerReload(", "Reloader.Trigger"} {
+			if strings.Contains(string(src), banned) {
+				t.Errorf("%s contains %q: rotation must go only through the RotationEngine", f, banned)
+			}
+		}
+	}
 	src, err := os.ReadFile("rest.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "s.Reloader.TriggerReload("); n != 1 {
-		t.Fatalf("rest.go calls Reloader.TriggerReload %d times; the only allowed call is the engine-less fallback of startManualRotation", n)
-	}
-	if !strings.Contains(string(src), "s.TriggerEngine.RotateSecretManually(") {
-		t.Fatal("the manual rotation does not go through TriggerEngine.RotateSecretManually")
+	if !strings.Contains(string(src), "eng.RotateSecretManually(") {
+		t.Fatal("the manual rotation does not go through RotationEngine.RotateSecretManually")
 	}
 }
