@@ -215,7 +215,7 @@ costs nothing when no container waits. `redeliverGated` (also the Docker `start`
 same OperationGuard, re-checks the rotation ownership markers after taking them, resolves the cached specs (private copies), skips a gate whose release flag already exists (idempotent), verifies
 identity/gate/tmpfs/file-set (`VerifyRunningGate`) and delivers. It never starts a stopped container, never retries a failed delivery in a loop and never fetches from a provider.
 
-**The one goroutine (`RequestGateReconcile`), ratified as an intentional exception.** The N19 follow-up plan (`docs/superpowers/plans/2026-11-16-n19-restart-ledger-followups.md`) states a constraint of "no new goroutines"; `RequestGateReconcile` starts one anyway, reviewed and
+**The one goroutine (`RequestGateReconcile`), ratified as an intentional exception.** The N19 follow-up work carried a working constraint of "no new goroutines"; `RequestGateReconcile` starts one anyway, reviewed and
 accepted by the controller as justified. What it does: a single CAS-gated (`gateScanBusy`) coalescing worker that runs `ReconcileGatedContainers` passes in a loop, draining `gateScanPending` each
 time, and exits once no further request arrived while it ran (the "coalesce any number of triggers into one worker" behaviour above). Why it exists: the cache-warm-after-restart gap. The three fixed
 call sites that invoke reconciliation synchronously (startup after recovery settles, a Docker reconnect, and the periodic reconciliation tick) cannot reach a container whose secret becomes cacheable

@@ -73,7 +73,7 @@ external importability cannot be disproved, nothing under `pkg/` is deleted on i
   Retained as diagnostic/test support.
 - `InjectedSecretSync` (same file, `tar_streamer.go:111`) was a one-line wrapper with zero callers anywhere
   (`grep -rn InjectedSecretSync --include=*.go .`: definition only). It was clearly obsolete internal code and a
-  safe removal candidate (also proposed in `docs/superpowers/plans/2026-11-16-g024-dead-code-disposition.md`).
+  safe removal candidate.
   It has since been removed, in a change coordinated with the concurrent `internal/rotation` workstream
   (commit `a3b2089`, "chore(rotation): remove InjectedSecretSync, a zero-caller dead wrapper (G024)");
   `go build ./... && go vet ./...` stayed green.
