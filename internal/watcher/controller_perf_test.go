@@ -124,13 +124,13 @@ func TestReconcileRuntimeState_ListFailureDoesNotWipeTracking(t *testing.T) {
 // "stopped but present" as existing. A default running-only list would
 // reclassify every stopped container as orphaned and untrack it.
 func TestReconcileRuntimeState_StoppedContainerIsNotOrphaned(t *testing.T) {
-	var sawAllFlag bool
+	var sawAllFlag atomic.Bool
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/containers/json") {
 			// Docker encodes ListOptions{All:true} as ?all=1.
 			if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
-				sawAllFlag = true
+				sawAllFlag.Store(true)
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`[{"Id":"stopped-but-present","State":"exited"}]`))
 				return
@@ -149,7 +149,7 @@ func TestReconcileRuntimeState_StoppedContainerIsNotOrphaned(t *testing.T) {
 
 	rc.reconcileRuntimeState(context.Background())
 
-	if !sawAllFlag {
+	if !sawAllFlag.Load() {
 		t.Error("reconciliation did not request all containers; stopped containers would be wrongly orphaned")
 	}
 	if _, ok := rc.Targets.Load("stopped-but-present"); !ok {
