@@ -43,7 +43,18 @@ const (
 	actorWebhook         = "webhook"
 
 	maxActorUsernameLen = 64
+
+	// Audit event names for the session/auth lifecycle (M3). Status values:
+	// success | failure | rate_limited.
+	auditAuthLoginEvent      = "auth_login"
+	auditAuthLogoutEvent     = "auth_logout"
+	auditSessionsRevokeEvent = "sessions_revoke_others"
 )
+
+// webuiActor is the actor for a verified WebUI operator session.
+func webuiActor(username string) auditActor {
+	return auditActor{Name: "webui:user:" + sanitizeActorPart(username), Authenticated: true}
+}
 
 // webhookActor is the actor for a request that passed authenticateWebhook. The
 // HMAC secret is shared, so it identifies the authentication method only.
@@ -59,7 +70,7 @@ func (s *RESTServer) actorFromContext(r *http.Request) auditActor {
 	switch method {
 	case authSession:
 		if sess != nil && sess.Username != "" {
-			return auditActor{Name: "webui:user:" + sanitizeActorPart(sess.Username), Authenticated: true}
+			return webuiActor(sess.Username)
 		}
 	case authBearer:
 		if s.Auth != nil {

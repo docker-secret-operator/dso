@@ -420,13 +420,19 @@ func (s *RESTServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := s.WebUIAuth.LoginFromRequest(r, creds.Username, creds.Password)
 	if err != nil {
+		// The attempted username is attacker-controlled (and may hold a
+		// mistyped password), so it is never recorded; the actor is
+		// "unauthenticated" and no client address is logged (see audit_actor.go).
 		if err == webuiauth.ErrTooManyLoginAttempts {
+			audit.Log(r.Context(), auditAuthLoginEvent, actorUnauthenticated, "", "", "", "rate_limited")
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
+		audit.Log(r.Context(), auditAuthLoginEvent, actorUnauthenticated, "", "", "", "failure")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	audit.Log(r.Context(), auditAuthLoginEvent, webuiActor(sess.Username).Name, "", "", "", "success")
 
 	http.SetCookie(w, s.WebUIAuth.SessionCookie(sess))
 	w.Header().Set("Content-Type", "application/json")
@@ -439,6 +445,11 @@ func (s *RESTServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if s.WebUIAuth == nil {
 		http.Error(w, "WebUI is disabled", http.StatusNotFound)
 		return
+	}
+	// Attribute only a logout that ends a real session; an anonymous call to
+	// this public endpoint is not an operator action and is not recorded.
+	if actor := s.actorFromContext(r); actor.Authenticated {
+		audit.Log(r.Context(), auditAuthLogoutEvent, actor.Name, "", "", "", "success")
 	}
 	s.WebUIAuth.Logout(webuiauth.TokenFromRequest(r))
 	http.SetCookie(w, s.WebUIAuth.ExpiredCookie())
@@ -1097,6 +1108,7 @@ func (s *RESTServer) handleSessionsRevokeOthers(w http.ResponseWriter, r *http.R
 
 	currentToken := webuiauth.TokenFromRequest(r)
 	removed := s.WebUIAuth.LogoutOthers(currentToken)
+	audit.Log(r.Context(), auditSessionsRevokeEvent, s.actorFromContext(r).Name, "", "", "", "success")
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{

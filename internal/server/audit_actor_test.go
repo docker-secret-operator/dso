@@ -29,7 +29,26 @@ func captureAudit(t *testing.T) *observer.ObservedLogs {
 	return logs
 }
 
+// auditEntries returns the operator-action audit events, excluding the
+// session/auth lifecycle events (auth_*, sessions_*) that test setup logins emit;
+// those are asserted in auth_audit_test.go via allAuditEntries.
 func auditEntries(logs *observer.ObservedLogs) []observer.LoggedEntry {
+	var out []observer.LoggedEntry
+	for _, e := range allAuditEntries(logs) {
+		ev := ""
+		for _, f := range e.Context {
+			if f.Key == "event" {
+				ev = f.String
+			}
+		}
+		if ev != auditAuthLoginEvent && ev != auditAuthLogoutEvent && ev != auditSessionsRevokeEvent {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func allAuditEntries(logs *observer.ObservedLogs) []observer.LoggedEntry {
 	var out []observer.LoggedEntry
 	for _, e := range logs.All() {
 		if e.Message == "audit_event" {
