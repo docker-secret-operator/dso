@@ -67,6 +67,7 @@ func Log(_ context.Context, action string, user string, provider string, secretN
 	if d := durable.Load(); d != nil {
 		if err := d.Append(action, user, provider, secretName, containerID, status); err != nil {
 			durableFailure.Add(1)
+			observability.AuditDurableWriteFailuresTotal.Inc()
 			auditLogger.Error("durable audit append failed", zap.Error(err))
 		}
 	}

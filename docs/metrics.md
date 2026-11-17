@@ -11,6 +11,7 @@ names are ever used as labels.
 | `dso_rest_sessions_revoked_total` | counter | none | Sessions signed out by `POST /api/sessions/revoke` or `/revoke-others` |
 | `dso_rest_manual_rotation_requests_total` | counter | `status` = `success` \| `failure` | Manual rotation requests over REST |
 | `dso_rest_websocket_clients` | gauge | none | Connected WebSocket event clients |
+| `dso_audit_durable_write_failures_total` | counter | none | Audit events not persisted to the durable file (still logged) |
 | `dso_rest_active_sessions` | gauge | none | WebUI sessions neither idle- nor absolute-expired (computed at scrape time) |
 
 Every metric above has a matching audit event where one applies (`auth_login`,

@@ -30,11 +30,22 @@ import (
 // Records hold metadata only (action, actor, provider, secret NAME, container
 // id, status); never a secret value, credential, password or address.
 type DurableSink struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
-	seq  uint64
-	prev [sha256.Size]byte
+	mu     sync.Mutex
+	f      auditFile
+	path   string
+	seq    uint64
+	prev   [sha256.Size]byte
+	off    int64 // byte length of the verified, acknowledged prefix
+	broken error // set when a failed append could not be rolled back
+}
+
+// auditFile is the subset of *os.File the sink needs (a seam for fault tests).
+type auditFile interface {
+	io.Writer
+	Sync() error
+	Truncate(int64) error
+	Seek(int64, int) (int64, error)
+	Close() error
 }
 
 // Record is one line of the durable audit file.
@@ -150,13 +161,16 @@ func OpenDurable(path string) (*DurableSink, error) {
 	if _, err := f.Seek(good, io.SeekStart); err != nil {
 		return fail(err)
 	}
-	return &DurableSink{f: f, path: path, seq: seq, prev: prev}, nil
+	return &DurableSink{f: f, path: path, seq: seq, prev: prev, off: good}, nil
 }
 
 // Append writes one record and fsyncs before returning.
 func (d *DurableSink) Append(event, user, provider, secret, container, status string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.broken != nil {
+		return fmt.Errorf("audit sink disabled after unrecoverable write failure: %w", d.broken)
+	}
 	rec := Record{
 		Seq: d.seq + 1, Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Event: event, User: user, Provider: provider, Secret: secret, Container: container, Status: status,
@@ -168,13 +182,26 @@ func (d *DurableSink) Append(event, user, provider, secret, container, status st
 	if err != nil {
 		return err
 	}
-	if _, err := d.f.Write(append(line, '\n')); err != nil {
-		return err
+	out := append(line, '\n')
+	_, err = d.f.Write(out)
+	if err == nil {
+		err = d.f.Sync()
 	}
-	if err := d.f.Sync(); err != nil {
+	if err != nil {
+		// A short write, ENOSPC or failed fsync may leave a partial or
+		// unacknowledged line. Roll the file back to the last acknowledged
+		// offset so later appends cannot sit behind garbage (which would make
+		// the whole chain unverifiable). If the rollback itself fails, stop
+		// writing rather than corrupt the chain.
+		if terr := d.f.Truncate(d.off); terr != nil {
+			d.broken = terr
+		} else if _, serr := d.f.Seek(d.off, io.SeekStart); serr != nil {
+			d.broken = serr
+		}
 		return err
 	}
 	d.seq, d.prev = rec.Seq, h
+	d.off += int64(len(out))
 	return nil
 }
 

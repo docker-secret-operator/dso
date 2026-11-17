@@ -151,6 +151,15 @@ var (
 		},
 	)
 
+	// AuditDurableWriteFailuresTotal counts audit events the durable sink failed
+	// to persist (they were still emitted to the log stream).
+	AuditDurableWriteFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "dso_audit_durable_write_failures_total",
+			Help: "Audit events that could not be persisted to the durable audit file",
+		},
+	)
+
 	// ReconciliationDurationSeconds tracks reconciliation duration
 	ReconciliationDurationSeconds = promauto.NewHistogram(
 		prometheus.HistogramOpts{
