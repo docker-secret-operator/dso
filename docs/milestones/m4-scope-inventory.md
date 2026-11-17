@@ -39,7 +39,7 @@ None for slices 1 to 4. PE-10 (ADR-006) and any D1, D4 or G025 work need separat
 | Slice | Status | Commit | Notes |
 |---|---|---|---|
 | 1 `dso audit verify` | Done | this commit | `internal/cli/audit_cmd.go`; exit 0/10/11; never modifies the file; refuses non-regular files; reason strings do not leak paths |
-| 2 Doctor audit-file check | Not started | n/a | |
+| 2 Doctor audit-file check | Done | next commit | `DSO-DOCTOR-032` (`internal/setup/doctor_audit.go`): agent mode only; INFO absent/unreadable, WARN for non-regular or group/other-accessible file, FAIL (high) on broken chain, PASS with record count; read-only; default path pinned equal to the agent's |
 | 3 Web UI audit status | Not started | n/a | |
 | 4 Troubleshooting doc | Not started | n/a | |
 

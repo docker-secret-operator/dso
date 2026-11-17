@@ -120,6 +120,10 @@ type DoctorOptions struct {
 	// is "file" or "passphrase" (see internal/cli/central.go's
 	// --key-provider); when "passphrase", the CentralKeyFile path is checked
 	// as the KDF-parameter file rather than a raw key file.
+	// AuditFile overrides the durable audit file path (tests); empty means the
+	// agent default.
+	AuditFile string
+
 	CentralDB          string
 	CentralKeyFile     string
 	CentralKeyProvider string
@@ -140,6 +144,7 @@ type Doctor struct {
 	rotation *RotationChecks
 	state    *StateDirChecks
 	central  *CentralChecks
+	auditf   *AuditFileChecks
 }
 
 // NewDoctor constructs a Doctor wired to real OS hooks.
@@ -177,6 +182,7 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 		rotation: newRotationChecks(opts.SocketPath, opts.ConfigPath),
 		state:    newStateDirChecks(opts.Mode, opts.StateDir),
 		central:  newCentralChecks(opts),
+		auditf:   newAuditFileChecks(opts.Mode, opts.AuditFile),
 	}
 }
 
@@ -193,6 +199,7 @@ func (d *Doctor) Run(ctx context.Context) *DoctorResult {
 	checks = append(checks, d.rotation.run(ctx)...)
 	checks = append(checks, d.state.run(ctx)...)
 	checks = append(checks, d.central.run(ctx)...)
+	checks = append(checks, d.auditf.run(ctx)...)
 
 	return &DoctorResult{
 		OverallStatus: doctorComputeOverall(checks),

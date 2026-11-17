@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/docker-secret-operator/dso/internal/agent"
+	"github.com/docker-secret-operator/dso/internal/setup"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,5 +90,11 @@ func TestAuditVerify_NeverModifiesTheFile_AndRefusesSymlink(t *testing.T) {
 	}
 	if _, code := runAuditVerify(t, "--file", link); code != exitAuditUnavailable {
 		t.Fatalf("symlink must be unavailable, code=%d", code)
+	}
+}
+
+func TestDoctorAuditFileDefaultMatchesAgentPath(t *testing.T) {
+	if setup.DefaultAuditFilePath != agent.DurableAuditPath() {
+		t.Fatalf("doctor default %q != agent path %q", setup.DefaultAuditFilePath, agent.DurableAuditPath())
 	}
 }
