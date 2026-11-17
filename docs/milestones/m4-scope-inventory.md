@@ -42,5 +42,6 @@ None for slices 1 to 4. PE-10 (ADR-006) and any D1, D4 or G025 work need separat
 | 2 Doctor audit-file check | Done | next commit | `DSO-DOCTOR-032` (`internal/setup/doctor_audit.go`): agent mode only; INFO absent/unreadable, WARN for non-regular or group/other-accessible file, FAIL (high) on broken chain, PASS with record count; read-only; default path pinned equal to the agent's |
 | 3 Web UI audit status | Done | next commit | `GET /api/audit/status` (cheap, does not verify the chain; in OpenAPI and the route matrix); audit page states whether the durable file is active, shows persistence failures and an export link, and says nothing is persisted when status is unknown. Embedded assets rebuilt and parity-checked |
 | 4 Troubleshooting doc | Done | next commit | `docs/operations/audit-and-delivery-troubleshooting.md`, limited to existing, verified commands and checks |
+| 5 `dso audit export` | Done | next commit | Offline verified NDJSON export (stdout or new 0600 file, never overwritten); verifies the whole chain first and writes nothing on exit 10/11; CLI reference regenerated; same record format as `GET /api/audit/export` |
 
 Deferred release gates are unchanged (real-Docker N19, integration and crash harness, live systemd, hosted CI, signing; N7/N8, Docker advisories and release approval are owner items). M4 is not production-ready.

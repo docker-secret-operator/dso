@@ -22,5 +22,6 @@ dso audit [flags]
 ### SEE ALSO
 
 * [dso](dso.md)	 - Docker Secret Operator (DSO) — Secret lifecycle runtime for Docker Compose
+* [dso audit export](dso_audit_export.md)	 - Export the agent's durable audit file as verified NDJSON (read-only)
 * [dso audit verify](dso_audit_verify.md)	 - Verify the agent's durable audit file hash chain (read-only)
 

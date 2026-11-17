@@ -132,3 +132,75 @@ func TestStartDurableAudit_BestEffortOnFailureAndInstallsOnSuccess(t *testing.T)
 		t.Fatal("teardown must detach the sink")
 	}
 }
+
+func runAuditExport(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	cmd := NewAuditCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs(append([]string{"export"}, args...))
+	err := cmd.Execute()
+	code := 0
+	if err != nil {
+		code = exitCodeFor(err)
+	}
+	return out.String(), code
+}
+
+func TestAuditExport_VerifiedFileEmitsOneJSONObjectPerRecord(t *testing.T) {
+	p := writeAudit(t, 3)
+	before, _ := os.ReadFile(p)
+	out, code := runAuditExport(t, "--file", p)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if code != 0 || len(lines) != 3 {
+		t.Fatalf("code=%d lines=%d out=%q", code, len(lines), out)
+	}
+	for i, l := range lines {
+		var r audit.Record
+		if err := json.Unmarshal([]byte(l), &r); err != nil || r.Seq != uint64(i+1) {
+			t.Fatalf("line %d: %v seq=%d", i, err, r.Seq)
+		}
+	}
+	if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+		t.Fatal("export modified the audit file")
+	}
+}
+
+func TestAuditExport_TamperedOrMissingWritesNothing(t *testing.T) {
+	p := writeAudit(t, 3)
+	b, _ := os.ReadFile(p)
+	if err := os.WriteFile(p, bytes.Replace(b, []byte("operator"), []byte("0perator"), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runAuditExport(t, "--file", p); code != 10 || out != "" {
+		t.Fatalf("tampered: code=%d out=%q", code, out)
+	}
+	if out, code := runAuditExport(t, "--file", filepath.Join(t.TempDir(), "none")); code != 11 || out != "" {
+		t.Fatalf("missing: code=%d out=%q", code, out)
+	}
+}
+
+func TestAuditExport_OutputFileIs0600AndNeverOverwritten(t *testing.T) {
+	p := writeAudit(t, 2)
+	dst := filepath.Join(t.TempDir(), "out.ndjson")
+	if out, code := runAuditExport(t, "--file", p, "--output", dst); code != 0 || out != "" {
+		t.Fatalf("code=%d out=%q", code, out)
+	}
+	st, err := os.Stat(dst)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("stat=%v err=%v", st, err)
+	}
+	if _, code := runAuditExport(t, "--file", p, "--output", dst); code == 0 {
+		t.Fatal("existing output file must not be overwritten")
+	}
+	// a failed export must not leave an output file behind
+	bad := filepath.Join(t.TempDir(), "never.ndjson")
+	if _, code := runAuditExport(t, "--file", filepath.Join(t.TempDir(), "none"), "--output", bad); code != 11 {
+		t.Fatalf("code=%d", code)
+	}
+	if _, err := os.Stat(bad); err == nil {
+		t.Fatal("failed export created an output file")
+	}
+}

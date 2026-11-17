@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -86,6 +87,61 @@ The audit file is best effort, not a guaranteed or fail-closed audit trail.`,
 	verify.Flags().StringVar(&file, "file", "", "audit file to verify (default: the agent's durable audit file)")
 	verify.Flags().BoolVar(&asJSON, "json", false, "print the result as one JSON document")
 	parent.AddCommand(verify)
+
+	var (
+		expFile string
+		expOut  string
+	)
+	export := &cobra.Command{
+		Use:   "export",
+		Short: "Export the agent's durable audit file as verified NDJSON (read-only)",
+		Args:  cobra.NoArgs,
+		Long: `Verifies the whole hash chain of the agent's durable audit file and, only if it
+verifies, writes every record as one JSON object per line (NDJSON), the same
+format as GET /api/audit/export. Nothing is written to stdout on failure, so a
+broken or unreadable file can never produce an export that looks valid. The
+audit file itself is never modified.
+
+By default the export goes to stdout. With --output FILE it is written to a new
+file (mode 0600); an existing file is never overwritten.
+
+Exit status is the same as ` + "`dso audit verify`" + `: 10 integrity failure, 11 unavailable.
+
+The chain is unkeyed and the audit file is best effort; an export is not proof
+of authenticity or completeness (see ` + "`dso audit verify --help`" + `).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := expFile
+			if path == "" {
+				path = agent.DurableAuditPath()
+			}
+			if _, failure := verifyAuditFile(path); failure != nil {
+				return failure
+			}
+			recs, err := audit.ReadVerified(path)
+			if err != nil {
+				return &exitCodeError{exitAuditUnavailable, fmt.Errorf("audit file changed during export: %s", printableUntrusted(err.Error()))}
+			}
+			var w io.Writer = cmd.OutOrStdout()
+			if expOut != "" {
+				f, err := os.OpenFile(expOut, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- operator-chosen output path, never overwritten
+				if err != nil {
+					return fmt.Errorf("cannot create output file: %w", err)
+				}
+				defer f.Close()
+				w = f
+			}
+			enc := json.NewEncoder(w)
+			for _, r := range recs {
+				if err := enc.Encode(r); err != nil { // #nosec G117 -- Record carries the secret name only
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	export.Flags().StringVar(&expFile, "file", "", "audit file to export (default: the agent's durable audit file)")
+	export.Flags().StringVar(&expOut, "output", "", "write to this new file (mode 0600) instead of stdout")
+	parent.AddCommand(export)
 	return parent
 }
 
