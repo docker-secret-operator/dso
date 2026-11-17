@@ -65,3 +65,20 @@ Exit gate (proposal): the per-route authorization matrix passes; every state-cha
 3. **Permission model.** Default: two credential classes (read-only, operator) on the existing token mechanism, optional and off by default; no named users, no roles table.
 4. **Bearer-token attribution.** Default: keep the token fingerprint as actor; do not introduce per-person tokens in M3 (that would be a new identity system).
 5. **OpenAPI and metrics inclusion.** Default: include both as the last, small slices; defer SDK/Terraform/webhook work (audit-roadmap M4) entirely.
+
+## 7. Implementation tracker (updated at the end of M3 development)
+
+Authorized scope: sections 5 items 1-2, 5-8 on the existing bearer token and single WebUI operator, per the owner's instruction to proceed with clearly authorized, non-conflicting work. Decisions D1-D4 were NOT taken: no second credential class, no durable audit sink, no per-person tokens.
+
+| Slice | Status | Commit | Notes |
+|---|---|---|---|
+| 1 Route authorization matrix | Already present | n/a | `TestRouteTableCoverage` and anonymous-401 matrix in `internal/server/auth_gate_test.go`; new routes added to it |
+| 2 Audit auth lifecycle | Done | ad90046 | `auth_login`, `auth_logout`, `sessions_revoke_others`; no attempted username, password or address recorded. Events go to the audit logger stream (not durable) |
+| 3 Durable REST audit sink | NOT started | n/a | Needs owner decision D2 |
+| 4 Read-only vs operate split | NOT started | n/a | Needs owner decision D1 |
+| 5 Session hardening | Done (partial) | fe72643 | Stable opaque session ids, `POST /api/sessions/revoke`. WebSocket edge cases not separately re-audited |
+| 6 Web UI operator workflows | Done (sessions page) | 8f831bc | Per-session sign-out, two-step confirmation; other pages not changed |
+| 7 OpenAPI + contract test | Done | b3d7338 | `docs/api/openapi.yaml`; minimal schemas |
+| 8 REST metrics | Done | 4cdc32f | `docs/metrics.md`; no session-count gauge |
+
+Still deferred: all production-qualification gates in `docs/milestones/deferred-production-qualification.md`. N19 remains implemented but not runtime-qualified. This milestone is not production-ready.
