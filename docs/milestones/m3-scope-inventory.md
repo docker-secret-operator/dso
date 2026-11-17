@@ -82,3 +82,5 @@ Authorized scope: sections 5 items 1-2, 5-8 on the existing bearer token and sin
 | 8 REST metrics | Done | 4cdc32f + next commit | `docs/metrics.md`; `dso_rest_active_sessions` gauge computed at scrape time (non-expired sessions, no timer refresh) |
 
 Still deferred: all production-qualification gates in `docs/milestones/deferred-production-qualification.md`. N19 remains implemented but not runtime-qualified. This milestone is not production-ready.
+
+Verification: see `docs/milestones/m3-verification-record.md` (Docker-free pass on `0bd01ac`).
