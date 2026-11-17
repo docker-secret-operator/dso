@@ -30,3 +30,22 @@ export async function revokeOtherSessions(): Promise<{ status: string; revoked: 
   }
   return res.json()
 }
+
+/** Sign out one other session by its opaque id (POST /api/sessions/revoke). */
+export async function revokeSession(id: string): Promise<{ status: string }> {
+  const res = await apiFetch('/api/sessions/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  })
+  if (res.status === 404) {
+    throw new Error('That session no longer exists')
+  }
+  if (res.status === 409) {
+    throw new Error('The current session cannot be revoked here; use sign out')
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to revoke session (${res.status})`)
+  }
+  return res.json()
+}

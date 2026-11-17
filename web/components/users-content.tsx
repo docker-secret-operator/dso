@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { ShieldCheck, Monitor, LogOut } from 'lucide-react'
 
 import { fetchOperatorIdentity } from '@/lib/api/auth'
-import { fetchSessions, revokeOtherSessions, type SessionInfo } from '@/lib/api/sessions'
+import { fetchSessions, revokeOtherSessions, revokeSession, type SessionInfo } from '@/lib/api/sessions'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -25,6 +25,9 @@ export function UsersContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [revoking, setRevoking] = useState(false)
+  // Two-step confirmation for destructive actions: holds the id awaiting confirm
+  // ('others' for sign-out-others), so one stray click never signs anyone out.
+  const [confirming, setConfirming] = useState<string | null>(null)
   const toast = useToast()
 
   async function load() {
@@ -45,8 +48,23 @@ export function UsersContent() {
     load()
   }, [])
 
+  async function handleRevokeOne(id: string) {
+    setRevoking(true)
+    setConfirming(null)
+    try {
+      await revokeSession(id)
+      toast.success('Session signed out')
+    } catch (err) {
+      toast.error('Failed to sign out session', err instanceof Error ? err.message : undefined)
+    } finally {
+      setRevoking(false)
+      await load()
+    }
+  }
+
   async function handleRevokeOthers() {
     setRevoking(true)
+    setConfirming(null)
     try {
       const result = await revokeOtherSessions()
       toast.success(
@@ -119,17 +137,28 @@ export function UsersContent() {
                   <Monitor className="h-4 w-4 text-primary" />
                   Active sessions
                 </CardTitle>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={revoking || otherSessionCount === 0}
-                  onClick={handleRevokeOthers}
-                  data-testid="revoke-others-button"
-                  className="self-start sm:self-auto"
-                >
-                  <LogOut className="mr-1.5 h-3.5 w-3.5" />
-                  Sign out other sessions
-                </Button>
+                {confirming === 'others' ? (
+                  <div className="flex gap-2 self-start sm:self-auto">
+                    <Button size="sm" variant="destructive" disabled={revoking} onClick={handleRevokeOthers} data-testid="revoke-others-confirm">
+                      Confirm sign out
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirming(null)} data-testid="revoke-cancel">
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={revoking || otherSessionCount === 0}
+                    onClick={() => setConfirming('others')}
+                    data-testid="revoke-others-button"
+                    className="self-start sm:self-auto"
+                  >
+                    <LogOut className="mr-1.5 h-3.5 w-3.5" />
+                    Sign out other sessions
+                  </Button>
+                )}
               </CardHeader>
               <CardContent className="divide-y divide-border p-0">
                 {sessions.length === 0 && (
@@ -151,6 +180,21 @@ export function UsersContent() {
                         {new Date(sess.last_seen_at).toLocaleString()}
                       </p>
                     </div>
+                    {!sess.current &&
+                      (confirming === sess.id ? (
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="destructive" disabled={revoking} onClick={() => handleRevokeOne(sess.id)} data-testid={`revoke-confirm-${sess.id}`}>
+                            Confirm
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setConfirming(null)} data-testid="revoke-cancel">
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button size="sm" variant="outline" disabled={revoking} onClick={() => setConfirming(sess.id)} data-testid={`revoke-button-${sess.id}`}>
+                          Sign out
+                        </Button>
+                      ))}
                   </div>
                 ))}
               </CardContent>
