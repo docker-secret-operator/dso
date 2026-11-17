@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import type { Event } from '@/hooks/useWebSocket'
-import { fetchAudit } from '@/lib/api/audit'
+import { fetchAudit, fetchAuditStatus, type AuditStatus } from '@/lib/api/audit'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -112,8 +112,10 @@ export function AuditContent() {
     }
   }, [])
 
+  const [auditStatus, setAuditStatus] = useState<AuditStatus | null>(null)
   useEffect(() => {
     load()
+    fetchAuditStatus().then(setAuditStatus)
   }, [load])
 
   const statuses = useMemo(
@@ -185,9 +187,30 @@ export function AuditContent() {
           <p className="mt-0.5 text-sm text-muted-foreground">Track security-relevant and administrative activity.</p>
           <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground/70">
             <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-            Sourced from DSO&apos;s in-memory runtime event log (the same store behind Events and Logs). Bounded and
-            resets on agent restart -- this is not a durable, persistent audit trail.
+            This table shows DSO&apos;s in-memory runtime event log (the same store behind Events and Logs). Bounded and
+            resets on agent restart.
           </p>
+          {auditStatus?.durable_enabled ? (
+            <p data-testid="audit-durable-status" className="mt-1 flex items-start gap-1.5 text-xs text-muted-foreground/70">
+              <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              <span>
+                A separate durable audit file is active (hash-chained, best effort, not tamper-proof).{' '}
+                {auditStatus.write_failures > 0 ? (
+                  <strong data-testid="audit-durable-failures" className="text-amber-400">
+                    {auditStatus.write_failures} event(s) could not be persisted since the agent started.{' '}
+                  </strong>
+                ) : null}
+                <a data-testid="audit-export-link" href="/api/audit/export" className="underline">
+                  Export (verified NDJSON)
+                </a>
+              </span>
+            </p>
+          ) : (
+            <p data-testid="audit-durable-status" className="mt-1 flex items-start gap-1.5 text-xs text-muted-foreground/70">
+              <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              No durable audit file is reported as active, so nothing shown here is persisted.
+            </p>
+          )}
         </header>
 
         {loading && (

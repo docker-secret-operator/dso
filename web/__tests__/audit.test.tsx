@@ -8,8 +8,10 @@ vi.mock('next/navigation', () => ({
 }))
 
 const fetchAuditMock = vi.fn()
+const fetchAuditStatusMock = vi.fn()
 vi.mock('@/lib/api/audit', () => ({
   fetchAudit: () => fetchAuditMock(),
+  fetchAuditStatus: () => fetchAuditStatusMock(),
 }))
 
 import { AuditContent } from '@/components/audit-content'
@@ -34,6 +36,8 @@ const rotationFailed = {
 describe('AuditContent', () => {
   beforeEach(() => {
     fetchAuditMock.mockReset()
+    fetchAuditStatusMock.mockReset()
+    fetchAuditStatusMock.mockResolvedValue(null)
   })
 
   it('shows a table-shaped loading state before the request resolves', () => {
@@ -196,5 +200,31 @@ describe('AuditContent', () => {
 
     await waitFor(() => expect(screen.getByTestId('audit-content')).toBeInTheDocument())
     expect(document.body.textContent ?? '').not.toContain(sentinel)
+  })
+
+  it('does not claim durability when status is unknown or disabled', async () => {
+    fetchAuditMock.mockResolvedValue([secretFetch])
+    fetchAuditStatusMock.mockResolvedValue({ durable_enabled: false, write_failures: 0 })
+    render(<AuditContent />)
+    const note = await screen.findByTestId('audit-durable-status')
+    expect(note).toHaveTextContent(/no durable audit file/i)
+    expect(screen.queryByTestId('audit-export-link')).not.toBeInTheDocument()
+  })
+
+  it('shows the durable file, its limits and an export link when active', async () => {
+    fetchAuditMock.mockResolvedValue([secretFetch])
+    fetchAuditStatusMock.mockResolvedValue({ durable_enabled: true, write_failures: 0 })
+    render(<AuditContent />)
+    const note = await screen.findByText(/separate durable audit file is active/i)
+    expect(note).toHaveTextContent(/best effort, not tamper-proof/i)
+    expect(screen.getByTestId('audit-export-link')).toHaveAttribute('href', '/api/audit/export')
+    expect(screen.queryByTestId('audit-durable-failures')).not.toBeInTheDocument()
+  })
+
+  it('surfaces persistence failures', async () => {
+    fetchAuditMock.mockResolvedValue([secretFetch])
+    fetchAuditStatusMock.mockResolvedValue({ durable_enabled: true, write_failures: 3 })
+    render(<AuditContent />)
+    expect(await screen.findByTestId('audit-durable-failures')).toHaveTextContent('3 event(s) could not be persisted')
   })
 })

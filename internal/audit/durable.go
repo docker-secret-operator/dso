@@ -246,3 +246,16 @@ func DurablePath() string {
 
 // DurableWriteFailures counts events the durable sink failed to persist.
 func DurableWriteFailures() uint64 { return durableFailure.Load() }
+
+// DurableStatus is the cheap, non-verifying state of the durable sink, for UIs
+// and diagnostics. Enabled means a sink is installed, not that its chain is valid.
+type DurableStatus struct {
+	Enabled       bool
+	WriteFailures uint64
+}
+
+// CurrentDurableStatus reports whether a sink is installed and how many events
+// it failed to persist since process start.
+func CurrentDurableStatus() DurableStatus {
+	return DurableStatus{Enabled: durable.Load() != nil, WriteFailures: durableFailure.Load()}
+}

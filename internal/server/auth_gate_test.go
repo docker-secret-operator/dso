@@ -85,6 +85,7 @@ var protectedRoutes = []struct{ method, path string }{
 	{"GET", "/api/containers"},
 	{"GET", "/api/audit"},
 	{"GET", "/api/audit/export"},
+	{"GET", "/api/audit/status"},
 	{"GET", "/api/sessions"},
 	{"POST", "/api/sessions/revoke"},
 	{"POST", "/api/sessions/revoke-others"},

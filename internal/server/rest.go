@@ -1037,6 +1037,10 @@ func (s *RESTServer) handleAudit(w http.ResponseWriter, r *http.Request) {
 		s.handleAuditExport(w, r)
 		return
 	}
+	if r.URL.Path == "/api/audit/status" {
+		s.handleAuditStatus(w, r)
+		return
+	}
 	limitStr := r.URL.Query().Get("limit")
 	limit := 200
 	if limitStr != "" {
@@ -1060,6 +1064,22 @@ func (s *RESTServer) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewEncoder(w).Encode(events); err != nil {
 		s.Logger.Error("Failed to encode audit response", zap.Error(err))
+	}
+}
+
+// handleAuditStatus reports, cheaply and without verifying the chain, whether
+// the durable audit file is active and how many events failed to persist since
+// start. "durable_enabled" means a sink is installed, not that the chain is
+// valid: only /api/audit/export (and `dso audit verify`) verify it.
+func (s *RESTServer) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {
+	st := audit.CurrentDurableStatus()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"durable_enabled": st.Enabled,
+		"write_failures":  st.WriteFailures,
+	}); err != nil {
+		s.Logger.Error("Failed to encode audit status", zap.Error(err))
 	}
 }
 
