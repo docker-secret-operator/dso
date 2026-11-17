@@ -63,7 +63,9 @@ paths:
   /api/containers:
     get: {summary: Managed containers, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
   /api/audit:
-    get: {summary: Audit events (in-memory, non-durable), responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+    get: {summary: Audit events (in-memory view; the durable record is /api/audit/export), responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/audit/export:
+    get: {summary: "Durable hash-chained audit records as NDJSON (503 when the durable sink is off, 500 if the chain fails verification)", responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}, "503": {description: Durable audit not enabled}, "500": {description: Chain verification failed}}}
   /api/sessions:
     get: {summary: Active WebUI sessions with stable opaque ids, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
   /api/sessions/revoke:

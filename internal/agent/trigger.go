@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,9 @@ const (
 	defaultTriggerStateDir = "/var/lib/dso/state"
 	defaultTriggerLockDir  = "/var/lib/dso/locks"
 )
+
+// DurableAuditPath is where the agent keeps its append-only audit file.
+func DurableAuditPath() string { return filepath.Join(defaultTriggerStateDir, "audit.jsonl") }
 
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
 	stateDir, lockDir := defaultTriggerStateDir, defaultTriggerLockDir

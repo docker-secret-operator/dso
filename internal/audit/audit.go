@@ -62,6 +62,15 @@ func Log(_ context.Context, action string, user string, provider string, secretN
 
 	auditLogger.Info("audit_event", fields...)
 
+	// Durable, hash-chained copy of EVERY event (best effort: a sink failure is
+	// counted and logged, never allowed to fail the audited operation).
+	if d := durable.Load(); d != nil {
+		if err := d.Append(action, user, provider, secretName, containerID, status); err != nil {
+			durableFailure.Add(1)
+			auditLogger.Error("durable audit append failed", zap.Error(err))
+		}
+	}
+
 	// Project "secret_fetch" activity into the queryable EventStore
 	// (internal/server/eventstore.go, fed via observability.EventStream) --
 	// previously this activity was only visible in the zap log stream, not

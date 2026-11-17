@@ -1033,6 +1033,10 @@ func (s *RESTServer) handleAlerts(w http.ResponseWriter, r *http.Request) {
 // different data source. Like /api/logs, this is a bounded, in-memory,
 // non-persistent-across-restart log -- it is NOT a durable audit trail.
 func (s *RESTServer) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/audit/export" {
+		s.handleAuditExport(w, r)
+		return
+	}
 	limitStr := r.URL.Query().Get("limit")
 	limit := 200
 	if limitStr != "" {
@@ -1056,6 +1060,34 @@ func (s *RESTServer) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewEncoder(w).Encode(events); err != nil {
 		s.Logger.Error("Failed to encode audit response", zap.Error(err))
+	}
+}
+
+// handleAuditExport streams the durable, hash-chained audit file as NDJSON after
+// verifying the whole chain. It is read-only. When no durable sink is active it
+// answers 503, and when the chain fails verification it answers 500 without
+// streaming anything (a tampered export must not look valid). The chain is
+// tamper-evident only, see audit.DurableSink for its limits.
+func (s *RESTServer) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	path := audit.DurablePath()
+	if path == "" {
+		http.Error(w, "Durable audit is not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	recs, err := audit.ReadVerified(path)
+	if err != nil {
+		s.Logger.Error("Durable audit export refused: chain verification failed", zap.Error(err))
+		http.Error(w, "Audit chain verification failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="dso-audit.ndjson"`)
+	w.Header().Set("Cache-Control", "no-store")
+	enc := json.NewEncoder(w)
+	for _, rec := range recs {
+		if err := enc.Encode(rec); err != nil {
+			return
+		}
 	}
 }
 

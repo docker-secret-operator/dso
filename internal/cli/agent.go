@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/docker-secret-operator/dso/internal/audit"
 	"os"
 	"os/signal"
 	"syscall"
@@ -222,6 +223,16 @@ func NewAgentCmd() *cobra.Command {
 				return fail("failed to start Docker Driver server", err)
 			}
 			onFail = append(onFail, driverShutdown)
+
+			// 2b. Durable, hash-chained audit file (best effort: the agent keeps
+			// running with the in-memory/log audit stream if it cannot be opened,
+			// and says so loudly).
+			if sink, aerr := audit.OpenDurable(agent.DurableAuditPath()); aerr != nil {
+				logger.Error("Durable audit file unavailable; audit events are NOT being persisted", zap.String("path", agent.DurableAuditPath()), zap.Error(aerr))
+			} else {
+				audit.SetDurable(sink)
+				onFail = append(onFail, func() { audit.SetDurable(nil); _ = sink.Close() })
+			}
 
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
 			// returns an error (and refuses to start) if bound to a non-loopback
