@@ -183,6 +183,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 	cmd.AddCommand(NewSecretCmd())
 	cmd.AddCommand(NewEnvImportCmd())
 	cmd.AddCommand(NewCentralCmd())
+	cmd.AddCommand(NewAuditCmd())
 
 	// Errors are reported exactly once, by Run, on stderr. Cobra's own
 	// printing is silenced so runtime failures don't also dump usage text.

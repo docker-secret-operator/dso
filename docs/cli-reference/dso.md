@@ -41,6 +41,7 @@ dso [flags]
 
 * [dso agent](dso_agent.md)	 - Run the DSO background reconciliation engine
 * [dso apply](dso_apply.md)	 - Apply declarative secret configuration
+* [dso audit](dso_audit.md)	 - Inspect the agent's durable audit file
 * [dso bootstrap](dso_bootstrap.md)	 - Initialize DSO runtime environment
 * [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso compose](dso_compose.md)	 - Wrapper around docker compose that injects secrets
