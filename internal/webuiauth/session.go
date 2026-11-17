@@ -222,6 +222,26 @@ func (m *Manager) Validate(token string) (*Session, error) {
 	return sess, nil
 }
 
+// ActiveCount returns the number of sessions that are neither idle- nor
+// absolute-expired. It does not refresh timers or remove anything, and never
+// exposes tokens, so it is safe to call from a metrics scrape.
+func (m *Manager) ActiveCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	n := 0
+	for _, sess := range m.sessions {
+		if now.Sub(sess.LastSeenAt) > m.idleTimeout {
+			continue
+		}
+		if m.maxLifetime > 0 && now.Sub(sess.CreatedAt) > m.maxLifetime {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // Logout invalidates the given session token, if present.
 func (m *Manager) Logout(token string) {
 	m.mu.Lock()

@@ -68,7 +68,7 @@ func TestRESTMetrics_CataloguedAndLabelsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"dso_rest_auth_failures_total", "dso_rest_login_attempts_total",
-		"dso_rest_sessions_revoked_total", "dso_rest_manual_rotation_requests_total", "dso_rest_websocket_clients"} {
+		"dso_rest_sessions_revoked_total", "dso_rest_manual_rotation_requests_total", "dso_rest_websocket_clients", "dso_rest_active_sessions"} {
 		if !strings.Contains(string(b), "`"+name+"`") {
 			t.Errorf("%s missing from docs/metrics.md", name)
 		}

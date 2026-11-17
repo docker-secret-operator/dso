@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -262,3 +263,28 @@ func isLocalhostRequest(remoteAddr string) bool {
 	return remoteAddr == "127.0.0.1" || remoteAddr == "localhost" ||
 		remoteAddr == "::1" || remoteAddr == "[::1]"
 }
+
+var restSessionCount atomic.Pointer[func() int]
+
+// SetRESTActiveSessionsFunc sets the callback the dso_rest_active_sessions
+// gauge reads at scrape time. Pass nil to report zero.
+func SetRESTActiveSessionsFunc(f func() int) {
+	if f == nil {
+		restSessionCount.Store(nil)
+		return
+	}
+	restSessionCount.Store(&f)
+}
+
+var _ = promauto.NewGaugeFunc(
+	prometheus.GaugeOpts{
+		Name: "dso_rest_active_sessions",
+		Help: "WebUI sessions that are neither idle- nor absolute-expired",
+	},
+	func() float64 {
+		if f := restSessionCount.Load(); f != nil {
+			return float64((*f)())
+		}
+		return 0
+	},
+)

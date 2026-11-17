@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"net/http"
 	"os"
 	"sort"
@@ -128,6 +129,9 @@ func (s *RESTServer) applyAccessWiring(w *accessWiring) {
 	s.AllowedOrigins = w.AllowedOrigins
 	s.HostGuard = w.HostGuard
 	s.WebUIAuth = w.WebUIAuth
+	if w.WebUIAuth != nil {
+		observability.SetRESTActiveSessionsFunc(w.WebUIAuth.ActiveCount)
+	}
 	s.WebUI = w.WebUI
 }
 
