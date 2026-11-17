@@ -8,6 +8,7 @@ Read-only first steps. None of the commands below changes agent state.
 |---|---|
 | Is a durable file active? | Web UI Audit page note, or `GET /api/audit/status` (`durable_enabled`, `write_failures`). This does not verify the chain. |
 | Is the chain consistent? | `dso audit verify` (add `--json` for a stable document; `--file PATH` to check a copy). |
+| Get a copy for review | `dso audit export` (stdout) or `--output FILE` (new file, mode 0600, never overwritten). It verifies the whole chain first and writes nothing on exit 10 or 11. Same format as `GET /api/audit/export`. |
 | Is it in a healthy state on the host? | `dso doctor` check `DSO-DOCTOR-032` (agent mode; run as root or the agent user so the file can be read). |
 | Can I get the records? | `GET /api/audit/export` (verified NDJSON). It answers 503 if the file is not active and 500, with no content, if the chain fails. |
 
