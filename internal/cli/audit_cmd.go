@@ -14,10 +14,10 @@ import (
 
 // auditFileVerifyJSON is the stable --json document of `dso audit verify`.
 type auditFileVerifyJSON struct {
-	Status      string `json:"status"` // verified | integrity_failure | unavailable
-	RecordCount *int   `json:"record_count,omitempty"`
-	TipSeq      *int   `json:"tip_seq,omitempty"`
-	Reason      string `json:"reason,omitempty"`
+	Status      string  `json:"status"` // verified | integrity_failure | unavailable
+	RecordCount *int    `json:"record_count,omitempty"`
+	TipSeq      *uint64 `json:"tip_seq,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
 }
 
 // NewAuditCmd is `dso audit`: read-only inspection of the agent's durable audit file.
@@ -111,9 +111,9 @@ func verifyAuditFile(path string) (auditFileVerifyJSON, error) {
 	if err != nil {
 		return unavailable("the audit file could not be read", err)
 	}
-	n, tip := len(recs), 0
+	n, tip := len(recs), uint64(0)
 	if n > 0 {
-		tip = int(recs[n-1].Seq)
+		tip = recs[n-1].Seq
 	}
 	return auditFileVerifyJSON{Status: "verified", RecordCount: &n, TipSeq: &tip}, nil
 }
