@@ -28,7 +28,7 @@ func eventsAt(t *testing.T, path string) []store.AuditEvent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	evs, err := st.ListAuditEvents(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -495,14 +495,14 @@ func TestRestore_UnauditedPathsWriteNothing(t *testing.T) {
 		}},
 		{"lock_busy", func(t *testing.T, e *env, cand string, got *[]store.AuditEvent) error {
 			if e.st != nil {
-				e.st.Close()
+				_ = e.st.Close()
 				e.st = nil
 			}
 			held, err := sqlite.AcquireExclusiveCentralLock(e.dbPath, time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer held.Close()
+			defer func() { _ = held.Close() }()
 			kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 			_, err = Restore(ctx, RestoreOptions{CandidatePath: cand, DBPath: e.dbPath, KeyProvider: kp,
 				LockTimeout:            100 * time.Millisecond,

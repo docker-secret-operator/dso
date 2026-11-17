@@ -20,12 +20,12 @@ func NewInspectCmd() *cobra.Command {
 			containerID := args[0]
 			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
-				return fmt.Errorf("Failed to connect to Docker daemon: %w", err)
+				return fmt.Errorf("failed to connect to Docker daemon: %w", err)
 			}
 
 			containerInfo, err := cli.ContainerInspect(context.Background(), containerID)
 			if err != nil {
-				return fmt.Errorf("Failed to inspect container %s: %v", containerID, err)
+				return fmt.Errorf("failed to inspect container %s: %v", containerID, err)
 			}
 
 			fmt.Printf("Container Environment Variables for %s (%s):\n", containerInfo.Name, util.ShortID(containerID))

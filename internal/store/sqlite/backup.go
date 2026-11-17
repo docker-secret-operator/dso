@@ -158,7 +158,7 @@ var syncBackupDir = func(dir string) error {
 	if err != nil {
 		return fmt.Errorf("opening backup directory %s to sync: %w", dir, err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	if err := d.Sync(); err != nil {
 		return fmt.Errorf("syncing backup directory %s: %w", dir, err)
 	}

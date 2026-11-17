@@ -731,7 +731,7 @@ func TestKey_NoMaterialInAnyFormattedOutput(t *testing.T) {
 	forbidden := []string{
 		hex.EncodeToString(key), strings.ToUpper(hex.EncodeToString(key)),
 		base64.StdEncoding.EncodeToString(key), base64.RawURLEncoding.EncodeToString(key),
-		base64.URLEncoding.EncodeToString(key), string(key), fmt.Sprint(key), fmt.Sprintf("%v", [HMACKeySize]byte(key)),
+		base64.URLEncoding.EncodeToString(key), string(key), fmt.Sprintf("%v", key), fmt.Sprintf("%v", [HMACKeySize]byte(key)),
 		strings.Join(strings.Fields(strings.Trim(fmt.Sprintf("%d", key), "[]")), ","),
 	}
 	check := func(label, s string) {

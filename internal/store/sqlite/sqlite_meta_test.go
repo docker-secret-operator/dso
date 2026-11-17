@@ -43,7 +43,7 @@ func TestMeta_PutIfAbsentIsAllOrNothing(t *testing.T) {
 
 func TestMeta_RowsAreImmutableThroughTheDatabase(t *testing.T) {
 	s, _ := open(t)
-	s.PutMetaIfAbsent(ctx, []store.MetaEntry{{Key: "k", Value: []byte("v")}})
+	_, _ = s.PutMetaIfAbsent(ctx, []store.MetaEntry{{Key: "k", Value: []byte("v")}})
 	if _, err := s.db.Exec(`UPDATE store_meta SET value = x'00' WHERE key = 'k'`); err == nil {
 		t.Fatal("metadata updated")
 	}
@@ -66,7 +66,7 @@ func TestMeta_ConcurrentInitialisersHaveExactlyOneWinner(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			defer h.Close()
+			defer func() { _ = h.Close() }()
 			ok, err := h.PutMetaIfAbsent(ctx, []store.MetaEntry{{Key: "binding.x", Value: []byte{byte(i)}}, {Key: "binding.y", Value: []byte{byte(i)}}})
 			if err != nil {
 				t.Error(err)

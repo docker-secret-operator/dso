@@ -114,7 +114,7 @@ func rpHotJournal(t *testing.T) (dbPath string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cp.Close()
+	defer func() { _ = cp.Close() }()
 	var name string
 	if err := cp.QueryRow(`SELECT name FROM projects`).Scan(&name); err != nil || name == "mutated-by-the-crashed-transaction" {
 		t.Fatalf("fixture is not a hot journal: SQLite did not roll the transaction back (%q, %v)", name, err)
@@ -1027,7 +1027,7 @@ func rpJournalIsHotFor(t *testing.T, path string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	var n int
 	_ = db.QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&n) // forces recovery; the result is irrelevant

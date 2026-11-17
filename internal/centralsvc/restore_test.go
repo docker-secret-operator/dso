@@ -383,7 +383,7 @@ func TestReplaceDatabaseFile_OrderingAndFailureLeavesOldMainInPlace(t *testing.T
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	err := replaceWithDisplacement(lock, db, filepath.Join(dir, "missing-candidate"))
 	if err == nil {
 		t.Fatal("expected failure for a missing candidate")
@@ -466,7 +466,7 @@ func TestRestore_StaleWALAndSHMDoNotCorruptRestoredDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restored database with stale WAL/SHM present did not reopen cleanly: %v", err)
 	}
-	restored.Close()
+	_ = restored.Close()
 }
 
 // TestRestore_UnsafeDestinationDirectoryRejectedWithNoActiveDatabase is a
@@ -481,7 +481,7 @@ func TestRestore_UnsafeDestinationDirectoryRejectedWithNoActiveDatabase(t *testi
 	e := setup(t)
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
-	e.st.Close()
+	_ = e.st.Close()
 	if err := os.Remove(e.dbPath); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestRestore_NoActiveDatabaseYetSkipsSnapshotAndStillWorks(t *testing.T) {
 	e := setup(t)
 	e.project(t, "proj", "prod")
 	cand := backupActive(t, e, "cand.db")
-	e.st.Close()
+	_ = e.st.Close()
 	if err := os.Remove(e.dbPath); err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func TestRestore_AuditEventAppendFailureAfterActivation_StillSucceeds(t *testing
 	if openErr != nil {
 		t.Fatalf("expected the active database to be usable: %v", openErr)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	if _, getErr := restored.GetProjectBySlug(ctx, "proj"); getErr != nil {
 		t.Fatalf("expected the restored project to be present and readable: %v", getErr)
 	}
@@ -664,7 +664,7 @@ func TestRestore_ReplacementFailureBeforeActivation_LeavesActiveDatabaseUsable(t
 	if openErr != nil {
 		t.Fatalf("expected the untouched active database to still open cleanly: %v", openErr)
 	}
-	defer active.Close()
+	defer func() { _ = active.Close() }()
 	if _, getErr := active.GetProjectBySlug(ctx, "proj"); getErr != nil {
 		t.Fatalf("expected the original project to still be present: %v", getErr)
 	}
@@ -674,7 +674,7 @@ func TestRestore_ReplacementFailureBeforeActivation_LeavesActiveDatabaseUsable(t
 	if openErr != nil {
 		t.Fatalf("expected the reported safety snapshot to open cleanly as a recovery artifact: %v", openErr)
 	}
-	defer snap.Close()
+	defer func() { _ = snap.Close() }()
 	if _, getErr := snap.GetProjectBySlug(ctx, "proj"); getErr != nil {
 		t.Fatalf("expected the safety snapshot to contain the pre-restore data: %v", getErr)
 	}
@@ -741,7 +741,7 @@ func TestRestore_ReopenFailureAfterReplacement_DoesNotPromiseAutomaticRecovery(t
 	if openErr != nil {
 		t.Fatalf("expected the safety snapshot to be usable for manual recovery: %v", openErr)
 	}
-	snap.Close()
+	_ = snap.Close()
 }
 
 func TestRestore_FailedKeyValidationLeavesActiveDatabaseUntouched(t *testing.T) {
@@ -802,7 +802,7 @@ func makeWALCandidate(t *testing.T, e *env) string {
 		t.Fatal(err)
 	}
 	raw.SetMaxOpenConns(1)
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	if _, err := raw.Exec(`CREATE TABLE wal_marker (v TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -831,7 +831,7 @@ func markerCount(t *testing.T, path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM wal_marker`).Scan(&n); err != nil {
 		return 0, err
@@ -979,13 +979,13 @@ func TestRestore_IncompleteCheckpointAbortsBeforeSidecarsOrMainFileTouched(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	reader.SetMaxOpenConns(1)
 	tx, err := reader.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var n int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&n); err != nil {
 		t.Fatal(err)

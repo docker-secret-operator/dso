@@ -141,7 +141,7 @@ func (r *redactor) walk(n *yaml.Node, t reflect.Type, inFlow bool) {
 	if n == nil {
 		return
 	}
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	flow := inFlow || n.Style&yaml.FlowStyle != 0
@@ -337,7 +337,7 @@ func yamlFields(t reflect.Type) map[string]reflect.StructField {
 		}
 		if strings.Contains(opts, "inline") {
 			ft := f.Type
-			for ft.Kind() == reflect.Ptr {
+			for ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {

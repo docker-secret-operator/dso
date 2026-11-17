@@ -32,7 +32,7 @@ Arguments are forwarded unchanged; DSO does not add or imply any of them.`,
 			// Reject characters that could lead to command substitution or piping
 			for _, arg := range args {
 				if strings.ContainsAny(arg, ";&|$`\"") {
-					return fmt.Errorf("Invalid character in arguments: %s", arg)
+					return fmt.Errorf("invalid character in arguments: %s", arg)
 				}
 			}
 

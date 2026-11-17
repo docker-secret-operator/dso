@@ -30,7 +30,6 @@ func stripIfNoColor(s string) string {
 
 func cprintf(format string, a ...any) { fmt.Print(stripIfNoColor(fmt.Sprintf(format, a...))) }
 func cprintln(a ...any)               { fmt.Println(stripIfNoColor(fmt.Sprint(a...))) }
-func cprint(a ...any)                 { fmt.Print(stripIfNoColor(fmt.Sprint(a...))) }
 
 // cfgFileExplicit records whether -c/--config was actually passed on the
 // command line, set from cmd.Flags().Changed("config") in NewRootCmd's
@@ -235,7 +234,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	rootCmd.SetErr(stderr)
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
+		_, _ = fmt.Fprintln(stderr, "Error:", err)
 		return exitCodeFor(err)
 	}
 	return 0

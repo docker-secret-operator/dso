@@ -157,16 +157,11 @@ func traced(t *testing.T) (ts *Store, plain *Store, log *traceLog) {
 	log = &traceLog{}
 	db := sql.OpenDB(&traceConnector{dsn: dsn, log: log})
 	db.SetMaxOpenConns(8)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return &Store{db: db, now: plain.now}, plain, log
 }
 
 // ---- helpers --------------------------------------------------------------------------------
-
-func isRead(q string) bool {
-	u := strings.ToUpper(strings.TrimSpace(q))
-	return strings.HasPrefix(u, "SELECT")
-}
 
 // expectShape runs call and asserts the exact number of statements and that no
 // transaction was begun (autocommit), returning the error of call.

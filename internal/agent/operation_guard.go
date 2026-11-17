@@ -75,7 +75,7 @@ func (st *StateTracker) unresolvedFor(keys []string) *RotationState {
 	defer st.mu.RUnlock()
 	for _, k := range st.sortedKeys() {
 		r := st.states[k]
-		if r.Status != "critical_error" && !(r.Status == "in_progress" && st.inherited[k]) {
+		if r.Status != "critical_error" && (r.Status != "in_progress" || !st.inherited[k]) {
 			continue
 		}
 		if matchesRecord(r, keys) {

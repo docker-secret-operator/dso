@@ -400,14 +400,14 @@ func newConfigPathCmd() *cobra.Command {
 				enc.SetIndent("", "  ")
 				return enc.Encode(rep)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), rep.Path)
-			fmt.Fprintf(cmd.ErrOrStderr(), "source: %s", rep.Source)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), rep.Path)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "source: %s", rep.Source)
 			if !rep.Exists {
-				fmt.Fprint(cmd.ErrOrStderr(), " (file does not exist)")
+				_, _ = fmt.Fprint(cmd.ErrOrStderr(), " (file does not exist)")
 			}
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			for _, p := range rep.Shadowed {
-				fmt.Fprintf(cmd.ErrOrStderr(), "ignored (lower priority): %s  -- pass -c %s to use it\n", p, p)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ignored (lower priority): %s  -- pass -c %s to use it\n", p, p)
 			}
 			return nil
 		},

@@ -109,7 +109,7 @@ func TestCharacterize_GhostConnection_WALCloseByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh.SetMaxOpenConns(1)
-	defer fresh.Close()
+	defer func() { _ = fresh.Close() }()
 	if _, err := fresh.Exec(`CREATE TABLE n(a)`); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestCharacterize_GhostConnection_WALCloseByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	second.SetMaxOpenConns(1)
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	var viaSecond int
 	secondErr := second.QueryRow(`SELECT count(*) FROM n`).Scan(&viaSecond)
 

@@ -239,7 +239,7 @@ func (in *inspector) attempt(abs string, probe func(Querier) error) (res Inspect
 	if err != nil {
 		return InspectionResult{}, false, fmt.Errorf("database file is not safe to use: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {
@@ -354,7 +354,7 @@ func (in *inspector) runProbe(dsn string, probe func(Querier) error) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {

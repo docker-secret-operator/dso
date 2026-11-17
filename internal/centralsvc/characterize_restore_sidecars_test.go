@@ -37,7 +37,7 @@ func chLiveWAL(t *testing.T, src string) string {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	// A header-only change: it commits a WAL frame without touching any table, so
 	// the database's classification and structure are unaffected.
 	if _, err := db.Exec(`PRAGMA user_version = 7`); err != nil {

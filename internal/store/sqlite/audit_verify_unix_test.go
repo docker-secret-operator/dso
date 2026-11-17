@@ -181,10 +181,10 @@ func TestStagingSignalHelperProcess(t *testing.T) {
 	defer stop()
 	st, err := StageCandidate(context.Background(), path)
 	if err != nil {
-		os.Stdout.WriteString("ERROR " + err.Error() + "\n")
+		_, _ = os.Stdout.WriteString("ERROR " + err.Error() + "\n")
 		return
 	}
-	os.Stdout.WriteString("STAGED " + filepath.Dir(st.Path) + "\n")
+	_, _ = os.Stdout.WriteString("STAGED " + filepath.Dir(st.Path) + "\n")
 	select {} // wait to be signalled
 }
 

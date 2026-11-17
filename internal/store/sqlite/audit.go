@@ -154,7 +154,7 @@ func (o ops) ListAuditEvents(ctx context.Context) ([]store.AuditEvent, error) {
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.AuditEvent
 	for rows.Next() {
 		var ev store.AuditEvent

@@ -33,8 +33,8 @@ func restServerWithSecret(name string) *RESTServer {
 
 func TestHandleSecretRotate_UnauthenticatedRejected(t *testing.T) {
 	server := restServerWithSecret("db_password")
-	os.Setenv("DSO_AUTH_TOKEN", "secret-token")
-	defer os.Unsetenv("DSO_AUTH_TOKEN")
+	_ = os.Setenv("DSO_AUTH_TOKEN", "secret-token")
+	defer func() { _ = os.Unsetenv("DSO_AUTH_TOKEN") }()
 	server.Auth = auth.NewAuthenticator()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/secrets/db_password/rotate", nil)
@@ -168,8 +168,8 @@ func TestHandleSecretRotate_AuditEventRecorded(t *testing.T) {
 
 func TestHandleNotificationsTest_UnauthenticatedRejected(t *testing.T) {
 	server := createTestRESTServer()
-	os.Setenv("DSO_AUTH_TOKEN", "secret-token")
-	defer os.Unsetenv("DSO_AUTH_TOKEN")
+	_ = os.Setenv("DSO_AUTH_TOKEN", "secret-token")
+	defer func() { _ = os.Unsetenv("DSO_AUTH_TOKEN") }()
 	server.Auth = auth.NewAuthenticator()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/integrations/notifications/test", nil)

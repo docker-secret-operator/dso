@@ -132,8 +132,8 @@ func TestCheckDirChain_Symlinks(t *testing.T) {
 	}
 	// Loop.
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
-	os.Symlink(b, a)
-	os.Symlink(a, b)
+	_ = os.Symlink(b, a)
+	_ = os.Symlink(a, b)
 	wantErr(t, CheckDirChain(a), "too many symbolic links")
 }
 
@@ -153,7 +153,7 @@ func TestOpenPrivateFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("mode %04o: %v", m, err)
 		}
-		f.Close()
+		_ = f.Close()
 	}
 	for _, m := range []os.FileMode{0o640, 0o644, 0o604, 0o660, 0o666, 0o440} {
 		_, err := OpenPrivateFile(writeFile(t, d, "bad", m))
@@ -186,7 +186,7 @@ func TestOpenPrivateFile_ReplacementAfterSetupIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	// The directory later becomes writable by others (misconfiguration or an
 	// attacker with the right to chmod): the very next open must refuse.
 	if err := os.Chmod(d, 0o777); err != nil {
@@ -217,7 +217,7 @@ func TestOpenPrivateFile_ForeignOwnerFileIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	wantErr(t, CheckOpenFile(f, p), "not owned by the current user")
 }
 

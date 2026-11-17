@@ -338,7 +338,7 @@ func NewAgentCmd() *cobra.Command {
 			if runErr != nil {
 				return runErr
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "DSO Agent stopped.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "DSO Agent stopped.")
 			return nil
 		},
 	}

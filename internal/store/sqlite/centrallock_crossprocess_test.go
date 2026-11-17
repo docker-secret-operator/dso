@@ -334,7 +334,7 @@ func TestCentralLock_TwoSharedHoldersAcrossRealProcesses_BothSucceed(t *testing.
 	if err != nil {
 		t.Fatalf("a second, independent-process shared holder must be compatible with the first: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 }
 
 func TestCentralLock_ExclusiveHelperBlocksSharedAcquisitionThenSucceedsAfterRelease(t *testing.T) {
@@ -369,7 +369,7 @@ func TestCentralLock_ExclusiveHelperBlocksSharedAcquisitionThenSucceedsAfterRele
 	if err != nil {
 		t.Fatalf("expected the shared lock to succeed once the exclusive holder released: %v", err)
 	}
-	l.Close()
+	_ = l.Close()
 }
 
 // TestCentralLock_ExclusiveHelperCleanup_ReleaseFileWriteFailure_KillsAndReapsHelper
@@ -492,7 +492,7 @@ func TestCentralLock_SharedAcquisitionSucceedsAfterExclusiveHelperIsKilled(t *te
 	if err != nil {
 		t.Fatalf("expected the shared lock to become available after the exclusive holder was killed, got: %v", err)
 	}
-	l.Close()
+	_ = l.Close()
 }
 
 // --- Lock contention and timeout: the busy error must appear within roughly the configured timeout, not hang forever ---
@@ -582,7 +582,7 @@ func TestCentralLock_SymlinkedPathToSameDatabaseSharesTheLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	_, err = AcquireExclusiveCentralLock(db, 300*time.Millisecond)
 	if err == nil {

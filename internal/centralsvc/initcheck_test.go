@@ -448,7 +448,7 @@ func TestCheckInitialized_LegacySchema1WithProject_IsAdoptable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if _, err := New(st, otherKey(t), nil).ListProjects(ctx); !errors.Is(err, ErrWrongRootKey) {
 		t.Fatalf("Bind must refuse a foreign key: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestCheckInitialized_InspectionErrorMapping(t *testing.T) {
 		}
 	}
 	t.Run("inspection-failed-is-inconclusive", func(t *testing.T) {
-		wantInconclusive(t, checkInitializedWith(failed(nil), "/x/c.db"))
+		_ = wantInconclusive(t, checkInitializedWith(failed(nil), "/x/c.db"))
 	})
 	t.Run("securefs-style-error-passes-through-identically", func(t *testing.T) {
 		sentinel := errors.New("securefs: /x/c.db is a symbolic link; refusing to follow it")
@@ -788,13 +788,13 @@ func TestCheckInitialized_NegativeWithWALPresent_NeverNotInitialized(t *testing.
 			if err != nil {
 				return sqlite.InspectionResult{}, err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			db.SetMaxOpenConns(1)
 			tx, err := db.Begin()
 			if err != nil {
 				return sqlite.InspectionResult{}, err
 			}
-			defer tx.Rollback()
+			defer func() { _ = tx.Rollback() }()
 			if err := probe(tx); err != nil {
 				return sqlite.InspectionResult{}, fmt.Errorf("%w: %w", sqlite.ErrInspectionFailed, err)
 			}
@@ -815,7 +815,7 @@ func TestCheckInitialized_NegativeWithWALPresent_NeverNotInitialized(t *testing.
 		t.Run(name, func(t *testing.T) {
 			err := checkInitializedWith(emptyProbe(c.res), "/x/c.db")
 			if c.inconcl {
-				wantInconclusive(t, err)
+				_ = wantInconclusive(t, err)
 				return
 			}
 			ni := wantNotInit(t, err)
@@ -869,7 +869,7 @@ func TestDSOTables_MatchAFreshlyMigratedDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table'`)
 	if err != nil {
 		t.Fatal(err)
@@ -882,7 +882,7 @@ func TestDSOTables_MatchAFreshlyMigratedDatabase(t *testing.T) {
 		}
 		got = append(got, n)
 	}
-	rows.Close()
+	_ = rows.Close()
 	want := append(append([]string{}, dsoTables...), sqliteSequenceTable)
 	sort.Strings(got)
 	sort.Strings(want)
@@ -958,7 +958,7 @@ func TestCheckInitialized_DiscardedGoodAttempt_DoesNotContaminateTheFailedWinner
 	icEdit(t, broken.dbPath, `DROP TABLE store_meta`, `CREATE TABLE store_meta(x)`)
 	// attempt 1 read a complete binding; attempt 2 (the winner) fails to read.
 	err := checkInitializedWith(icAttempts(t, good.dbPath, broken.dbPath), "/x/c.db")
-	wantInconclusive(t, err) // not nil: the discarded attempt's evidence must not stand in
+	_ = wantInconclusive(t, err) // not nil: the discarded attempt's evidence must not stand in
 }
 
 func TestCheckInitialized_FailedAttemptThenNegative_ReportsOnlyTheWinner(t *testing.T) {
@@ -1014,7 +1014,7 @@ func TestLeaveToInspection_RealDriverErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	_, qerr := db.Query(`SELECT * FROM no_such_table`)
 	if qerr == nil || leaveToInspection(qerr) {
 		t.Fatalf("a real 'no such table' error must be captured by the probe: %v", qerr)
@@ -1026,7 +1026,7 @@ func TestLeaveToInspection_RealDriverErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetMaxOpenConns(1)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	if _, err := w.Exec(`PRAGMA locking_mode=EXCLUSIVE`); err != nil {
 		t.Fatal(err)
 	}
@@ -1037,7 +1037,7 @@ func TestLeaveToInspection_RealDriverErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	_, berr := r.Query(`SELECT count(*) FROM store_meta`)
 	if berr == nil || !leaveToInspection(berr) {
 		t.Fatalf("a real busy error must be left to InspectDatabase's retry: %v", berr)

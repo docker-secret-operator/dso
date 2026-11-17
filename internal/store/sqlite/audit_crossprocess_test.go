@@ -49,7 +49,7 @@ func TestHelperProcessAuditAppender(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "audit helper: open:", err)
 		os.Exit(2)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := os.WriteFile(filepath.Join(syncDir, "ready-"+idx), []byte("ready"), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, "audit helper: signalling ready:", err)
 		os.Exit(2)

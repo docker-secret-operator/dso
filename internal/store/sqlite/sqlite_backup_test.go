@@ -26,8 +26,8 @@ func TestMigrationBackup_EveryAttemptGetsAFreshCompleteSnapshot(t *testing.T) {
 	path := filepath.Join(securefstest.TempDir(t), "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("early", "EARLY"))
-	s.Close()
+	_ = s.CreateSecret(ctx, newSecret("early", "EARLY"))
+	_ = s.Close()
 
 	// attempt 1 fails -> snapshot A taken before the failing change
 	if _, err := Open(ctx, path, Options{Migrations: v2(`INSERT INTO no_such_table VALUES (1)`)}); err == nil {
@@ -44,8 +44,8 @@ func TestMigrationBackup_EveryAttemptGetsAFreshCompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.CreateSecret(ctx, newSecret("late", "LATE"))
-	s.Close()
+	_ = s.CreateSecret(ctx, newSecret("late", "LATE"))
+	_ = s.Close()
 
 	// attempt 2 succeeds -> must take snapshot B that includes LATE
 	s, err = Open(ctx, path, Options{Migrations: v2(`ALTER TABLE projects ADD COLUMN x TEXT`)})
@@ -53,7 +53,7 @@ func TestMigrationBackup_EveryAttemptGetsAFreshCompleteSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapB := s.LastMigrationBackup()
-	s.Close()
+	_ = s.Close()
 	if snapB == "" || snapB == snapA {
 		t.Fatalf("second migration reused backup %q", snapA)
 	}
@@ -66,7 +66,7 @@ func TestMigrationBackup_EveryAttemptGetsAFreshCompleteSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("backup %s unusable: %v", bak, err)
 		}
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 		_, err = b.GetSecret(ctx, "e1", name)
 		return err == nil
 	}
@@ -82,12 +82,12 @@ func TestMigrationBackup_IsPrivateCompleteAndMadeBeforeSchemaChange(t *testing.T
 	path := filepath.Join(securefstest.TempDir(t), "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.Close()
+	_ = s.Close()
 	s, err := Open(ctx, path, Options{Migrations: v2(`ALTER TABLE projects ADD COLUMN x TEXT`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	bak := s.LastMigrationBackup()
 	fi, err := os.Stat(bak)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestMigrationBackup_IsPrivateCompleteAndMadeBeforeSchemaChange(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	if v, _ := b.SchemaVersion(ctx); v != curV {
 		t.Fatalf("backup schema %d, want the pre-migration 1", v)
 	}
@@ -120,15 +120,15 @@ func TestMigrationBackup_RestoreThenMigrateAgain(t *testing.T) {
 	path := filepath.Join(dir, "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
-	s.Close()
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.Close()
 	good := v2(`ALTER TABLE projects ADD COLUMN x TEXT`)
 	s, err := Open(ctx, path, Options{Migrations: good})
 	if err != nil {
 		t.Fatal(err)
 	}
 	bak := s.LastMigrationBackup()
-	s.Close()
+	_ = s.Close()
 
 	data, err := os.ReadFile(bak)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestMigrationBackup_RestoreThenMigrateAgain(t *testing.T) {
 	}
 	// operator restores: remove db + WAL companions, install the snapshot (0600)
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		os.Remove(p)
+		_ = os.Remove(p)
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -151,12 +151,12 @@ func TestMigrationBackup_RestoreThenMigrateAgain(t *testing.T) {
 	if _, err := s.GetSecret(ctx, "e1", "A"); err != nil {
 		t.Fatalf("restored data missing: %v", err)
 	}
-	s.Close()
+	_ = s.Close()
 	s, err = Open(ctx, path, Options{Migrations: good}) // and it migrates again
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if v, _ := s.SchemaVersion(ctx); v != curV+1 {
 		t.Fatalf("re-migrated schema %d", v)
 	}
@@ -171,7 +171,7 @@ func TestMigrationBackup_FreshDatabaseNeedsNoBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if s.LastMigrationBackup() != "" || len(backups(t, path)) != 0 {
 		t.Fatal("a brand-new database should not produce a backup")
 	}
@@ -182,12 +182,12 @@ func TestMigrationBackup_FailureToBackUpPreventsMigration(t *testing.T) {
 	path := filepath.Join(dir, "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.Close()
+	_ = s.Close()
 	// Make the directory read-only so the snapshot file cannot be created.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0o700)
+	defer func() { _ = os.Chmod(dir, 0o700) }()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -195,12 +195,12 @@ func TestMigrationBackup_FailureToBackUpPreventsMigration(t *testing.T) {
 	if err == nil {
 		t.Fatal("migration proceeded without a backup")
 	}
-	os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700)
 	s2, err := Open(ctx, path, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if v, _ := s2.SchemaVersion(ctx); v != curV {
 		t.Fatalf("schema changed to %d despite the missing backup", v)
 	}

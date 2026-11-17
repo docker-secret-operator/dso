@@ -65,7 +65,7 @@ func tamperAudit(t *testing.T, db string, stmts ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	for _, q := range append([]string{`DROP TRIGGER audit_events_no_update`}, stmts...) {
 		if _, err := raw.Exec(q); err != nil {
 			t.Fatalf("%s: %v", q, err)

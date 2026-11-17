@@ -612,7 +612,7 @@ func (d *displacer) verifyPrepared(r *Replacement) error {
 		}
 		return bad("%s could not be opened securely, so it was not verified: %v", r.path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return bad("%s could not be examined: %v", r.path, err)
@@ -697,7 +697,7 @@ func (d *displacer) prepare(dbPath, candidatePath string) (*Replacement, error) 
 	if err != nil {
 		return nil, fmt.Errorf("opening restore candidate: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := d.createFile(tmp, 0o600)
 	if err != nil {
@@ -782,7 +782,7 @@ func (bl *baseliner) file(path string, private bool) (baselineFile, error) {
 		}
 		return baselineFile{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi1, err := f.Stat()
 	if err != nil {
 		return baselineFile{}, err
@@ -1429,7 +1429,7 @@ func (d *displacer) verifyInstalled(dbPath string, repl *Replacement) (*installe
 		}
 		return bad(InstalledUnreadable, "the installed file could not be opened: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return bad(InstalledUnreadable, "the installed file could not be examined: %v", err)

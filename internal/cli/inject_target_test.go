@@ -91,11 +91,11 @@ func TestInject_DefaultMountIsTmpfsDirectory(t *testing.T) {
 }
 
 func TestInject_RejectsUnsafeDestinationBeforeAnyDockerCall(t *testing.T) {
-	err, _, _ := runInject(t, "", "--container", "x", "--secret", "a/b", "--value", "v")
+	_, _, err := runInject(t, "", "--container", "x", "--secret", "a/b", "--value", "v")
 	if err == nil || !strings.Contains(err.Error(), "plain file name") {
 		t.Fatalf("got %v", err)
 	}
-	err, _, _ = runInject(t, "", "--container", "x", "--secret", "k", "--mount", "/run/../etc", "--value", "v")
+	_, _, err = runInject(t, "", "--container", "x", "--secret", "k", "--mount", "/run/../etc", "--value", "v")
 	if err == nil || !strings.Contains(err.Error(), "invalid --mount") {
 		t.Fatalf("got %v", err)
 	}

@@ -36,7 +36,7 @@ func TestSharedLock_CreatesSidecarIfAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	if _, err := os.Stat(sidecar); err != nil {
 		t.Fatalf("acquiring the shared lock must create the sidecar: %v", err)
 	}
@@ -48,12 +48,12 @@ func TestSharedLock_TwoSharedHolders_BothSucceed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l1.Close()
+	defer func() { _ = l1.Close() }()
 	l2, err := AcquireSharedCentralLock(db, time.Second)
 	if err != nil {
 		t.Fatalf("a second shared holder must be compatible with the first: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 }
 
 func TestSharedLock_ConcurrentExclusiveHolder_TimesOutBusy(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSharedLock_ConcurrentExclusiveHolder_TimesOutBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer excl.Close()
+	defer func() { _ = excl.Close() }()
 
 	_, err = AcquireSharedCentralLock(db, 150*time.Millisecond)
 	if !errors.Is(err, ErrCentralLockBusy) {
@@ -87,7 +87,7 @@ func TestSharedLock_LockFailure_NeverLeavesAPartialLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the shared lock to succeed once the exclusive holder released: %v", err)
 	}
-	l.Close()
+	_ = l.Close()
 }
 
 func TestSharedLock_SidecarIsSymlink_IsRefused(t *testing.T) {

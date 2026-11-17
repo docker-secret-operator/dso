@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -72,14 +71,14 @@ The audit file is best effort, not a guaranteed or fail-closed audit trail.`,
 			}
 			switch doc.Status {
 			case "verified":
-				fmt.Fprintf(out, "Audit file: VERIFIED (%d records)\n", *doc.RecordCount)
-				fmt.Fprintln(out, "Note: the chain is unkeyed. This does not prove authenticity, and cannot detect deleted newest records, rollback to an older valid copy, or events lost while persistence was unavailable.")
+				_, _ = fmt.Fprintf(out, "Audit file: VERIFIED (%d records)\n", *doc.RecordCount)
+				_, _ = fmt.Fprintln(out, "Note: the chain is unkeyed. This does not prove authenticity, and cannot detect deleted newest records, rollback to an older valid copy, or events lost while persistence was unavailable.")
 			case "integrity_failure":
-				fmt.Fprintln(out, "Audit file: INTEGRITY FAILURE")
-				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(doc.Reason))
+				_, _ = fmt.Fprintln(out, "Audit file: INTEGRITY FAILURE")
+				_, _ = fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(doc.Reason))
 			default:
-				fmt.Fprintln(out, "Audit file: VERIFICATION UNAVAILABLE (this is not evidence of tampering)")
-				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(doc.Reason))
+				_, _ = fmt.Fprintln(out, "Audit file: VERIFICATION UNAVAILABLE (this is not evidence of tampering)")
+				_, _ = fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(doc.Reason))
 			}
 			return failure
 		},
@@ -121,13 +120,13 @@ of authenticity or completeness (see ` + "`dso audit verify --help`" + `).`,
 			if err != nil {
 				return &exitCodeError{exitAuditUnavailable, fmt.Errorf("audit file changed during export: %s", printableUntrusted(err.Error()))}
 			}
-			var w io.Writer = cmd.OutOrStdout()
+			var w = cmd.OutOrStdout()
 			if expOut != "" {
 				f, err := os.OpenFile(expOut, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- operator-chosen output path, never overwritten
 				if err != nil {
 					return fmt.Errorf("cannot create output file: %w", err)
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				w = f
 			}
 			enc := json.NewEncoder(w)

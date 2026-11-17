@@ -29,7 +29,7 @@ func open(t *testing.T) (*Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s, path
 }
 
@@ -64,17 +64,17 @@ func TestSchemaInitialisation(t *testing.T) {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	var mode string
-	s.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
+	_ = s.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
 	if mode != "wal" {
 		t.Fatalf("journal_mode %s", mode)
 	}
 	var fk int
-	s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
+	_ = s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
 	if fk != 1 {
 		t.Fatal("foreign keys off")
 	}
 	var sync int
-	s.db.QueryRow(`PRAGMA synchronous`).Scan(&sync)
+	_ = s.db.QueryRow(`PRAGMA synchronous`).Scan(&sync)
 	if sync != 2 { // FULL
 		t.Fatalf("synchronous=%d, want FULL(2)", sync)
 	}
@@ -103,13 +103,13 @@ func TestSchemaInitialisation(t *testing.T) {
 func TestOpenRefusesInsecureOrInvalidFiles(t *testing.T) {
 	d := securefstest.TempDir(t)
 	loose := filepath.Join(d, "loose.db")
-	os.WriteFile(loose, nil, 0o644)
-	os.Chmod(loose, 0o644)
+	_ = os.WriteFile(loose, nil, 0o644)
+	_ = os.Chmod(loose, 0o644)
 	if _, err := Open(ctx, loose, Options{}); err == nil || !strings.Contains(err.Error(), "chmod 600") {
 		t.Fatalf("world-readable db accepted: %v", err)
 	}
 	garbage := filepath.Join(d, "garbage.db")
-	os.WriteFile(garbage, []byte(strings.Repeat("this is not a database ", 100)), 0o600)
+	_ = os.WriteFile(garbage, []byte(strings.Repeat("this is not a database ", 100)), 0o600)
 	if _, err := Open(ctx, garbage, Options{}); err == nil {
 		t.Fatal("garbage file accepted")
 	}
@@ -117,7 +117,7 @@ func TestOpenRefusesInsecureOrInvalidFiles(t *testing.T) {
 		t.Fatal("directory accepted as database")
 	}
 	sym := filepath.Join(d, "sym.db")
-	os.Symlink(garbage, sym)
+	_ = os.Symlink(garbage, sym)
 	if _, err := Open(ctx, sym, Options{}); err == nil {
 		t.Fatal("symlink accepted")
 	}
@@ -130,13 +130,13 @@ func TestPathCannotInjectDSNOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	seed(t, s) // would fail on a read-only or FK-disabled-misparsed open
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("database not created at the literal path: %v", err)
 	}
 	var fk int
-	s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
+	_ = s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
 	if fk != 1 {
 		t.Fatal("path injected a pragma")
 	}
@@ -158,7 +158,7 @@ func TestRestartPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	m, err := s2.GetSecret(ctx, "e1", "A")
 	if err != nil || m.LatestVersion != 2 || m.VersionCount != 2 {
 		t.Fatalf("after restart: %+v %v", m, err)
@@ -180,13 +180,13 @@ func TestCrashRecoveryUncheckpointedWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
-	s.db.Close() // closes connections but skips our checkpoint
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.db.Close() // closes connections but skips our checkpoint
 	s2, err := Open(ctx, path, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if _, err := s2.GetSecret(ctx, "e1", "A"); err != nil {
 		t.Fatalf("committed data lost: %v", err)
 	}
@@ -198,8 +198,8 @@ func TestMigrationUpgradePreservesDataAndBacksUp(t *testing.T) {
 	path := filepath.Join(securefstest.TempDir(t), "m.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
-	s.Close()
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.Close()
 
 	embedded, _ := EmbeddedMigrations()
 	more := append(append([]Migration{}, embedded...), Migration{Version: curV + 1, SQL: `ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT ''`})
@@ -207,7 +207,7 @@ func TestMigrationUpgradePreservesDataAndBacksUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if v, _ := s2.SchemaVersion(ctx); v != curV+1 {
 		t.Fatalf("version %d", v)
 	}
@@ -229,7 +229,7 @@ func TestMigrationUpgradePreservesDataAndBacksUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup unusable: %v", err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	if v, _ := b.SchemaVersion(ctx); v != curV {
 		t.Fatalf("backup should be at the old schema, got %d", v)
 	}
@@ -239,7 +239,7 @@ func TestFailedMigrationRollsBackCompletely(t *testing.T) {
 	path := filepath.Join(securefstest.TempDir(t), "f.db")
 	s, _ := Open(ctx, path, Options{})
 	seed(t, s)
-	s.Close()
+	_ = s.Close()
 	embedded, _ := EmbeddedMigrations()
 	bad := append(append([]Migration{}, embedded...), Migration{Version: curV + 1, SQL: `
 		ALTER TABLE projects ADD COLUMN half_applied TEXT;
@@ -251,7 +251,7 @@ func TestFailedMigrationRollsBackCompletely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if v, _ := s2.SchemaVersion(ctx); v != curV {
 		t.Fatalf("version advanced to %d after failed migration", v)
 	}
@@ -271,7 +271,7 @@ func TestNewerSchemaIsRefusedAndUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	_ = s.Close()
 	_, err = Open(ctx, path, Options{}) // "old binary"
 	if !errors.Is(err, store.ErrSchemaTooNew) {
 		t.Fatalf("expected ErrSchemaTooNew, got %v", err)
@@ -331,7 +331,7 @@ func TestUniquenessAndForeignKeys(t *testing.T) {
 		t.Fatalf("duplicate live name: %v", err)
 	}
 	// a secret naming an environment that belongs to a different project is rejected by the composite FK
-	s.CreateProject(ctx, store.Project{ID: "p2", Slug: "other", WrappedDEK: []byte("w"), DEKKeyID: "k"})
+	_ = s.CreateProject(ctx, store.Project{ID: "p2", Slug: "other", WrappedDEK: []byte("w"), DEKKeyID: "k"})
 	cross := newSecret("s3", "B")
 	cross.ProjectID = "p2"
 	if err := s.CreateSecret(ctx, cross); err == nil {
@@ -367,7 +367,7 @@ func TestUniquenessAndForeignKeys(t *testing.T) {
 func TestSoftDeleteFreesNameAndKeepsVersions(t *testing.T) {
 	s, _ := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	if err := s.DeleteSecret(ctx, "s1", "bob"); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestSoftDeleteFreesNameAndKeepsVersions(t *testing.T) {
 		t.Fatalf("version added to deleted secret: %v", err)
 	}
 	var n int
-	s.db.QueryRow(`SELECT COUNT(*) FROM secret_versions WHERE secret_id='s1'`).Scan(&n)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM secret_versions WHERE secret_id='s1'`).Scan(&n)
 	if n != 1 {
 		t.Fatal("versions not retained after soft delete")
 	}
@@ -401,7 +401,7 @@ func TestSoftDeleteFreesNameAndKeepsVersions(t *testing.T) {
 func TestVersionImmutabilityEnforcedByDatabase(t *testing.T) {
 	s, _ := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	for _, stmt := range []string{
 		`UPDATE secret_versions SET ciphertext = x'00' WHERE secret_id='s1'`,
 		`UPDATE secret_versions SET nonce = x'000000000000000000000001' WHERE secret_id='s1'`,
@@ -442,7 +442,7 @@ func TestVersionImmutabilityEnforcedByDatabase(t *testing.T) {
 func TestVersionRetrievalAndDisable(t *testing.T) {
 	s, _ := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	for i := 2; i <= 3; i++ {
 		v, err := s.AddVersion(ctx, "s1", "t", "c"+strconv.Itoa(i), sealN("a"))
 		if err != nil || v != i {
@@ -472,8 +472,8 @@ func TestVersionRetrievalAndDisable(t *testing.T) {
 	if m, _ := s.GetSecret(ctx, "e1", "A"); m.LatestVersion != 3 || !m.LatestVersionDisabled || m.VersionCount != 3 {
 		t.Fatalf("meta %+v", m)
 	}
-	s.DisableVersion(ctx, "s1", 2, "t")
-	s.DisableVersion(ctx, "s1", 1, "t")
+	_ = s.DisableVersion(ctx, "s1", 2, "t")
+	_ = s.DisableVersion(ctx, "s1", 1, "t")
 	if _, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrLatestVersionDisabled) {
 		t.Fatalf("all disabled: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestVersionRetrievalAndDisable(t *testing.T) {
 		t.Fatalf("new version not served as latest: %+v %v", r, err)
 	}
 	// an older ENABLED version never substitutes for a disabled newest one
-	s.DisableVersion(ctx, "s1", 4, "t")
+	_ = s.DisableVersion(ctx, "s1", 4, "t")
 	if _, err := s.GetLatestVersion(ctx, "s1"); !errors.Is(err, store.ErrLatestVersionDisabled) {
 		t.Fatalf("fell back after disabling v4: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestTransactionRollbackOnFailure(t *testing.T) {
 		t.Fatal("expected failure")
 	}
 	var n int
-	s.db.QueryRow(`SELECT COUNT(*) FROM secrets`).Scan(&n)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM secrets`).Scan(&n)
 	if n != 0 {
 		t.Fatal("secret row survived a failed CreateSecret")
 	}
@@ -532,8 +532,8 @@ func TestTransactionRollbackOnFailure(t *testing.T) {
 	}
 	// AddVersion: seal panics -> transaction must not wedge the store
 	func() {
-		defer func() { recover() }()
-		s.AddVersion(ctx, "s2", "t", "", func(int) ([]byte, []byte, int, error) { panic("boom") })
+		defer func() { _ = recover() }()
+		_, _ = s.AddVersion(ctx, "s2", "t", "", func(int) ([]byte, []byte, int, error) { panic("boom") })
 	}()
 	if v, err := s.AddVersion(ctx, "s2", "t", "", sealN("ok")); err != nil || v != 2 {
 		t.Fatalf("version after failures: %d %v (store wedged or number consumed)", v, err)
@@ -555,7 +555,7 @@ func TestTransactionRollbackOnFailure(t *testing.T) {
 func TestConcurrentWritersNoLostUpdate(t *testing.T) {
 	s, _ := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	const writers, each = 16, 10
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -675,7 +675,7 @@ func TestHelperProcessWriter(t *testing.T) {
 			os.Exit(3)
 		}
 	}
-	s.Close()
+	_ = s.Close()
 }
 
 func helper(t *testing.T, path string, n int) *exec.Cmd {
@@ -688,7 +688,7 @@ func helper(t *testing.T, path string, n int) *exec.Cmd {
 func TestMultiProcessWritersNoLostUpdate(t *testing.T) {
 	s, path := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	const procs, each = 4, 15
 	var cmds []*exec.Cmd
 	for i := 0; i < procs; i++ {
@@ -717,7 +717,7 @@ func TestMultiProcessWritersNoLostUpdate(t *testing.T) {
 func TestCrashDuringWritesLeavesConsistentDatabase(t *testing.T) {
 	s, path := open(t)
 	seed(t, s)
-	s.CreateSecret(ctx, newSecret("s1", "A"))
+	_ = s.CreateSecret(ctx, newSecret("s1", "A"))
 	c := helper(t, path, 0) // writes until killed
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
@@ -729,20 +729,20 @@ func TestCrashDuringWritesLeavesConsistentDatabase(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			c.Process.Kill()
+			_ = c.Process.Kill()
 			t.Fatal("helper made no progress")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	c.Process.Signal(syscall.SIGKILL)
-	c.Wait()
-	s.Close()
+	_ = c.Process.Signal(syscall.SIGKILL)
+	_ = c.Wait()
+	_ = s.Close()
 
 	s2, err := Open(ctx, path, Options{})
 	if err != nil {
 		t.Fatalf("reopen after crash: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	var res string
 	if err := s2.db.QueryRow(`PRAGMA integrity_check`).Scan(&res); err != nil || res != "ok" {
 		t.Fatalf("integrity_check: %q %v", res, err)

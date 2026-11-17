@@ -198,7 +198,7 @@ func postRotate(t *testing.T, ts *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("rotate = %d, want 202", resp.StatusCode)
 	}

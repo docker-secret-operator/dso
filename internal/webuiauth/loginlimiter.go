@@ -385,10 +385,10 @@ func (m *Manager) LoginFromRequest(r *http.Request, username, password string) (
 	defer res.finish(outcomeNeutral) // panic safety net; no-op after an explicit finish
 
 	sess, err := m.Login(username, password)
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		res.finish(outcomeSuccess)
-	case err == ErrInvalidCredentials:
+	case ErrInvalidCredentials:
 		res.finish(outcomeFailure)
 	default:
 		res.finish(outcomeNeutral)

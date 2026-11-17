@@ -376,13 +376,13 @@ func TestMigration0003_UpgradesExistingDatabaseAndIsUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	seed(t, s)
-	s.Close()
+	_ = s.Close()
 
 	s2, err := Open(ctx, path, Options{}) // full embedded set, including migration 3
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if v, _ := s2.SchemaVersion(ctx); v < 3 {
 		t.Fatalf("expected schema version >= 3 after upgrade, got %d", v)
 	}
@@ -421,7 +421,7 @@ func TestMigration0003_FailureLeavesNoPartialAuditTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	_ = s.Close()
 
 	if _, err := Open(ctx, path, Options{Migrations: upTo2}); err == nil {
 		t.Fatal("expected the broken migration 3 to fail")
@@ -431,7 +431,7 @@ func TestMigration0003_FailureLeavesNoPartialAuditTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if v, _ := s2.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("schema version advanced to %d despite the failed migration 3", v)
 	}

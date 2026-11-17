@@ -420,7 +420,7 @@ func TestCentralUninitialized_AllElevenCommandsAreGuarded(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s succeeded against an uninitialized database: %q", c.name, stdout)
 			}
-			unNotInit(t, err, centralsvc.ReasonNoSchema)
+			_ = unNotInit(t, err, centralsvc.ReasonNoSchema)
 			if stdout != "" || exitCodeFor(err) != 1 {
 				t.Fatalf("stdout=%q exit=%d", stdout, exitCodeFor(err))
 			}

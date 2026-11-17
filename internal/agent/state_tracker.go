@@ -771,7 +771,7 @@ func (st *StateTracker) persistState() error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("failed to close state file: %w", err)
 	}
-	faultinject.Hit("state:before_persist_rename")
+	_ = faultinject.Hit("state:before_persist_rename")
 	if st.migrationLegacy != nil && migrationFault != nil {
 		if err := migrationFault("before_persist"); err != nil {
 			return err
@@ -781,7 +781,7 @@ func (st *StateTracker) persistState() error {
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 	st.migrationLegacy = nil
-	faultinject.Hit("state:after_persist_rename")
+	_ = faultinject.Hit("state:after_persist_rename")
 	if d, err := os.Open(st.stateDir); err == nil { // #nosec G304 -- agent state dir
 		_ = d.Sync()
 		_ = d.Close()

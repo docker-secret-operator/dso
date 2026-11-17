@@ -278,7 +278,7 @@ func pvAppend(t *testing.T, path string, b []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(b); err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestPreserve_ContentChangeIsCaughtByTheHashAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcs[0].f.Close()
+	defer func() { _ = srcs[0].f.Close() }()
 	partial := filepath.Join(pvDir(t), "p")
 	if err := os.Mkdir(partial, 0o700); err != nil {
 		t.Fatal(err)
@@ -621,7 +621,7 @@ func TestPreserve_PathReplacementIsCaughtByThePathCheckAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcs[0].f.Close()
+	defer func() { _ = srcs[0].f.Close() }()
 	partial := filepath.Join(pvDir(t), "p")
 	if err := os.Mkdir(partial, 0o700); err != nil {
 		t.Fatal(err)
@@ -1346,7 +1346,7 @@ func pvOpenCopy(t *testing.T, files map[string]string) (rows int, integrity stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
 		return -1, err.Error()

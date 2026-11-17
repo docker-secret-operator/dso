@@ -359,7 +359,7 @@ func TestWebSocket_ClosedWhenSessionRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	s.WebUIAuth.Logout(sess.Value) // logout / revoke-others / eviction all delete the session
 	expectPolicyClose(t, c, 3*time.Second)
 }
@@ -378,7 +378,7 @@ func TestWebSocket_ClosedWhenSessionIdleExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	// The open socket must NOT keep the idle timer alive.
 	expectPolicyClose(t, c, 3*time.Second)
 }
@@ -393,7 +393,7 @@ func TestWebSocket_ReadLimitEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", maxClientMessageBytes*4))); err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestWebSocket_ClosedWhenSessionRevokedByID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	// Revoked from "another" session: keepToken is a different token.
 	revoked, isCurrent := s.WebUIAuth.RevokeByID(webuiauth.SessionID(sess.Value), "some-other-token")
 	if !revoked || isCurrent {
@@ -444,7 +444,7 @@ func TestWebSocket_ClosedAtAbsoluteSessionLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	// Idle timer is an hour; only the absolute cap can end this socket.
 	expectPolicyClose(t, c, 3*time.Second)
 }
@@ -460,7 +460,7 @@ func TestWebSocket_SurvivesRevokeOfAnotherSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	s.WebUIAuth.Logout(b.Value)
 	time.Sleep(400 * time.Millisecond) // several recheck ticks
 	if err := c.WriteMessage(websocket.TextMessage, []byte("{}")); err != nil {

@@ -241,7 +241,7 @@ func foldWALIntoMain(ctx context.Context, workPath string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	var busy, logFrames, checkpointed int
 	if err := db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
@@ -334,7 +334,7 @@ func ValidateStagedCandidate(ctx context.Context, staged *StagedCandidate, origP
 	if err != nil {
 		return CandidateInfo{}, fmt.Errorf("restore candidate %s is not a valid SQLite database: %w", path, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var integrity string
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {

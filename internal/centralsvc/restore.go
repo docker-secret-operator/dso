@@ -155,7 +155,7 @@ func validateStagedCandidateKey(ctx context.Context, staged *sqlite.StagedCandid
 	if err != nil {
 		return fmt.Errorf("opening restore candidate for key validation: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.QueryContext(ctx, `SELECT key, value FROM store_meta WHERE key LIKE 'binding.%'`)
 	if err != nil {
@@ -166,7 +166,7 @@ func validateStagedCandidateKey(ctx context.Context, staged *sqlite.StagedCandid
 		var k string
 		var v []byte
 		if err := rows.Scan(&k, &v); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return fmt.Errorf("reading restore candidate key-binding metadata: %w", err)
 		}
 		switch k {
@@ -487,7 +487,7 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 			}
 			return
 		}
-		defer orig.Close()
+		defer func() { _ = orig.Close() }()
 		recordRestoreEvent(orig, store.AuditFailure, reason)
 	}
 
@@ -789,7 +789,7 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		}
 		return result, fmt.Errorf("reopening restored database: %w%s", err, displacedNote(result)+vanishedNote(result))
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 
 	// Best-effort (A-2): the restore has already succeeded and the restored
 	// database is usable, so a failure to record the event is logged at Error
@@ -828,11 +828,6 @@ func installedKindWording(k sqlite.InstalledFileKind) (observed, conclusion stri
 			"it has not been confirmed whether the active database is the restored content"
 	}
 	return "the installed file could not be verified", "it has not been confirmed whether the active database is the restored content"
-}
-
-func fileExists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
 }
 
 // LEGACY: Restore no longer replaces the database with replaceDatabaseFile or
@@ -927,7 +922,7 @@ func replaceDatabaseFileOpts(dbPath, candidatePath string, allowNonEmptyJournal 
 	if err != nil {
 		return fmt.Errorf("opening restore candidate: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := securefs.CreateExclusive(tmp, 0o600)
 	if err != nil {
@@ -955,7 +950,7 @@ func replaceDatabaseFileOpts(dbPath, candidatePath string, allowNonEmptyJournal 
 	if err != nil {
 		return &unconfirmedDurabilityError{fmt.Errorf("opening %s to sync the rename: %w", dir, err)}
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	if err := d.Sync(); err != nil {
 		return &unconfirmedDurabilityError{fmt.Errorf("syncing directory %s after rename: %w", dir, err)}
 	}
@@ -1181,7 +1176,7 @@ func hashFile(path string) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {

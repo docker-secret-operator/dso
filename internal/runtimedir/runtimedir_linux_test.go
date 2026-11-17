@@ -70,7 +70,7 @@ func TestEnsure_CreatesAMissingDirectoryWithTheExactMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	if got := modeOf(t, p); got != 0o750 {
 		t.Fatalf("created directory has mode %04o, want 0750 (umask must not weaken it)", got)
 	}
@@ -90,7 +90,7 @@ func TestEnsure_CorrectsAnExisting0775Directory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	if got := modeOf(t, p); got != 0o750 {
 		t.Fatalf("mode %04o after Ensure, want 0750", got)
 	}
@@ -106,7 +106,7 @@ func TestEnsure_ClearsExtraModeBits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	fi, _ := os.Lstat(p)
 	if fi.Mode()&os.ModeSetgid != 0 || fi.Mode().Perm() != 0o750 {
 		t.Fatalf("mode %v after Ensure, want plain 0750", fi.Mode())
@@ -120,7 +120,7 @@ func TestEnsure_RefusesAWrongOwnerWithoutModifyingIt(t *testing.T) {
 	pol.OwnerUID = euid() + 1 // the directory is owned by someone else, as far as the policy is concerned
 	d, err := Ensure(p, pol)
 	if err == nil {
-		d.Close()
+		_ = d.Close()
 		t.Fatal("a directory with an unexpected owner must be refused")
 	}
 	if !errors.Is(err, ErrUnsafe) {
@@ -138,7 +138,7 @@ func TestEnsure_RefusesANonDirectory(t *testing.T) {
 	}
 	if d, err := Ensure(p, enforcePolicy()); err == nil || !errors.Is(err, ErrUnsafe) {
 		if d != nil {
-			d.Close()
+			_ = d.Close()
 		}
 		t.Fatalf("want ErrUnsafe for a regular file, got %v", err)
 	}
@@ -157,7 +157,7 @@ func TestEnsure_RefusesASymlinkedDirectoryAndLeavesTheTargetAlone(t *testing.T) 
 	}
 	d, err := Ensure(link, enforcePolicy())
 	if err == nil {
-		d.Close()
+		_ = d.Close()
 		t.Fatal("a symlinked runtime directory must be refused")
 	}
 	if !errors.Is(err, ErrUnsafe) {
@@ -174,7 +174,7 @@ func TestEnsure_VerifyOnlyRejectsGroupOrOtherWrite(t *testing.T) {
 	pol := Policy{OwnerUID: euid(), RequireNoGroupOtherWrite: true}
 	d, err := Ensure(p, pol)
 	if err == nil {
-		d.Close()
+		_ = d.Close()
 		t.Fatal("0775 must be rejected in verify-only mode")
 	}
 	if !errors.Is(err, ErrUnsafe) {
@@ -189,7 +189,7 @@ func TestEnsure_VerifyOnlyRejectsGroupOrOtherWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("0750 owned by the caller must be accepted: %v", err)
 	}
-	d.Close()
+	_ = d.Close()
 }
 
 func TestEnsure_VerifyOnlyDoesNotCreateWhenCreateIsFalse(t *testing.T) {
@@ -217,7 +217,7 @@ func TestEnsure_FailureToSetTheGroupIsAnErrorNotAWideningAndNotSilent(t *testing
 	pol.LookupGroup = nil
 	d, err := Ensure(p, pol)
 	if err == nil {
-		d.Close()
+		_ = d.Close()
 		t.Fatal("being unable to establish the group must fail, not be ignored")
 	}
 	if got := modeOf(t, p); got != 0o770 {
@@ -293,7 +293,7 @@ var testFP = func() FilePolicy { return FilePolicy{OwnerUID: euid(), MaxMode: 0o
 func wantUnsafe(t *testing.T, f *os.File, err error, what string) {
 	t.Helper()
 	if f != nil {
-		f.Close()
+		_ = f.Close()
 	}
 	if err == nil {
 		t.Fatalf("%s: expected the file to be refused", what)
@@ -498,7 +498,7 @@ func TestOpenRegular_RejectsNonPlainNames(t *testing.T) {
 	d, _ := newDir(t)
 	for _, name := range []string{"", ".", "..", "a/b", "../x", "/etc/passwd"} {
 		if f, err := d.OpenRegular(name, os.O_RDONLY, 0, testFP()); err == nil {
-			f.Close()
+			_ = f.Close()
 			t.Errorf("name %q must be rejected", name)
 		}
 	}
@@ -515,7 +515,7 @@ func TestOpenRegular_ParentReplacementAfterPinningDoesNotRedirect(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	// Swap the path for a symlink to an attacker directory after pinning.
 	attacker := filepath.Join(root, "attacker")
@@ -614,7 +614,7 @@ func TestOpenRegular_ReadWriteConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	var wg sync.WaitGroup
 	const writers, perWriter = 4, 200

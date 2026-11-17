@@ -141,7 +141,7 @@ func TestReservation_WindowExpiryAppliesToCountedFailures(t *testing.T) {
 	frozen := m.now()
 	m.now = func() time.Time { return frozen }
 	for i := 0; i < maxLoginFailures; i++ {
-		m.LoginFromRequest(loginRequest("203.0.113.220:1"), "operator", "wrong")
+		_, _ = m.LoginFromRequest(loginRequest("203.0.113.220:1"), "operator", "wrong")
 	}
 	if _, err := m.LoginFromRequest(loginRequest("203.0.113.220:1"), "operator", goodPass); err != ErrTooManyLoginAttempts {
 		t.Fatalf("expected throttling, got %v", err)
@@ -192,7 +192,7 @@ func TestThrottle_KeyDerivation(t *testing.T) {
 func TestThrottle_DifferentIPv6PrefixesAndIPv4NeighboursAreIndependent(t *testing.T) {
 	m, _ := testManager(t, 0)
 	for i := 0; i < maxLoginFailures; i++ {
-		m.LoginFromRequest(loginRequest("[2001:db8:1:2::1]:1"), "operator", "bad")
+		_, _ = m.LoginFromRequest(loginRequest("[2001:db8:1:2::1]:1"), "operator", "bad")
 	}
 	if _, err := m.LoginFromRequest(loginRequest("[2001:db8:1:2::ffff]:1"), "operator", goodPass); err != ErrTooManyLoginAttempts {
 		t.Fatalf("same /64 not throttled: %v", err)
@@ -201,7 +201,7 @@ func TestThrottle_DifferentIPv6PrefixesAndIPv4NeighboursAreIndependent(t *testin
 		t.Fatalf("different /64 wrongly throttled: %v", err)
 	}
 	for i := 0; i < maxLoginFailures; i++ {
-		m.LoginFromRequest(loginRequest("192.0.2.1:1"), "operator", "bad")
+		_, _ = m.LoginFromRequest(loginRequest("192.0.2.1:1"), "operator", "bad")
 	}
 	if _, err := m.LoginFromRequest(loginRequest("192.0.2.2:1"), "operator", goodPass); err != nil {
 		t.Fatalf("IPv4 neighbour wrongly throttled: %v", err)
@@ -211,7 +211,7 @@ func TestThrottle_DifferentIPv6PrefixesAndIPv4NeighboursAreIndependent(t *testin
 func TestThrottle_MalformedRemoteAddrDoesNotPanicOrBypass(t *testing.T) {
 	m, _ := testManager(t, 0)
 	for i := 0; i < maxLoginFailures; i++ {
-		m.LoginFromRequest(loginRequest("@"), "operator", "bad")
+		_, _ = m.LoginFromRequest(loginRequest("@"), "operator", "bad")
 	}
 	if _, err := m.LoginFromRequest(loginRequest("@"), "operator", goodPass); err != ErrTooManyLoginAttempts {
 		t.Fatalf("malformed peer address escaped throttling: %v", err)
@@ -226,7 +226,7 @@ func TestThrottle_TrustedProxyClientsAreAggregatedByPrefixToo(t *testing.T) {
 	for i := 0; i < maxLoginFailures; i++ {
 		r := loginRequest("10.0.0.1:5555")
 		r.Header.Set("X-Forwarded-For", fmt.Sprintf("2001:db8:9:9:%x::1", i+1))
-		m.LoginFromRequest(r, "operator", "bad")
+		_, _ = m.LoginFromRequest(r, "operator", "bad")
 	}
 	r := loginRequest("10.0.0.1:5555")
 	r.Header.Set("X-Forwarded-For", "2001:db8:9:9:ffff::1")

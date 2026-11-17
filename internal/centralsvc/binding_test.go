@@ -77,7 +77,7 @@ func TestBinding_FirstUseBindsAndSurvivesRestart(t *testing.T) {
 func TestBinding_SecondKeyCannotCreateProjectsOrAnythingElse(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
 	db := e.rawDB(t)
 	before := snapshot(t, db)
 
@@ -140,7 +140,7 @@ func TestBinding_TamperingWithTheKeyIdFieldCannotBypassTheCheck(t *testing.T) {
 		t.Fatalf("legitimate key rejected because only the label changed: %v", err)
 	}
 	// Garbage label, right key: still fine.
-	db.Exec(`UPDATE store_meta SET value = ? WHERE key = ?`, []byte("garbage"), metaBindingKeyID)
+	_, _ = db.Exec(`UPDATE store_meta SET value = ? WHERE key = ?`, []byte("garbage"), metaBindingKeyID)
 	e.reopen(t)
 	if _, err := e.svc.CreateProject(ctx, "third", ""); err != nil {
 		t.Fatalf("label garbage broke the legitimate key: %v", err)
@@ -165,12 +165,16 @@ func TestBinding_CorruptedMetadataFailsClosed(t *testing.T) {
 		return e, db
 	}
 	for name, tamper := range map[string]func(*sql.DB){
-		"canary row deleted":   func(db *sql.DB) { db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingCanary) },
-		"key-id row deleted":   func(db *sql.DB) { db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingKeyID) },
-		"version row deleted":  func(db *sql.DB) { db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingVersion) },
-		"canary bit flipped":   func(db *sql.DB) { flipLastByte(t, db, metaBindingCanary) },
-		"canary truncated":     func(db *sql.DB) { db.Exec(`UPDATE store_meta SET value = x'0102' WHERE key = ?`, metaBindingCanary) },
-		"unknown format":       func(db *sql.DB) { db.Exec(`UPDATE store_meta SET value = x'39' WHERE key = ?`, metaBindingVersion) },
+		"canary row deleted":  func(db *sql.DB) { _, _ = db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingCanary) },
+		"key-id row deleted":  func(db *sql.DB) { _, _ = db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingKeyID) },
+		"version row deleted": func(db *sql.DB) { _, _ = db.Exec(`DELETE FROM store_meta WHERE key = ?`, metaBindingVersion) },
+		"canary bit flipped":  func(db *sql.DB) { flipLastByte(t, db, metaBindingCanary) },
+		"canary truncated": func(db *sql.DB) {
+			_, _ = db.Exec(`UPDATE store_meta SET value = x'0102' WHERE key = ?`, metaBindingCanary)
+		},
+		"unknown format": func(db *sql.DB) {
+			_, _ = db.Exec(`UPDATE store_meta SET value = x'39' WHERE key = ?`, metaBindingVersion)
+		},
 		"canary from other db": nil, // filled below
 	} {
 		if tamper == nil {
@@ -216,7 +220,7 @@ func TestBinding_CanaryFromAnotherDatabaseUnderTheSameKeyIdIsStillAcceptedOnlyIf
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Exec(`UPDATE store_meta SET value = ? WHERE key = ?`, forged, metaBindingCanary)
+	_, _ = db.Exec(`UPDATE store_meta SET value = ? WHERE key = ?`, forged, metaBindingCanary)
 	e.reopen(t)
 	if _, err := e.svc.CreateProject(ctx, "x", ""); err == nil {
 		t.Fatal("forged canary accepted")
@@ -228,7 +232,7 @@ func TestBinding_DeletedBindingCannotBeAdoptedByAWrongKey(t *testing.T) {
 	e.project(t, "app", "prod")
 	db := e.rawDB(t)
 	dropMetaTriggers(t, db)
-	db.Exec(`DELETE FROM store_meta`) // attacker wipes the binding hoping to re-bind to their key
+	_, _ = db.Exec(`DELETE FROM store_meta`) // attacker wipes the binding hoping to re-bind to their key
 	before := snapshot(t, db)
 	bad := New(e.st, otherKey(t), nil)
 	if _, err := bad.CreateProject(ctx, "intruder", ""); !errors.Is(err, ErrWrongRootKey) {
@@ -248,7 +252,7 @@ func TestBinding_UpgradedSchema1DatabaseIsAdoptedOnlyByItsOwnKey(t *testing.T) {
 	dir := securefstest.TempDir(t)
 	dbPath := filepath.Join(dir, "old.db")
 	keyPath := filepath.Join(dir, "k", "root.key")
-	crypto.InstallKeyFile(keyPath)
+	_, _ = crypto.InstallKeyFile(keyPath)
 	kp, _ := crypto.NewFileKeyProvider(keyPath)
 
 	all, _ := sqlite.EmbeddedMigrations()
@@ -261,13 +265,13 @@ func TestBinding_UpgradedSchema1DatabaseIsAdoptedOnlyByItsOwnKey(t *testing.T) {
 	if err := old.CreateProject(ctx, store.Project{ID: "p-old", Slug: "legacy", WrappedDEK: wrapped, DEKKeyID: kp.ID()}); err != nil {
 		t.Fatal(err)
 	}
-	old.Close()
+	_ = old.Close()
 
 	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{}) // upgrade to current schema
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if st.LastMigrationBackup() == "" {
 		t.Fatal("upgrade of an existing database took no backup")
 	}
@@ -296,12 +300,12 @@ func TestBinding_ConcurrentFirstInitSameKeyAllSucceedWithOneBinding(t *testing.T
 	dir := securefstest.TempDir(t)
 	dbPath := filepath.Join(dir, "c.db")
 	keyPath := filepath.Join(dir, "k", "root.key")
-	crypto.InstallKeyFile(keyPath)
+	_, _ = crypto.InstallKeyFile(keyPath)
 	first, err := sqlite.Open(ctx, dbPath, sqlite.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Close()
+	_ = first.Close()
 
 	const n = 12
 	var wg sync.WaitGroup
@@ -316,7 +320,7 @@ func TestBinding_ConcurrentFirstInitSameKeyAllSucceedWithOneBinding(t *testing.T
 				errs <- err
 				return
 			}
-			defer st.Close()
+			defer func() { _ = st.Close() }()
 			kp, _ := crypto.NewFileKeyProvider(keyPath)
 			<-start
 			errs <- New(st, kp, nil).Bind(ctx)
@@ -331,7 +335,7 @@ func TestBinding_ConcurrentFirstInitSameKeyAllSucceedWithOneBinding(t *testing.T
 		}
 	}
 	st, _ := sqlite.Open(ctx, dbPath, sqlite.Options{})
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	for _, k := range []string{metaBindingVersion, metaBindingKeyID, metaBindingCanary} {
 		if _, err := st.GetMeta(ctx, k); err != nil {
 			t.Fatalf("%s: %v", k, err)
@@ -346,7 +350,7 @@ func TestBinding_ConcurrentFirstInitDifferentKeysExactlyOneWins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Close()
+	_ = first.Close()
 
 	const keys, per = 6, 3
 	var wg sync.WaitGroup
@@ -367,7 +371,7 @@ func TestBinding_ConcurrentFirstInitDifferentKeysExactlyOneWins(t *testing.T) {
 					out <- res{k, err}
 					return
 				}
-				defer st.Close()
+				defer func() { _ = st.Close() }()
 				<-start
 				out <- res{k, New(st, kp, nil).Bind(ctx)}
 			}(k)

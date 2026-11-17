@@ -188,7 +188,7 @@ func (st SystemStatus) exitError() error {
 func (s *Status) watchStatus() error {
 	for {
 		// Clear screen (ANSI escape code)
-		fmt.Fprint(s.out(), "\033[2J\033[H")
+		_, _ = fmt.Fprint(s.out(), "\033[2J\033[H")
 
 		systemStatus := s.gatherStatus()
 		if s.JSON {
@@ -197,8 +197,8 @@ func (s *Status) watchStatus() error {
 			_ = s.printText(systemStatus)
 		}
 
-		fmt.Fprintln(s.out())
-		fmt.Fprintln(s.out(), "Refreshing in 2 seconds (Ctrl+C to exit)...")
+		_, _ = fmt.Fprintln(s.out())
+		_, _ = fmt.Fprintln(s.out(), "Refreshing in 2 seconds (Ctrl+C to exit)...")
 		time.Sleep(2 * time.Second)
 	}
 }
@@ -349,7 +349,7 @@ func boxRow(text string) string {
 
 func (s *Status) printText(status SystemStatus) error {
 	w := s.out()
-	line := func(text string) { fmt.Fprintln(w, boxRow(text)) }
+	line := func(text string) { _, _ = fmt.Fprintln(w, boxRow(text)) }
 	rule := strings.Repeat("─", statusInnerWidth)
 
 	uptime := status.Runtime.Uptime
@@ -361,10 +361,10 @@ func (s *Status) printText(status SystemStatus) error {
 		version += " (" + status.Runtime.Commit + ")"
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "┌"+rule+"┐")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "┌"+rule+"┐")
 	line("             DSO Runtime Status")
-	fmt.Fprintln(w, "├"+rule+"┤")
+	_, _ = fmt.Fprintln(w, "├"+rule+"┤")
 	line(fmt.Sprintf("Mode:     %s", status.Runtime.Mode))
 	line(fmt.Sprintf("Version:  %s", version))
 	line(fmt.Sprintf("Uptime:   %s", uptime))
@@ -375,8 +375,8 @@ func (s *Status) printText(status SystemStatus) error {
 		line("  " + status.AgentError)
 		line("")
 		line("HEALTH: " + status.Health)
-		fmt.Fprintln(w, "└"+rule+"┘")
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "└"+rule+"┘")
+		_, _ = fmt.Fprintln(w)
 		return nil
 	}
 
@@ -423,8 +423,8 @@ func (s *Status) printText(status SystemStatus) error {
 	}
 
 	line("HEALTH: " + status.Health)
-	fmt.Fprintln(w, "└"+rule+"┘")
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "└"+rule+"┘")
+	_, _ = fmt.Fprintln(w)
 
 	return nil
 }
@@ -496,11 +496,4 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh %dm", hours, minutes)
 	}
 	return fmt.Sprintf("%dm", minutes)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

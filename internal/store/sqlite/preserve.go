@@ -197,7 +197,7 @@ func (p *Preservation) Unchanged() error {
 	if err != nil {
 		return changed("the database file can no longer be opened safely: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return changed("%v", err)
@@ -309,7 +309,7 @@ func fsyncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 
@@ -661,7 +661,7 @@ func (pv *preserver) writeManifest(partial, abs string, expect FileIdentity, fil
 	sorted := append([]PreservedFile(nil), files...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, f := range sorted {
-		m.Files = append(m.Files, manifestFile{Name: f.Name, Source: f.Source, Size: f.Size, SHA256: f.SHA256, Advisory: f.Advisory})
+		m.Files = append(m.Files, manifestFile(f))
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

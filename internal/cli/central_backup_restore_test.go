@@ -23,7 +23,7 @@ func auditEventsAt(t *testing.T, path string) []store.AuditEvent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	evs, err := st.ListAuditEvents(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +475,7 @@ func TestCentralBackupCmd_RealAuditPersistenceFailureIsLoggedAndBackupSucceeds(t
 		WHEN NEW.event_type = 'backup' BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	raw.Close()
+	_ = raw.Close()
 
 	core, logs := observer.New(zap.DebugLevel)
 	centralAuditLoggerOverride = zap.New(core)

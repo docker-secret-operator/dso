@@ -30,8 +30,8 @@ func TestKeyFile_UnsafeDirectoryIsRefusedForInstallAndLoad(t *testing.T) {
 	}
 	// Installing: nothing is written into an unsafe directory.
 	bad := filepath.Join(root, "bad")
-	os.Mkdir(bad, 0o700)
-	os.Chmod(bad, 0o777)
+	_ = os.Mkdir(bad, 0o700)
+	_ = os.Chmod(bad, 0o777)
 	if _, err := InstallKeyFile(filepath.Join(bad, "root.key")); err == nil {
 		t.Fatal("key installed into an unsafe directory")
 	}
@@ -54,14 +54,14 @@ func TestKeyFile_SubstitutedKeyInUnsafeDirectoryScenario(t *testing.T) {
 	if _, err := InstallKeyFile(p); err != nil {
 		t.Fatal(err)
 	}
-	os.Chmod(d, 0o770) // group-writable: the attacker is in the group
-	os.Remove(p)
+	_ = os.Chmod(d, 0o770) // group-writable: the attacker is in the group
+	_ = os.Remove(p)
 	attackerKey := filepath.Join(root, "attacker.key")
 	if _, err := InstallKeyFile(attackerKey); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(attackerKey)
-	os.WriteFile(p, data, 0o400)
+	_ = os.WriteFile(p, data, 0o400)
 	if _, err := NewFileKeyProvider(p); err == nil {
 		t.Fatal("a key substituted in a group-writable directory was accepted")
 	}
@@ -70,7 +70,7 @@ func TestKeyFile_SubstitutedKeyInUnsafeDirectoryScenario(t *testing.T) {
 func TestStaleTempKeyFilesAreReportedNotDeleted(t *testing.T) {
 	d := securefstest.TempDir(t)
 	stale := filepath.Join(d, staleTempPrefix+"123")
-	os.WriteFile(stale, []byte("key material"), 0o400)
+	_ = os.WriteFile(stale, []byte("key material"), 0o400)
 	if got := StaleTempKeyFiles(d); len(got) != 1 || got[0] != stale {
 		t.Fatalf("got %v", got)
 	}

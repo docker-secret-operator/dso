@@ -33,7 +33,7 @@ func TestDurable_AppendVerifyAndReopenContinuesChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d2.Close()
+	defer func() { _ = d2.Close() }()
 	if err := d2.Append("d", "op", "", "", "", "success"); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestDurable_TornTailDiscardedAndAppendContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("torn tail must be tolerated: %v", err)
 	}
-	defer d2.Close()
+	defer func() { _ = d2.Close() }()
 	if err := d2.Append("two", "op", "", "", "", "success"); err != nil {
 		t.Fatal(err)
 	}

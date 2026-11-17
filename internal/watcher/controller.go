@@ -144,7 +144,7 @@ type ReloaderController struct {
 
 func (r *ReloaderController) fault(point string) {
 	// Real-process crash harness: a no-op unless built with -tags dsofault.
-	faultinject.Hit(point)
+	_ = faultinject.Hit(point)
 	if r.FaultHook != nil {
 		r.FaultHook(point)
 	}

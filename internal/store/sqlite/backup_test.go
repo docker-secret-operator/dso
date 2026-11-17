@@ -58,7 +58,7 @@ func TestBackup_SuccessfulBackupContainsEveryTableAndVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup did not reopen cleanly: %v", err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 
 	if _, err := restored.GetProjectBySlug(ctx, "proj"); err != nil {
 		t.Fatalf("project missing from backup: %v", err)
@@ -93,7 +93,7 @@ func TestBackup_EmptyStoreBackupSucceedsAndReopens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty backup did not reopen cleanly: %v", err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	events, err := restored.ListAuditEvents(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestBackup_ConsistentDuringInFlightWriteTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup produced during a concurrent write did not reopen cleanly: %v", err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	var integrity string
 	if err := restored.db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("backup taken during a concurrent write transaction failed integrity_check: %q, %v", integrity, err)
@@ -268,7 +268,7 @@ func TestBackup_DirectorySyncFailureIsSurfacedNotSwallowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup with only a directory-sync warning must still reopen cleanly: %v", err)
 	}
-	restored.Close()
+	_ = restored.Close()
 }
 
 // TestSafetySnapshot_DirectorySyncFailureStillReturnsUsableSnapshot ensures
@@ -299,7 +299,7 @@ func TestSafetySnapshot_DirectorySyncFailureStillReturnsUsableSnapshot(t *testin
 	if openErr != nil {
 		t.Fatalf("safety snapshot with only a directory-sync warning must still reopen cleanly: %v", openErr)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	if _, err := restored.GetProjectBySlug(ctx, "proj"); err != nil {
 		t.Fatalf("safety snapshot missing seeded data: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSafetySnapshot_NamingAndReopenability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("safety snapshot did not reopen cleanly: %v", err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	if _, err := restored.GetProjectBySlug(ctx, "proj"); err != nil {
 		t.Fatalf("safety snapshot missing seeded data: %v", err)
 	}

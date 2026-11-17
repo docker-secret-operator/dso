@@ -30,7 +30,7 @@ func openWith(t *testing.T, o Options) (*Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s, path
 }
 
@@ -122,7 +122,7 @@ func TestWithTxPanicRollsBackIsPropagatedAndStoreStaysUsable(t *testing.T) {
 				t.Fatalf("panic not propagated unchanged: %v", r)
 			}
 		}()
-		s.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		_ = s.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 			if err := tx.CreateSecret(ctx, newSecret("s1", "A")); err != nil {
 				return err
 			}
@@ -183,6 +183,10 @@ func TestWithTxContextCancellationRollsBackWithoutLeaks(t *testing.T) {
 
 // ---- AC-TX-04 / 04a: the marked context -----------------------------------------------------
 
+// derivedMarkKey is a private context key for an unrelated value layered on a
+// marked context, proving derived contexts still carry the WithTx mark.
+type derivedMarkKey struct{}
+
 func TestNestedWithTxWithMarkedContextIsRejectedImmediately(t *testing.T) {
 	s, _ := open(t)
 	seed(t, s)
@@ -190,7 +194,7 @@ func TestNestedWithTxWithMarkedContextIsRejectedImmediately(t *testing.T) {
 		if err := tx.CreateSecret(ctx, newSecret("s1", "A")); err != nil {
 			return err
 		}
-		derived, cancel := context.WithCancel(context.WithValue(ctx, struct{}{}, 1)) // derived contexts carry the mark
+		derived, cancel := context.WithCancel(context.WithValue(ctx, derivedMarkKey{}, 1)) // derived contexts carry the mark
 		defer cancel()
 		for _, c := range []context.Context{ctx, derived} {
 			start := time.Now()

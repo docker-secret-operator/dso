@@ -279,7 +279,7 @@ func TestCharacterize_Driver_Version(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var v string
 	if err := db.QueryRow(`select sqlite_version()`).Scan(&v); err != nil || v == "" {
 		t.Fatalf("sqlite_version(): %q, %v", v, err)

@@ -171,12 +171,12 @@ func factsProbe(out *facts) func(Querier) error {
 		for rows.Next() {
 			var n string
 			if err := rows.Scan(&n); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			names = append(names, n)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
 		}

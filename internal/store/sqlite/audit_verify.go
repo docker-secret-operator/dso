@@ -137,7 +137,7 @@ func VerifyAuditLog(ctx context.Context, path string) AuditVerifyResult {
 	if err != nil {
 		return unavailable("the database could not be opened for verification", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var v sql.NullInt64
 	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {

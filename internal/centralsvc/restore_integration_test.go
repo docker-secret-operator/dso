@@ -253,7 +253,7 @@ func riAssertRestored(t *testing.T, db string, kp crypto.KeyProvider) {
 		_ = rows.Scan(&s)
 		slugs = append(slugs, s)
 	}
-	rows.Close()
+	_ = rows.Close()
 	_ = raw.Close()
 	if strings.Join(slugs, ",") != "candproj" {
 		t.Fatalf("the restored database holds projects %v, want exactly the candidate's [candproj]", slugs)
@@ -262,7 +262,7 @@ func riAssertRestored(t *testing.T, db string, kp crypto.KeyProvider) {
 	if err != nil {
 		t.Fatalf("the restored database does not open: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if _, err := New(st, kp, nil).ListProjects(ctx); err != nil {
 		t.Fatalf("the restored database is not usable with the candidate's key: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestRestoreIntegration_PreserveFirstThenSnapshotFlow(t *testing.T) {
 			}
 			// Preservation strictly precedes the first Open, and the preserved copy is the
 			// ORIGINAL, byte for byte -- not what Open or the checkpoint left.
-			if !(r.indexOf(stagePreserved) >= 0 && r.indexOf(stagePreserved) < r.indexOf(stageOpenOriginal)) {
+			if r.indexOf(stagePreserved) < 0 || r.indexOf(stagePreserved) >= r.indexOf(stageOpenOriginal) {
 				t.Fatalf("preservation must precede Open: %v", r.stages)
 			}
 			if r.res.RawPreservation == "" || r.res.SafetySnapshot == "" {
@@ -1195,7 +1195,7 @@ func TestRestoreIntegration_StaleHotJournal_ControlRevertsAndRestoreDoesNot(t *t
 			_ = rows.Scan(&s)
 			slugs = append(slugs, s)
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	_ = cdb.Close()
 	if ierr == nil && integrity == "ok" && strings.Join(slugs, ",") == "candproj" {

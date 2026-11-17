@@ -54,7 +54,7 @@ func parseKey(input string) (string, string, error) {
 func resolveKey(cmd *cobra.Command, arg string) (project, path string, err error) {
 	project, path, err = parseKey(arg)
 	if err == nil && !strings.Contains(strings.TrimSpace(arg), "/") {
-		fmt.Fprintf(cmd.ErrOrStderr(), "note: no project given; using the default project %q (write %s/%s to be explicit)\n", project, project, path)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "note: no project given; using the default project %q (write %s/%s to be explicit)\n", project, project, path)
 	}
 	return project, path, err
 }
@@ -120,9 +120,9 @@ func readSecretValue(cmd *cobra.Command, label string, trimNewline bool) (string
 
 	var raw []byte
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { // #nosec G115 -- file descriptors are small OS-provided values.
-		fmt.Fprintf(cmd.ErrOrStderr(), "Enter secret for '%s': ", label)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Enter secret for '%s': ", label)
 		b, err := term.ReadPassword(int(f.Fd())) // #nosec G115 -- see above.
-		fmt.Fprintln(cmd.ErrOrStderr())
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 		if err != nil {
 			return "", fmt.Errorf("failed to read password: %w", err)
 		}
@@ -187,7 +187,7 @@ Values must be valid UTF-8 and at most 1MB.`,
 				return fmt.Errorf("failed to save secret: %w", err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "✅ Secret '%s/%s' saved successfully.\n", project, path)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "✅ Secret '%s/%s' saved successfully.\n", project, path)
 			return nil
 		},
 	}
@@ -240,9 +240,9 @@ project "global" is used (the same default as 'secret set', 'secret list' and
 			}
 
 			if newline {
-				fmt.Fprintln(cmd.OutOrStdout(), sec.Value)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), sec.Value)
 			} else {
-				fmt.Fprint(cmd.OutOrStdout(), sec.Value)
+				_, _ = fmt.Fprint(cmd.OutOrStdout(), sec.Value)
 			}
 			return nil
 		},

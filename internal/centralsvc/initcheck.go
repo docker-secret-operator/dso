@@ -297,7 +297,7 @@ func collectEvidence(q sqlite.Querier) (initEvidence, error) {
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return initEvidence{}, err
 		}
 		ev.tables[n] = true
@@ -316,7 +316,7 @@ func collectEvidence(q sqlite.Querier) (initEvidence, error) {
 	for vrows.Next() {
 		var n string
 		if err := vrows.Scan(&n); err != nil {
-			vrows.Close()
+			_ = vrows.Close()
 			return initEvidence{}, err
 		}
 		ev.views = append(ev.views, n)
@@ -347,7 +347,7 @@ func collectEvidence(q sqlite.Querier) (initEvidence, error) {
 		for rows.Next() {
 			var v int
 			if err := rows.Scan(&v); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return initEvidence{}, err
 			}
 			ev.versions = append(ev.versions, v)
@@ -369,7 +369,7 @@ func collectEvidence(q sqlite.Querier) (initEvidence, error) {
 		for rows.Next() {
 			var n string
 			if err := rows.Scan(&n); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return initEvidence{}, err
 			}
 			cols[n] = true
@@ -400,7 +400,7 @@ func collectEvidence(q sqlite.Querier) (initEvidence, error) {
 			var k string
 			var v []byte
 			if err := rows.Scan(&k, &v); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return initEvidence{}, err
 			}
 			ev.bindingPresent[k] = v
@@ -798,7 +798,7 @@ func tableSignature(q sqlite.Querier, table string) (string, error) {
 		var name, typ string
 		var notNull, pk, hidden int
 		if err := rows.Scan(&name, &typ, &notNull, &pk, &hidden); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return "", err
 		}
 		fmt.Fprintf(&b, "%s %s %d %d %d;", strings.ToLower(name), strings.ToUpper(typ), notNull, pk, hidden)
@@ -881,7 +881,7 @@ func deriveDSOStructures() (dsoSchema, error) {
 	if err != nil {
 		return dsoSchema{}, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1) // a private :memory: database lives on one connection
 	bg := context.Background()
 	if _, err := db.ExecContext(bg, schemaMigrationsDDL); err != nil {

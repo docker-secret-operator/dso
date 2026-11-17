@@ -132,7 +132,7 @@ func TestCentralBackupUninitialized_StateMatrix(t *testing.T) {
 		e := unEnv(t)
 		unWrite(t, e.db, []byte(strings.Repeat("not a database\n", 30)))
 		err := ubRefusal(t, e, true) // before D3 this created a .central.lock
-		unNotInit(t, err, centralsvc.ReasonNotSQLite)
+		_ = unNotInit(t, err, centralsvc.ReasonNotSQLite)
 		if !errors.Is(err, sqlite.ErrNotSQLite) {
 			t.Fatalf("the file-level cause must stay reachable: %v", err)
 		}
@@ -141,13 +141,13 @@ func TestCentralBackupUninitialized_StateMatrix(t *testing.T) {
 		t.Parallel()
 		e := unEnv(t)
 		unForeign(t, e.db, `CREATE TABLE t(a)`, `INSERT INTO t VALUES(1)`)
-		unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
+		_ = unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
 	})
 	t.Run("foreign-sqlite-already-wal", func(t *testing.T) {
 		t.Parallel()
 		e := unEnv(t)
 		unForeign(t, e.db, `PRAGMA journal_mode=WAL`, `CREATE TABLE t(a)`, `INSERT INTO t VALUES(1)`)
-		unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
+		_ = unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
 	})
 	t.Run("foreign-sqlite-with-its-own-projects-table", func(t *testing.T) {
 		t.Parallel()
@@ -155,7 +155,7 @@ func TestCentralBackupUninitialized_StateMatrix(t *testing.T) {
 		unForeign(t, e.db, `CREATE TABLE projects(x)`)
 		// Before D3 this exited 1 but still converted the file to WAL and added
 		// a schema_migrations table.
-		unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
+		_ = unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonNoSchema)
 	})
 	t.Run("uninitialized-dso-schema-without-audit-row", func(t *testing.T) {
 		t.Parallel()
@@ -356,7 +356,7 @@ func TestCentralBackupUninitialized_LegacySchema1WithProject_StillMigratesAndBac
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if v, err := st.SchemaVersion(t.Context()); err != nil || v != len(all) {
 		t.Fatalf("schema version = %d (%v), want %d", v, err, len(all))
 	}
@@ -389,7 +389,7 @@ func TestCentralBackupUninitialized_ZeroByteLeftover_RefusedThenInitStillWorks(t
 		t.Fatal(err)
 	}
 	unWrite(t, e.db, nil)
-	unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonEmptyFile)
+	_ = unNotInit(t, ubRefusal(t, e, true), centralsvc.ReasonEmptyFile)
 	// Before D3 the backup would have turned this reusable leftover into a
 	// non-empty file that init refuses.
 	out, _, err := e.run(t, "", append([]string{"init"}, e.file()...)...)

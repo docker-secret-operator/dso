@@ -115,7 +115,7 @@ func TestCentralAuditLogger_EndToEndFailureIsLoggedAtErrorLevelWithNoSecretLeak(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	kp, err := crypto.NewFileKeyProvider(e.key)
 	if err != nil {
 		t.Fatal(err)

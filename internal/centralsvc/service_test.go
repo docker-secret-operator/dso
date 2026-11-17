@@ -50,7 +50,7 @@ func setup(t *testing.T) *env {
 func (e *env) reopen(t *testing.T) {
 	t.Helper()
 	if e.st != nil {
-		e.st.Close()
+		_ = e.st.Close()
 	}
 	kp, err := crypto.NewFileKeyProvider(e.keyPath)
 	if err != nil {
@@ -64,7 +64,7 @@ func (e *env) reopen(t *testing.T) {
 	e.logs = logs
 	e.st = st
 	e.svc = New(st, kp, zap.New(core))
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 }
 
 func (e *env) project(t *testing.T, slug string, envs ...string) {
@@ -96,7 +96,7 @@ func (e *env) rawDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -151,8 +151,8 @@ func TestRoundTripAndVersioning(t *testing.T) {
 func TestDisableAndDelete(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("one"), "a", "")
-	e.svc.AddVersion(ctx, "app", "prod", "K", []byte("two"), "a", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("one"), "a", "")
+	_, _ = e.svc.AddVersion(ctx, "app", "prod", "K", []byte("two"), "a", "")
 	if err := e.svc.DisableVersion(ctx, "app", "prod", "K", 2, "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -219,8 +219,8 @@ func TestValidation(t *testing.T) {
 func TestMetadataResponsesContainNoPlaintextOrKeyMaterial(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "note")
-	e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"-2"), "a", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "note")
+	_, _ = e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"-2"), "a", "")
 	ms, _ := e.svc.ListSecrets(ctx, "app", "prod")
 	vs, _ := e.svc.ListVersions(ctx, "app", "prod", "K")
 	ps, _ := e.svc.ListProjects(ctx)
@@ -252,8 +252,8 @@ func TestMetadataResponsesContainNoPlaintextOrKeyMaterial(t *testing.T) {
 func TestPlaintextNeverOnDisk(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "")
-	e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"-v2"), "a", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "")
+	_, _ = e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"-v2"), "a", "")
 	check := func(when string) {
 		files, _ := filepath.Glob(e.dbPath + "*")
 		if len(files) == 0 {
@@ -272,26 +272,26 @@ func TestPlaintextNeverOnDisk(t *testing.T) {
 		}
 	}
 	check("with live WAL") // WAL not yet checkpointed
-	e.st.Close()
+	_ = e.st.Close()
 	check("after close")
 }
 
 func TestLogsNeverContainPlaintextOrKeys(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "c")
-	e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"2"), "a", "")
-	e.svc.GetValue(ctx, "app", "prod", "K", 0)
-	e.svc.GetValue(ctx, "app", "prod", "K", 9)
-	e.svc.DisableVersion(ctx, "app", "prod", "K", 1, "a")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "c")
+	_, _ = e.svc.AddVersion(ctx, "app", "prod", "K", []byte(plain+"2"), "a", "")
+	_, _ = e.svc.GetValue(ctx, "app", "prod", "K", 0)
+	_, _ = e.svc.GetValue(ctx, "app", "prod", "K", 9)
+	_ = e.svc.DisableVersion(ctx, "app", "prod", "K", 1, "a")
 	// force an integrity failure to exercise the warning path
 	db := e.rawDB(t)
 	dropTriggers(t, db)
-	db.Exec(`UPDATE secret_versions SET ciphertext = x'00112233445566778899aabbccddeeff00112233' WHERE version = 2`)
+	_, _ = db.Exec(`UPDATE secret_versions SET ciphertext = x'00112233445566778899aabbccddeeff00112233' WHERE version = 2`)
 	if _, err := e.svc.GetValue(ctx, "app", "prod", "K", 2); !errors.Is(err, ErrIntegrity) {
 		t.Fatal(err)
 	}
-	e.svc.DeleteSecret(ctx, "app", "prod", "K", "a")
+	_ = e.svc.DeleteSecret(ctx, "app", "prod", "K", "a")
 	kb, _ := os.ReadFile(e.keyPath)
 	raw := strings.TrimPrefix(strings.TrimSpace(string(kb)), "dso-root-key-v1:")
 	if e.logs.Len() == 0 {
@@ -314,11 +314,11 @@ func TestTamperedCiphertextNonceAndTagFailClosed(t *testing.T) {
 	for _, col := range []string{"ciphertext", "nonce"} {
 		e := setup(t)
 		e.project(t, "app", "prod")
-		e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "")
+		_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte(plain), "a", "")
 		db := e.rawDB(t)
 		dropTriggers(t, db)
 		var b []byte
-		db.QueryRow(`SELECT ` + col + ` FROM secret_versions`).Scan(&b)
+		_ = db.QueryRow(`SELECT ` + col + ` FROM secret_versions`).Scan(&b)
 		b[len(b)-1] ^= 0x01 // last byte: GCM tag for ciphertext, nonce byte for nonce
 		if _, err := db.Exec(`UPDATE secret_versions SET `+col+` = ?`, b); err != nil {
 			t.Fatal(err)
@@ -337,10 +337,10 @@ func TestCiphertextSubstitutionFailsClosed(t *testing.T) {
 	build := func(t *testing.T) (*env, *sql.DB) {
 		e := setup(t)
 		e.project(t, "app", "prod", "staging")
-		e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("value-A"), "x", "")
-		e.svc.AddVersion(ctx, "app", "prod", "A", []byte("value-A2"), "x", "")
-		e.svc.CreateSecret(ctx, "app", "prod", "B", []byte("value-B"), "x", "")
-		e.svc.CreateSecret(ctx, "app", "staging", "A", []byte("value-staging-A"), "x", "")
+		_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("value-A"), "x", "")
+		_, _ = e.svc.AddVersion(ctx, "app", "prod", "A", []byte("value-A2"), "x", "")
+		_ = e.svc.CreateSecret(ctx, "app", "prod", "B", []byte("value-B"), "x", "")
+		_ = e.svc.CreateSecret(ctx, "app", "staging", "A", []byte("value-staging-A"), "x", "")
 		db := e.rawDB(t)
 		dropTriggers(t, db)
 		return e, db
@@ -387,13 +387,13 @@ func TestCiphertextSubstitutionFailsClosed(t *testing.T) {
 		e := setup(t)
 		e.project(t, "app", "prod")
 		e.project(t, "other", "prod")
-		e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
-		e.svc.CreateSecret(ctx, "other", "prod", "A", []byte("o"), "x", "")
+		_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
+		_ = e.svc.CreateSecret(ctx, "other", "prod", "A", []byte("o"), "x", "")
 		db := e.rawDB(t)
 		dropTriggers(t, db)
 		var ct, nonce []byte
-		db.QueryRow(`SELECT v.ciphertext, v.nonce FROM secret_versions v JOIN secrets s ON s.id=v.secret_id JOIN projects p ON p.id=s.project_id WHERE p.slug='other'`).Scan(&ct, &nonce)
-		db.Exec(`UPDATE secret_versions SET ciphertext=?, nonce=? WHERE secret_id=(SELECT s.id FROM secrets s JOIN projects p ON p.id=s.project_id WHERE p.slug='app')`, ct, nonce)
+		_ = db.QueryRow(`SELECT v.ciphertext, v.nonce FROM secret_versions v JOIN secrets s ON s.id=v.secret_id JOIN projects p ON p.id=s.project_id WHERE p.slug='other'`).Scan(&ct, &nonce)
+		_, _ = db.Exec(`UPDATE secret_versions SET ciphertext=?, nonce=? WHERE secret_id=(SELECT s.id FROM secrets s JOIN projects p ON p.id=s.project_id WHERE p.slug='app')`, ct, nonce)
 		if _, err := e.svc.GetValue(ctx, "app", "prod", "A", 1); !errors.Is(err, ErrIntegrity) {
 			t.Fatalf("cross-project substitution accepted: %v", err)
 		}
@@ -401,7 +401,7 @@ func TestCiphertextSubstitutionFailsClosed(t *testing.T) {
 
 	t.Run("secret renamed in the database", func(t *testing.T) {
 		e, db := build(t)
-		db.Exec(`UPDATE secrets SET name='A-renamed' WHERE name='B'`)
+		_, _ = db.Exec(`UPDATE secrets SET name='A-renamed' WHERE name='B'`)
 		if _, err := e.svc.GetValue(ctx, "app", "prod", "A-renamed", 1); !errors.Is(err, ErrIntegrity) {
 			t.Fatalf("renamed secret accepted: %v", err)
 		}
@@ -409,8 +409,8 @@ func TestCiphertextSubstitutionFailsClosed(t *testing.T) {
 
 	t.Run("secret moved to another environment", func(t *testing.T) {
 		e, db := build(t)
-		db.Exec(`PRAGMA foreign_keys=ON`)
-		db.Exec(`UPDATE secrets SET environment_id=(SELECT e.id FROM environments e WHERE e.slug='staging') WHERE name='B'`)
+		_, _ = db.Exec(`PRAGMA foreign_keys=ON`)
+		_, _ = db.Exec(`UPDATE secrets SET environment_id=(SELECT e.id FROM environments e WHERE e.slug='staging') WHERE name='B'`)
 		if _, err := e.svc.GetValue(ctx, "app", "staging", "B", 1); !errors.Is(err, ErrIntegrity) {
 			t.Fatalf("moved secret accepted: %v", err)
 		}
@@ -421,8 +421,8 @@ func TestUntamperedValuesStillReadAfterSubstitutionSetup(t *testing.T) {
 	// guards the suite above: the same fixture reads fine when not tampered with
 	e := setup(t)
 	e.project(t, "app", "prod", "staging")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("value-A"), "x", "")
-	e.svc.CreateSecret(ctx, "app", "staging", "A", []byte("value-staging-A"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("value-A"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "staging", "A", []byte("value-staging-A"), "x", "")
 	if mustGet(t, e, "app", "prod", "A", 1) != "value-A" || mustGet(t, e, "app", "staging", "A", 1) != "value-staging-A" {
 		t.Fatal("fixture broken")
 	}
@@ -432,12 +432,12 @@ func TestWrappedDEKTamperAndSubstitution(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
 	e.project(t, "other", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
 	db := e.rawDB(t)
 	// swap in another project's wrapped DEK (same root key, different project id in AAD)
 	var other []byte
-	db.QueryRow(`SELECT wrapped_dek FROM projects WHERE slug='other'`).Scan(&other)
-	db.Exec(`UPDATE projects SET wrapped_dek=? WHERE slug='app'`, other)
+	_ = db.QueryRow(`SELECT wrapped_dek FROM projects WHERE slug='other'`).Scan(&other)
+	_, _ = db.Exec(`UPDATE projects SET wrapped_dek=? WHERE slug='app'`, other)
 	if _, err := e.svc.GetValue(ctx, "app", "prod", "A", 1); err == nil {
 		t.Fatal("wrapped DEK from another project accepted")
 	}
@@ -451,10 +451,10 @@ func TestWrappedDEKTamperAndSubstitution(t *testing.T) {
 func TestWrongRootKeyFailsClosedAndWritesNothing(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
 
 	otherKey := filepath.Join(securefstest.TempDir(t), "other.key")
-	crypto.InstallKeyFile(otherKey)
+	_, _ = crypto.InstallKeyFile(otherKey)
 	kp, _ := crypto.NewFileKeyProvider(otherKey)
 	bad := New(e.st, kp, nil)
 	if _, err := bad.GetValue(ctx, "app", "prod", "A", 0); !errors.Is(err, ErrWrongRootKey) {
@@ -484,7 +484,7 @@ func (brokenProvider) Wrap(context.Context, []byte, []byte) ([]byte, error) {
 func TestKeyProviderFailureFailsClosed(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("a"), "x", "")
 	kp, _ := crypto.NewFileKeyProvider(e.keyPath)
 	b := New(e.st, brokenProvider{kp}, nil)
 	if _, err := b.GetValue(ctx, "app", "prod", "A", 0); err == nil {
@@ -508,8 +508,8 @@ func TestKeyProviderInterfaceIsStorageIndependent(t *testing.T) {
 func TestRestartPersistenceWithFreshKeyProviderAndMissingKey(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte(plain), "x", "")
-	e.svc.AddVersion(ctx, "app", "prod", "A", []byte("two"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte(plain), "x", "")
+	_, _ = e.svc.AddVersion(ctx, "app", "prod", "A", []byte("two"), "x", "")
 	e.reopen(t) // new process equivalent: provider re-read from disk, DB reopened
 	if mustGet(t, e, "app", "prod", "A", 1) != plain || mustGet(t, e, "app", "prod", "A", 0) != "two" {
 		t.Fatal("data not readable after restart")
@@ -544,10 +544,10 @@ func TestPassphraseProviderEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	svc := New(st, kp, nil)
-	svc.CreateProject(ctx, "app", "")
-	svc.CreateEnvironment(ctx, "app", "prod", "")
+	_, _ = svc.CreateProject(ctx, "app", "")
+	_, _ = svc.CreateEnvironment(ctx, "app", "prod", "")
 	if err := svc.CreateSecret(ctx, "app", "prod", "A", []byte("pv"), "x", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -584,17 +584,17 @@ func TestProjectsHaveIndependentDEKs(t *testing.T) {
 func TestEveryVersionUsesAUniqueNonce(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("same"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("same"), "x", "")
 	for i := 0; i < 50; i++ {
-		e.svc.AddVersion(ctx, "app", "prod", "A", []byte("same"), "x", "")
+		_, _ = e.svc.AddVersion(ctx, "app", "prod", "A", []byte("same"), "x", "")
 	}
 	db := e.rawDB(t)
 	rows, _ := db.Query(`SELECT nonce, ciphertext FROM secret_versions`)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	n, cts := map[string]bool{}, map[string]bool{}
 	for rows.Next() {
 		var a, b []byte
-		rows.Scan(&a, &b)
+		_ = rows.Scan(&a, &b)
 		if n[string(a)] || cts[string(b)] {
 			t.Fatal("nonce or ciphertext repeated for identical plaintext")
 		}
@@ -608,7 +608,7 @@ func TestEveryVersionUsesAUniqueNonce(t *testing.T) {
 func TestConcurrentServiceUse(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("v0"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "A", []byte("v0"), "x", "")
 	var wg sync.WaitGroup
 	errc := make(chan error, 64)
 	for i := 0; i < 8; i++ {
@@ -649,9 +649,9 @@ func TestConcurrentServiceUse(t *testing.T) {
 func TestCiphertextFromDeletedSecretWithSameNameIsRejected(t *testing.T) {
 	e := setup(t)
 	e.project(t, "app", "prod")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("old-value"), "x", "")
-	e.svc.DeleteSecret(ctx, "app", "prod", "K", "x")
-	e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("new-value"), "x", "")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("old-value"), "x", "")
+	_ = e.svc.DeleteSecret(ctx, "app", "prod", "K", "x")
+	_ = e.svc.CreateSecret(ctx, "app", "prod", "K", []byte("new-value"), "x", "")
 	db := e.rawDB(t)
 	dropTriggers(t, db)
 	var ct, nonce []byte

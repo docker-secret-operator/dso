@@ -165,7 +165,7 @@ func NewComposeCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				return fmt.Errorf("Agent connection failed. Is the DSO agent running? Error: %w", err)
+				return fmt.Errorf("agent connection failed. Is the DSO agent running? Error: %w", err)
 			}
 			defer func() { _ = client.Close() }()
 
@@ -196,7 +196,7 @@ func NewComposeCmd() *cobra.Command {
 			fullArgs := append([]string{"docker", "compose"}, dockerArgs...)
 			// #nosec G204 -- docker execution uses strictly validated arguments
 			if err := syscall.Exec(dockerPath, fullArgs, finalEnvs); err != nil {
-				return fmt.Errorf("Exec failed: %w", err)
+				return fmt.Errorf("exec failed: %w", err)
 			}
 			return nil
 		},

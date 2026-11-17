@@ -105,7 +105,7 @@ func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *Rolli
 
 func (rs *RollingStrategy) fault(point string) {
 	// Real-process crash harness: a no-op unless built with -tags dsofault.
-	faultinject.Hit("rolling:" + point)
+	_ = faultinject.Hit("rolling:" + point)
 	if rs.FaultHook != nil {
 		rs.FaultHook(point)
 	}

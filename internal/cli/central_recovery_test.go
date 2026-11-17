@@ -97,7 +97,7 @@ func TestCentralRecoveryStatus_LockUnavailable_StatesScanningWasNotPerformed(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer excl.Close()
+	defer func() { _ = excl.Close() }()
 
 	out, _, err := e.run(t, "", "recovery-status", "--db", e.db)
 	if err != nil {

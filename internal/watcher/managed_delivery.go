@@ -238,7 +238,7 @@ func (r *ReloaderController) redeliverGated(ctx context.Context, id, name string
 	lock := &lockInfo{startTime: time.Now(), serviceName: serviceName}
 	if val, busy := r.rotationLocks.LoadOrStore(lockKey, lock); busy {
 		info := val.(*lockInfo)
-		if !(info.idleFor() > 5*time.Minute && r.rotationLocks.CompareAndSwap(lockKey, info, lock)) {
+		if info.idleFor() <= 5*time.Minute || !r.rotationLocks.CompareAndSwap(lockKey, info, lock) {
 			r.Logger.Info("Re-delivery to a gated container deferred: a rotation of its service is running",
 				zap.String("id", util.ShortID(id)), zap.String("service", lockKey))
 			r.gateWaiting.Store(id, struct{}{})

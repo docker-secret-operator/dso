@@ -99,8 +99,7 @@ func TestDeliveryError_WrappedDeadlinePreservedAndURLFree(t *testing.T) {
 func TestNotify_RedirectIsNotFollowedAndLocationNotExposed(t *testing.T) {
 	const locTok = "LOCTOK-8a2d-SYNTH"
 	var hits int32
-	var target *httptest.Server
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
 		http.Redirect(w, r, "https://elsewhere.example.com/"+locTok+"?k="+locTok, http.StatusFound)
 	}))

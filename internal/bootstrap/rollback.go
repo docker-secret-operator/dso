@@ -200,7 +200,7 @@ func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFu
 // operation in the same transaction fails.
 func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) (Operation, RollbackFunc) {
 	var previousContent []byte
-	var previousMode os.FileMode = dsoConfigFileMode
+	var previousMode = dsoConfigFileMode
 	var previouslyExisted bool
 
 	op := NewSimpleOperation("write-config", func(ctx context.Context) error {

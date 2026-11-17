@@ -327,7 +327,7 @@ func base64Key() string {
 func TestKeyErrorsDoNotContainKeyMaterial(t *testing.T) {
 	p := filepath.Join(securefstest.TempDir(t), "k")
 	secret := "SECRETKEYMATERIAL1234567890abcdefghijk"
-	os.WriteFile(p, []byte(fileKeyPrefix+secret), 0o644)
+	_ = os.WriteFile(p, []byte(fileKeyPrefix+secret), 0o644)
 	_, err := NewFileKeyProvider(p)
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("error leaks key material or is nil: %v", err)
@@ -395,7 +395,7 @@ func TestPassphraseParameterTamperingIsRejected(t *testing.T) {
 		if s == string(orig) {
 			t.Fatalf("%s: mutation did not apply", name)
 		}
-		os.WriteFile(p, []byte(s), 0o400)
+		_ = os.WriteFile(p, []byte(s), 0o400)
 		if _, err := NewPassphraseKeyProvider(p, pass); err == nil || errors.Is(err, ErrWrongPassphrase) {
 			t.Fatalf("%s: expected parameter rejection, got %v", name, err)
 		}
@@ -408,7 +408,7 @@ func TestPassphraseParameterTamperingIsRejected(t *testing.T) {
 	mutate("format", `dso-passphrase-key-v1`, `v0`)
 	// a changed salt derives a different key: wrong-passphrase, never silent success
 	p := filepath.Join(d, "salt")
-	os.WriteFile(p, []byte(strings.Replace(string(orig), `"salt": "`, `"salt": "AAAA`, 1)), 0o400)
+	_ = os.WriteFile(p, []byte(strings.Replace(string(orig), `"salt": "`, `"salt": "AAAA`, 1)), 0o400)
 	if _, err := NewPassphraseKeyProvider(p, pass); err == nil {
 		t.Fatal("tampered salt accepted")
 	}

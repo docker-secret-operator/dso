@@ -117,7 +117,7 @@ func injectCommand(cmd *cobra.Command, args []string) error {
 		if injectOpts.Value == "" {
 			return fmt.Errorf("secret value cannot be empty")
 		}
-		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --value puts the secret in the command line (shell history, process list, CI logs); prefer --value-stdin or the prompt")
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --value puts the secret in the command line (shell history, process list, CI logs); prefer --value-stdin or the prompt")
 	} else {
 		v, err := readSecretValue(cmd, injectOpts.Secret, injectOpts.TrimNewline)
 		if err != nil {

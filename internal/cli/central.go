@@ -98,9 +98,9 @@ func promptHidden(cmd *cobra.Command, prompt string) ([]byte, error) {
 	if !term.IsTerminal(fd) {
 		return nil, errors.New("no terminal available for a hidden prompt; use --passphrase-file or stdin options")
 	}
-	fmt.Fprint(cmd.ErrOrStderr(), prompt)
+	_, _ = fmt.Fprint(cmd.ErrOrStderr(), prompt)
 	b, err := term.ReadPassword(fd)
-	fmt.Fprintln(cmd.ErrOrStderr())
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 	return b, err
 }
 
@@ -296,7 +296,7 @@ database files this run created are removed; fix the cause and re-run with
 				dbExisted = true // empty leftover of an earlier failed init; reuse it
 			}
 			if stale := crypto.StaleTempKeyFiles(keyDir); len(stale) > 0 {
-				fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: leftover temporary key file(s) from an interrupted installation: %s\n"+
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: leftover temporary key file(s) from an interrupted installation: %s\n"+
 					"They contain key material and are not removed automatically. Delete them yourself once you are sure no database depends on them.\n",
 					strings.Join(stale, ", "))
 			}
@@ -393,15 +393,15 @@ database files this run created are removed; fix the cause and re-run with
 			if err != nil {
 				return fail(err)
 			}
-			defer st.Close()
+			defer func() { _ = st.Close() }()
 			if err := centralsvc.New(st, kp, centralAuditLogger()).Bind(cmd.Context()); err != nil {
 				recordInitEvent(st, store.AuditFailure, "db_error")
 				_ = st.Close()
 				return fail(err)
 			}
 			recordInitEvent(st, store.AuditSuccess, "")
-			fmt.Fprintf(cmd.OutOrStdout(), "Initialised %s, bound to root key id %s (%s provider).\n", f.db, kp.ID(), f.provider)
-			fmt.Fprintln(cmd.OutOrStdout(), "Back up the root key separately from the database. Without it the data is unrecoverable.")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Initialised %s, bound to root key id %s (%s provider).\n", f.db, kp.ID(), f.provider)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Back up the root key separately from the database. Without it the data is unrecoverable.")
 			return nil
 		},
 	}
@@ -481,7 +481,7 @@ func centralProjectCmd(f *centralFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Created project %s\n", p.Slug)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created project %s\n", p.Slug)
 			return nil
 		},
 	}
@@ -509,9 +509,9 @@ func centralProjectCmd(f *centralFlags) *cobra.Command {
 				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
-			fmt.Fprintln(w, "SLUG\tNAME\tCREATED")
+			_, _ = fmt.Fprintln(w, "SLUG\tNAME\tCREATED")
 			for _, p := range ps {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", p.Slug, p.Name, p.CreatedAt.Format("2006-01-02 15:04:05Z"))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", p.Slug, p.Name, p.CreatedAt.Format("2006-01-02 15:04:05Z"))
 			}
 			return w.Flush()
 		},
@@ -559,7 +559,7 @@ risk clearing it).`,
 			if renameJSON {
 				return writeCentralJSON(cmd, projectRenameJSON{PreviousSlug: args[0], Slug: args[1], Name: newName})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Renamed project %s to %s\n", args[0], args[1])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Renamed project %s to %s\n", args[0], args[1])
 			return nil
 		},
 	}
@@ -592,7 +592,7 @@ risk clearing it).`,
 			if delErr != nil {
 				return delErr
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %s\n", args[0])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %s\n", args[0])
 			return nil
 		},
 	}
@@ -644,7 +644,7 @@ func centralEnvCmd(f *centralFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Created environment %s/%s\n", args[0], e.Slug)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created environment %s/%s\n", args[0], e.Slug)
 			return nil
 		},
 	}
@@ -671,9 +671,9 @@ func centralEnvCmd(f *centralFlags) *cobra.Command {
 				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
-			fmt.Fprintln(w, "SLUG\tNAME")
+			_, _ = fmt.Fprintln(w, "SLUG\tNAME")
 			for _, e := range es {
-				fmt.Fprintf(w, "%s\t%s\n", e.Slug, e.Name)
+				_, _ = fmt.Fprintf(w, "%s\t%s\n", e.Slug, e.Name)
 			}
 			return w.Flush()
 		},
@@ -721,7 +721,7 @@ than risk clearing it).`,
 			if renameJSON {
 				return writeCentralJSON(cmd, environmentRenameJSON{Project: args[0], PreviousSlug: args[1], Slug: args[2], Name: newName})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Renamed environment %s/%s to %s\n", args[0], args[1], args[2])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Renamed environment %s/%s to %s\n", args[0], args[1], args[2])
 			return nil
 		},
 	}
@@ -754,7 +754,7 @@ than risk clearing it).`,
 			if delErr != nil {
 				return delErr
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deleted environment %s/%s\n", args[0], args[1])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Deleted environment %s/%s\n", args[0], args[1])
 			return nil
 		},
 	}
@@ -840,13 +840,13 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "Created version %d of %s\n", n, args[2])
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created version %d of %s\n", n, args[2])
 					return nil
 				}
 				if err := svc.CreateSecret(cmd.Context(), args[0], args[1], args[2], v, actorName(), comment); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Created secret %s (version 1)\n", args[2])
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created secret %s (version 1)\n", args[2])
 				return nil
 			},
 		}
@@ -876,7 +876,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			defer v.Zero()
 			_, err = cmd.OutOrStdout().Write(v.Plaintext)
 			if err == nil && term.IsTerminal(int(os.Stdout.Fd())) { // #nosec G115 -- a terminal file descriptor is a small non-negative OS value
-				fmt.Fprintln(cmd.OutOrStdout())
+				_, _ = fmt.Fprintln(cmd.OutOrStdout())
 			}
 			return err
 		},
@@ -908,13 +908,13 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
-			fmt.Fprintln(w, "NAME\tLATEST\tVERSIONS\tCREATED BY\tCREATED")
+			_, _ = fmt.Fprintln(w, "NAME\tLATEST\tVERSIONS\tCREATED BY\tCREATED")
 			for _, m := range ms {
 				latest := fmt.Sprint(m.LatestVersion)
 				if m.LatestVersionDisabled {
 					latest += " (DISABLED)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", m.Name, latest, m.VersionCount, m.CreatedBy, m.CreatedAt.Format("2006-01-02 15:04:05Z"))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", m.Name, latest, m.VersionCount, m.CreatedBy, m.CreatedAt.Format("2006-01-02 15:04:05Z"))
 			}
 			return w.Flush()
 		},
@@ -945,13 +945,13 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 				return writeCentralJSON(cmd, docs)
 			}
 			w := tabs(cmd)
-			fmt.Fprintln(w, "VERSION\tCREATED BY\tCREATED\tSTATE\tCOMMENT")
+			_, _ = fmt.Fprintln(w, "VERSION\tCREATED BY\tCREATED\tSTATE\tCOMMENT")
 			for _, v := range vs {
 				state := "enabled"
 				if v.DisabledAt != nil {
 					state = "disabled"
 				}
-				fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", v.Version, v.CreatedBy, v.CreatedAt.Format("2006-01-02 15:04:05Z"), state, v.Comment)
+				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", v.Version, v.CreatedBy, v.CreatedAt.Format("2006-01-02 15:04:05Z"), state, v.Comment)
 			}
 			return w.Flush()
 		},
@@ -973,7 +973,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			if err := svc.DisableVersion(cmd.Context(), args[0], args[1], args[2], n, actorName()); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Disabled version %d of %s\n", n, args[2])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Disabled version %d of %s\n", n, args[2])
 			return nil
 		},
 	}
@@ -1002,7 +1002,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 					Project: args[0], Environment: args[1], Name: args[2], FromVersion: n, NewVersion: newVersion,
 				})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Rolled back %s to version %d (created version %d)\n", args[2], n, newVersion)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Rolled back %s to version %d (created version %d)\n", args[2], n, newVersion)
 			return nil
 		},
 	}
@@ -1020,7 +1020,7 @@ func centralSecretCmd(f *centralFlags) *cobra.Command {
 			if err := svc.DeleteSecret(cmd.Context(), args[0], args[1], args[2], actorName()); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deleted secret %s\n", args[2])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Deleted secret %s\n", args[2])
 			return nil
 		},
 	}
@@ -1082,13 +1082,13 @@ responsibility.`,
 			if err != nil {
 				return err
 			}
-			defer st.Close()
+			defer func() { _ = st.Close() }()
 			path, err := centralsvc.BackupWithAudit(cmd.Context(), st, out, actorName(), centralAuditLogger())
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Backup written to %s\n", path)
-			fmt.Fprintln(cmd.OutOrStdout(), "Reminder: this backup does not include the root key or passphrase; preserve that material separately.")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup written to %s\n", path)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Reminder: this backup does not include the root key or passphrase; preserve that material separately.")
 			return nil
 		},
 	}
@@ -1151,34 +1151,34 @@ move, repair or install anything, and it appends no audit event.`,
 
 func printRecoveryScanResult(cmd *cobra.Command, res centralsvc.RecoveryScanResult) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Recovery artifact scan for %s\n", res.DBPath)
-	fmt.Fprintf(out, "Shared central lock acquired: %t\n", res.LockAcquired)
-	fmt.Fprintf(out, "  %s\n", res.LockNote)
-	fmt.Fprintln(out, "This scan does not perform recovery or cleanup: nothing was deleted, renamed, repaired or installed.")
+	_, _ = fmt.Fprintf(out, "Recovery artifact scan for %s\n", res.DBPath)
+	_, _ = fmt.Fprintf(out, "Shared central lock acquired: %t\n", res.LockAcquired)
+	_, _ = fmt.Fprintf(out, "  %s\n", res.LockNote)
+	_, _ = fmt.Fprintln(out, "This scan does not perform recovery or cleanup: nothing was deleted, renamed, repaired or installed.")
 	if !res.Scanned {
-		fmt.Fprintln(out, "Artifact scanning and classification were NOT performed, because the shared lock could not be acquired.")
-		fmt.Fprintln(out, "Whether recovery artifacts exist beside this path is UNKNOWN from this run. Retry once the conflicting dso central process has finished.")
+		_, _ = fmt.Fprintln(out, "Artifact scanning and classification were NOT performed, because the shared lock could not be acquired.")
+		_, _ = fmt.Fprintln(out, "Whether recovery artifacts exist beside this path is UNKNOWN from this run. Retry once the conflicting dso central process has finished.")
 		return
 	}
 	if len(res.Artifacts) == 0 {
-		fmt.Fprintln(out, "No recovery artifacts were found beside this path.")
+		_, _ = fmt.Fprintln(out, "No recovery artifacts were found beside this path.")
 		return
 	}
 	for i, a := range res.Artifacts {
-		fmt.Fprintf(out, "\n[%d] %s\n", i+1, a.Path)
-		fmt.Fprintf(out, "    Kind:       %s\n", a.Kind)
-		fmt.Fprintf(out, "    Confidence: %s\n", a.Confidence)
+		_, _ = fmt.Fprintf(out, "\n[%d] %s\n", i+1, a.Path)
+		_, _ = fmt.Fprintf(out, "    Kind:       %s\n", a.Kind)
+		_, _ = fmt.Fprintf(out, "    Confidence: %s\n", a.Confidence)
 		if a.MainDatabaseUnsafe {
-			fmt.Fprintln(out, "    The active database must NOT be treated as safe to open based on this artifact's state.")
+			_, _ = fmt.Fprintln(out, "    The active database must NOT be treated as safe to open based on this artifact's state.")
 		}
-		fmt.Fprintln(out, "    Facts:")
+		_, _ = fmt.Fprintln(out, "    Facts:")
 		for _, fct := range a.Facts {
-			fmt.Fprintf(out, "      - %s\n", fct)
+			_, _ = fmt.Fprintf(out, "      - %s\n", fct)
 		}
 		if len(a.Unresolved) > 0 {
-			fmt.Fprintln(out, "    Unresolved (manual judgment required):")
+			_, _ = fmt.Fprintln(out, "    Unresolved (manual judgment required):")
 			for _, u := range a.Unresolved {
-				fmt.Fprintf(out, "      - %s\n", u)
+				_, _ = fmt.Fprintf(out, "      - %s\n", u)
 			}
 		}
 	}
@@ -1192,14 +1192,14 @@ func printRecoveryScanResult(cmd *cobra.Command, res centralsvc.RecoveryScanResu
 // the operator may be comparing this output against a log or a script's own
 // record of which file it asked for).
 func printCandidateInfo(cmd *cobra.Command, candidatePath string, info sqlite.CandidateInfo) {
-	fmt.Fprintf(cmd.OutOrStdout(), "Candidate: %s\n", candidatePath)
-	fmt.Fprintf(cmd.OutOrStdout(), "Candidate schema version: %d\n", info.SchemaVersion)
-	fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit events:   %d\n", info.EventCount)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Candidate: %s\n", candidatePath)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Candidate schema version: %d\n", info.SchemaVersion)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit events:   %d\n", info.EventCount)
 	if info.LastEvent != nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit-chain tip: %s (%s, %s)\n",
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Candidate audit-chain tip: %s (%s, %s)\n",
 			info.LastEvent.ID, info.LastEvent.EventType, info.LastEvent.CreatedAt.UTC().Format(time.RFC3339))
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "Candidate audit chain: empty")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Candidate audit chain: empty")
 	}
 }
 
@@ -1290,7 +1290,7 @@ restore event, or taking the exclusive lock.`,
 				},
 			})
 			if errors.Is(err, centralsvc.ErrRestoreNotConfirmed) {
-				fmt.Fprintln(cmd.OutOrStdout(), "Restore cancelled.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Restore cancelled.")
 				return nil
 			}
 			if err != nil {
@@ -1298,12 +1298,12 @@ restore event, or taking the exclusive lock.`,
 			}
 			if dryRun {
 				printCandidateInfo(cmd, from, result.CandidateInfo)
-				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: candidate passed validation. The active database was not modified.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Dry run: candidate passed validation. The active database was not modified.")
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Restore complete. Safety snapshot: %s\n", result.SafetySnapshot)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restore complete. Safety snapshot: %s\n", result.SafetySnapshot)
 			if result.RestoreEventID != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Restore audit event: %s\n", result.RestoreEventID)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restore audit event: %s\n", result.RestoreEventID)
 			}
 			return nil
 		},
@@ -1320,7 +1320,7 @@ restore event, or taking the exclusive lock.`,
 // (which is bound to the process's os.Stdin/os.Stdout), so the restore
 // confirmation can be driven and captured through the Cobra command.
 func promptApprovalIO(in io.Reader, out io.Writer, prompt string) bool {
-	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	_, _ = fmt.Fprintf(out, "%s [y/N] ", prompt)
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && line == "" {
 		return false
@@ -1434,17 +1434,17 @@ authorization, and not a tamper-proof guarantee.`,
 			}
 			switch res.Status {
 			case sqlite.AuditVerified:
-				fmt.Fprintf(out, "Audit chain: VERIFIED (%d events)\n", res.EventCount)
+				_, _ = fmt.Fprintf(out, "Audit chain: VERIFIED (%d events)\n", res.EventCount)
 				if res.TipEventID != "" {
-					fmt.Fprintf(out, "Tip event: %s\n", quoteUntrusted(res.TipEventID))
+					_, _ = fmt.Fprintf(out, "Tip event: %s\n", quoteUntrusted(res.TipEventID))
 				}
-				fmt.Fprintln(out, "Note: the chain is unkeyed. This does not prove authenticity, and cannot detect deleted newest events or rollback to an older valid copy.")
+				_, _ = fmt.Fprintln(out, "Note: the chain is unkeyed. This does not prove authenticity, and cannot detect deleted newest events or rollback to an older valid copy.")
 			case sqlite.AuditIntegrityFailure:
-				fmt.Fprintf(out, "Audit chain: INTEGRITY FAILURE at index %d (event %s)\n", res.FailureIndex, quoteUntrusted(res.FailureEventID))
-				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.FailureReason))
+				_, _ = fmt.Fprintf(out, "Audit chain: INTEGRITY FAILURE at index %d (event %s)\n", res.FailureIndex, quoteUntrusted(res.FailureEventID))
+				_, _ = fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.FailureReason))
 			default:
-				fmt.Fprintln(out, "Audit chain: VERIFICATION UNAVAILABLE - the database could not be safely read or verified (this is not evidence of tampering)")
-				fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.Reason))
+				_, _ = fmt.Fprintln(out, "Audit chain: VERIFICATION UNAVAILABLE - the database could not be safely read or verified (this is not evidence of tampering)")
+				_, _ = fmt.Fprintf(out, "Reason: %s\n", printableUntrusted(res.Reason))
 			}
 			return failure
 		},

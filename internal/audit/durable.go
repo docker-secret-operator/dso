@@ -222,7 +222,7 @@ func ReadVerified(path string) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	recs, _, _, _, err := parseChain(f)
 	return recs, err
 }

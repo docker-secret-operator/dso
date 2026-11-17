@@ -102,11 +102,11 @@ func TestVerifyDirectories_StrictRuntimeDirectoryViolationsFail(t *testing.T) {
 
 	// owner mismatch
 	err = pm.verifyDirectories(specFor(ok, 0o750, true), gid, uid+1)
-	asViolations(t, err)
+	_ = asViolations(t, err)
 
 	// group mismatch
 	err = pm.verifyDirectories(specFor(ok, 0o750, true), gid+1, uid)
-	asViolations(t, err)
+	_ = asViolations(t, err)
 }
 
 func TestVerifyDirectories_NoDsoGroupMeansRootGroup(t *testing.T) {
@@ -118,7 +118,7 @@ func TestVerifyDirectories_NoDsoGroupMeansRootGroup(t *testing.T) {
 	mkdirMode(t, d, 0o750)
 	// dsoGID < 0 (the dso group does not exist): the invariant is group root.
 	err := pm.verifyDirectories(specFor(d, 0o750, true), -1, uint32(os.Getuid()))
-	asViolations(t, err)
+	_ = asViolations(t, err)
 }
 
 func TestVerifyDirectories_SymlinkedRuntimeDirectoryFails(t *testing.T) {
@@ -180,7 +180,7 @@ func TestVerifyDirectories_AllDirectoriesAreReportedBeforeFailing(t *testing.T) 
 	mkdirMode(t, b, 0o750)
 	plan := []dsoDirSpec{{a, 0o750, true}, {b, 0o750, true}}
 	err := pm.verifyDirectories(plan, gid, uid)
-	asViolations(t, err)
+	_ = asViolations(t, err)
 	verified := 0
 	for _, m := range logger.messages {
 		if m == "Directory verified" {

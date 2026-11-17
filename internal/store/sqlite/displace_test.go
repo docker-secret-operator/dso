@@ -2161,7 +2161,7 @@ func TestDisplace_EveryMethodRequiresAHeldLockForThisPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer wrongPath.Close()
+	defer func() { _ = wrongPath.Close() }()
 	var nilLock *RestoreLock
 	before := pvStates(t, e.db)
 	for name, lock := range map[string]*RestoreLock{"nil": nilLock, "released": released, "wrong path": wrongPath} {
@@ -2305,14 +2305,15 @@ func TestDisplace_CrashAtEveryStep_NeverLosesAnOriginalByte_AndIsDetectable(t *t
 					t.Fatal(err)
 				}
 				var want []string
-				if step == "main-moved" {
+				switch step {
+				case "main-moved":
 					want = []string{"-wal", "-journal", "-shm"}
-				} else if step == "wal-moved" {
+				case "wal-moved":
 					want = []string{"-journal", "-shm"}
-				} else if step == "journal-moved" {
+				case "journal-moved":
 					want = []string{"-shm"}
 				}
-				if fmt.Sprint(sc.OrphanNonEmpty()) != fmt.Sprint(want) && !(len(want) == 0 && len(sc.OrphanNonEmpty()) == 0) {
+				if fmt.Sprint(sc.OrphanNonEmpty()) != fmt.Sprint(want) && (len(want) != 0 || len(sc.OrphanNonEmpty()) != 0) {
 					t.Fatalf("orphans %v, want %v", sc.OrphanNonEmpty(), want)
 				}
 			default:
@@ -2407,7 +2408,7 @@ func instAppend(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write([]byte{1}); err != nil {
 		t.Fatal(err)
 	}
@@ -3075,8 +3076,8 @@ func TestDisplace_PreparedReplacementVerified_IsTheStepBeforeAnyDisplacement(t *
 		}
 		return -1
 	}
-	if !(idx("prepared-verified") >= 0 && idx("prepared-verified") < idx("aside-created") && idx("aside-created") < idx("main-moved") &&
-		idx("main-moved") < idx("installed") && idx("installed") < idx("install-verified") && idx("install-verified") < idx("final-rechecked")) {
+	if idx("prepared-verified") < 0 || idx("prepared-verified") >= idx("aside-created") || idx("aside-created") >= idx("main-moved") ||
+		idx("main-moved") >= idx("installed") || idx("installed") >= idx("install-verified") || idx("install-verified") >= idx("final-rechecked") {
 		t.Fatalf("unexpected order: %v", steps)
 	}
 }

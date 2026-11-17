@@ -49,7 +49,7 @@ func SanitizedEnv(parent []string, dockerHost string, extra map[string]string) (
 		out[k] = v
 	}
 	for k, v := range extra {
-		if strings.HasPrefix(k, "DOCKER_") && !(k == "DOCKER_HOST" && v == dockerHost) {
+		if strings.HasPrefix(k, "DOCKER_") && (k != "DOCKER_HOST" || v != dockerHost) {
 			return nil, fmt.Errorf("refusing to pass %s to a subprocess: only DOCKER_HOST=<guard endpoint> is allowed", k)
 		}
 		if strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {

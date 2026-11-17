@@ -910,7 +910,7 @@ func ownerModeText(uid, gid uint32, perm os.FileMode) string {
 // reports unknown.
 func ownerOf(fi os.FileInfo) (uid, gid uint32, ok bool) {
 	v := reflect.ValueOf(fi.Sys())
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {

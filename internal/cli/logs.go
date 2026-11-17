@@ -152,7 +152,7 @@ func runAPILogs(ctx context.Context, out io.Writer, apiAddr string, follow bool)
 		return err
 	}
 	if len(events) == 0 {
-		fmt.Fprintln(out, stripIfNoColor("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m"))
+		_, _ = fmt.Fprintln(out, stripIfNoColor("\033[33m[DSO] No events found. Is the agent running? Try: sudo systemctl start dso-agent\033[0m"))
 	}
 	for _, ev := range events {
 		printEventTo(out, ev)
@@ -162,8 +162,8 @@ func runAPILogs(ctx context.Context, out io.Writer, apiAddr string, follow bool)
 		return nil
 	}
 
-	fmt.Fprintln(out, stripIfNoColor("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m"))
-	fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+	_, _ = fmt.Fprintln(out, stripIfNoColor("\033[36m[DSO] Following live events via REST API... (Ctrl+C to stop)\033[0m"))
+	_, _ = fmt.Fprintln(out, "--------------------------------------------------------------------------------")
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -197,11 +197,11 @@ func runAPILogs(ctx context.Context, out io.Writer, apiAddr string, follow bool)
 func printHeader() { printHeaderTo(os.Stdout) }
 
 func printHeaderTo(w io.Writer) {
-	fmt.Fprintln(w, stripIfNoColor("\033[1;36m"))
-	fmt.Fprintln(w, "  ╔══════════════════════════════════════════════════╗")
-	fmt.Fprintln(w, "  ║         Docker Secret Operator — Logs            ║")
-	fmt.Fprintln(w, "  ╚══════════════════════════════════════════════════╝")
-	fmt.Fprintln(w, stripIfNoColor("\033[0m"))
+	_, _ = fmt.Fprintln(w, stripIfNoColor("\033[1;36m"))
+	_, _ = fmt.Fprintln(w, "  ╔══════════════════════════════════════════════════╗")
+	_, _ = fmt.Fprintln(w, "  ║         Docker Secret Operator — Logs            ║")
+	_, _ = fmt.Fprintln(w, "  ╚══════════════════════════════════════════════════╝")
+	_, _ = fmt.Fprintln(w, stripIfNoColor("\033[0m"))
 }
 
 // validateLoopbackURL rejects any --api-addr value whose host resolves to a
@@ -294,7 +294,7 @@ func printEventTo(w io.Writer, ev map[string]interface{}) {
 		line += fmt.Sprintf("  \033[36m[%s]\033[0m", secret)
 	}
 	line += "  " + msg
-	fmt.Fprintln(w, stripIfNoColor(line))
+	_, _ = fmt.Fprintln(w, stripIfNoColor(line))
 }
 
 // journaldPriority maps DSO log levels to journald priority numbers

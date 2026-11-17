@@ -275,7 +275,7 @@ func scanPreservationPublished(dir string) Artifact {
 		a.Confidence = ConfidenceManual
 		return a
 	}
-	defer mf.Close()
+	defer func() { _ = mf.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(mf, 1<<20))
 	if err != nil {
 		a.Facts = append(a.Facts, fmt.Sprintf("its manifest could not be read: %v", err))
@@ -462,7 +462,7 @@ func hashFileNoFollow(path string) (sum string, size int64, err error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {

@@ -65,7 +65,7 @@ func TestScanActiveRecoveryArtifacts_ConcurrentExclusiveRestore_NeverScansOrClas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer excl.Close()
+	defer func() { _ = excl.Close() }()
 
 	scanCalls := 0
 	orig := scanRecoveryArtifactsFn

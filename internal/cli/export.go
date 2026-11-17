@@ -23,7 +23,7 @@ func NewExportCmd() *cobra.Command {
 			cfgPath := ResolveConfig()
 			cfg, err := config.LoadConfig(cfgPath)
 			if err != nil {
-				return fmt.Errorf("Config load failed: %w", err)
+				return fmt.Errorf("config load failed: %w", err)
 			}
 
 			socketPath := "/run/dso/dso.sock"
@@ -33,7 +33,7 @@ func NewExportCmd() *cobra.Command {
 
 			client, err := injector.NewAgentClient(socketPath)
 			if err != nil {
-				return fmt.Errorf("Agent connection failed. Is the DSO agent running? error: %w", err)
+				return fmt.Errorf("agent connection failed. Is the DSO agent running? error: %w", err)
 			}
 			defer func() { _ = client.Close() }()
 
@@ -43,7 +43,7 @@ func NewExportCmd() *cobra.Command {
 
 			injectedEnvs, err := client.FetchAllEnvs(cfg)
 			if err != nil {
-				return fmt.Errorf("Injection failed: %w", err)
+				return fmt.Errorf("injection failed: %w", err)
 			}
 
 			// G304: Ensure the output path is safe and does not escape the current directory
@@ -68,7 +68,7 @@ func NewExportCmd() *cobra.Command {
 				return nil
 			})
 			if err != nil {
-				return fmt.Errorf("Export failed: %w", err)
+				return fmt.Errorf("export failed: %w", err)
 			}
 			fmt.Printf("Secrets successfully exported to %s format at: %s\n", format, output)
 			return nil

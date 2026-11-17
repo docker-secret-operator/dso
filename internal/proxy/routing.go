@@ -20,9 +20,9 @@ package proxy
 type reconstructionState int
 
 const (
-	// reconstructionNone: no scan has run in this process (the table is empty
+	// The zero value: no scan has run in this process (the table is empty
 	// because nobody filled it, not because nothing is routed).
-	reconstructionNone reconstructionState = iota
+	_ reconstructionState = iota
 	// reconstructionComplete: the Docker listing succeeded and every eligible
 	// container with a host-port mapping was processed.
 	reconstructionComplete

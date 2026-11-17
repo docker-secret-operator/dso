@@ -306,7 +306,7 @@ func (s *Store) applyMigration(ctx context.Context, m Migration) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	// Another process may have applied it between our check and our lock.
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.Version).Scan(&n); err != nil {
@@ -393,7 +393,7 @@ func verifyBackup(ctx context.Context, path string, wantVersion int) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var res string
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&res); err != nil || res != "ok" {
 		return fmt.Errorf("integrity_check = %q (%v)", res, err)
@@ -518,7 +518,7 @@ func (o ops) ListProjects(ctx context.Context) ([]store.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Project
 	for rows.Next() {
 		p, err := scanProject(rows)
@@ -588,7 +588,7 @@ func (o ops) ListEnvironments(ctx context.Context, projectID string) ([]store.En
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Environment
 	for rows.Next() {
 		e, err := scanEnv(rows)
@@ -646,8 +646,8 @@ func (o ops) countAllSecrets(ctx context.Context, environmentID string) (int, er
 // validNewSecret is checked before any transaction is begun (standalone) and
 // again by the Tx form.
 func validNewSecret(n store.NewSecret) bool {
-	return !(n.ID == "" || n.ProjectID == "" || n.EnvironmentID == "" || n.Name == "" ||
-		len(n.Ciphertext) == 0 || len(n.Nonce) == 0 || n.DEKVersion < 1)
+	return n.ID != "" && n.ProjectID != "" && n.EnvironmentID != "" && n.Name != "" &&
+		len(n.Ciphertext) != 0 && len(n.Nonce) != 0 && n.DEKVersion >= 1
 }
 
 func (o ops) CreateSecret(ctx context.Context, n store.NewSecret) error {
@@ -695,7 +695,7 @@ func (o ops) ListSecrets(ctx context.Context, environmentID string) ([]store.Sec
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.SecretMeta
 	for rows.Next() {
 		m, err := scanSecret(rows)
@@ -827,7 +827,7 @@ func (o ops) ListVersions(ctx context.Context, secretID string) ([]store.Version
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.VersionMeta
 	for rows.Next() {
 		v, err := scanVersionMeta(rows)
@@ -905,7 +905,7 @@ func (o ops) ListMeta(ctx context.Context, prefix string) ([]store.MetaEntry, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.MetaEntry
 	for rows.Next() {
 		var e store.MetaEntry

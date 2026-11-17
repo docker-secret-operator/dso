@@ -281,7 +281,7 @@ func TestSchemaCredentialFieldsAreTagged(t *testing.T) {
 	seen := map[reflect.Type]bool{}
 	var walk func(reflect.Type, string)
 	walk = func(rt reflect.Type, path string) {
-		for rt.Kind() == reflect.Ptr || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array || rt.Kind() == reflect.Map {
+		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array || rt.Kind() == reflect.Map {
 			rt = rt.Elem()
 		}
 		if rt.Kind() != reflect.Struct || seen[rt] {

@@ -10,7 +10,7 @@ const injectCanary = "SYNTHETIC-INJECT-CANARY"
 
 // runInject runs `inject` with a bogus Docker endpoint so nothing real is
 // contacted: input handling is exercised, then Docker lookup fails.
-func runInject(t *testing.T, stdin string, args ...string) (err error, stdout, stderr string) {
+func runInject(t *testing.T, stdin string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/dso-test.sock")
 	cmd := NewInjectCmd()
@@ -20,11 +20,11 @@ func runInject(t *testing.T, stdin string, args ...string) (err error, stdout, s
 	cmd.SetErr(&e)
 	cmd.SetArgs(args)
 	err = cmd.Execute()
-	return err, o.String(), e.String()
+	return o.String(), e.String(), err
 }
 
 func TestInject_ValueFlagWarnsAndNeverEchoesSecret(t *testing.T) {
-	err, out, errOut := runInject(t, "", "--container", "c", "--secret", "s", "--value", injectCanary)
+	out, errOut, err := runInject(t, "", "--container", "c", "--secret", "s", "--value", injectCanary)
 	if err == nil {
 		t.Fatal("expected failure reaching the bogus Docker endpoint")
 	}
@@ -39,7 +39,7 @@ func TestInject_ValueFlagWarnsAndNeverEchoesSecret(t *testing.T) {
 }
 
 func TestInject_ValueStdinReadsPipedInputWithoutWarning(t *testing.T) {
-	err, out, errOut := runInject(t, injectCanary+"\n", "--container", "c", "--secret", "s", "--value-stdin")
+	out, errOut, err := runInject(t, injectCanary+"\n", "--container", "c", "--secret", "s", "--value-stdin")
 	if err == nil || !strings.Contains(err.Error(), "container not found") {
 		t.Fatalf("expected to reach Docker lookup, got %v", err)
 	}
@@ -61,11 +61,11 @@ func TestInject_InputValidation(t *testing.T) {
 		"missing secret":            {"--container", "c", "--value", "x"},
 	}
 	for name, args := range cases {
-		if err, _, _ := runInject(t, "", args...); err == nil || strings.Contains(err.Error(), "container not found") {
+		if _, _, err := runInject(t, "", args...); err == nil || strings.Contains(err.Error(), "container not found") {
 			t.Errorf("%s: want validation error before Docker access, got %v", name, err)
 		}
 	}
-	if err, _, _ := runInject(t, "", "--container", "c", "--secret", "s", "--value-stdin"); err == nil || strings.Contains(err.Error(), "container not found") {
+	if _, _, err := runInject(t, "", "--container", "c", "--secret", "s", "--value-stdin"); err == nil || strings.Contains(err.Error(), "container not found") {
 		t.Errorf("empty stdin must be rejected before Docker access, got %v", err)
 	}
 }

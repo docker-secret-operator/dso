@@ -85,14 +85,14 @@ func TestValidateCandidate_CorruptedAuditChainRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `DROP TRIGGER IF EXISTS audit_events_no_update`); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE audit_events SET event_hash = X'DEADBEEF' WHERE id = 'e2'`); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatal(err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	if _, err := ValidateCandidate(ctx, path, latestSchema(t)); err == nil {
 		t.Fatal("expected a tampered audit chain to be rejected")
@@ -160,7 +160,7 @@ func TestValidateCandidate_WALModeCandidateWithPendingFramesIsNeverModified(t *t
 	if len(walBefore) == 0 {
 		t.Fatal("test setup failed to produce a non-empty -wal file to validate against")
 	}
-	s.db.Close()
+	_ = s.db.Close()
 
 	if _, err := ValidateCandidate(ctx, cand, latestSchema(t)); err != nil {
 		t.Fatalf("expected the WAL-mode candidate to validate successfully: %v", err)
@@ -210,7 +210,7 @@ func walShmCandidate(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	s.db.Close()
+	_ = s.db.Close()
 	return cand
 }
 

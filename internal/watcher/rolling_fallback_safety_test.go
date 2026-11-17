@@ -461,7 +461,7 @@ func TestExecuteSimpleRestart_UnhealthyReplacement_RollsBackKeepingOriginal(t *t
 	if health < 0 || stopNew < 0 || removeNew < 0 || renameBack < 0 || startOrig < 0 {
 		t.Fatalf("rollback sequence incomplete: %v", s.log.r)
 	}
-	if !(health < stopNew && stopNew < removeNew && removeNew < renameBack && renameBack < startOrig) {
+	if health >= stopNew || stopNew >= removeNew || removeNew >= renameBack || renameBack >= startOrig {
 		t.Fatalf("rollback out of order (health %d, stop new %d, rm new %d, rename %d, start orig %d): %v",
 			health, stopNew, removeNew, renameBack, startOrig, s.log.r)
 	}

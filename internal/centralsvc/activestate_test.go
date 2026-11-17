@@ -58,7 +58,7 @@ func acWant(t *testing.T, path string, want activeState) error {
 		if errors.Is(err, ErrNotInitialized) {
 			t.Fatalf("an inconclusive classification must not match ErrNotInitialized: %v", err)
 		}
-		wantInconclusive(t, err)
+		_ = wantInconclusive(t, err)
 		return err
 	}
 	if fmt.Sprint(legacy) != fmt.Sprint(err) {
@@ -187,7 +187,7 @@ func TestClassifyActive_EmptySQLite_IsDSOUnbound(t *testing.T) {
 func TestClassifyActive_OnlyEmptySchemaMigrations_IsDSOUnbound_NotForeign(t *testing.T) {
 	t.Parallel()
 	path := icForeign(t, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`)
-	wantNotInit(t, acWant(t, path, stateDSOUnbound))
+	_ = wantNotInit(t, acWant(t, path, stateDSOUnbound))
 }
 
 func TestClassifyActive_PartialDSOSchema_WithExactStructures_IsDSOUnbound(t *testing.T) {
@@ -196,7 +196,7 @@ func TestClassifyActive_PartialDSOSchema_WithExactStructures_IsDSOUnbound(t *tes
 	// the DSO structure, so the evidence supports "unbound DSO fragment".
 	path := icUnbound(t)
 	icEdit(t, path, `DROP TABLE secret_versions`, `DROP TABLE secrets`, `DROP TABLE environments`)
-	wantNotInit(t, acWant(t, path, stateDSOUnbound))
+	_ = wantNotInit(t, acWant(t, path, stateDSOUnbound))
 }
 
 func TestClassifyActive_PartialDSOSchema_WithHandWrittenColumns_IsInconclusive(t *testing.T) {
@@ -205,7 +205,7 @@ func TestClassifyActive_PartialDSOSchema_WithHandWrittenColumns_IsInconclusive(t
 	path := icForeign(t,
 		`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
 		`CREATE TABLE projects(id TEXT PRIMARY KEY, wrapped_dek BLOB, dek_key_id TEXT)`)
-	acWant(t, path, stateInconclusive)
+	_ = acWant(t, path, stateInconclusive)
 }
 
 func TestClassifyActive_DSONamedTablesWithForeignColumns_AreInconclusive(t *testing.T) {
@@ -228,7 +228,7 @@ func TestClassifyActive_DSONamedTablesWithForeignColumns_AreInconclusive(t *test
 	for name, stmts := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			acWant(t, icForeign(t, stmts...), stateInconclusive)
+			_ = acWant(t, icForeign(t, stmts...), stateInconclusive)
 		})
 	}
 }
@@ -240,7 +240,7 @@ func TestClassifyActive_CompleteDSOSchemaWithAlteredTable_IsInconclusive(t *test
 			t.Parallel()
 			path := icUnbound(t)
 			icEdit(t, path, `ALTER TABLE `+table+` ADD COLUMN extra_col TEXT`)
-			acWant(t, path, stateInconclusive)
+			_ = acWant(t, path, stateInconclusive)
 		})
 	}
 }
@@ -251,21 +251,21 @@ func TestClassifyActive_Views(t *testing.T) {
 	t.Parallel()
 	t.Run("view-only-foreign-database", func(t *testing.T) {
 		t.Parallel()
-		acWant(t, icForeign(t, `CREATE VIEW v AS SELECT 1`), stateInconclusive)
+		_ = acWant(t, icForeign(t, `CREATE VIEW v AS SELECT 1`), stateInconclusive)
 	})
 	t.Run("view-only-with-dso-named-view", func(t *testing.T) {
 		t.Parallel()
-		acWant(t, icForeign(t, `CREATE VIEW projects AS SELECT 1 AS id`), stateInconclusive)
+		_ = acWant(t, icForeign(t, `CREATE VIEW projects AS SELECT 1 AS id`), stateInconclusive)
 	})
 	t.Run("complete-dso-schema-plus-view-no-binding", func(t *testing.T) {
 		t.Parallel()
 		path := icUnbound(t)
 		icEdit(t, path, `CREATE VIEW v AS SELECT 1`)
-		acWant(t, path, stateInconclusive)
+		_ = acWant(t, path, stateInconclusive)
 	})
 	t.Run("only-schema_migrations-plus-view", func(t *testing.T) {
 		t.Parallel()
-		acWant(t, icForeign(t,
+		_ = acWant(t, icForeign(t,
 			`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
 			`CREATE VIEW v AS SELECT version FROM schema_migrations`), stateInconclusive)
 	})
@@ -273,13 +273,13 @@ func TestClassifyActive_Views(t *testing.T) {
 		t.Parallel()
 		// D7 is about tables: a foreign table makes it Foreign whether or not a
 		// view is also present. A view alone never does.
-		acWant(t, icForeign(t, `CREATE TABLE t(a)`, `CREATE VIEW v AS SELECT a FROM t`), stateForeign)
+		_ = acWant(t, icForeign(t, `CREATE TABLE t(a)`, `CREATE VIEW v AS SELECT a FROM t`), stateForeign)
 	})
 	t.Run("complete-dso-plus-extra-table-plus-view-is-foreign", func(t *testing.T) {
 		t.Parallel()
 		path := icUnbound(t)
 		icEdit(t, path, `CREATE TABLE extra(a)`, `CREATE VIEW v AS SELECT 1`)
-		acWant(t, path, stateForeign)
+		_ = acWant(t, path, stateForeign)
 	})
 	// Documented precedence: valid binding or well-formed projects decide first,
 	// exactly as CheckInitialized does, so a view cannot turn an initialized or
@@ -313,7 +313,7 @@ func TestClassifyActive_Views(t *testing.T) {
 		t.Parallel()
 		e := icBound(t, false)
 		icEdit(t, e.dbPath, `INSERT INTO schema_migrations(version, applied_at) VALUES (99, 0)`, `CREATE VIEW v AS SELECT 1`)
-		acWant(t, e.dbPath, stateTooNew)
+		_ = acWant(t, e.dbPath, stateTooNew)
 	})
 }
 
@@ -403,7 +403,7 @@ func TestClassifyActive_LegacySchema1WithoutProjects_IsDSOUnbound(t *testing.T) 
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	wantNotInit(t, acWant(t, dbPath, stateDSOUnbound))
+	_ = wantNotInit(t, acWant(t, dbPath, stateDSOUnbound))
 }
 
 // ---- Foreign ---------------------------------------------------------------------------------
@@ -450,7 +450,7 @@ func TestClassifyActive_MigratedForeignDatabase_IsForeign(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	wantNotInit(t, acWant(t, path, stateForeign))
+	_ = wantNotInit(t, acWant(t, path, stateForeign))
 }
 
 func TestClassifyActive_SQLiteInternalTables_NeverMakeAFile_Foreign(t *testing.T) {
@@ -472,7 +472,7 @@ func TestClassifyActive_SQLiteInternalTables_NeverMakeAFile_Foreign(t *testing.T
 		path := icUnbound(t)
 		icEdit(t, path, `ANALYZE`)
 		hasTable(t, path, "sqlite_stat1")
-		wantNotInit(t, acWant(t, path, stateDSOUnbound))
+		_ = wantNotInit(t, acWant(t, path, stateDSOUnbound))
 	})
 	t.Run("bound-with-sqlite_stat1", func(t *testing.T) {
 		t.Parallel()
@@ -488,7 +488,7 @@ func TestClassifyActive_SQLiteInternalTables_NeverMakeAFile_Foreign(t *testing.T
 		// audit_events is AUTOINCREMENT, so a normal DSO database always has it.
 		path := icUnbound(t)
 		hasTable(t, path, "sqlite_sequence")
-		wantNotInit(t, acWant(t, path, stateDSOUnbound))
+		_ = wantNotInit(t, acWant(t, path, stateDSOUnbound))
 	})
 }
 
@@ -579,7 +579,7 @@ func TestClassifyActive_LockedDatabase_IsInconclusive(t *testing.T) {
 	if st != stateInconclusive {
 		t.Fatalf("state = %v (err %v)", st, err)
 	}
-	wantInconclusive(t, err)
+	_ = wantInconclusive(t, err)
 	if time.Since(start) > 30*time.Second {
 		t.Fatal("the inspection was not bounded")
 	}
@@ -624,7 +624,7 @@ func TestClassifyActive_DamagedWAL_IsInconclusive_AndReadOnly(t *testing.T) {
 	if st != stateInconclusive {
 		t.Fatalf("state = %v (err %v)", st, err)
 	}
-	wantInconclusive(t, err)
+	_ = wantInconclusive(t, err)
 	if icFileHash(t, path) != mainBefore || icFileHash(t, path+"-wal") != walBefore {
 		t.Fatal("the main file or the -wal changed")
 	}
@@ -654,7 +654,7 @@ func TestClassifyActive_InjectedInspectionErrors_FailClosed(t *testing.T) {
 		if st != stateInconclusive {
 			t.Fatalf("state = %v", st)
 		}
-		wantInconclusive(t, err)
+		_ = wantInconclusive(t, err)
 	})
 	t.Run("unrecognised-error", func(t *testing.T) {
 		boom := errors.New("something else")
@@ -673,7 +673,7 @@ func TestClassifyActive_InjectedInspectionErrors_FailClosed(t *testing.T) {
 		if st != stateInconclusive {
 			t.Fatalf("state = %v (err %v)", st, err)
 		}
-		wantInconclusive(t, err)
+		_ = wantInconclusive(t, err)
 	})
 }
 
@@ -1212,11 +1212,11 @@ func TestAssessActive_InterruptedInit_OnlySchemaMigrations_IsDSOUnbound(t *testi
 		t.Parallel()
 		// An interrupted initialization leaves schema_migrations EMPTY; a row means
 		// something else wrote it (see the zero-rows tests below).
-		acWant(t, icForeign(t, ddl, `INSERT INTO schema_migrations VALUES (999, 0)`), stateInconclusive)
+		_ = acWant(t, icForeign(t, ddl, `INSERT INTO schema_migrations VALUES (999, 0)`), stateInconclusive)
 	})
 	t.Run("altered-schema_migrations-is-inconclusive", func(t *testing.T) {
 		t.Parallel()
-		acWant(t, icForeign(t, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, extra TEXT)`), stateInconclusive)
+		_ = acWant(t, icForeign(t, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, extra TEXT)`), stateInconclusive)
 	})
 }
 
@@ -1301,7 +1301,7 @@ func TestAssessActive_UnknownVersionEvidence_MakesMigrationDefinedTablesInconclu
 			path := icUnbound(t)
 			icEdit(t, path, stmts...)
 			a := acWantAssess(t, path, stateInconclusive, structureUnknown)
-			wantInconclusive(t, a.Err)
+			_ = wantInconclusive(t, a.Err)
 			if !strings.Contains(a.Err.Error(), "do not have its structure") {
 				t.Fatalf("the diagnostic should say why: %v", a.Err)
 			}
@@ -1320,7 +1320,7 @@ func TestAssessActive_UnknownVersionEvidence_MakesMigrationDefinedTablesInconclu
 		path := icUnbound(t)
 		icEdit(t, path, acVersions(1)...)
 		a := acWantAssess(t, path, stateInconclusive, structureMismatch)
-		wantInconclusive(t, a.Err)
+		_ = wantInconclusive(t, a.Err)
 		if !strings.Contains(a.Err.Error(), "store_meta") || !strings.Contains(acReasons(a), "does not belong to schema version 1") {
 			t.Fatalf("unexpected diagnostics: %v / %s", a.Err, acReasons(a))
 		}
@@ -1506,7 +1506,7 @@ func TestAssessActive_SchemaMigrationsOnly_ZeroRowsRule(t *testing.T) {
 					t.Fatalf("reason = %q", ni.Reason)
 				}
 			case stateInconclusive:
-				wantInconclusive(t, a.Err)
+				_ = wantInconclusive(t, a.Err)
 				if errors.Is(a.Err, ErrNotInitialized) {
 					t.Fatalf("an inconclusive classification must not match ErrNotInitialized: %v", a.Err)
 				}
@@ -1514,7 +1514,7 @@ func TestAssessActive_SchemaMigrationsOnly_ZeroRowsRule(t *testing.T) {
 					t.Fatalf("the diagnostic should say the table holds rows: %v", a.Err)
 				}
 			case stateForeign:
-				wantNotInit(t, a.Err)
+				_ = wantNotInit(t, a.Err)
 			}
 			if a.Structure == structureClean {
 				t.Fatalf("a schema_migrations-only file can never be structurally clean (%v)", a.StructureReasons)

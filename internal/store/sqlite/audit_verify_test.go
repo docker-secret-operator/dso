@@ -134,7 +134,7 @@ func TestVerifyAuditLog_OperationalFailuresAreUnavailable(t *testing.T) {
 	if _, err := raw.Exec(`CREATE TABLE schema_migrations(version INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1)`); err != nil {
 		t.Fatal(err)
 	}
-	raw.Close()
+	_ = raw.Close()
 	if err := os.Chmod(bare, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestVerifyAuditLog_DoesNotModifyDatabaseOrAppendEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	evs, err := reopened.ListAuditEvents(ctx)
 	if err != nil || len(evs) != 2 {
 		t.Fatalf("verification must not append events: %d events, err %v", len(evs), err)
