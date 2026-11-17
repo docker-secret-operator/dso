@@ -92,13 +92,28 @@ func buildCrashArtifacts(t *testing.T, sess *dockerguard.Session, dir string) cr
 			t.Fatalf("go build %v: %v\n%s", args, err, b)
 		}
 	}
+	// t.TempDir creates numbered subdirectories as 0777 &^ umask. The agent's plugin
+	// trust check (G012) rejects a group-writable directory chain, so the harness must not
+	// depend on the caller's umask (0002 is the default on many systems).
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	a := crashArtifacts{dso: filepath.Join(dir, "dso-fault"), pluginDir: filepath.Join(dir, "plugins")}
 	if err := os.MkdirAll(a.pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(a.pluginDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	build(a.dso, "-tags", "dsofault", "./cmd/dso")
 	plugin := filepath.Join(a.pluginDir, "dso-provider-vault")
 	build(plugin, "./cmd/plugins/dso-provider-vault")
+	// go build honours the umask; the trust check rejects a group-writable plugin binary.
+	for _, f := range []string{a.dso, plugin} {
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	b, err := os.ReadFile(plugin)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +207,10 @@ func newCrashCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts, 
 		_ = os.RemoveAll(c.root.Dir) // the harness' own unique temp directory
 	})
 
-	cfg := harness.AgentConfig{OwnerID: c.owner, VaultAddr: c.vault.Addr(), VaultToken: c.token, HealthTimeout: "45s"}
+	// PollInterval is short because the agent adopts the FIRST observation of a secret without
+	// rotating (M1 applied-version ledger): arm() publishes a baseline, waits for adoption, then
+	// publishes the rotated value, which only a later poll can see.
+	cfg := harness.AgentConfig{OwnerID: c.owner, VaultAddr: c.vault.Addr(), VaultToken: c.token, HealthTimeout: "45s", PollInterval: "3s"}
 	switch strategy {
 	case harness.Signal:
 		cfg.Secrets = []harness.SecretSpec{
@@ -421,6 +439,13 @@ func (c *crashCase) startAgent(point string, nth int) *crashAgent {
 	a := &crashAgent{n: n, proc: p, log: c.root.AgentLog(n), marker: marker, start: time.Now()}
 	c.agents = append(c.agents, a)
 	t.Logf("agent #%d started: pid=%d armed=%q", n, p.PID(), point)
+	// A failed test must carry the agent's own account of why (the log is removed with the
+	// temp dir). Secret sentinels are redacted by logTail.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("--- agent #%d log tail (on failure) ---\n%s", a.n, logTail(a.log, 40))
+		}
+	})
 	return a
 }
 
@@ -516,12 +541,22 @@ func (c *crashCase) stopGracefully(a *crashAgent) {
 func (c *crashCase) arm() {
 	t := c.t
 	if c.strategy == harness.Signal {
+		// baseline: the first observation of each secret is adopted, not rotated
+		c.vault.Set(crashSecretA, map[string]string{"value": syntheticValue("a1")})
+		c.vault.Set(crashSecretB, map[string]string{"value": syntheticValue("b1")})
+		waitFor(t, "agent to adopt the baseline signal secrets", 30*time.Second, func() bool {
+			return c.vault.Reads(crashSecretA) > 0 && c.vault.Reads(crashSecretB) > 0
+		})
+		time.Sleep(5 * time.Second)
 		c.vault.Set(crashSecretB, map[string]string{"value": syntheticValue("b2")})
-		waitFor(t, "agent to read the first signal secret", 30*time.Second, func() bool { return c.vault.Reads(crashSecretB) > 0 })
+		waitFor(t, "agent to read the first signal secret", 30*time.Second, func() bool { return c.vault.Reads(crashSecretB) > 1 })
 		time.Sleep(2 * time.Second)
 		c.vault.Set(crashSecretA, map[string]string{"value": syntheticValue("a2")})
 		return
 	}
+	c.vault.Set(crashSecret, map[string]string{"password": syntheticValue("v1")})
+	waitFor(t, "agent to adopt the baseline secret", 30*time.Second, func() bool { return c.vault.Reads(crashSecret) > 0 })
+	time.Sleep(5 * time.Second)
 	c.vault.Set(crashSecret, map[string]string{"password": syntheticValue("v2")})
 }
 
