@@ -44,7 +44,7 @@ type Record struct {
 	Event     string `json:"event"`
 	User      string `json:"user"`
 	Provider  string `json:"provider,omitempty"`
-	Secret    string `json:"secret_name,omitempty"`
+	Secret    string `json:"secret_name,omitempty"` // #nosec G117 -- holds the secret NAME (metadata), never a value
 	Container string `json:"container_id,omitempty"`
 	Status    string `json:"status"`
 	Prev      string `json:"prev_hash"`
@@ -164,7 +164,7 @@ func (d *DurableSink) Append(event, user, provider, secret, container, status st
 	}
 	h := recordHash(d.prev, rec)
 	rec.Hash = hex.EncodeToString(h[:])
-	line, err := json.Marshal(rec)
+	line, err := json.Marshal(rec) // #nosec G117 -- Record carries the secret name only
 	if err != nil {
 		return err
 	}

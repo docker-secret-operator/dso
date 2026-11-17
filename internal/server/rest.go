@@ -1085,7 +1085,7 @@ func (s *RESTServer) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	enc := json.NewEncoder(w)
 	for _, rec := range recs {
-		if err := enc.Encode(rec); err != nil {
+		if err := enc.Encode(rec); err != nil { // #nosec G117 -- Record carries the secret name only
 			return
 		}
 	}
