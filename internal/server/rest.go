@@ -269,6 +269,7 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var sess *webuiauth.Session
 		method, sess = s.authenticate(r)
 		if method == authNone {
+			observability.RESTAuthFailuresTotal.WithLabelValues("unauthenticated").Inc()
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -286,6 +287,7 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !isWebhook && method != authBearer &&
 		(isUnsafeMethod(r.Method) || r.URL.Path == "/api/events/ws") &&
 		!s.originAllowed(r) {
+		observability.RESTAuthFailuresTotal.WithLabelValues("cross_origin").Inc()
 		http.Error(w, "Forbidden: cross-origin request rejected", http.StatusForbidden)
 		return
 	}
@@ -426,14 +428,17 @@ func (s *RESTServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// mistyped password), so it is never recorded; the actor is
 		// "unauthenticated" and no client address is logged (see audit_actor.go).
 		if err == webuiauth.ErrTooManyLoginAttempts {
+			observability.RESTLoginAttemptsTotal.WithLabelValues("rate_limited").Inc()
 			audit.Log(r.Context(), auditAuthLoginEvent, actorUnauthenticated, "", "", "", "rate_limited")
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
+		observability.RESTLoginAttemptsTotal.WithLabelValues("failure").Inc()
 		audit.Log(r.Context(), auditAuthLoginEvent, actorUnauthenticated, "", "", "", "failure")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	observability.RESTLoginAttemptsTotal.WithLabelValues("success").Inc()
 	audit.Log(r.Context(), auditAuthLoginEvent, webuiActor(sess.Username).Name, "", "", "", "success")
 
 	http.SetCookie(w, s.WebUIAuth.SessionCookie(sess))
@@ -1129,6 +1134,7 @@ func (s *RESTServer) handleSessionRevoke(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
+	observability.RESTSessionsRevokedTotal.Inc()
 	audit.Log(r.Context(), auditSessionRevokeEvent, s.actorFromContext(r).Name, "", "", "", "success")
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -1144,6 +1150,7 @@ func (s *RESTServer) handleSessionsRevokeOthers(w http.ResponseWriter, r *http.R
 
 	currentToken := webuiauth.TokenFromRequest(r)
 	removed := s.WebUIAuth.LogoutOthers(currentToken)
+	observability.RESTSessionsRevokedTotal.Add(float64(removed))
 	audit.Log(r.Context(), auditSessionsRevokeEvent, s.actorFromContext(r).Name, "", "", "", "success")
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1326,6 +1333,7 @@ func (s *RESTServer) handleSecretRotate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		status = "failure"
 	}
+	observability.RESTManualRotationRequestsTotal.WithLabelValues(status).Inc()
 	audit.Log(ctx, "manual_rotation_triggered", actor, "", name, "", status)
 
 	if err != nil {

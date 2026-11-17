@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,6 +83,7 @@ func (h *Hub) Run(ctx context.Context) {
 		case client := <-h.register:
 			h.mutex.Lock()
 			h.clients[client] = true
+			observability.RESTWebSocketClients.Set(float64(len(h.clients)))
 			h.mutex.Unlock()
 			h.logger.Info("Client connected to WS Hub. Total connections active", zap.Int("count", len(h.clients)))
 
@@ -90,6 +92,7 @@ func (h *Hub) Run(ctx context.Context) {
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
 				close(client.send)
+				observability.RESTWebSocketClients.Set(float64(len(h.clients)))
 				h.logger.Info("Client disconnected from WS Hub. Remaining", zap.Int("count", len(h.clients)))
 			}
 			h.mutex.Unlock()
@@ -104,6 +107,7 @@ func (h *Hub) Run(ctx context.Context) {
 					delete(h.clients, client)
 				}
 			}
+			observability.RESTWebSocketClients.Set(float64(len(h.clients)))
 			h.mutex.Unlock()
 		}
 	}

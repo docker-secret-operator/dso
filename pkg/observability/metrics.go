@@ -104,6 +104,52 @@ var (
 		[]string{"action"},
 	)
 
+	// RESTAuthFailuresTotal counts requests rejected by the REST gate. reason is
+	// a fixed set: "unauthenticated" (401) or "cross_origin" (403).
+	RESTAuthFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_auth_failures_total",
+			Help: "REST requests rejected by the authentication or CSRF gate",
+		},
+		[]string{"reason"},
+	)
+
+	// RESTLoginAttemptsTotal counts WebUI login attempts by result:
+	// "success", "failure" or "rate_limited". Never labelled by user or address.
+	RESTLoginAttemptsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_login_attempts_total",
+			Help: "WebUI login attempts by result",
+		},
+		[]string{"result"},
+	)
+
+	// RESTSessionsRevokedTotal counts sessions signed out by an operator action.
+	RESTSessionsRevokedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "dso_rest_sessions_revoked_total",
+			Help: "WebUI sessions revoked by revoke or revoke-others",
+		},
+	)
+
+	// RESTManualRotationRequestsTotal counts manual rotation requests by outcome
+	// ("success" or "failure"); the secret name is deliberately not a label.
+	RESTManualRotationRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_manual_rotation_requests_total",
+			Help: "Manual rotation requests received over REST",
+		},
+		[]string{"status"},
+	)
+
+	// RESTWebSocketClients is the number of connected WebSocket event clients.
+	RESTWebSocketClients = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dso_rest_websocket_clients",
+			Help: "Currently connected WebSocket event clients",
+		},
+	)
+
 	// ReconciliationDurationSeconds tracks reconciliation duration
 	ReconciliationDurationSeconds = promauto.NewHistogram(
 		prometheus.HistogramOpts{
