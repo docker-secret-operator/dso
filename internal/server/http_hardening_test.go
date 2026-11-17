@@ -409,3 +409,64 @@ func TestWebSocket_ReadLimitEnforced(t *testing.T) {
 	}
 	_ = s
 }
+
+func TestWebSocket_ClosedWhenSessionRevokedByID(t *testing.T) {
+	setRecheck(t, 40*time.Millisecond)
+	s, h := hardeningChain(t, false)
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	sess := login(t, s)
+	c, _, err := dialWS(ts, "", cookieHdr(sess))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Revoked from "another" session: keepToken is a different token.
+	revoked, isCurrent := s.WebUIAuth.RevokeByID(webuiauth.SessionID(sess.Value), "some-other-token")
+	if !revoked || isCurrent {
+		t.Fatalf("RevokeByID = %v,%v, want true,false", revoked, isCurrent)
+	}
+	expectPolicyClose(t, c, 3*time.Second)
+}
+
+func TestWebSocket_ClosedAtAbsoluteSessionLifetime(t *testing.T) {
+	setRecheck(t, 40*time.Millisecond)
+	s, h := hardeningChain(t, false)
+	hash, _ := webuiauth.HashPassword(testPassword)
+	mgr := webuiauth.NewManager(testOperator, hash, time.Hour)
+	mgr.Secure = false
+	mgr.SetMaxLifetime(400 * time.Millisecond)
+	s.WebUIAuth = mgr
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	sess := login(t, s)
+	c, _, err := dialWS(ts, "", cookieHdr(sess))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Idle timer is an hour; only the absolute cap can end this socket.
+	expectPolicyClose(t, c, 3*time.Second)
+}
+
+func TestWebSocket_SurvivesRevokeOfAnotherSession(t *testing.T) {
+	setRecheck(t, 40*time.Millisecond)
+	s, h := hardeningChain(t, false)
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	a := login(t, s)
+	b := login(t, s)
+	c, _, err := dialWS(ts, "", cookieHdr(a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	s.WebUIAuth.Logout(b.Value)
+	time.Sleep(400 * time.Millisecond) // several recheck ticks
+	if err := c.WriteMessage(websocket.TextMessage, []byte("{}")); err != nil {
+		t.Fatalf("unrelated revoke closed the socket: %v", err)
+	}
+	if s.WebUIAuth.Peek(a.Value) != nil {
+		t.Fatal("session a should still be valid")
+	}
+}

@@ -76,7 +76,7 @@ Authorized scope: sections 5 items 1-2, 5-8 on the existing bearer token and sin
 | 2 Audit auth lifecycle | Done | ad90046 | `auth_login`, `auth_logout`, `sessions_revoke_others`; no attempted username, password or address recorded. Events go to the audit logger stream (not durable) |
 | 3 Durable REST audit sink | NOT started | n/a | Needs owner decision D2 |
 | 4 Read-only vs operate split | NOT started | n/a | Needs owner decision D1 |
-| 5 Session hardening | Done (partial) | fe72643 | Stable opaque session ids, `POST /api/sessions/revoke`. WebSocket edge cases not separately re-audited |
+| 5 Session hardening | Done (partial) | fe72643, next commit | Stable opaque session ids, `POST /api/sessions/revoke`. WebSocket close on revoke-by-id and absolute lifetime, and survival on unrelated revoke, now have tests (race-clean). Bearer-token rotation closing sockets is by design a process restart (token is read once from env); not separately tested |
 | 6 Web UI operator workflows | Done (sessions page) | 8f831bc | Per-session sign-out, two-step confirmation; other pages not changed |
 | 7 OpenAPI + contract test | Done | b3d7338 | `docs/api/openapi.yaml`; minimal schemas |
 | 8 REST metrics | Done | 4cdc32f | `docs/metrics.md`; no session-count gauge |
