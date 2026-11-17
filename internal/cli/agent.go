@@ -227,11 +227,8 @@ func NewAgentCmd() *cobra.Command {
 			// 2b. Durable, hash-chained audit file (best effort: the agent keeps
 			// running with the in-memory/log audit stream if it cannot be opened,
 			// and says so loudly).
-			if sink, aerr := audit.OpenDurable(agent.DurableAuditPath()); aerr != nil {
-				logger.Error("Durable audit file unavailable; audit events are NOT being persisted", zap.String("path", agent.DurableAuditPath()), zap.Error(aerr))
-			} else {
-				audit.SetDurable(sink)
-				onFail = append(onFail, func() { audit.SetDurable(nil); _ = sink.Close() })
+			if closeAudit := startDurableAudit(logger, agent.DurableAuditPath()); closeAudit != nil {
+				onFail = append(onFail, closeAudit)
 			}
 
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
@@ -352,4 +349,18 @@ func NewAgentCmd() *cobra.Command {
 	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", "127.0.0.1:9090", "Address to bind the Prometheus metrics server")
 
 	return cmd
+}
+
+// startDurableAudit opens the durable audit file and installs it as the audit
+// sink. It is best effort by policy: on any failure it logs a loud error and
+// returns nil, and the agent keeps running with audit events logged only. On
+// success it returns the teardown that detaches and closes the sink.
+func startDurableAudit(logger *zap.Logger, path string) func() {
+	sink, err := audit.OpenDurable(path)
+	if err != nil {
+		logger.Error("Durable audit file unavailable; audit events are NOT being persisted", zap.String("path", path), zap.Error(err))
+		return nil
+	}
+	audit.SetDurable(sink)
+	return func() { audit.SetDurable(nil); _ = sink.Close() }
 }

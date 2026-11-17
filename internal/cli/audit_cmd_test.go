@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"github.com/docker-secret-operator/dso/internal/agent"
 	"github.com/docker-secret-operator/dso/internal/setup"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,5 +98,37 @@ func TestAuditVerify_NeverModifiesTheFile_AndRefusesSymlink(t *testing.T) {
 func TestDoctorAuditFileDefaultMatchesAgentPath(t *testing.T) {
 	if setup.DefaultAuditFilePath != agent.DurableAuditPath() {
 		t.Fatalf("doctor default %q != agent path %q", setup.DefaultAuditFilePath, agent.DurableAuditPath())
+	}
+}
+
+func TestStartDurableAudit_BestEffortOnFailureAndInstallsOnSuccess(t *testing.T) {
+	audit.SetDurable(nil)
+	core, logs := observer.New(zap.ErrorLevel)
+	logger := zap.New(core)
+
+	// Failure: a group/world-accessible file is refused; the agent must go on.
+	bad := filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := os.WriteFile(bad, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if closeFn := startDurableAudit(logger, bad); closeFn != nil {
+		t.Fatal("failure must return no teardown")
+	}
+	if audit.DurablePath() != "" || audit.CurrentDurableStatus().Enabled {
+		t.Fatal("no sink may be installed after a failed open")
+	}
+	if logs.FilterMessageSnippet("NOT being persisted").Len() != 1 {
+		t.Fatalf("failure must be logged loudly, got %d entries", logs.Len())
+	}
+
+	// Success: sink installed, status enabled, teardown detaches it.
+	good := filepath.Join(t.TempDir(), "state", "audit.jsonl")
+	closeFn := startDurableAudit(logger, good)
+	if closeFn == nil || audit.DurablePath() != good || !audit.CurrentDurableStatus().Enabled {
+		t.Fatal("sink not installed")
+	}
+	closeFn()
+	if audit.CurrentDurableStatus().Enabled {
+		t.Fatal("teardown must detach the sink")
 	}
 }
