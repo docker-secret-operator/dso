@@ -13,6 +13,7 @@ package webuiauth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -331,4 +332,32 @@ func newToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// SessionID returns a stable, opaque, non-reversible identifier for a session
+// token. It is safe to show to the operator (unlike the token itself, a live
+// credential) and stays the same for the session's lifetime, unlike a list
+// position.
+func SessionID(token string) string {
+	sum := sha256.Sum256([]byte("dso-session-id-v1\x00" + token))
+	return "sess-" + hex.EncodeToString(sum[:8])
+}
+
+// RevokeByID invalidates the one session whose SessionID equals id, unless it
+// is the caller's own (keepToken), which must end via Logout. It reports
+// whether a session matched and whether the match was the caller's own.
+func (m *Manager) RevokeByID(id, keepToken string) (revoked, isCurrent bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for token := range m.sessions {
+		if SessionID(token) != id {
+			continue
+		}
+		if token == keepToken {
+			return false, true
+		}
+		delete(m.sessions, token)
+		return true, false
+	}
+	return false, false
 }

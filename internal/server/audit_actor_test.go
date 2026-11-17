@@ -41,7 +41,7 @@ func auditEntries(logs *observer.ObservedLogs) []observer.LoggedEntry {
 				ev = f.String
 			}
 		}
-		if ev != auditAuthLoginEvent && ev != auditAuthLogoutEvent && ev != auditSessionsRevokeEvent {
+		if ev != auditAuthLoginEvent && ev != auditAuthLogoutEvent && ev != auditSessionsRevokeEvent && ev != auditSessionRevokeEvent {
 			out = append(out, e)
 		}
 	}

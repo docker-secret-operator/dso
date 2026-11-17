@@ -49,6 +49,7 @@ const (
 	auditAuthLoginEvent      = "auth_login"
 	auditAuthLogoutEvent     = "auth_logout"
 	auditSessionsRevokeEvent = "sessions_revoke_others"
+	auditSessionRevokeEvent  = "session_revoke"
 )
 
 // webuiActor is the actor for a verified WebUI operator session.

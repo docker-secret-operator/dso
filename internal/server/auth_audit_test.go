@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,5 +111,80 @@ func TestAuthAudit_RevokeOthersAttributedPerCredential(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(users, ""), actorTestToken) {
 		t.Fatal("bearer token leaked into actor")
+	}
+}
+
+func TestSessionRevokeByID(t *testing.T) {
+	s := newWebUIServer(t, "")
+	a, b := login(t, s), login(t, s)
+	hdr := map[string]string{"Origin": "http://example.com"}
+
+	listed := func(c *http.Cookie) (ids []string, cur string) {
+		w := do(s, "GET", "/api/sessions", nil, c)
+		var v []struct {
+			ID      string `json:"id"`
+			Current bool   `json:"current"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range v {
+			ids = append(ids, e.ID)
+			if e.Current {
+				cur = e.ID
+			}
+		}
+		return
+	}
+	ids, curA := listed(a)
+	if len(ids) != 2 || curA == "" || strings.Contains(strings.Join(ids, ""), a.Value) {
+		t.Fatalf("ids=%v cur=%q", ids, curA)
+	}
+	if again, _ := listed(a); strings.Join(again, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids not stable: %v vs %v", ids, again)
+	}
+	post := func(id string) int {
+		req := httptest.NewRequest("POST", "/api/sessions/revoke", strings.NewReader(`{"id":"`+id+`"}`))
+		req.Header.Set("Origin", hdr["Origin"])
+		req.AddCookie(a)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		return w.Code
+	}
+	if c := post(curA); c != http.StatusConflict {
+		t.Fatalf("own session: %d", c)
+	}
+	if c := post("sess-0000000000000000"); c != http.StatusNotFound {
+		t.Fatalf("unknown id: %d", c)
+	}
+	var other string
+	for _, id := range ids {
+		if id != curA {
+			other = id
+		}
+	}
+	users, _, _ := eventsNamed(t, s, "session_revoke", func() {
+		if c := post(other); c != http.StatusOK {
+			t.Fatalf("revoke other: %d", c)
+		}
+		post("sess-0000000000000000")
+	})
+	if len(users) != 1 || users[0] != "webui:user:"+testOperator {
+		t.Fatalf("audit users=%v", users)
+	}
+	if w := do(s, "GET", "/api/auth/session", nil, b); w.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session still valid: %d", w.Code)
+	}
+	if w := do(s, "GET", "/api/auth/session", nil, a); w.Code != http.StatusOK {
+		t.Fatalf("own session lost: %d", w.Code)
+	}
+	// foreign origin with a cookie must be refused (CSRF)
+	req := httptest.NewRequest("POST", "/api/sessions/revoke", strings.NewReader(`{"id":"x"}`))
+	req.Header.Set("Origin", "https://evil.example")
+	req.AddCookie(a)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin: %d", w.Code)
 	}
 }

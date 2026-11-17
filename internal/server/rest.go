@@ -325,6 +325,8 @@ func (s *RESTServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleContainers(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/audit"):
 		s.handleAudit(w, r)
+	case r.URL.Path == "/api/sessions/revoke" && r.Method == "POST":
+		s.handleSessionRevoke(w, r)
 	case r.URL.Path == "/api/sessions/revoke-others" && r.Method == "POST":
 		s.handleSessionsRevokeOthers(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/sessions"):
@@ -359,7 +361,7 @@ func methodNotAllowed(r *http.Request) (string, bool) {
 		return "GET, HEAD", !isRead
 	case p == "/api/events/ws":
 		return "GET", r.Method != http.MethodGet
-	case p == webhookPath, p == "/api/sessions/revoke-others",
+	case p == webhookPath, p == "/api/sessions/revoke-others", p == "/api/sessions/revoke",
 		p == "/api/integrations/notifications/test":
 		// POST-only action; a safe-method request keeps its historical
 		// fall-through to the parent list route, anything else is rejected.
@@ -1082,9 +1084,9 @@ func (s *RESTServer) handleSessionsList(w http.ResponseWriter, r *http.Request) 
 	currentToken := webuiauth.TokenFromRequest(r)
 	sessions := s.WebUIAuth.ListSessions()
 	out := make([]sessionView, 0, len(sessions))
-	for i, sess := range sessions {
+	for _, sess := range sessions {
 		out = append(out, sessionView{
-			ID:         fmt.Sprintf("session-%d", i+1),
+			ID:         webuiauth.SessionID(sess.Token),
 			Username:   sess.Username,
 			CreatedAt:  sess.CreatedAt.UTC().Format(time.RFC3339),
 			LastSeenAt: sess.LastSeenAt.UTC().Format(time.RFC3339),
@@ -1096,6 +1098,40 @@ func (s *RESTServer) handleSessionsList(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewEncoder(w).Encode(out); err != nil {
 		s.Logger.Error("Failed to encode sessions response", zap.Error(err))
 	}
+}
+
+// handleSessionRevoke signs out one other session by its opaque id (as listed
+// by GET /api/sessions). The caller's own session is refused (409): it ends via
+// logout. An unknown id is 404 and is not audited as a revocation.
+func (s *RESTServer) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
+	if s.WebUIAuth == nil {
+		http.Error(w, "WebUI is disabled", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid Payload", http.StatusBadRequest)
+		return
+	}
+	revoked, isCurrent := s.WebUIAuth.RevokeByID(body.ID, webuiauth.TokenFromRequest(r))
+	switch {
+	case isCurrent:
+		http.Error(w, "Cannot revoke the current session; use logout", http.StatusConflict)
+		return
+	case !revoked:
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	audit.Log(r.Context(), auditSessionRevokeEvent, s.actorFromContext(r).Name, "", "", "", "success")
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleSessionsRevokeOthers signs out every session for the operator
