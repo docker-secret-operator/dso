@@ -77,7 +77,7 @@ Authorized scope: sections 5 items 1-2, 5-8 on the existing bearer token and sin
 | 3 Durable REST audit sink | NOT started | n/a | Needs owner decision D2 |
 | 4 Read-only vs operate split | NOT started | n/a | Needs owner decision D1 |
 | 5 Session hardening | Done (partial) | fe72643, next commit | Stable opaque session ids, `POST /api/sessions/revoke`. WebSocket close on revoke-by-id and absolute lifetime, and survival on unrelated revoke, now have tests (race-clean). Bearer-token rotation closing sockets is by design a process restart (token is read once from env); not separately tested |
-| 6 Web UI operator workflows | Done (sessions page) | 8f831bc | Per-session sign-out, two-step confirmation; other pages not changed |
+| 6 Web UI operator workflows | Done within authorized scope | 8f831bc | Sessions page: per-session sign-out with two-step confirmation. Manual rotation already has a confirmation dialog and tests (`web/__tests__/secrets-rotate.test.tsx`); the notification test is a deliberately unconfirmed synthetic event. Permission-aware controls need slice 4 (D1) and a per-action identity display needs a person-level identity (D4), so neither is built |
 | 7 OpenAPI + contract test | Done | b3d7338 | `docs/api/openapi.yaml`; minimal schemas |
 | 8 REST metrics | Done | 4cdc32f | `docs/metrics.md`; no session-count gauge |
 
