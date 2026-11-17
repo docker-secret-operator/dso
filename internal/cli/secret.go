@@ -106,7 +106,7 @@ const maxSecretSize = 1 << 20
 // Input handling contract:
 //   - Piped/redirected stdin (including `< file`): the exact bytes are stored.
 //     No whitespace, CR or LF is stripped, so PEM blocks keep their final
-//     newline. Note that `echo secret | dso secret set ...` therefore stores
+//     newline. Note that `echo secret | docker dso secret set ...` therefore stores
 //     "secret\n"; use `printf %s` / `echo -n`, or pass trimNewline.
 //   - Interactive terminal: the hidden prompt returns the typed line without
 //     its terminating newline; nothing else is altered.
@@ -163,8 +163,8 @@ func newSecretSetCmd() *cobra.Command {
 
 The value is stored byte-for-byte: leading/trailing whitespace, tabs, carriage
 returns and trailing newlines are preserved. Piped input is NOT trimmed, so
-'echo secret | dso secret set p/k' stores "secret\n". Use 'printf %s secret |',
-'dso secret set p/k < file', or --trim-newline (removes one trailing newline).
+'echo secret | docker dso secret set p/k' stores "secret\n". Use 'printf %s secret |',
+'docker dso secret set p/k < file', or --trim-newline (removes one trailing newline).
 Values must be valid UTF-8 and at most 1MB.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

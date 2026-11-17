@@ -16,7 +16,7 @@
 
 Evidence: `internal/cli/system_mgmt.go:73-87`.
 
-#### CLI-02 — `dso down` rejects valid argument values despite using no shell
+#### CLI-02 — `docker dso down` rejects valid argument values despite using no shell
 
 **Severity: P3 (CLI compatibility)**
 
@@ -70,5 +70,5 @@ Evidence: `web/components/audit-content.tsx:184-190`; `internal/server/rest.go:8
 
 - The earlier `system doctor` no-op is no longer present in this working tree: `NewSystemCmd` registers it and it delegates to the real doctor command.
 - The old client-side CSRF-token concern is not present in the current web client. The Go API enforces origin checks for unsafe session-authenticated requests.
-- `dso diff` remains an explicitly documented unsupported command, so it is not reported as a defect.
+- `docker dso diff` remains an explicitly documented unsupported command, so it is not reported as a defect.
 - The review is static. Provider connectivity, browser behavior, command execution against Docker/systemd, and test outcomes remain unverified.

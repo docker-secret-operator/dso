@@ -388,7 +388,7 @@ service locks (`rotationLocks` are in memory, empty after a restart) before disp
 API and the watcher were live earlier, and a service recovery left `critical_error` (for
 example a partially published signal rotation) was rotated again by the first poll.
 
-*Fix.* Every dispatch path (first/scheduled poll, webhook, IPC `dso sync`/`apply`, REST manual
+*Fix.* Every dispatch path (first/scheduled poll, webhook, IPC `docker dso sync`/`apply`, REST manual
 rotate, watcher) reaches `ReloaderController.TriggerReload`. A durable `OperationGuard`
 (`internal/watcher/operation_guard.go`, implemented by `internal/agent/operation_guard.go`) is
 consulted per target AFTER its service lock is taken (so check-then-start cannot interleave

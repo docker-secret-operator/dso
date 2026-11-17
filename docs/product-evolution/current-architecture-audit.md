@@ -173,7 +173,7 @@ These identifiers **do not appear anywhere in the repository**: not in any `.md`
 | Docker daemon outage | Event stream reconnect with backoff; local-mode agent exits after 20 consecutive failures (`agent.go:93-140`); docs say agent terminates after 100 attempts (`docs/OPERATIONAL_LIMITATIONS.md:83`) — inconsistent numbers between two runtimes | PE-18 |
 | Provider outage | Fail-safe: no rotation on fetch error, no stale/empty injection (prior P-03 verified); no per-call deadline (PE-13) | `trigger.go:439-461` |
 | Crash mid-rotation | Orphan cleanup + name restoration at start (`internal/agent/recovery.go`); rotation state file best-effort (`trigger.go:119-125` continues without it) | — |
-| Two runtimes | `dso up` (local) uses `agent.Agent` + `injector.InjectFiles` + stub reactor; `dso agent` uses `TriggerEngine` + `ReloaderController`. Different injection mechanisms, different reconnect policies, different docs | **PE-18, Medium (maintenance)** |
+| Two runtimes | `docker dso up` (local) uses `agent.Agent` + `injector.InjectFiles` + stub reactor; `dso agent` uses `TriggerEngine` + `ReloaderController`. Different injection mechanisms, different reconnect policies, different docs | **PE-18, Medium (maintenance)** |
 | Secret-driver socket | Serves `POST /SecretDriver.Get` (`server.go:557-560`); swarmkit's secret driver protocol uses `/SecretProvider.GetSecret` and is Swarm-managed (search result, not independently verified). Likely dead | **PE-19, Low — needs verification** |
 | CI realism | Real-Docker integration tests skipped by `-short`; single distro (`ubuntu-latest`) | **PE-16, High** for any production-readiness claim |
 

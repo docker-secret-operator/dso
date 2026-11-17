@@ -275,7 +275,7 @@ pre-HMAC `auth_token`-only configuration keeps working unchanged.
 * `InitDefault` runs under the same lock and installs the master key
   all-or-nothing (unique `0600` temp file, fsync, then `link(2)` to
   `master.key`, which cannot replace an existing key; filesystems without hard
-  links fall back to `rename`). Concurrent `dso init` cannot produce a vault
+  links fall back to `rename`). Concurrent `docker dso init` cannot produce a vault
   encrypted with a lost key, and a crash can no longer leave a partial or empty
   `master.key`. Leftover `.master.key.tmp-*` files from a crash are ignored.
 * An **empty or whitespace-only** `master.key` (or blank `DSO_MASTER_KEY`) is

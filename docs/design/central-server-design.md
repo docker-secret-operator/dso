@@ -52,7 +52,7 @@ Classes: **1** confirmed vulnerability/defect · **2** confirmed architectural l
 - **Mitigation already present** (my earlier claim was wrong here): `StartRESTServer` (`rest.go:1227`) returns an error for non-loopback binds without a token, and enforces token length 16–512 bytes. Default `--api-addr` is `127.0.0.1:8471` (`internal/cli/agent.go:283`). `bindsPublic()` treats an unparsable address as non-public (`net.SplitHostPort` error → false) **[V]**.
 - **Context that makes it worse:** a same-host reverse proxy (connections arrive from loopback, nothing is "public"), shared hosts / other local users, and DNS rebinding (REST handlers do not check the `Host` header; only the WS origin check does) **[V]** that the loopback guard assumes away. DNS rebinding is **not demonstrated**, only code-plausible.
 - **Safe repro (not executed):** `httptest` against `RESTServer{Auth: NewAuthenticator() /*token unset*/, WebUIAuth: mgr}`; `GET /api/audit` without cookie → expect 401, actual 200.
-- **Fix [R]:** when `WebUIAuth != nil` (or any credential source exists), "no bearer token configured" must mean *bearer auth disabled*, not *everything open*. Only the explicit legacy mode (WebUI disabled, loopback, no token) stays open, behind a logged warning. **Breaking change:** loopback scripts that call the API unauthenticated while the WebUI is enabled will start getting 401. Need to confirm what `dso logs --api-addr` (`internal/cli/logs.go:129`) and any other CLI client sends **[5]**.
+- **Fix [R]:** when `WebUIAuth != nil` (or any credential source exists), "no bearer token configured" must mean *bearer auth disabled*, not *everything open*. Only the explicit legacy mode (WebUI disabled, loopback, no token) stays open, behind a logged warning. **Breaking change:** loopback scripts that call the API unauthenticated while the WebUI is enabled will start getting 401. Need to confirm what `docker dso logs --api-addr` (`internal/cli/logs.go:129`) and any other CLI client sends **[5]**.
 
 ### F2: Webhook credential collision — **Class 1**
 - `/api/events/secret-update` is not in `publicPaths`, so `authorized()` runs first and, when `DSO_AUTH_TOKEN` is set, requires `Authorization: Bearer <DSO_AUTH_TOKEN>` **[V]**. `handleSecretUpdate` then compares the **same header** to `"Bearer "+webhook.AuthToken` (`rest.go:474`) **[V]**.
@@ -68,7 +68,7 @@ Classes: **1** confirmed vulnerability/defect · **2** confirmed architectural l
 - **Fix [R]:** see §5 key hierarchy. For Milestone 0 only document the limitation and add a doctor check (key file on same filesystem as the vault, perms, env-var presence).
 
 ### F4: Vault concurrency and crash safety — **Class 1**
-- `LoadDefault` reads and decrypts once; `Set`/`SetBatch` mutate that in-memory copy and `saveLocked()` rewrites the **entire file** **[V]**. The `sync.RWMutex` is per-process. There is no file lock anywhere in `pkg/vault` (the only `flock` is `internal/rotation/lock_manager.go`) **[V]**. Two `dso secret set` processes (or CLI + CI) each load the same snapshot; the later rename wins and **silently drops the other's write** (lost update).
+- `LoadDefault` reads and decrypts once; `Set`/`SetBatch` mutate that in-memory copy and `saveLocked()` rewrites the **entire file** **[V]**. The `sync.RWMutex` is per-process. There is no file lock anywhere in `pkg/vault` (the only `flock` is `internal/rotation/lock_manager.go`) **[V]**. Two `docker dso secret set` processes (or CLI + CI) each load the same snapshot; the later rename wins and **silently drops the other's write** (lost update).
 - Temp file is a fixed name `vault.enc.tmp` **[V]**: two concurrent savers write the same temp path (corrupt interleaving possible, then one rename).
 - No `fsync` of the temp file or the directory (`grep Sync()` in `vault.go` → none) **[V]**: a power loss after `rename` can leave a zero-length or stale vault.
 - Integrity: the embedded SHA-256 "checksum" is inside the encrypted payload, so it only detects accidental corruption, which GCM already detects.
@@ -104,8 +104,8 @@ Classes: **1** confirmed vulnerability/defect · **2** confirmed architectural l
 
 ### F10: Plaintext on disk — **Class 1**
 - `dso export` creates the output with `os.Create` (mode 0666 before umask, typically 0644) **[V]** (`internal/cli/export.go:55`), default `.env.local`. It prints a warning but the file is group/world-readable on a default umask. **Fix:** `O_CREATE|O_EXCL|O_WRONLY` 0600, refuse if the file exists, warn if not gitignored.
-- `dso up` writes a mutated compose AST to `os.CreateTemp` (0600) **[V]**; whether it contains resolved secret **values** or only references **[5]**. Must be checked before any claim.
-- `dso env import <file>` reads a user-supplied plaintext `.env` (expected). `secret set` reads value from a TTY or stdin, never argv **[V]** (good).
+- `docker dso up` writes a mutated compose AST to `os.CreateTemp` (0600) **[V]**; whether it contains resolved secret **values** or only references **[5]**. Must be checked before any claim.
+- `docker dso env import <file>` reads a user-supplied plaintext `.env` (expected). `secret set` reads value from a TTY or stdin, never argv **[V]** (good).
 - Injection: `dso://` env values are intentionally visible in `docker inspect`; `dsofile://` uses tmpfs mounts **[V]** (documented in README).
 
 ### F11: CLI quality — **mixed**
@@ -113,7 +113,7 @@ Classes: **1** confirmed vulnerability/defect · **2** confirmed architectural l
 - `newSystemDoctorCmd` (`internal/cli/utils.go:148`) is a no-op returning nil, but it is **never registered** (only its definition appears) → **dead code, not a user-visible no-op** (Class 4 for "no-op command", Class 3 for "dead code"). `stubs.go` holds the real `version` command despite its name.
 - Error handling: `export.go` uses `Run` + `os.Exit(1)`; `secret.go` uses `RunE` **[V]**. No common `--output json` [A: not exhaustively surveyed].
 - `login`, `logout`, `whoami`, `run`, `secret delete|history|rollback`: **absent** (no matching `Use:`) **[V]**. `secret` has only `set|get|list` **[V]**.
-- **Naming conflict:** `dso env` is already a command (`NewEnvImportCmd`, `Use: "env"`, subcommand `import`). The proposed `dso env` (environments) must be a sibling subcommand of that parent or use another name (see §8).
+- **Naming conflict:** `docker dso env` is already a command (`NewEnvImportCmd`, `Use: "env"`, subcommand `import`). The proposed `docker dso env` (environments) must be a sibling subcommand of that parent or use another name (see §8).
 
 ### F12: Frontend, artifacts, docs, versions — **Class 3 / 5**
 - Authoritative embedded assets: `internal/webui/assets` (tracked, 76 files, built by `make webui-build` → `scripts/build-webui.sh`) **[V]**. `ui-dist/` and `web/out/` are **gitignored** local copies; `ui-dist` diverges from `internal/webui/assets` **[V]**. `web/package.json` `export` still copies to `../ui-dist`: a stale script, not repo bloat.
@@ -125,7 +125,7 @@ Classes: **1** confirmed vulnerability/defect · **2** confirmed architectural l
 There is **no authorization layer**: `authorized()` answers only "authenticated?". Every authenticated principal can rotate, revoke sessions, read audit and subscribe to events **[V]**. Audit `actor` for rotation is the session username or the literal `"webui"` (bearer-token callers are not individually identifiable) **[V]**. This is acceptable for a single operator and unacceptable for multi-user.
 
 ### Items that could not be verified
-Webhook test coverage vs F2; whether any CLI client sends the token (F1 breakage); cookie-expiry behavior in a real browser (F5); whether the `dso up` temp file contains values (F10); events.jsonl rotation/size; unused frontend dependencies; existing CI freshness check for embedded assets; correctness of the uncommitted changes in watcher/rotation/agent (out of scope, not reviewed).
+Webhook test coverage vs F2; whether any CLI client sends the token (F1 breakage); cookie-expiry behavior in a real browser (F5); whether the `docker dso up` temp file contains values (F10); events.jsonl rotation/size; unused frontend dependencies; existing CI freshness check for embedded assets; correctness of the uncommitted changes in watcher/rotation/agent (out of scope, not reviewed).
 
 ---
 
@@ -362,8 +362,8 @@ New contexts: `dso login --server URL [--context NAME]` stores a named context; 
 |---|---|
 | `dso login` / `logout` / `whoami` | Device-code login; logout revokes the server token, deletes local credential; `whoami` prints server, user, roles, and context kind (local vs central). |
 | `dso project list\|create\|rm` | Central only. |
-| `dso env ...` | **Conflict:** already `env import`. Proposal: keep `env` as the parent and add `env list\|create\|rm` beside `import`; disambiguate by flag `--project`. Needs your decision (see §12). |
-| `dso secret set\|get\|list\|delete\|history\|rollback` | Same grammar. Central: `--project P --env E` (or `P/E/path`); local: unchanged `project/path`. `set` reads TTY/stdin only (never argv). `get` needs `--reveal`-free but prints only to stdout. `delete` asks confirmation, `--purge` needs admin. `history` shows versions without values; `rollback --to N`. |
+| `docker dso env ...` | **Conflict:** already `env import`. Proposal: keep `env` as the parent and add `env list\|create\|rm` beside `import`; disambiguate by flag `--project`. Needs your decision (see §12). |
+| `docker dso secret set\|get\|list\|delete\|history\|rollback` | Same grammar. Central: `--project P --env E` (or `P/E/path`); local: unchanged `project/path`. `set` reads TTY/stdin only (never argv). `get` needs `--reveal`-free but prints only to stdout. `delete` asks confirmation, `--purge` needs admin. `history` shows versions without values; `rollback --to N`. |
 | `dso run -- cmd args` | See below. |
 
 Output: all new commands support `--output json|table` and use `RunE` returning typed errors with stable exit codes (0 ok, 1 generic, 2 usage, 3 unauthenticated, 4 forbidden, 5 not found, 6 server unavailable).

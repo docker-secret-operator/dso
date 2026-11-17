@@ -234,7 +234,7 @@ func NewAgentCmd() *cobra.Command {
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
 			// returns an error (and refuses to start) if bound to a non-loopback
 			// address without DSO_AUTH_TOKEN.
-			// The API is mandatory (WebUI, `dso logs --api` and health probes
+			// The API is mandatory (WebUI, `docker dso logs --api` and health probes
 			// depend on it): a bind failure aborts startup, and a later
 			// unexpected termination stops the agent (see restFailed below).
 			restShutdown, restFailed, err := server.StartRESTServerSupervised(ctx, apiAddr, cache, trigger, cfg, logger, reloader)

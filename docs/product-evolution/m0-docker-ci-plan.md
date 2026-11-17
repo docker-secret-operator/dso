@@ -99,7 +99,7 @@ Design rules:
 
 **What the S1–S3 baseline exercises:** DSO's real rotation engine (`watcher.ReloaderController`: label discovery, the `dso.owner` ownership gate, the restart / rolling / signal strategies, the health gate, container rename/create/remove) running in-process against a real Docker Engine and real `docker compose`.
 
-**What it does NOT exercise (synthetic cache seeding):** the secret value is written straight into the controller's cache interface by the test. The scenarios therefore do **not** cover the Vault provider plugin or any provider polling, the root `dso-agent` / `docker-dso agent` binary and its startup wiring, the Unix IPC socket, SO_PEERCRED peer-credential authorization, the REST API, or the proxy. The S1/S2/S3 "Expected outcome" column above (IPC `GetStatus`, Vault v1→v2, proxy 0-failed-requests) describes the planned end-to-end harness, not this baseline.
+**What it does NOT exercise (synthetic cache seeding):** the secret value is written straight into the controller's cache interface by the test. The scenarios therefore do **not** cover the Vault provider plugin or any provider polling, the root `docker-dso agent` binary and its startup wiring, the Unix IPC socket, SO_PEERCRED peer-credential authorization, the REST API, or the proxy. The S1/S2/S3 "Expected outcome" column above (IPC `GetStatus`, Vault v1→v2, proxy 0-failed-requests) describes the planned end-to-end harness, not this baseline.
 
 **Gating:** the package carries `//go:build dockerint`; without the tag `go list ./test/docker/...` matches no packages, so `go test ./...` in `ci.yml` / `coverage.yml` never compiles or runs it.
 

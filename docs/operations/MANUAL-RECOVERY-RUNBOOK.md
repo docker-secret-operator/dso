@@ -22,8 +22,8 @@ What exists (verified in code):
 
 * `dso status` (and `dso status --json`) shows **only a count**: `Rotations.Pending`, from `StateTracker.GetPendingRotations()` (records that are `critical_error`, `rollback_required`, or `in_progress` with `last_update` older than 5 minutes). It does not name the service. An `in_progress` record inherited from a previous process less than 5 minutes old is NOT counted but still blocks rotation.
 * `dso doctor` runs DSO-DOCTOR-018 (pending count, same source), DSO-DOCTOR-019 (services marked degraded, with reason), DSO-DOCTOR-020 (leftover `_dso_backup_` / `_dso_new_` / `_old_<ts>` containers). The advice text of 018 says "run `dso status` for detail"; status only has the count, so use the journal and logs below.
-* `dso system status`, `dso system logs [-f] [-n N] [-p err]`, `dso system restart` wrap `systemctl show/restart dso-agent` and `journalctl -u dso-agent`.
-* There is **no** `dso` command that lists, inspects, acknowledges or clears individual rotation records (checked: `internal/cli` has setup, bootstrap, doctor, status, config, system, agent, compose, fetch, init, apply, inject, sync, migrate, notifications, up, down, watch, version, validate, export, inspect, diff, logs, secret, central...; none touches `rotations.json`). `dso inspect` and `dso logs` are unrelated to the journal [UNVERIFIED in detail: only command names and help text were read].
+* `docker dso system status`, `docker dso system logs [-f] [-n N] [-p err]`, `docker dso system restart` wrap `systemctl show/restart dso-agent` and `journalctl -u dso-agent`.
+* There is **no** `dso` command that lists, inspects, acknowledges or clears individual rotation records (checked: `internal/cli` has setup, bootstrap, doctor, status, config, system, agent, compose, fetch, init, apply, inject, sync, migrate, notifications, up, down, watch, version, validate, export, inspect, diff, logs, secret, central...; none touches `rotations.json`). `docker dso inspect` and `docker dso logs` are unrelated to the journal [UNVERIFIED in detail: only command names and help text were read].
 
 Journal file:
 
@@ -51,7 +51,7 @@ for k, r in d.items():
 PY
 ```
 
-Agent logs (`dso system logs -n 200`, or `sudo journalctl -u dso-agent --no-pager --since "2 hours ago"`). Messages the code emits, exact start of text:
+Agent logs (`docker dso system logs -n 200`, or `sudo journalctl -u dso-agent --no-pager --since "2 hours ago"`). Messages the code emits, exact start of text:
 
 * `Detected unfinished rotations, performing safe recovery`
 * `Recovery cannot establish a safe state; all workloads preserved, manual recovery required` (field `reason` lists what was preserved)
@@ -198,8 +198,8 @@ When the operator has repaired the service (or nothing was wrong), start the age
 
 ```
 sudo systemctl start dso-agent
-dso system status
-dso system logs -n 100
+docker dso system status
+docker dso system logs -n 100
 ```
 
 Startup order (design doc 3c): the journal loads (`Loaded rotation states`), `BeginStartup` blocks every dispatch path, the embedded proxy rebuilds its table from running labelled containers, recovery runs (`Detected unfinished rotations...`), then the gate is released and pollers start. Expected outcomes per record: `Recovery complete: a verified healthy workload exists...` then the record becomes `recovered` and the service is no longer blocked; or `Recovery cannot establish a safe state ...` and the record stays `critical_error`, the service is re-flagged degraded, and a rotation attempt logs `Rotation refused: the service has an unresolved operation ...`.
@@ -254,7 +254,7 @@ Then:
 
 ```
 sudo systemctl start dso-agent
-dso system logs -n 100         # expect: Loaded rotation states; no "Recovery cannot establish a safe state" for the record; no "Rotation refused" for the service
+docker dso system logs -n 100         # expect: Loaded rotation states; no "Recovery cannot establish a safe state" for the record; no "Rotation refused" for the service
 dso status                       # Pending should drop; dso doctor: DSO-DOCTOR-018/019/020
 ```
 
@@ -275,7 +275,7 @@ Proposed item, not implemented:
 ## Claims in this runbook not verified from code
 
 1. Exact text and fields printed by `dso doctor`, `dso status`, `dso config show` (only the command wiring, the status struct and the doctor check source were read, not executed); whether `dso config show` prints `agent.owner_id`.
-2. That `dso inspect` / `dso logs` do not read the journal (only names and Use lines were read).
+2. That `docker dso inspect` / `docker dso logs` do not read the journal (only names and Use lines were read).
 3. The agent runs as root in all installs: the repo's unit has no `User=`; other templates (bootstrap, the older `repair_service.go` unit using `/usr/local/bin/dso-agent`) differ in binary name, and I did not read the bootstrap templates. Unit name `dso-agent.service` and `ExecStart=/usr/local/bin/dso agent` are from `planner.go`.
 4. `sha256sum`, `stat`, `sh` exist inside the target container images; the secret directory is `/run/secrets/dso` only when the service uses the default (`spec.Path` is configurable).
 5. Behaviour of a real Docker daemon for the `docker inspect --format` / `docker ps --format` templates (written from Docker CLI knowledge, not run here).

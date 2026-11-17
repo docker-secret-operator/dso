@@ -8,7 +8,7 @@ Not implemented. This command always exits 1.
 
 It is reserved for comparing the provider mappings in dso.yaml with a deployed
 stack. A real comparison needs a defined source of truth for the deployed side
-(container labels written by 'dso up', or the agent's tracked targets) and a
+(container labels written by 'docker dso up', or the agent's tracked targets) and a
 stable identity for "the stack" (project/environment selection), neither of
 which the CLI exposes yet. Until then it reports that no comparison was made
 rather than claiming "no differences".

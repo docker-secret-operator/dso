@@ -67,7 +67,7 @@ no archive, rename or delete for projects or environments. Encryption contexts b
 | Audit identifiers and rename compatibility | Slugs only; or add project/environment ids | New event schema version and migration required |
 | Restore of a backup older than a lifecycle change | Define whether archive/rename state reverts | An older backup silently reverts such state; the same concern applies to a quarantine flag if one is ever stored in the database |
 | Authorization of destructive lifecycle operations | Depends on the authorization architecture | Cannot be finalized before that decision |
-| Compatibility with local mode | Undetermined | `docs/design/central-server-design.md` plans a shared `dso secret` grammar; local-mode integration was not audited |
+| Compatibility with local mode | Undetermined | `docs/design/central-server-design.md` plans a shared `docker dso secret` grammar; local-mode integration was not audited |
 
 Suggested non-goals for a first version (a proposal for the owner): hard purge, per-environment keys, moving secrets
 between environments.

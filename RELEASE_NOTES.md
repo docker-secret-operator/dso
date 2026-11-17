@@ -18,7 +18,7 @@ Leave the identity unchanged only when the shared configuration is intentionally
 
 ### Upgrading existing installations
 
-When upgrading from a pre-ownership DSO version, the agent (`dso agent`) and `dso compose up` automatically generate and persist an `agent.owner_id` in your configuration. Read-only commands (`doctor`, `export`, `fetch`, `apply`, `notifications test`, ...) never write the file and work on a config they can read but not write. Containers created by the previous version do not have the new `dso.owner` label and are therefore **not automatically adopted**.
+When upgrading from a pre-ownership DSO version, the agent (`dso agent`) and `docker dso compose up` automatically generate and persist an `agent.owner_id` in your configuration. Read-only commands (`doctor`, `export`, `fetch`, `apply`, `notifications test`, ...) never write the file and work on a config they can read but not write. Containers created by the previous version do not have the new `dso.owner` label and are therefore **not automatically adopted**.
 
 These legacy containers will not receive secret rotations, restarts, or recovery from the upgraded agent until they are recreated/re-labeled. Re-run the appropriate DSO `apply`, `up`, or `compose` workflow to create containers carrying the new ownership label.
 

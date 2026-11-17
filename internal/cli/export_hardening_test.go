@@ -225,7 +225,7 @@ func TestExportCmd_HasOverwriteFlagDefaultingOff(t *testing.T) {
 	}
 }
 
-// ---- dso logs --api client -------------------------------------------------
+// ---- docker dso logs --api client -------------------------------------------------
 
 func TestFetchEvents_SendsBearerTokenWhenConfigured(t *testing.T) {
 	var gotAuth string

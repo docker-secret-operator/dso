@@ -54,12 +54,12 @@ func (ac *AuditFileChecks) checkAuditFile() DoctorCheck {
 	if !st.Mode().IsRegular() {
 		return warnCheck(id, name, desc, ac.path+": not a regular file",
 			"The agent only writes a regular file; a symlink or special file is refused",
-			cat, "Remove or move the unexpected path aside, then restart dso-agent")
+			cat, "Remove or move the unexpected path aside, then restart the dso-agent service")
 	}
 	if st.Mode().Perm()&0o077 != 0 {
 		return warnCheck(id, name, desc, fmt.Sprintf("%s: mode %04o is accessible to group or other", ac.path, st.Mode().Perm()),
 			"The agent refuses to open an audit file accessible to group or other, so audit events are not being persisted",
-			cat, fmt.Sprintf("chmod 600 %s, then restart dso-agent", ac.path))
+			cat, fmt.Sprintf("chmod 600 %s, then restart the dso-agent service", ac.path))
 	}
 	recs, err := ac.read(ac.path)
 	switch {
@@ -68,7 +68,7 @@ func (ac *AuditFileChecks) checkAuditFile() DoctorCheck {
 			"The file was modified, reordered, truncated mid-file or corrupted; the agent refuses to append to it, so audit events are not being persisted",
 			DoctorHigh, cat,
 			"Run `dso audit verify` for the exit-coded result",
-			"Preserve the file as evidence, move it aside, then restart dso-agent to start a new chain")
+			"Preserve the file as evidence, move it aside, then restart the dso-agent service to start a new chain")
 	case errors.Is(err, fs.ErrPermission):
 		return infoCheck(id, name, desc, ac.path+": exists but cannot be read as this user; run doctor as root or the agent user to verify the chain", cat)
 	case err != nil:

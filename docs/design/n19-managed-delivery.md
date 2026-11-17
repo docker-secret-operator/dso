@@ -170,7 +170,7 @@ post-readiness probe of **every** delivered file in all three paths. Regression 
 
 ## 10. Migration, compatibility, remaining work
 
-- Env-mode secrets, signal strategy, `dsofile://` local mode, `dso inject`, compose-project recreation: unchanged. Rotations without file secrets: no gate, no new journal phases.
+- Env-mode secrets, signal strategy, `dsofile://` local mode, `docker dso inject`, compose-project recreation: unchanged. Rotations without file secrets: no gate, no new journal phases.
 - Existing configs: `inject.type` values unchanged. **Behaviour changes for file secrets:** the destination must be a declared tmpfs (previously silently accepted, and
   possibly persistent); the container needs `/bin/sh` and the injector tools; a numeric non-root user must equal `inject.uid`; both ENTRYPOINT and CMD empty is refused;
   provider file names must be plain names; downtime of the restart strategy grows by the delivery time; a missing cache value now aborts instead of starting a secretless candidate.

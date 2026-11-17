@@ -18,9 +18,9 @@ Read-only first steps. None of the commands below changes agent state.
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Audit page says no durable file is active | The agent could not open `/var/lib/dso/state/audit.jsonl` (permissions, a broken chain, or a full disk) | Read the agent log for "Durable audit file unavailable", fix the cause, restart `dso-agent`. Until then events are logged only. |
+| Audit page says no durable file is active | The agent could not open `/var/lib/dso/state/audit.jsonl` (permissions, a broken chain, or a full disk) | Read the agent log for "Durable audit file unavailable", fix the cause, restart the `dso-agent` service. Until then events are logged only. |
 | `write_failures` or `dso_audit_durable_write_failures_total` is above 0 | Disk full, I/O error or fsync failure while appending | Free space or fix the device. Those events exist only in the log stream. Failed appends are rolled back, so the file stays verifiable. |
-| `dso audit verify` exits 10 | A record was edited, reordered, removed mid-file, or the file was damaged | Keep the file as evidence, move it aside and restart `dso-agent` to start a new chain. Do not edit it. |
+| `dso audit verify` exits 10 | A record was edited, reordered, removed mid-file, or the file was damaged | Keep the file as evidence, move it aside and restart the `dso-agent` service to start a new chain. Do not edit it. |
 | `DSO-DOCTOR-032` WARN: mode accessible to group or other | The file was created or changed with loose permissions | `chmod 600` the file and restart; the agent refuses to open a file that group or other can access. |
 | Doctor shows INFO "cannot be read as this user" | The file is 0600 and owned by the agent | Re-run doctor as root or the agent user. |
 

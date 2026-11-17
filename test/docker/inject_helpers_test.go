@@ -2,7 +2,7 @@
 
 package docker
 
-// Helpers for the `dso inject` security scenarios (inject_security_test.go).
+// Helpers for the `docker dso inject` security scenarios (inject_security_test.go).
 // Everything goes through the isolation guard: the verified endpoint only, the
 // run's labels on every resource, unique names, synthetic secrets only.
 
@@ -72,7 +72,7 @@ func injVolume(t *testing.T) string {
 	return name
 }
 
-// injRun executes `dso inject` in-process against the verified endpoint
+// injRun executes `docker dso inject` in-process against the verified endpoint
 // (dockerguard.Main exported DOCKER_HOST) with the value on stdin, and returns
 // everything it printed (stdout + stderr) and its error.
 func injRun(t *testing.T, value string, args ...string) (string, error) {

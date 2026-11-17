@@ -58,7 +58,7 @@ export interface RotateSecretResponse {
 
 /**
  * POST /api/secrets/{name}/rotate -- triggers the exact same production
- * rotation machinery as `dso sync --secret NAME`
+ * rotation machinery as `docker dso sync --secret NAME`
  * (watcher.ReloaderController.TriggerReload). This call only reports
  * whether the request was accepted; it never blocks on the rotation
  * actually finishing. Callers must watch the WebSocket event stream (see

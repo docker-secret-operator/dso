@@ -100,7 +100,7 @@ Each item: evidence → problem → solution → benefit → complexity → risk
 
 | Test | Pass criterion |
 |---|---|
-| Secret leakage scan after each integration scenario | No secret value in: agent logs, `journalctl`, `docker inspect` for file-mode secrets, `/proc/*/cmdline`, host overlay dirs, `/tmp` after `dso up` exits normally |
+| Secret leakage scan after each integration scenario | No secret value in: agent logs, `journalctl`, `docker inspect` for file-mode secrets, `/proc/*/cmdline`, host overlay dirs, `/tmp` after `docker dso up` exits normally |
 | IPC authz matrix | Every RPC method × {root, agent UID, dso member, other user} matches the table in ADR-007 |
 | Webhook | Replay, stale timestamp, wrong signature, table-full all rejected (existing tests; keep in CI) |
 | Provider poisoning | S-1 tests |

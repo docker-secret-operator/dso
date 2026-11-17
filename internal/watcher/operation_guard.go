@@ -5,7 +5,7 @@ import "errors"
 // Competing-mutation guard (M0-04 finding 3.3).
 //
 // Every way of starting a rotation -- the first/scheduled poll, a webhook, an IPC
-// reconcile (`dso sync`/`apply`), the REST manual-rotate endpoint and the watcher's
+// reconcile (`docker dso sync`/`apply`), the REST manual-rotate endpoint and the watcher's
 // own event-driven dispatch -- funnels into ReloaderController.TriggerReload. The
 // per-service rotation lock that serialises them is IN-MEMORY: a restarted agent
 // starts with every service unlocked, so on its own it cannot know that the previous

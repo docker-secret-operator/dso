@@ -23,7 +23,7 @@ This document's job is to decide the trust model *before* any of Phase 2's later
 
 DSO's product identity (per the complete-product audit, §9, and ROADMAP.md) is a **self-hosted, single-operator, Docker Compose-native** secrets operator — not a multi-tenant SaaS platform. `dso central`'s intended user population inherits that:
 
-- **Primary user: the single operator** who already runs `dso agent`/`dso up` on a host and wants durable, versioned, encrypted secret storage with a real schema (projects/environments) instead of the flat per-agent vault model. This is the same person who already has root or docker-group access to the host.
+- **Primary user: the single operator** who already runs `dso agent`/`docker dso up` on a host and wants durable, versioned, encrypted secret storage with a real schema (projects/environments) instead of the flat per-agent vault model. This is the same person who already has root or docker-group access to the host.
 - **Secondary, narrower user: an automation identity** (a CI/CD pipeline, a deployment script) that needs to read or write secrets non-interactively on the operator's behalf. This is the main place where "is it strictly local-only" actually matters (§9 below) — a CI runner is very often *not* the same host as the one running `dso agent`.
 - **Explicitly not a target user for Phase 2**: multiple independent human operators with different privilege levels on the same store (that is RBAC/multi-tenancy, explicitly out of scope per ROADMAP.md:191 and the original audit's Group D exclusions), and not a hosted/shared control plane serving multiple customers.
 

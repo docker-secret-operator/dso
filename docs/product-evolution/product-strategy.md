@@ -65,7 +65,7 @@ What this explicitly is **not**: a secret store, a credential generator, an IdP,
 ## 5. Use cases (in priority order)
 
 1. Provider-side rotation (AWS SM rotation Lambda, Doppler/Infisical rotated secrets, Vault KV update) → DSO re-delivers to every dependent Compose service with a health gate.
-2. Replace `.env` with a provider: `dso migrate` → `dso validate` in CI → `dso up`.
+2. Replace `.env` with a provider: `dso migrate` → `dso validate` in CI → `docker dso up`.
 3. Emergency credential revocation: operator updates the secret in the provider, triggers `dso rotate <secret>` (or provider webhook), sees per-container outcome.
 4. Audit question "is anything still running the old credential?" answered from the runtime ledger.
 5. Local development with the local vault (unchanged, dev-only positioning).

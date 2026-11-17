@@ -154,7 +154,7 @@ func (rc *RotationChecks) checkLedger(status *api.StatusResponse, statusErr erro
 		if l.Remediation != "" {
 			recovery = append(recovery, l.Remediation)
 		}
-		recovery = append(recovery, "Check the agent log for the one-time \"ledger DISABLED\" warning, fix the cause, then restart dso-agent")
+		recovery = append(recovery, "Check the agent log for the one-time \"ledger DISABLED\" warning, fix the cause, then restart the dso-agent service")
 		return warnCheck(id, name, desc,
 			fmt.Sprintf("ledger: disabled (%s): %s", l.Code, l.Message),
 			l.Degraded,
@@ -340,13 +340,13 @@ func (rc *RotationChecks) checkUnownedManagedContainers(ctx context.Context) Doc
 	if cfg.Agent.OwnerID == "" {
 		// Read-only commands never write the config, so a configuration the
 		// agent has not initialised yet legitimately has no identity.
-		detail.WriteString("This configuration has no agent.owner_id yet (it is created the first time the agent or `dso compose up` runs), so no container can belong to it yet. ")
+		detail.WriteString("This configuration has no agent.owner_id yet (it is created the first time the agent or `docker dso compose up` runs), so no container can belong to it yet. ")
 	}
 
 	return warnCheck(id, name, desc, strings.TrimSpace(detail.String()),
 		"Most commonly caused by upgrading an existing DSO installation to an ownership-aware version -- pre-upgrade containers have no dso.owner label and are never automatically adopted",
 		DoctorCatRotation,
-		"These containers will NOT receive secret rotations, restarts, or recovery from this agent until recreated (e.g. re-running `dso apply`/`dso up`/`dso compose` so the new container gets this agent's dso.owner label)",
+		"These containers will NOT receive secret rotations, restarts, or recovery from this agent until recreated (e.g. re-running `docker dso apply`/`docker dso up`/`docker dso compose` so the new container gets this agent's dso.owner label)",
 		"If a container is intentionally managed by a different, separate DSO agent instance, no action is needed",
 	)
 }

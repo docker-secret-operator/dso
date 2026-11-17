@@ -1574,7 +1574,7 @@ var serveFunc = func(srv *http.Server, ln net.Listener) error { return srv.Serve
 //     returns, so a nil error means the API is really accepting connections.
 //   - If the server later terminates for any reason other than shutdown, the
 //     cause is delivered once on the returned channel. The agent treats the API
-//     as mandatory (the WebUI, `dso logs --api` and health probes depend on
+//     as mandatory (the WebUI, `docker dso logs --api` and health probes depend on
 //     it) and shuts down when it fires. The channel is never closed and never
 //     receives a value after an intentional shutdown.
 //   - The returned shutdown function is idempotent and also runs when ctx is

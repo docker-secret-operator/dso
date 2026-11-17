@@ -63,7 +63,7 @@ In parallel (documentation only, S): **BL-11** truth pass on README/ROADMAP clai
 | ID | Title | Findings | Problem | Proposed solution | Size | Acceptance criteria |
 |---|---|---|---|---|---|---|
 | **BL-21** | Provider webhook adapters (Doppler, Infisical, AWS EventBridge) | PE-18 | Polling latency | Verify vendor signatures, enqueue RotationRequest | M | Signed vendor webhook triggers rotation within 5s in an integration test; unsigned rejected |
-| **BL-19** | Single runtime | PE-18, PE-17 | Two runtimes (`agent.Agent` vs `TriggerEngine`) | Local mode uses the same controller with the local-vault provider | L | `dso up` and `dso agent` share one rotation code path; old `agent.Agent` deleted |
+| **BL-19** | Single runtime | PE-18, PE-17 | Two runtimes (`agent.Agent` vs `TriggerEngine`) | Local mode uses the same controller with the local-vault provider | L | `docker dso up` and `dso agent` share one rotation code path; old `agent.Agent` deleted |
 | **BL-16** | Remove dead surface | PE-19, PE-22, PE-18 | Secret-driver socket (verify first), `system doctor`, SmartPoller, stub reactor | Delete after verification | S | Build/vet/tests pass; socket not created |
 | **BL-23** | Reduce AWS API calls | PE-25 | `DescribeSecret` per poll | Folded into BL-13 | S | One API call per poll when unchanged |
 | **BL-25** | Pin Actions to SHAs | P-05 note | Major-version tags | SHA pins + Dependabot | S | All `uses:` pinned |

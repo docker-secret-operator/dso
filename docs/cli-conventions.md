@@ -7,7 +7,7 @@ Authoritative behaviour of the CLI as of this change. Per-command flags live in
 
 | Situation | Exit | Output |
 |---|---|---|
-| Success, `--help`, `help`, `completion`, bare group (`dso secret`) | 0 | stdout |
+| Success, `--help`, `help`, `completion`, bare group (`docker dso secret`) | 0 | stdout |
 | Unknown subcommand, bad/missing arguments, bad flag | 1 | one `Error: …` line on stderr |
 | Runtime failure | 1 | one `Error: …` line on stderr, no usage dump |
 | `status`: agent unreachable or degraded | 1 | status report on stdout (or JSON), reason on stderr |
@@ -30,7 +30,7 @@ had already started (exit 1, one `Error:` line); it no longer calls
 dies unexpectedly the agent shuts down gracefully and exits 1. Intentional
 shutdown (SIGINT/SIGTERM) is not reported as a failure.
 
-`dso logs` returns errors (connection refused, 401, malformed response,
+`docker dso logs` returns errors (connection refused, 401, malformed response,
 journalctl failure) instead of printing a tip and exiting 0 — **a script that
 relied on `logs` always exiting 0 will now see exit 1** when the journal or the
 API is unavailable. Ctrl+C while following exits 0. Static tests forbid
@@ -40,7 +40,7 @@ except for `version` and the hidden Docker-plugin metadata command.
 ## Secret input
 
 * `secret set`, `inject`: values come from a hidden prompt or stdin — **bytes are
-  stored exactly**. `echo x | dso secret set p/k` stores `x\n`; use
+  stored exactly**. `echo x | docker dso secret set p/k` stores `x\n`; use
   `printf %s x |`, `< file`, or `--trim-newline` (removes exactly one trailing
   `\n` / `\r\n`, nothing else).
 * Values must be valid UTF-8, non-empty, ≤ 1 MB. Whitespace-only values are accepted.
@@ -179,9 +179,9 @@ docs (`docs/*.md`, `examples/`) before any change.
 
 ## Not implemented (do not rely on)
 
-`dso diff` has no comparison logic: it exits 1 with "not implemented" instead
+`docker dso diff` has no comparison logic: it exits 1 with "not implemented" instead
 of claiming "no differences" (its help text says so). A real implementation
-needs a defined deployed-state source (labels written by `dso up` or the
+needs a defined deployed-state source (labels written by `docker dso up` or the
 agent's tracked targets) and project/environment selection, which the CLI does
 not have yet; no partial comparison will be shipped. Remote login, service tokens, secret
 history and `dso run` are future work requiring API/store/authorization design.

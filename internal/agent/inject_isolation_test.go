@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// (13) Standalone `dso inject` (admin injection into an arbitrary container) must
+// (13) Standalone `docker dso inject` (admin injection into an arbitrary container) must
 // not touch managed ledger state. It runs in the operator's own process, talks to
 // Docker directly and never reaches the agent's engine, journal or ledger: the
 // ledger is owned (flock) by the agent process and only the engine's managed

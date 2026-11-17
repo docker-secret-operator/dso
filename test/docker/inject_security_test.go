@@ -2,10 +2,10 @@
 
 package docker
 
-// `dso inject` security scenarios (docs/audit/38-DSO-INJECT-SECURITY-FINDING.md).
+// `docker dso inject` security scenarios (docs/audit/38-DSO-INJECT-SECURITY-FINDING.md).
 //
 // CONTRACT under test (audit 38 section 2):
-//   - `dso inject` is an explicit ADMINISTRATIVE command: the operator names the
+//   - `docker dso inject` is an explicit ADMINISTRATIVE command: the operator names the
 //     target container; DSO ownership labels are NOT required (a managed and an
 //     unmanaged container are treated alike).
 //   - It writes ONLY into a directory that lies inside a tmpfs mount declared by

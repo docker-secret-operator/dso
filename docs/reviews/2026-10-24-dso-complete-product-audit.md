@@ -17,7 +17,7 @@ The most important gap is not a bug — it's incompleteness of newer work. The `
 **Top 5 verified problems:**
 1. `dso central` (the feature that would bring DSO to parity on environments/versioning/projects) has no authn/authz, no audit chain, and no backup/restore command — explicitly self-documented as pre-production (docs/central-store-m1.md:3-7, 224-226).
 2. Dead client-side CSRF token machinery (`web/lib/csrf.ts`) is generated and sent but never validated server-side — inert code that misleads anyone reading the frontend into believing double-submit CSRF protection exists (`web/lib/api-client.ts:52-58` vs. zero matches in `internal/server/rest.go`/`internal/webuiauth/*.go`).
-3. `dso system doctor` is registered nowhere in the command tree — dead code exercised only by a direct unit test (`internal/cli/utils.go:148-155`, `internal/cli/secret_test.go:53`).
+3. `docker dso system doctor` is registered nowhere in the command tree — dead code exercised only by a direct unit test (`internal/cli/utils.go:148-155`, `internal/cli/secret_test.go:53`).
 4. Three security-relevant subsystems were not traced deep enough in this pass to close out as verified-safe: rotation fail-open/closed behavior under partial failure, provider-outage fail-safe behavior for secret delivery, and the `internal/proxy` Docker-socket-mediation authorization boundary (P-02, P-03, P-04 in §6).
 5. Test-coverage gaps: five web UI pages (`/drift`, `/analytics`, `/alerts`, `/users`, `/settings`) and two CLI commands (`notifications`, `down`) have no dedicated test file, against an otherwise consistently well-tested codebase.
 
@@ -146,7 +146,7 @@ No hardcoded secrets found in `internal/crypto`, `internal/auth`, `internal/webu
 ## 7. Verified Bugs, Stubs, Dead Code, and Incomplete Implementations (consolidated)
 
 1. `internal/cli/utils.go:148-155` — `newSystemDoctorCmd`: dead code, unreachable from the binary, exercised only by a direct unit test.
-2. `internal/cli/diff.go:11-46` — `dso diff`: honest, declared stub (always errors, never fabricates a result); docs match.
+2. `internal/cli/diff.go:11-46` — `docker dso diff`: honest, declared stub (always errors, never fabricates a result); docs match.
 3. `web/lib/csrf.ts` + `web/lib/api-client.ts:52-58` — dead client-side CSRF token, never validated server-side.
 4. `docs/central-store-m1.md:224-226` — `dso central`'s audit trail fields are explicitly "not an audit log and not tamper-evident"; auth/authz is explicitly absent ("any process with the OS user's file access can do everything").
 5. Test-coverage gaps: CLI `notifications.go`, `down.go`; web pages `/drift`, `/analytics`, `/alerts`, `/users`, `/settings`.
@@ -223,7 +223,7 @@ All DSO claims are sourced from the repo (README.md, ROADMAP.md, SECURITY.md, TH
 
 ## 11. Documentation Discrepancies
 
-- **None found that overstate functionality.** Every discrepancy found runs the opposite direction from the usual failure mode: docs and code comments consistently *underclaim* or explicitly flag incompleteness (`dso diff`'s docs match its stub exactly; `docs/central-store-m1.md` explicitly says "not production-ready"; web component comments explicitly disclaim out-of-scope functionality rather than implying it exists).
+- **None found that overstate functionality.** Every discrepancy found runs the opposite direction from the usual failure mode: docs and code comments consistently *underclaim* or explicitly flag incompleteness (`docker dso diff`'s docs match its stub exactly; `docs/central-store-m1.md` explicitly says "not production-ready"; web component comments explicitly disclaim out-of-scope functionality rather than implying it exists).
 - **One naming-only issue:** `internal/cli/stubs.go` is a misleading filename for a complete, correct command — worth a rename for future-maintainer clarity, not a doc fix.
 - **Recommended doc additions:** document the provider-plugin environment allow-list behavior in SECURITY.md (currently only in code comments, per F-04); once P-01 through P-05 are resolved, update SECURITY.md/THREAT_MODEL.md with the findings either way (confirmed-safe or confirmed-needs-fix).
 

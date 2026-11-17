@@ -230,7 +230,7 @@ No recursive permission changes will be performed
 
 What it does: sets the owner and mode of the directories above, one directory at a time, through a descriptor opened with `O_NOFOLLOW|O_DIRECTORY` (`fchown`/`fchmod`). A symlink, or a regular file where a directory is expected, is refused and reported as `manual`. A path that already conforms is not touched, so a second run changes nothing. A directory that is *stricter* than the contract (except `/var/run/dso`, which is exact) is never loosened.
 
-What it never does: recursive chmod/chown; read, rewrite or replace `dso.yaml` or any configuration file; create, regenerate, rename or remove the ledger key; reset authentication state; restart the agent (restart `dso-agent` yourself afterwards); modify unrelated files; print key material.
+What it never does: recursive chmod/chown; read, rewrite or replace `dso.yaml` or any configuration file; create, regenerate, rename or remove the ledger key; reset authentication state; restart the agent (restart the `dso-agent` service yourself afterwards); modify unrelated files; print key material.
 
 The ledger key is only ever *inspected*. A missing key beside existing ledger state, a key owned by someone other than root, a hard-linked or symlinked key, or a file that is not a ledger key (wrong size or header) is reported as `manual` with a diagnostic and left untouched. Only the mode of a key that is verifiably a ledger key owned by root is tightened (to `0400`). The plugin directory is only repaired when it is root-owned, and only its group/world write bits are removed.
 

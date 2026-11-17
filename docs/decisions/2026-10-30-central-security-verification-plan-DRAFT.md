@@ -187,7 +187,7 @@ blocked because no service exists.
 
 `scripts/validate-cli.sh` is a CI-style check, reported earlier as failing with 26 pre-existing hits unrelated to the
 central-store work. This task did not run it, did not change it, and did not remediate any hit. From reading the script:
-it uses `git grep` over **tracked** files, minus an exclusion list, for two patterns (a bare `dso-agent` command, and a
+it uses `git grep` over **tracked** files, minus an exclusion list, for two patterns (a bare invocation of the legacy agent binary, and a
 standalone `dso <init|apply|sync|inject|diff|env|secret|system|up|down|logs|watch|fetch|compose|inspect|legacy-agent>`
 command), and fails when either matches.
 

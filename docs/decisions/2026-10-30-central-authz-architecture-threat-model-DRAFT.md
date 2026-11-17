@@ -84,7 +84,7 @@ the operator, any same-user process, and the key.
 - **Failure behavior.** If the socket is unavailable the CLI should fail closed. Whether a break-glass direct mode
   exists is an owner decision, and it is itself a bypass (section 4, path 4).
 - **Migration.** Moving key and database ownership, a documented rollback, and the relationship to local mode and
-  the planned shared `dso secret` grammar (`docs/design/central-server-design.md`) are undetermined.
+  the planned shared `docker dso secret` grammar (`docs/design/central-server-design.md`) are undetermined.
 
 ### ARCH-C: defer the architecture and keep the current implementation temporarily
 
@@ -221,5 +221,5 @@ document the ownership change, and add the authorization matrix tests before ena
 4. The operation policy table, including who may reveal, disable, delete, back up and restore.
 5. How backup, restore and audit verify work under a service, and how caller-supplied paths are removed.
 6. Which hardening list (section 5) is required, and the supported platforms.
-7. How local mode and the shared `dso secret` grammar relate to the service.
+7. How local mode and the shared `docker dso secret` grammar relate to the service.
 8. Supported filesystems and platforms (section 7).
