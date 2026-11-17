@@ -28,6 +28,11 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 func TestN19ReconcileLifecycle_NoWorkerAccumulation(t *testing.T) {
 	w := newGateWorld(t)
 	w.listGate = make(chan struct{})
+	// Deterministic ordering: start the worker with ONE request and wait until its pass is blocked
+	// in ContainerList. Only then flood. (Flooding first lets all requests coalesce into the first
+	// pass, which is correct behaviour but makes "exactly one more pass" timing-dependent.)
+	w.r.RequestGateReconcile(t.Context())
+	waitUntil(t, "first pass blocked in list", func() bool { return w.lists() >= 1 })
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
@@ -39,7 +44,6 @@ func TestN19ReconcileLifecycle_NoWorkerAccumulation(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	waitUntil(t, "first pass listing", func() bool { return w.lists() >= 1 })
 	// 2000 requests while the pass is blocked: a second worker would list concurrently.
 	runtime.Gosched()
 	if n := w.lists(); n != 1 {
