@@ -31,7 +31,7 @@ func TestStartupRecovery(t *testing.T) {
 	t.Run("CandidateNeverRoutedBeforeRecovery", func(t *testing.T) { testCandidateNeverRouted(t, sess, arts) })
 	t.Run("SignalPartialPublication_NoCompetingRotationAfterRestart", func(t *testing.T) { testNoCompetingSignalRotation(t, sess, arts) })
 	t.Run("CorruptJournal_BlocksRotationAfterRestart", func(t *testing.T) { testCorruptJournalBlocksRotation(t, sess, arts) })
-	t.Run("CleanRestart_InitialisationRotationStillRuns", func(t *testing.T) { testInitialisationRotationStillRuns(t, sess, arts) })
+	t.Run("CleanRestart_SettledValueNotRotatedAgain_ChangedValueStillRotates", func(t *testing.T) { testInitialisationRotationStillRuns(t, sess, arts) })
 }
 
 // identityOf returns the identity the application serves (the body the traffic
@@ -171,10 +171,13 @@ func testCorruptJournalBlocksRotation(t *testing.T, sess *dockerguard.Session, a
 	c.stopGracefully(a2)
 }
 
-// 3.3 control: the legitimate initialisation rotation is NOT removed. After a clean,
-// completed rotation and a graceful restart, the first poll of the new agent (no
-// baseline hash, secret visible) rotates the service again and the journal records it
-// as completed.
+// 3.3 control: a clean, completed rotation followed by a graceful restart must not leave
+// the service blocked. Since the M1 applied-version ledger (O-5) the restarted agent's first
+// poll of an UNCHANGED, already-delivered value is adopted and NOT rotated again (it used to
+// dispatch a second rotation; that is deliberately gone: no mass rotation on restart). What
+// must still hold, and what this control proves, is that (a) the unchanged value is not
+// re-rotated, (b) the service is not refused as having an unresolved operation, and (c) a
+// genuinely NEW secret value after the restart still rotates and completes.
 func testInitialisationRotationStillRuns(t *testing.T, sess *dockerguard.Session, arts crashArtifacts) {
 	c := newCrashCase(t, sess, arts, harness.Rolling, harness.ScenarioHappy)
 	a1 := c.startAgent("", 0)
@@ -194,9 +197,21 @@ func testInitialisationRotationStillRuns(t *testing.T, sess *dockerguard.Session
 	waitFor(t, "first rotation to complete", 3*time.Minute, func() bool { return completed() >= 1 })
 	c.stopGracefully(a1)
 
-	a2 := c.startAgent("", 0) // secret still visible: first poll dispatches
+	a2 := c.startAgent("", 0) // the delivered value is still visible
 	c.waitReady(a2)
-	waitFor(t, "the initialisation rotation of the restarted agent to complete", 3*time.Minute, func() bool { return completed() >= 2 })
+	waitFor(t, "the restarted agent to observe the already-delivered value without rotating it", 60*time.Second, func() bool {
+		return logContains(a2.log, "Secret observed; no rotation dispatched")
+	})
+	if n := completed(); n != 1 {
+		t.Fatalf("an unchanged, already-delivered value was rotated again after the restart (completed rotations: %d)", n)
+	}
+	if logContains(a2.log, "Rotation refused: the service has an unresolved operation") {
+		t.Errorf("a settled service was refused:\n%s", logTail(a2.log, 40))
+	}
+
+	// A new value still rotates through the restarted agent.
+	c.vault.Set(crashSecret, map[string]string{"password": syntheticValue("v3")})
+	waitFor(t, "a changed secret to rotate through the restarted agent", 3*time.Minute, func() bool { return completed() >= 2 })
 	if logContains(a2.log, "Rotation refused: the service has an unresolved operation") {
 		t.Errorf("a settled service was refused:\n%s", logTail(a2.log, 40))
 	}

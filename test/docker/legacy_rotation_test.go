@@ -134,7 +134,10 @@ func TestRotation_BlueGreenSwap_Success(t *testing.T) {
 func TestRotation_FileModeSecret_NeverInDockerInspect(t *testing.T) {
 	cli := dockerClient(t)
 	runLabel := lgNewRun(t, cli)
-	id, name := lgRun(t, "filemode", runLabel)
+	// N19 managed delivery fails closed unless the destination directory lies inside a tmpfs
+	// the container declares (it will not write secret material to the writable layer), so
+	// the container must declare one; the previous fixture predated that rule.
+	id, name := lgRun(t, "filemode", runLabel, "--tmpfs", "/run/secrets/dso:rw,mode=0755")
 	secret := syntheticValue("inspect-probe")
 	has := func(s string) bool { return strings.Contains(s, secret) }
 
