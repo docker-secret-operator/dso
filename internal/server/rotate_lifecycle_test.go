@@ -13,6 +13,7 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
+	"github.com/docker-secret-operator/dso/pkg/observability"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"go.uber.org/zap"
@@ -206,12 +207,24 @@ func postRotate(t *testing.T, ts *httptest.Server) {
 
 // Success: the rotation must run to completion AFTER the 202 has been sent.
 func TestManualRotate_RunsToCompletionAfterResponse(t *testing.T) {
-	_, ts, calls := rotationFixture(t, "ok")
+	s, ts, calls := rotationFixture(t, "ok")
+	eng := wireEngine(t, s)
+	before := observability.RotationSuccessTotal.Load()
 	postRotate(t, ts)
 
 	waitFor(t, "replacement container created", func() bool { return calls.count("/containers/create") > 0 })
 	waitFor(t, "replacement started", func() bool { return calls.count("/containers/new-1/start") > 0 })
 	waitFor(t, "original removed", func() bool { return calls.countReq("DELETE", "/containers/orig-1") > 0 })
+	// The daemon seeing the DELETE is not the end of the rotation: the engine
+	// still completes the journal record afterwards, writing into the test's
+	// state directory. Wait for that, or the TempDir cleanup races those writes
+	// ("directory not empty").
+	waitFor(t, "the engine to count the rotation as complete", func() bool {
+		return observability.RotationSuccessTotal.Load() > before
+	})
+	waitFor(t, "the journal to settle", func() bool {
+		return len(eng.StateTracker.GetPendingRotations()) == 0
+	})
 }
 
 // Failure: a create error rolls back (the original is renamed back) while the
