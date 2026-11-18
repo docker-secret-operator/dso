@@ -1783,6 +1783,13 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					finish(err)
 					return
 				}
+				// Crash-test boundary only (a no-op outside the dsofault build): the
+				// replacement is now RUNNING while the journal still ends at
+				// intent_start_replacement. This path journals no separate
+				// replacement_started record (candidate_ready follows the gate, health
+				// check and probe), so the point marks "started, nothing acknowledged
+				// yet"; it fires only after ContainerStart succeeded.
+				r.fault("restart:after_start_before_ack")
 
 				// 6.1 (N19) verify identity + tmpfs, deliver every file, probe, record the
 				// evidence durably, then release the gate. On failure the replacement is

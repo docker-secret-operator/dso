@@ -171,7 +171,10 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	second := c.snapshot(false)
 	c.stopGracefully(again)
 
-	vs := harness.CheckRecovery(c.world(), p, crash, final)
+	// The armed point must have fired at the boundary it names (observed at the crash,
+	// before recovery): a point that fires early or late would test a different window.
+	vs := harness.CheckCrashBoundary(c.world(), p, crash)
+	vs = append(vs, harness.CheckRecovery(c.world(), p, crash, final)...)
 	if c.strategy == harness.Signal {
 		vs = append(vs, harness.CheckSignal(c.world(), crash, final, ev)...)
 	}

@@ -188,3 +188,40 @@ func TestVerifyFault(t *testing.T) {
 		}
 	}
 }
+
+// Both restart executions -- the main compose-recreate path (inside TriggerReload) and
+// the executeSimpleRestart fallback -- run the same journalled sequence, and the crash
+// matrix drives the main one. A restart point instrumented in only one path is
+// reachable only through that path, so a matrix case armed with it silently never fires
+// ("an unreached point is not a pass"). TestRegistryMatchesSource cannot see this: it
+// only asks whether a name occurs anywhere. Require every restart point in both.
+func TestRestartPointsAreInstrumentedInBothRestartPaths(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "internal/watcher/controller.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	const marker = "func (r *ReloaderController) executeSimpleRestart("
+	at := strings.Index(src, marker)
+	if at < 0 {
+		t.Fatal("executeSimpleRestart not found: update this test deliberately")
+	}
+	rest := src[at+len(marker):]
+	end := strings.Index(rest, "\nfunc ")
+	if end < 0 {
+		end = len(rest)
+	}
+	fallback, main := rest[:end], src[:at]
+	for _, p := range Points {
+		if !strings.HasPrefix(p.Name, "restart:") {
+			continue
+		}
+		call := `r.fault("` + p.Name + `")`
+		if !strings.Contains(main, call) {
+			t.Errorf("%s is not instrumented in the main restart path", p.Name)
+		}
+		if !strings.Contains(fallback, call) {
+			t.Errorf("%s is not instrumented in executeSimpleRestart", p.Name)
+		}
+	}
+}
