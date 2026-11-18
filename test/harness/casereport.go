@@ -86,3 +86,19 @@ func LayoutOf(s Snapshot, service string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// CaseLogPrefix marks a one-line JSON case report in a test's output so scripts can pull
+// the reports out of the `go test -json` stream (scripts/integration/summarize-results.sh).
+const CaseLogPrefix = "CASE-REPORT "
+
+// CaseLogLine renders c as CaseLogPrefix followed by compact JSON on ONE line. Logged by every
+// matrix case, it puts the full per-case evidence (crash and final journal, container layouts,
+// second-pass verdict, violations) into the CI job log, which is kept whatever the outcome; the
+// artifact upload only runs on failure, so a passing run would otherwise keep none of it.
+func CaseLogLine(c CaseReport) string {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return CaseLogPrefix + fmt.Sprintf(`{"ID":%q,"error":%q}`, c.ID, err.Error())
+	}
+	return CaseLogPrefix + string(b)
+}

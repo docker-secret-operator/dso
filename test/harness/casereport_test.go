@@ -82,3 +82,21 @@ func TestLayoutOf_ShowsTheServiceAndItsArtifactsOnly(t *testing.T) {
 		t.Fatalf("layout = %v, want %v", got, want)
 	}
 }
+
+func TestCaseLogLine_IsOneLineOfValidJSONWithThePrefix(t *testing.T) {
+	c := CaseReport{ID: "signal/signal-after-spec-0-published", FaultFired: true, PIDVerified: true,
+		CrashJournal: "intent_signal_publish/in_progress", FinalStatus: "critical_error",
+		CrashLayout: []string{"svc aaaaaaaaaaaa running"}, SecondPass: "unchanged",
+		Notes: []string{"line one\nstill one JSON line"}}
+	line := CaseLogLine(c)
+	if !strings.HasPrefix(line, CaseLogPrefix) || strings.ContainsAny(line, "\n\r") {
+		t.Fatalf("must be a single prefixed line, got %q", line)
+	}
+	var back CaseReport
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, CaseLogPrefix)), &back); err != nil {
+		t.Fatalf("not valid JSON: %v", err)
+	}
+	if back.ID != c.ID || back.CrashJournal != c.CrashJournal || back.SecondPass != "unchanged" || len(back.CrashLayout) != 1 {
+		t.Fatalf("round trip lost evidence: %+v", back)
+	}
+}

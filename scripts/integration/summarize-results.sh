@@ -21,4 +21,23 @@ sort -t$'\t' -k2 "$tmp.fin" | awk -F'\t' '{printf "%-12s %s\n", toupper($1), $2}
 # parents that never finished, which is exactly what a timeout leaves behind.
 comm -23 "$tmp.run" "$tmp" | awk '{printf "%-12s %s\n", "INTERRUPTED", $0}'
 echo "---- totals: pass=$(grep -c '^pass' "$tmp.fin") fail=$(grep -c '^fail' "$tmp.fin") skip=$(grep -c '^skip' "$tmp.fin") interrupted=$(comm -23 "$tmp.run" "$tmp" | wc -l) ----"
+
+# Full per-case evidence: every matrix case logs its report as one "CASE-REPORT {json}" line.
+echo "---- case reports (one JSON line per case) ----"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -I - "$json" <<'PY' || true
+import json, sys
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    out = e.get("Output", "")
+    i = out.find("CASE-REPORT ")
+    if e.get("Action") == "output" and i >= 0:
+        print(out[i:].rstrip("\n"))
+PY
+else
+  echo "(python3 not available: case reports are in test.json only)"
+fi
 exit 0

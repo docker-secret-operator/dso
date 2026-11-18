@@ -649,6 +649,9 @@ func evidenceDir() string {
 // the cases that had already completed. Best effort: it logs, never fails the case.
 func saveCaseEvidence(t *testing.T, cr harness.CaseReport) {
 	t.Helper()
+	// Always: the case report as one line in the test output, which the job log keeps even
+	// when the run passes (no artifact is uploaded then).
+	t.Log(harness.CaseLogLine(cr))
 	dir := evidenceDir()
 	if dir == "" {
 		return
