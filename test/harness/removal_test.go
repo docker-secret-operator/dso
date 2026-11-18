@@ -182,19 +182,13 @@ func TestRemovalIsRolledBackCandidate_Negatives(t *testing.T) {
 	})
 }
 
-// Existing behaviour that must not change.
+// Existing behaviour that must not change: an artifact-named removal is never reported by
+// the name rule, whether or not a rollback record exists.
 func TestOnlyArtifactsRemoved_NameRuleUnchanged(t *testing.T) {
 	s := rbDefault()
-	crash, final := s.snapshots()
-	// An artifact-named removal is fine without any rollback record.
-	crash.Containers = append(crash.Containers, c("bk", "app_dso_backup_9", false))
-	s.finalTr, s.finalState = "intent_rollback", ""
-	_, final = s.snapshots()
-	final.Containers = baseContainers()
-	final.Containers = append(final.Containers, CView{ID: "orig", Name: "app", Running: true, Owner: owner})
-	crash2, _ := s.snapshots(c("bk", "app_dso_backup_9", false))
-	vs := CheckRecovery(s.w, pt("restart:after_intent_start"), crash2, final)
-	for _, v := range vs {
+	s.finalTr, s.finalState = "intent_rollback", "" // no rollback record: the identity exception cannot apply
+	crash, final := s.snapshots(c("bk", "app_dso_backup_9", false))
+	for _, v := range CheckRecovery(s.w, pt("restart:after_intent_start"), crash, final) {
 		if v.Rule == "only-artifacts-removed" && strings.Contains(v.Detail, short("bk")) {
 			t.Fatalf("an artifact-named removal was reported: %s", v)
 		}
