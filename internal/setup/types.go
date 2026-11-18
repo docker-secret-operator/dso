@@ -76,6 +76,9 @@ type FileChange struct {
 	Mode      os.FileMode
 	Owner     string // e.g. "root:dso"
 	Operation string // "create" | "modify"
+	// BackupExisting makes the executor write a timestamped 0600 copy of the existing file
+	// next to it before replacing it. Set only for a modify the operator opted into.
+	BackupExisting bool
 }
 
 // DirectoryChange describes a directory create operation.
@@ -357,6 +360,12 @@ type SetupOptions struct {
 	// AutoDetect forces cloud provider auto-detection.
 	AutoDetect bool
 
+	// ReplaceExistingConfig is the explicit opt-in (--replace-config) to replace a DSO
+	// configuration that already exists. Without it setup refuses: the generated file is a
+	// minimal stub and would otherwise silently destroy provider config, secret mappings and
+	// agent.owner_id. With it the existing file is backed up first.
+	ReplaceExistingConfig bool
+
 	// Resume continues a previously interrupted transaction.
 	Resume string
 
@@ -418,6 +427,7 @@ type TxOperation struct {
 	Status     TransactionStatus // Pending → Running → Completed | Failed
 	Before     interface{}       // OS state snapshot captured before execution (for rollback)
 	After      interface{}       // OS state snapshot captured after success (for verification)
+	BackupPath string            // timestamped copy of a replaced file, when one was taken
 	Reversible bool              // true once the operation completed successfully
 	Error      error             // set on failure; nil on success
 	StartedAt  time.Time

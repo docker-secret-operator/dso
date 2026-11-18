@@ -77,6 +77,20 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		}
 	}
 
+	// Resolve the config path now so an existing configuration is refused BEFORE any prompt
+	// or change (from options/context, with the standard fallback).
+	configPath := "/etc/dso/dso.yaml" // Default path
+	if opts.Context != nil {
+		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
+			if path, ok := val.(string); ok && path != "" {
+				configPath = path
+			}
+		}
+	}
+	if err := refuseExistingConfig(configPath, opts.ReplaceExistingConfig); err != nil {
+		return nil, ErrPathValidation("bootstrap", configPath, err.Error())
+	}
+
 	// Step 4: Collect configuration from user
 	builder, err := ab.collectConfiguration(ctx, opts, cloudInfo)
 	if err != nil {
@@ -116,19 +130,14 @@ func (ab *AgentBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 
 	// Step 8: Build and execute transaction
-	// Safely retrieve config path from options or context, with fallback
-	configPath := "/etc/dso/dso.yaml" // Default path
-
-	// Check if context has config_path set (defensive check)
-	if opts.Context != nil {
-		if val := opts.Context.Value(ConfigPathContextKey); val != nil {
-			if path, ok := val.(string); ok && path != "" {
-				configPath = path
-			}
-		}
-	}
-
 	ab.logger.Debug("Using config path", "path", configPath)
+
+	// An opted-in replacement keeps the previous file as a backup; no backup, no replace.
+	if backup, err := backupExistingConfig(configPath); err != nil {
+		return nil, ErrFileWrite("bootstrap", configPath, err)
+	} else if backup != "" {
+		ab.logger.Info("Existing configuration backed up", "backup", backup)
+	}
 
 	// Determine DSO group ID (placeholder - would be looked up or created)
 	dsoGID := 1001 // Typical DSO group ID

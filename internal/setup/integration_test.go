@@ -49,6 +49,10 @@ func TestIntegration_FreshInstall_AgentMode_FullPipeline(t *testing.T) {
 		Mode:     ModeAgent,
 		Provider: "aws",
 		DryRun:   false,
+		// ReplaceExistingConfig: these tests exercise the pipeline, not the overwrite policy, and
+		// the engine detects the REAL host: without the opt-in they would depend on whether the
+		// machine running them already has /etc/dso/dso.yaml.
+		ReplaceExistingConfig: true,
 	})
 
 	if err != nil {
@@ -200,6 +204,10 @@ func TestIntegration_AgentPlan_ContainsServiceOperations(t *testing.T) {
 	eng := newTestEngine()
 	result, _ := eng.Setup(context.Background(), SetupOptions{
 		Mode: ModeAgent, Provider: "local", DryRun: true,
+		// ReplaceExistingConfig: these tests exercise the pipeline, not the overwrite policy, and
+		// the engine detects the REAL host: without the opt-in they would depend on whether the
+		// machine running them already has /etc/dso/dso.yaml.
+		ReplaceExistingConfig: true,
 	})
 	if len(result.Plan.Services) == 0 {
 		t.Error("agent plan must include service operations")

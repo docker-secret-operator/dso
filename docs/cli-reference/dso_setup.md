@@ -30,6 +30,7 @@ dso setup [flags]
   -h, --help              help for setup
       --mode string       Deployment mode: local or agent (cloud)
       --provider string   Cloud provider: aws, azure, vault, huawei
+      --replace-config    Replace an existing DSO configuration with a freshly generated one (the existing file is backed up first); without this flag setup refuses to overwrite it
 ```
 
 ### Options inherited from parent commands

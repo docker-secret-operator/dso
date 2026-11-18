@@ -136,6 +136,10 @@ func TestEngine_Setup_PlanModeAndProviderPropagated(t *testing.T) {
 		Mode:     ModeAgent,
 		Provider: "aws",
 		DryRun:   true, // dry-run keeps apply from running; plan is still generated
+		// ReplaceExistingConfig: these tests exercise the pipeline, not the overwrite policy, and
+		// the engine detects the REAL host: without the opt-in they would depend on whether the
+		// machine running them already has /etc/dso/dso.yaml.
+		ReplaceExistingConfig: true,
 	})
 
 	if result.Plan == nil {

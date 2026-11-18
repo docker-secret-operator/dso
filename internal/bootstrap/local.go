@@ -75,6 +75,11 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 		return nil, err
 	}
 
+	// Never silently replace an existing configuration (checked before any prompt).
+	if err := refuseExistingConfig(configPath, opts.ReplaceExistingConfig); err != nil {
+		return nil, ErrPathValidation("bootstrap", configPath, err.Error())
+	}
+
 	// Collect configuration from user
 	builder, err := lb.collectConfiguration(ctx, opts)
 	if err != nil {
@@ -107,6 +112,13 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return nil, ErrPathValidation("bootstrap", configDir, fmt.Sprintf("failed to create directory: %v", err))
+	}
+
+	// An opted-in replacement keeps the previous file as a backup; no backup, no replace.
+	if backup, err := backupExistingConfig(configPath); err != nil {
+		return nil, ErrFileWrite("bootstrap", configPath, err)
+	} else if backup != "" {
+		lb.logger.Info("Existing configuration backed up", "backup", backup)
 	}
 
 	// Write config file
