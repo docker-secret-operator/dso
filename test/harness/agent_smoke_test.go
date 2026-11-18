@@ -35,7 +35,7 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 	bin := t.TempDir()
 	// t.TempDir() honours the umask (0775 under umask 0002), and the plugin hash
 	// manifest is refused from a group- or world-writable directory. Do not let the
-	// result depend on the developer's umask.
+	// result depend on the developer's umask (the binaries are handled below).
 	if err := os.Chmod(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +45,13 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 	}
 	goBuild(t, dso, "dsofault")
 	goBuildPkg(t, filepath.Join(plugDir, "dso-provider-vault"), "./cmd/plugins/dso-provider-vault")
+	// go build creates binaries with 0777 &^ umask; the agent refuses a plugin that
+	// is group- or world-writable, so normalise the modes.
+	for _, f := range []string{dso, filepath.Join(plugDir, "dso-provider-vault")} {
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pb, _ := os.ReadFile(filepath.Join(plugDir, "dso-provider-vault"))
 	sum := sha256.Sum256(pb)
 	manifest := filepath.Join(bin, "hashes.txt")
