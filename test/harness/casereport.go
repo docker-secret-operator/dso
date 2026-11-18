@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -59,4 +60,29 @@ func WriteCaseReport(dir string, c CaseReport) error {
 	_, err = fmt.Fprintf(f, "%s\t%s\tcrash_journal=%s\tfinal=%s/%s\tviolations=%d\tduration=%s\n",
 		c.ID, CaseStatus(c), c.CrashJournal, c.FinalStatus, c.FinalOutcome, len(c.Violations), c.Duration.Round(1e9))
 	return err
+}
+
+// LayoutOf renders the containers of one snapshot that belong to the service (the real name
+// holder and its rotation artifacts: _dso_new_, _dso_backup_, _old_<ts>) as stable, sorted
+// "name id12 running|stopped" lines, so a case report shows WHICH container held which name
+// at each stage. Unrelated and foreign containers are omitted.
+func LayoutOf(s Snapshot, service string) []string {
+	var out []string
+	for _, c := range s.Containers {
+		base, isArtifact := ArtifactBase(c.Name)
+		if c.Name != service && !(isArtifact && base == service) {
+			continue
+		}
+		state := "stopped"
+		if c.Running {
+			state = "running"
+		}
+		id := c.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		out = append(out, fmt.Sprintf("%s %s %s", c.Name, id, state))
+	}
+	sort.Strings(out)
+	return out
 }

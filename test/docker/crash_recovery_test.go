@@ -116,6 +116,7 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	cr.FaultFired, cr.FaultPID, cr.AgentExit, cr.PIDVerified = true, a1.proc.PID(), info.String(), verified
 
 	crash := c.snapshot(false)
+	cr.CrashLayout = harness.LayoutOf(crash, c.service)
 	if r, ok := crash.RecordFor(c.service); ok {
 		cr.CrashJournal = r.Transition + "/" + r.Status
 	}
@@ -146,6 +147,7 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	marks.AgentReady = c.waitReady(last)
 	time.Sleep(6 * time.Second) // let proxy re-registration / event handling settle while traffic runs
 	final := c.snapshot(true)
+	cr.FinalLayout = harness.LayoutOf(final, c.service)
 	if r, ok := final.RecordFor(c.service); ok {
 		cr.FinalStatus = r.Status
 		cr.FinalOutcome = r.Transition
@@ -171,6 +173,7 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	c.waitReady(again)
 	time.Sleep(2 * time.Second)
 	second := c.snapshot(false)
+	cr.SecondLayout = harness.LayoutOf(second, c.service)
 	c.stopGracefully(again)
 
 	// The armed point must have fired at the boundary it names (observed at the crash,
@@ -181,7 +184,12 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	if c.strategy == harness.Signal {
 		vs = append(vs, harness.CheckSignal(c.world(), crash, final, ev)...)
 	}
-	vs = append(vs, harness.CheckSecondPass(final, second)...)
+	secondVs := harness.CheckSecondPass(final, second)
+	vs = append(vs, secondVs...)
+	cr.SecondPass = "unchanged"
+	if len(secondVs) > 0 {
+		cr.SecondPass = "CHANGED: " + harness.FormatViolations(secondVs)
+	}
 	cr.Violations = vs
 
 	findings := c.leakScan()

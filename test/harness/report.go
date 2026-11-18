@@ -15,11 +15,18 @@ type CaseReport struct {
 	Point    string
 	Scenario Scenario
 
-	FaultFired     bool   // the marker was written and verified
-	FaultPID       int    // pid the harness started
-	AgentExit      string // how the agent died
-	PIDVerified    bool   // marker pid == started pid, and the signal was SIGKILL
-	CrashJournal   string // last transition durable at the crash
+	FaultFired   bool   // the marker was written and verified
+	FaultPID     int    // pid the harness started
+	AgentExit    string // how the agent died
+	PIDVerified  bool   // marker pid == started pid, and the signal was SIGKILL
+	CrashJournal string // last transition durable at the crash
+	// Container layouts (name, short id, running) of the service's own containers at the
+	// crash, after recovery, and after the second recovery pass, and the second pass's
+	// verdict ("unchanged" or the violations): the evidence behind the pass/fail line.
+	CrashLayout    []string
+	FinalLayout    []string
+	SecondLayout   []string
+	SecondPass     string
 	FinalStatus    string // journal status after recovery
 	FinalOutcome   string // short human summary of the post-recovery layout
 	Violations     []Violation

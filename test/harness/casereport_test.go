@@ -66,3 +66,19 @@ func TestCaseStatus_UnreachedIsNeverAPass(t *testing.T) {
 		t.Fatalf("an unverified pid reported %q", got)
 	}
 }
+
+func TestLayoutOf_ShowsTheServiceAndItsArtifactsOnly(t *testing.T) {
+	s := Snapshot{Containers: []CView{
+		{ID: "aaaaaaaaaaaaaaaa", Name: "svc", Running: true},
+		{ID: "bbbbbbbbbbbbbbbb", Name: "svc_dso_backup_1700", Running: false},
+		{ID: "cccccccccccccccc", Name: "svc_dso_new_1700", Running: true},
+		{ID: "dddddddddddddddd", Name: "svc_old_1699", Running: false},
+		{ID: "eeeeeeeeeeeeeeee", Name: "other", Running: true},
+		{ID: "ffffffffffffffff", Name: "other_dso_backup_1", Running: true},
+	}}
+	got := LayoutOf(s, "svc")
+	want := []string{"svc aaaaaaaaaaaa running", "svc_dso_backup_1700 bbbbbbbbbbbb stopped", "svc_dso_new_1700 cccccccccccc running", "svc_old_1699 dddddddddddd stopped"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("layout = %v, want %v", got, want)
+	}
+}
