@@ -124,6 +124,19 @@ func TestSetBatch_InvalidEntryAppliesNothing(t *testing.T) {
 // its own lock file descriptor, exactly like separate processes).
 func TestConcurrentWriters_DistinctKeys_AllPreserved(t *testing.T) {
 	initTestVault(t)
+	// Every Set derives an Argon2id key while holding the vault lock, and lockTimeout bounds
+	// EACH acquisition, so a writer queued behind seven others only succeeds while one locked
+	// write takes under about lockTimeout/7 (4.3s at the 30s default). On a loaded runner under
+	// -race that is not guaranteed (hosted failure: "timed out after 30s waiting for another dso
+	// process"; reproduced locally under CPU starvation). This test checks that concurrent writers
+	// lose no key, not how long the lock may be waited for, so widen the wait for its duration.
+	// The production default is untouched, and TestLock_TimeoutIsReportedAndReleasedLockUnblocks
+	// still pins the timeout behaviour itself. Safe as a package variable: no vault test calls
+	// t.Parallel and every goroutine started here has exited before the cleanup runs.
+	old := lockTimeout
+	lockTimeout = 5 * time.Minute
+	t.Cleanup(func() { lockTimeout = old })
+
 	const writers, perWriter = 8, 3
 	var wg sync.WaitGroup
 	errs := make(chan error, writers)
