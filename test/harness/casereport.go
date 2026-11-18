@@ -70,7 +70,7 @@ func LayoutOf(s Snapshot, service string) []string {
 	var out []string
 	for _, c := range s.Containers {
 		base, isArtifact := ArtifactBase(c.Name)
-		if c.Name != service && !(isArtifact && base == service) {
+		if c.Name != service && (!isArtifact || base != service) {
 			continue
 		}
 		state := "stopped"
