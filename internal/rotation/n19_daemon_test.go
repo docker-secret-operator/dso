@@ -37,6 +37,7 @@ type n19Daemon struct {
 	seq   int
 	count map[string]int
 
+	failRenameTo string // a rename whose target name has this prefix fails with a 500 (nothing applied)
 	startErr     bool   // ContainerStart of the candidate fails
 	candHealth   string // health of the started candidate ("healthy" by default)
 	candExited   bool   // the started candidate is not running (application failed to start)
@@ -159,6 +160,11 @@ func (d *n19Daemon) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && strings.HasSuffix(p, "/rename"):
 		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/containers/"), "/rename")
+		if d.failRenameTo != "" && strings.HasPrefix(r.URL.Query().Get("name"), d.failRenameTo) {
+			rec("rename-failed:" + ref + "->" + r.URL.Query().Get("name"))
+			http.Error(w, `{"message":"injected rename failure"}`, http.StatusInternalServerError)
+			return
+		}
 		if c := d.find(ref); c != nil {
 			c.name = r.URL.Query().Get("name")
 		}

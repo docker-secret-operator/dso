@@ -2,6 +2,7 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/docker-secret-operator/dso/internal/faultinject"
 )
+
+// ErrHandoffNotReverted reports that a step after the proxy handoff failed and the handoff
+// could not be undone. The candidate was PRESERVED (it may be the only backend the proxy
+// routes to) and the rotation was journalled for manual recovery; the caller must not run a
+// fallback restart on the original.
+var ErrHandoffNotReverted = errors.New("the proxy handoff could not be reverted after a later failure; the candidate was preserved and manual recovery is required")
 
 // RollingStrategy coordinates the zero-downtime rotation lifecycle with atomic guarantees
 type RollingStrategy struct {
@@ -49,6 +56,15 @@ type RollingStrategy struct {
 	// the shadow is torn down and the old container is left untouched and
 	// still serving.
 	OnReady func(ctx context.Context, newContainerID string) error
+
+	// OnRevert, if set, undoes what OnReady did. It is called when a step AFTER a
+	// successful handoff fails (the intent_swap write, a rename, swap verification), before
+	// the candidate is discarded, so the caller can put the original back in service. It is
+	// not called for failures before the handoff, nor on success. If it returns an error, or
+	// is nil although OnReady is set, the candidate is preserved and the rotation is
+	// journalled for manual recovery (ErrHandoffNotReverted): the candidate may be the only
+	// backend the proxy still routes to.
+	OnRevert func(ctx context.Context, newContainerID string) error
 
 	// PreCleanupDelay is how long to leave the OLD container running and
 	// reachable after traffic has been handed to the replacement, before
@@ -143,6 +159,47 @@ func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, n
 	defer cancel()
 
 	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)
+}
+
+// abortAfterHandoff is the failure path for every step after the proxy handoff. Before the
+// handoff the candidate was never routed to, so discarding it is enough. After it the proxy
+// may route only to the candidate (the original was marked draining and is removed from the
+// registry after the drain window), so discarding the candidate alone would leave the
+// service with no backend.
+//
+//   - handoff reverted (OnRevert succeeded): the original serves again; the candidate is
+//     discarded as before and cause is returned unchanged.
+//   - handoff NOT reverted (no OnRevert, or it failed): the candidate is PRESERVED, the
+//     rotation is journalled for manual recovery, and the returned error wraps both
+//     ErrHandoffNotReverted and cause.
+func (rs *RollingStrategy) abortAfterHandoff(ctx context.Context, newID, tempName string, handedOff bool, cause error) error {
+	if handedOff {
+		if rerr := rs.revertHandoff(ctx, newID); rerr != nil {
+			cctx, cancel := CleanupContext(ctx)
+			defer cancel()
+			rs.logger.Error("CRITICAL: a step after the proxy handoff failed and the handoff could not be reverted; "+
+				"the candidate is preserved because it may be the only backend. Manual recovery required",
+				zap.String("candidate_id", newID), zap.NamedError("revert_error", rerr), zap.NamedError("cause", cause))
+			rs.ack(cctx, JournalEvent{
+				Transition: TrFailed, CandidateIDs: []string{newID}, ManualRecovery: true,
+				Detail: "a step after the proxy handoff failed and the handoff could not be reverted; the candidate was preserved and the service may be routed only to it: operator action required",
+			})
+			return fmt.Errorf("%w: %v: %w", ErrHandoffNotReverted, rerr, cause)
+		}
+	}
+	rs.discardShadow(ctx, newID, tempName, true)
+	return cause
+}
+
+// revertHandoff undoes OnReady on a bounded cleanup context (it must work after the
+// rotation context ended). With OnReady set but no OnRevert there is no way to undo it.
+func (rs *RollingStrategy) revertHandoff(ctx context.Context, newID string) error {
+	if rs.OnRevert == nil {
+		return errors.New("no handoff revert is configured")
+	}
+	cctx, cancel := CleanupContext(ctx)
+	defer cancel()
+	return rs.OnRevert(cctx, newID)
 }
 
 // discardShadow removes the not-yet-promoted replacement ("shadow") container
@@ -433,6 +490,10 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	rs.fault("after_candidate_verified")
 	rs.ack(ctx, JournalEvent{Transition: TrCandidateReady, CandidateIDs: []string{newContainerID}})
 
+	// handedOff is true once OnReady has succeeded: from then on the proxy may route to the
+	// candidate, so every failure path below must revert the handoff (abortAfterHandoff)
+	// instead of simply discarding the candidate.
+	handedOff := false
 	if rs.OnReady != nil {
 		if err := rs.intent(ctx, JournalEvent{
 			Transition: TrIntentHandoff, CandidateIDs: []string{newContainerID},
@@ -449,6 +510,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 			rs.discardShadow(ctx, newContainerID, tempNewName, true)
 			return fmt.Errorf("proxy handoff failed: %w", err)
 		}
+		handedOff = true
 		rs.fault("after_handoff_before_ack")
 		rs.ack(ctx, JournalEvent{Transition: TrHandoffDone, ObservedProxyTarget: newContainerID, CandidateIDs: []string{newContainerID}})
 	}
@@ -465,8 +527,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		Transition: TrIntentSwap, OriginalIDs: []string{containerID}, CandidateIDs: []string{newContainerID},
 		Detail: "rename " + originalName + " -> " + backupName + ", candidate -> " + originalName,
 	}); err != nil {
-		rs.discardShadow(ctx, newContainerID, tempNewName, true)
-		return err
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff, err)
 	}
 	rs.fault("after_intent_swap")
 
@@ -482,8 +543,8 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		// At this point, the original container is still active with its original name,
 		// and the new container is running under the temp name. This is a recoverable state.
 		// The operator must manually fix this by removing the new container.
-		rs.discardShadow(ctx, newContainerID, tempNewName, true)
-		return fmt.Errorf("FATAL: Failed to rename original container to backup: %w", err)
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("FATAL: Failed to rename original container to backup: %w", err))
 	}
 
 	// Step 7: Rename new container to original name
@@ -526,8 +587,8 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		}
 
 		// Restore succeeded, cleanup the new container
-		rs.discardShadow(ctx, newContainerID, tempNewName, true)
-		return fmt.Errorf("failed to finalize swap: %w", err)
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("failed to finalize swap: %w", err))
 	}
 
 verifySwap:
@@ -551,9 +612,8 @@ verifySwap:
 
 		// If we got here, managed to restore original container to original name
 		// Remove the new container that's stuck with temp/wrong name
-		rs.discardShadow(ctx, newContainerID, tempNewName, true)
-
-		return fmt.Errorf("atomic swap verification failed, rolled back to original state")
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("atomic swap verification failed, rolled back to original state"))
 	}
 
 	// Success! The new container is now the active one

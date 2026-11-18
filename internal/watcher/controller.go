@@ -1254,6 +1254,9 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				r.markProxyPending(newID)
 				r.markGateOwned(newID)
 			}
+			rs.OnRevert = func(hctx context.Context, newID string) error {
+				return r.revertRollingHandoff(hctx, rollingOldID, newID, rollingPortsLabel)
+			}
 			rs.OnReady = func(hctx context.Context, newID string) error {
 				// Nothing to hand off when this container's ports aren't
 				// proxy-owned: rotation is a pure Docker rename swap.
@@ -1400,6 +1403,16 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 					// service is flagged degraded for the operator instead.
 					if r.ProxyManager != nil && rollingPortsLabel != "" {
 						recordAsyncErr(err)
+						if errors.Is(err, rotation.ErrHandoffNotReverted) {
+							// The proxy handoff happened, a later step failed and the handoff
+							// could not be undone: the candidate was preserved because it may
+							// be the only backend. This is NOT "still serving the previous
+							// secret"; an operator must act.
+							r.Logger.Error("CRITICAL: rolling rotation failed after the proxy handoff and the handoff could not be reverted; the candidate was preserved and the proxy may route only to it. Manual recovery required",
+								zap.String("id", util.ShortID(tc.ID)), zap.Error(err))
+							r.markDegraded(rollingServiceName, fmt.Sprintf("rotation failed after the proxy handoff and it could not be reverted; manual recovery required: %v", err))
+							return
+						}
 						r.Logger.Error("Rolling rotation failed; keeping old container in service (proxy-managed, fallback restart would drop traffic)",
 							zap.String("id", util.ShortID(tc.ID)),
 							zap.Error(err))
@@ -2156,6 +2169,33 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 		zap.String("original_id", originalID),
 		zap.String("replacement_id", createdID))
 	return false
+}
+
+// revertRollingHandoff is RollingStrategy.OnRevert for a proxy-owned container: it undoes
+// the SwapBackend that OnReady performed, so a rolling rotation that failed after the
+// handoff leaves the original routed again before its candidate is discarded. When the
+// container is not proxy-owned, or OnReady had no usable port mapping to swap, nothing was
+// handed off and there is nothing to revert.
+func (r *ReloaderController) revertRollingHandoff(ctx context.Context, oldID, newID, portsLabel string) error {
+	if r.ProxyManager == nil || portsLabel == "" {
+		return nil
+	}
+	portMaps := dsoProxy.ParseHostPorts(portsLabel)
+	if len(portMaps) == 0 {
+		return nil
+	}
+	// The original's address is needed only if the proxy already dropped it after the
+	// drain window; an inspect failure is reported only then (RevertSwap decides).
+	oldIP := ""
+	if inspect, err := r.cli.ContainerInspect(ctx, oldID); err == nil && inspect.NetworkSettings != nil {
+		for _, ep := range inspect.NetworkSettings.Networks {
+			if ep != nil && ep.IPAddress != "" {
+				oldIP = ep.IPAddress
+				break
+			}
+		}
+	}
+	return r.ProxyManager.RevertSwap(oldID, newID, oldIP, portMaps[0].ContainerPort)
 }
 
 // swapRestartBackend hands the proxy's traffic from oldID to the started, verified

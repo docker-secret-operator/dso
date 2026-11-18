@@ -58,6 +58,15 @@ type Manager struct {
 	// can look up a backend when we know only the container being replaced.
 	containerToBackendID sync.Map
 
+	// reverted records candidates whose SwapBackend was undone by RevertSwap. The deferred
+	// removal goroutine of that swap consults it, so it does not take the restored original
+	// back out of the registry after DrainWindow.
+	reverted sync.Map
+	// swapMu makes "was this swap reverted? then remove the old backend" (the deferred
+	// removal) and RevertSwap mutually exclusive: otherwise the goroutine could pass its
+	// check just before a revert restores the original and then remove it.
+	swapMu sync.Mutex
+
 	// ctx/cancel bound the lifetime of background goroutines spawned by
 	// SwapBackend (the deferred-removal drain wait) to the Manager's own
 	// lifetime, so Stop can guarantee none of them outlive it.
@@ -223,15 +232,64 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 			// with it, so there is nothing useful left to remove.
 			return
 		}
+		m.swapMu.Lock()
+		if _, undone := m.reverted.LoadAndDelete(newContainerID); undone {
+			m.swapMu.Unlock()
+			m.log.Info("proxy: swap was reverted; keeping the restored original backend",
+				zap.String("old", util.ShortID(oldContainerID)))
+			return
+		}
 		if err := m.registry.Remove(oldContainerID); err != nil {
 			m.log.Debug("proxy: remove old backend (already gone)",
 				zap.String("old", util.ShortID(oldContainerID)))
 		}
 		m.containerToBackendID.Delete(oldContainerID)
+		m.swapMu.Unlock()
 		m.log.Info("proxy: old backend removed",
 			zap.String("old", util.ShortID(oldContainerID)))
 	}()
 
+	return nil
+}
+
+// RevertSwap undoes a SwapBackend(oldContainerID, newContainerID, ...) whose caller then
+// failed before its own commit point: the original becomes the active backend again and
+// the candidate's backend is removed.
+//
+// The original is restored FIRST. If it cannot be (no usable address and it is no longer
+// registered), the candidate is left routed and an error is returned: dropping the only
+// remaining backend would turn a failed rotation into an outage. The pending deferred
+// removal of the original is cancelled, so it cannot undo the restore after DrainWindow.
+// oldContainerIP/containerPort are used only when the original was already removed from
+// the registry.
+func (m *Manager) RevertSwap(oldContainerID, newContainerID, oldContainerIP string, containerPort int) error {
+	m.swapMu.Lock()
+	defer m.swapMu.Unlock()
+	if _, ok := m.registry.Get(oldContainerID); ok {
+		if err := m.registry.SetActive(oldContainerID); err != nil {
+			return fmt.Errorf("proxy: revert swap: re-activate original: %w", err)
+		}
+	} else {
+		if oldContainerIP == "" || containerPort <= 0 {
+			return fmt.Errorf("proxy: revert swap: original %s is no longer registered and has no usable address",
+				util.ShortID(oldContainerID))
+		}
+		addr := fmt.Sprintf("%s:%d", oldContainerIP, containerPort)
+		if err := m.registry.Add(Backend{ID: oldContainerID, Addr: addr}); err != nil {
+			return fmt.Errorf("proxy: revert swap: re-register original: %w", err)
+		}
+	}
+	m.containerToBackendID.Store(oldContainerID, oldContainerID)
+	// Cancel the deferred removal of the original.
+	m.reverted.Store(newContainerID, struct{}{})
+
+	// Retire the candidate's backend now that the original serves again.
+	_ = m.registry.SetDraining(newContainerID)
+	_ = m.registry.Remove(newContainerID)
+	m.containerToBackendID.Delete(newContainerID)
+	m.log.Info("proxy: swap reverted, original backend serving again",
+		zap.String("old", util.ShortID(oldContainerID)),
+		zap.String("new", util.ShortID(newContainerID)))
 	return nil
 }
 
