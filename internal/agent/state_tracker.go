@@ -166,6 +166,11 @@ type StateTracker struct {
 	// action is to leave every workload alone and report.
 	corrupt     bool
 	corruptPath string
+	// unreadable is set when rotations.json exists but could not be READ (permission
+	// denied, I/O error, not a regular file). The file is left exactly where it is, so
+	// persistState must never replace it: doing so would destroy every unresolved
+	// record it holds. corrupt is set with it, so recovery and the guard stand down.
+	unreadable bool
 
 	// inherited holds the keys (in states) of records that were loaded from disk
 	// still in_progress: they belong to a PREVIOUS process, so no goroutine of this
@@ -730,6 +735,11 @@ func (st *StateTracker) DeleteState(providerName, secretName, originalContainerI
 }
 
 func (st *StateTracker) persistState() error {
+	if st.unreadable {
+		// Fail closed: callers abort the action a journal write announces. The unread
+		// journal on disk is the only record of unresolved operations; never replace it.
+		return fmt.Errorf("rotation journal %s is unreadable: refusing to overwrite it (fix its permissions or restore it, then restart the agent)", st.corruptPath)
+	}
 	if st.migrationLegacy != nil {
 		// The file on disk still has the legacy shape: never replace it before its
 		// bytes are preserved. A failure here refuses every journal write (callers
@@ -965,7 +975,15 @@ func (st *StateTracker) loadStates() error {
 		if os.IsNotExist(err) {
 			return nil // No previous state
 		}
-		return err
+		// The file exists but cannot be read (EACCES under a different uid, EIO, EISDIR,
+		// EMFILE ...). Nothing is known about interrupted operations, exactly as for an
+		// unparsable file, so fail safe the same way: flag it (recovery, the operation
+		// guard, the orphan sweep and the proxy startup gate all stand down) and never
+		// write over it. Unlike a parse error it cannot be quarantined by a rename we
+		// can trust to preserve the bytes, so it stays in place until the operator fixes
+		// the cause and restarts.
+		st.corrupt, st.corruptPath, st.unreadable = true, stateFile, true
+		return fmt.Errorf("rotation journal %s exists but could not be read (left untouched; automatic recovery and journal writes disabled): %w", stateFile, err)
 	}
 
 	raw := make(map[string]*RotationState)
