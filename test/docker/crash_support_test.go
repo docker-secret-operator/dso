@@ -445,9 +445,47 @@ func (c *crashCase) startAgent(point string, nth int) *crashAgent {
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("--- agent #%d log tail (on failure) ---\n%s", a.n, logTail(a.log, 40))
+			saveFailureEvidence(t, a, c.root)
 		}
 	})
 	return a
+}
+
+// saveFailureEvidence copies the failed run's COMPLETE agent log (a 40-line tail is not
+// enough to attribute a container removal to a code path) and the rotation journal into
+// $DSO_IT_ARTIFACTS/crash/<test>/, which the CI job uploads. Secret sentinels are
+// redacted; the journal holds identifiers and transitions only. Best effort: evidence
+// collection never changes a test's outcome.
+func saveFailureEvidence(t *testing.T, a *crashAgent, root harness.Root) {
+	dir := os.Getenv("DSO_IT_ARTIFACTS")
+	if dir == "" {
+		return
+	}
+	if !filepath.IsAbs(dir) { // go test runs in the package directory; the script's path is repo-root relative
+		wd, err := os.Getwd()
+		if err != nil {
+			return
+		}
+		for r := wd; ; r = filepath.Dir(r) {
+			if _, err := os.Stat(filepath.Join(r, "go.mod")); err == nil {
+				dir = filepath.Join(r, dir)
+				break
+			}
+			if filepath.Dir(r) == r {
+				return
+			}
+		}
+	}
+	out := filepath.Join(dir, "crash", strings.NewReplacer("/", "_", "#", "_").Replace(t.Name()))
+	if err := os.MkdirAll(out, 0o750); err != nil {
+		return
+	}
+	if b, err := os.ReadFile(a.log); err == nil { // #nosec G304 -- harness-owned log
+		_ = os.WriteFile(filepath.Join(out, fmt.Sprintf("agent-%d.log", a.n)), []byte(strings.ReplaceAll(string(b), sentinel, "<redacted>")), 0o600)
+	}
+	if b, err := os.ReadFile(filepath.Join(root.State, "rotations.json")); err == nil { // #nosec G304 -- harness-owned journal
+		_ = os.WriteFile(filepath.Join(out, "rotations.json"), b, 0o600)
+	}
 }
 
 func logContains(path, sub string) bool {
