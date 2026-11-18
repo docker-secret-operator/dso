@@ -2686,6 +2686,7 @@ func TestDisplace_InstallRenameError_UnknownOutcome_IsNeverRolledBackAndNeverGue
 		{"took effect, then another file took the path", func(t *testing.T, e *dsEnv, d *displacer, calls *dsCalls) {
 			d.rename = calls.renamerAfter(func(n int, a, b string) error {
 				if b == e.db {
+					pvPin(t, e.db) // a freed inode would be reused, making the file look like ours
 					_ = os.Remove(e.db)
 					pvWrite(t, e.db, []byte("someone else"))
 					return errInjected

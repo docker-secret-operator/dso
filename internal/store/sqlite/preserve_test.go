@@ -161,6 +161,22 @@ func pvWrite(t *testing.T, path string, b []byte) {
 	}
 }
 
+// pvPin keeps the inode behind path allocated until the test ends, even if the
+// path is unlinked in the meantime. File identity in this package is
+// (device, inode), and a filesystem such as ext4 hands a just-freed inode number
+// straight to the next object created, so a test that deletes a file or
+// directory and then creates "someone else's" at the same path would otherwise
+// get an object that is indistinguishable from the original. Pin the original
+// first to make the simulated replacement a genuinely different object.
+func pvPin(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+}
+
 // pvDB creates <dir>/c.db with random bytes and the requested companions.
 func pvDB(t *testing.T, wal, shm, journal bool) (dir, path string) {
 	t.Helper()
@@ -2150,6 +2166,7 @@ func TestPublishDirWith_InterruptedRenameIsResolvedFromIdentity(t *testing.T) {
 				t.Fatal(e)
 			}
 			// ... and then someone replaced the published directory with their own.
+			pvPin(t, n) // a freed inode would be reused, making theirs look like ours
 			if e := os.RemoveAll(n); e != nil {
 				t.Fatal(e)
 			}
@@ -2175,6 +2192,7 @@ func TestPublishDirWith_InterruptedRenameIsResolvedFromIdentity(t *testing.T) {
 		t.Parallel()
 		partial, final := mk(t)
 		err := publishDirWith(func(o, n string) error {
+			pvPin(t, o) // a freed inode would be reused, making the swap invisible
 			_ = os.RemoveAll(o)
 			pvMkdirWith(t, o, map[string]string{"swapped": "x"})
 			return syscall.EINTR
