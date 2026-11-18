@@ -2,7 +2,9 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -18,6 +20,34 @@ import (
 // proven against the same engine method in internal/agent
 // (TestManagedRotation_Manual_*); this file proves the handler routes to it.
 
+// engineTempDir is t.TempDir() for directories the rotation engine writes into.
+// A manual rotation unwinds on its own goroutine after the test body returns (a
+// cancelled or failed rotation journals its rollback), so removing the directory
+// can race those last writes and fail with "directory not empty". Retry the removal
+// for a short, bounded time so the goroutine can finish; a directory that still
+// cannot be removed afterwards is a real leak and fails the test.
+func engineTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dsoengine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		var rerr error
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			if rerr = os.RemoveAll(dir); rerr == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("engine directory %s could not be removed after 5s: %v", dir, rerr)
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
 // wireEngine gives the fixture's REST server a real trigger engine that drives the
 // fixture's reloader, as `dso agent` wires them.
 func wireEngine(t *testing.T, s *RESTServer) *agent.TriggerEngine {
@@ -25,7 +55,7 @@ func wireEngine(t *testing.T, s *RESTServer) *agent.TriggerEngine {
 	if eng, ok := s.TriggerEngine.(*agent.TriggerEngine); ok && eng != nil {
 		return eng // already wired by rotationFixture
 	}
-	eng, err := agent.NewTriggerEngineWithDirs(s.Cache, nil, s.Reloader, zap.NewNop(), s.Config, nil, t.TempDir(), t.TempDir())
+	eng, err := agent.NewTriggerEngineWithDirs(s.Cache, nil, s.Reloader, zap.NewNop(), s.Config, nil, engineTempDir(t), engineTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
