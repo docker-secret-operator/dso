@@ -264,6 +264,17 @@ for the passing case and for every violation.
   after the proxy handoff intent it may remove one ONLY if the measured routing after
   recovery shows the surviving real-name holder receiving the traffic (the agent now wires
   a `RoutingVerifier`, finding 1; a persisted handoff ack alone is never evidence).
+  **One identity-based exception (owner-approved, N21):** the N21 controlled rollback of a
+  *restart* rotation renames the unverified candidate `<service>_dso_new_<ts>` and a later
+  pass retires it, so at the crash (where names are measured) the candidate still holds the
+  real service name. A removed container is accepted as that candidate only if ALL hold: it
+  carries the interrupted record's `dso.rotation.id` label (or its ID is in the record's
+  candidate list; a different rotation's label never qualifies); it is not an original; it
+  is owned by this agent; the strategy is restart; the crash-time transition is before
+  `candidate_ready`; the original survives, running, under the real name; and the final
+  record is `rolled_back` with an operation state of `rollback_container_restored_*`.
+  Anything else, including an unrelated service-named container, is still reported
+  (`removal_test.go`, 11 negative cases).
 * **interrupted-not-successful / no-adoption-claim / recovered-needs-holder /
   no-holder-must-be-manual**: an interrupted operation is never `completed`; `recovered`
   requires a running name holder; where nothing holds the real name (`between_renames`,
@@ -331,7 +342,16 @@ reconstructed routing agrees.
 for the cases where Docker + journal identify an unambiguous holder (crash before the swap:
 original keeps serving; crash after `swap_committed`: promoted candidate serves). A crash
 INSIDE the swap (`intent_swap` without commit; `between_renames`) is still manual: the
-holder is ambiguous and nothing is routed until an operator acts. (b) If recovery itself
+holder is ambiguous and nothing is routed until an operator acts. The matrix asserts exactly
+that for the two points marked `DocumentedManual` (`rolling:between_renames`,
+`rolling:after_swap_before_commit_ack`): the rotation stays `critical_error`, the journal
+stays at `intent_swap`, no container is deleted or renamed, and `service-reachable` is NOT
+required there (every other proxied point still requires it). For
+`after_swap_before_commit_ack` the layout is not ambiguous (both renames done) but the proxy
+withholds the candidate until recovery settles it while recovery asks that withheld table for
+routing evidence; the owner chose to keep this documented fail-closed behaviour (Option E)
+over changing recovery (`docs/superpowers/proposals/2026-11-18-rolling-intent-swap-recovery-cycle.md`).
+`CheckCrashBoundary` tells the two layouts apart from the container names at the crash. (b) If recovery itself
 starts a stopped original (rollback), that container is not in the scan-time table, so the
 rotation is conservatively left manual until the next restart. (c) Traffic through the
 embedded proxy is still interrupted for the whole death/restart window (topology, section 1).

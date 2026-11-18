@@ -1,6 +1,9 @@
 package harness
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // CheckCrashBoundary proves, from what was observed AT the crash (before any recovery),
 // that the process died at the lifecycle boundary the armed point names -- not merely
@@ -23,6 +26,8 @@ func CheckCrashBoundary(w World, p Point, crash Snapshot) []Violation {
 		wantRunning = false
 	case "restart:after_start_before_ack":
 		wantRunning = true
+	case "rolling:after_swap_before_commit_ack", "rolling:between_renames":
+		return checkSwapLayout(w, p, crash)
 	default:
 		return nil
 	}
@@ -54,6 +59,59 @@ func CheckCrashBoundary(w World, p Point, crash Snapshot) []Violation {
 		add("%s: the replacement was not running at the crash: the point fired before ContainerStart", p.Name)
 	case !wantRunning && running > 0:
 		add("%s: the replacement was already running at the crash: the point fired after ContainerStart", p.Name)
+	}
+	return vs
+}
+
+// checkSwapLayout distinguishes the two rolling swap crash points by the container NAMES
+// observed at the crash, before recovery. They are the two documented manual-recovery
+// layouts and differ in exactly one rename:
+//
+//	rolling:between_renames              original -> _dso_backup_ done; candidate still
+//	                                     _dso_new_; NOTHING holds the real name
+//	rolling:after_swap_before_commit_ack both renames done: candidate holds the real name,
+//	                                     original is _dso_backup_
+//
+// Both leave the journal at intent_swap (swap_committed is the missing ack).
+func checkSwapLayout(w World, p Point, crash Snapshot) []Violation {
+	var vs []Violation
+	add := func(f string, a ...any) { vs = append(vs, Violation{"crash-at-boundary", fmt.Sprintf(f, a...)}) }
+
+	if rec, ok := crash.RecordFor(w.Service); !ok {
+		add("%s: no journal record of the interrupted rotation at the crash", p.Name)
+	} else if rec.Transition != "intent_swap" {
+		add("%s: the journal ended at %q, want intent_swap", p.Name, rec.Transition)
+	}
+	var holder, original, candidate *CView
+	for _, c := range crash.serviceContainers(w.Service, w.OwnerID) {
+		c := c
+		switch {
+		case c.ID == w.OriginalID:
+			original = &c
+		case c.Name == w.Service:
+			holder = &c
+		case strings.Contains(c.Name, "_dso_new_"):
+			candidate = &c
+		}
+	}
+	if original == nil || !strings.Contains(original.Name, "_dso_backup_") {
+		add("%s: the original was not renamed to a _dso_backup_ name at the crash", p.Name)
+	}
+	switch p.Name {
+	case "rolling:between_renames":
+		if holder != nil {
+			add("%s: a container (%s) already held the real name %q: the second rename had happened", p.Name, short(holder.ID), w.Service)
+		}
+		if candidate == nil {
+			add("%s: the candidate was not still named _dso_new_ at the crash", p.Name)
+		}
+	case "rolling:after_swap_before_commit_ack":
+		if holder == nil || !holder.Running {
+			add("%s: no running candidate held the real name %q at the crash: the swap had not completed", p.Name, w.Service)
+		}
+		if candidate != nil {
+			add("%s: a _dso_new_ container still existed at the crash: the swap had not completed", p.Name)
+		}
 	}
 	return vs
 }

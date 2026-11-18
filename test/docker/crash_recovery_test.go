@@ -175,6 +175,7 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	// before recovery): a point that fires early or late would test a different window.
 	vs := harness.CheckCrashBoundary(c.world(), p, crash)
 	vs = append(vs, harness.CheckRecovery(c.world(), p, crash, final)...)
+	vs = append(vs, harness.CheckManualRecovery(c.world(), p, crash, final)...)
 	if c.strategy == harness.Signal {
 		vs = append(vs, harness.CheckSignal(c.world(), crash, final, ev)...)
 	}

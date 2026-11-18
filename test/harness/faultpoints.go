@@ -51,6 +51,14 @@ type Point struct {
 	// (original renamed away, candidate not yet promoted): recovery cannot establish
 	// a healthy holder and MUST flag the rotation for manual recovery.
 	NoNameHolder bool
+	// DocumentedManual: a crash INSIDE the rolling swap, which the recovery design
+	// documents as staying manual (docs/design/m0-04-recovery-design.md "Limits"):
+	// recovery stays fail-closed, flags the rotation critical_error and preserves every
+	// container, and the service is NOT expected to answer traffic until an operator acts
+	// (the proxy withholds the candidate until recovery settles it, and recovery asks the
+	// withheld table for routing evidence). The matrix therefore asserts the manual
+	// outcome (CheckManualRecovery) and does not require service-reachable here.
+	DocumentedManual bool
 	// Note is shown in the report.
 	Note string
 }
@@ -102,8 +110,14 @@ var Points = []Point{
 	rp("after_intent_handoff", "proxy_handoff", handoff),
 	rp("after_handoff_before_ack", "proxy_handoff", handoff),
 	rp("after_intent_swap", "commit", handoff),
-	rp("between_renames", "commit", handoff, func(p *Point) { p.NoNameHolder = true }),
-	rp("after_swap_before_commit_ack", "commit", handoff),
+	rp("between_renames", "commit", handoff, func(p *Point) {
+		p.NoNameHolder, p.DocumentedManual = true, true
+		p.Note = "documented manual recovery: after the first rename nothing holds the real name (original is _dso_backup_, candidate still _dso_new_); recovery must stay fail-closed, preserve all three names and wait for an operator"
+	}),
+	rp("after_swap_before_commit_ack", "commit", handoff, func(p *Point) {
+		p.DocumentedManual = true
+		p.Note = "documented manual recovery: both renames done (candidate holds the real name, original is _dso_backup_) but swap_committed was never journalled; the proxy withholds the candidate until recovery settles it and recovery wants routing evidence from that withheld table, so recovery stays fail-closed and the service is unreachable until an operator acts"
+	}),
 	rp("after_swap_committed", "commit", handoff),
 	rp("after_intent_cleanup", "original_retirement", handoff),
 	rp("after_cleanup_before_ack", "original_retirement", handoff),

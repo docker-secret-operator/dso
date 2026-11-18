@@ -359,7 +359,7 @@ func (c *crashCase) snapshot(withRouting bool) harness.Snapshot {
 		if err != nil {
 			continue // vanished between list and inspect
 		}
-		v := harness.CView{ID: x.ID, Name: name, Running: in.State != nil && in.State.Running, Owner: x.Labels["dso.owner"]}
+		v := harness.CView{ID: x.ID, Name: name, Running: in.State != nil && in.State.Running, Owner: x.Labels["dso.owner"], RotationID: x.Labels["dso.rotation.id"]}
 		if in.State != nil && in.State.Health != nil {
 			v.Health = in.State.Health.Status
 		}

@@ -14,6 +14,10 @@ type CView struct {
 	Running bool
 	Health  string // "", "starting", "healthy", "unhealthy"
 	Owner   string // dso.owner label
+	// RotationID is the dso.rotation.id label: the identity of the rotation operation
+	// that created the container. A candidate carries it even when the crash preceded
+	// the journal recording its container ID.
+	RotationID string
 }
 
 // Snapshot is everything observed about the world at one moment.
@@ -215,7 +219,7 @@ func CheckRecovery(w World, p Point, crash, final Snapshot) []Violation {
 		if c.Owner != w.OwnerID {
 			continue // already reported by the bystander rule where relevant
 		}
-		if _, isArt := ArtifactBase(c.Name); !isArt {
+		if _, isArt := ArtifactBase(c.Name); !isArt && !removalIsRolledBackCandidate(w, crash, final, c) {
 			add("only-artifacts-removed", "recovery removed %s (%q), which is not a rotation artifact", short(c.ID), c.Name)
 		}
 		if p.HandoffStarted && w.Proxied && !holderRouted {
@@ -272,7 +276,10 @@ func CheckRecovery(w World, p Point, crash, final Snapshot) []Violation {
 				}
 			}
 		}
-		if len(final.RoutedTo) == 0 && running > 0 {
+		// A documented manual-recovery point (a crash inside the rolling swap) is expected
+		// to leave the service unreachable until an operator acts; CheckManualRecovery
+		// asserts that outcome instead. Every other proxied point must serve traffic.
+		if len(final.RoutedTo) == 0 && running > 0 && !p.DocumentedManual {
 			add("service-reachable", "the service has a running container but no traffic was answered after recovery")
 		}
 		for _, id := range final.RoutedTo {
@@ -407,4 +414,124 @@ func short(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// rollbackScope is the set of restart-journal transitions the N21 controlled rollback
+// acts on: every step before candidate_ready (mirrors rollbackTransition in
+// internal/agent/recovery_rollback.go; TestRollbackScopeMatchesRotationConstants pins the
+// names). candidate_ready and later steps are deliberately absent.
+var rollbackScope = map[string]bool{
+	"intent_rename_original": true, "intent_create_candidate": true, "candidate_created": true,
+	"intent_stop_original": true, "original_stopped": true,
+	"intent_start_replacement": true, "replacement_started": true, "intent_rollback": true,
+	"gate_started": true, "intent_deliver_secrets": true, "delivery_partial": true,
+	"secrets_delivered": true, "intent_release_gate": true, "gate_released": true,
+}
+
+// removalIsRolledBackCandidate reports whether a container that recovery removed, and
+// that was not artifact-named at the crash, is demonstrably the interrupted restart
+// rotation's own candidate retired after the N21 controlled rollback.
+//
+// N21 stops the unverified candidate and RENAMES it <service>_dso_new_<ts> before a later
+// pass retires it as an artifact, so at the crash (the name this harness sees) the
+// candidate still holds the real service name. Name alone therefore cannot tell it from
+// an unrelated service container; identity can. Every one of these must hold, otherwise
+// the removal is still reported by only-artifacts-removed:
+//
+//  1. identity: the container carries the interrupted record's rotation ID label, or its
+//     ID is in the record's candidate list; a container labelled with a DIFFERENT
+//     rotation never qualifies, even if its ID is listed
+//  2. it is not an original (record's original IDs and World.OriginalID)
+//  3. it is owned by this agent
+//  4. the strategy is Restart
+//  5. the crash-time journal transition is inside the N21 rollback scope
+//  6. the original survives in the final snapshot, running, holding the real name
+//  7. the final record of the same operation is rolled_back with an operation state of
+//     rollback_container_restored_*
+//
+// Any missing record or empty identity fails closed.
+func removalIsRolledBackCandidate(w World, crash, final Snapshot, removed CView) bool {
+	if w.Strategy != Restart || removed.Owner != w.OwnerID || w.OriginalID == "" || removed.ID == w.OriginalID {
+		return false
+	}
+	crashRec, haveCrash := crash.RecordFor(w.Service)
+	finalRec, haveFinal := final.RecordFor(w.Service)
+	if !haveCrash || !haveFinal || !rollbackScope[crashRec.Transition] {
+		return false
+	}
+	rid := finalRec.RotationID
+	if rid == "" || (crashRec.RotationID != "" && crashRec.RotationID != rid) {
+		return false // no operation identity, or the crash and final records are different operations
+	}
+	if finalRec.Transition != "rolled_back" || !strings.HasPrefix(finalRec.OperationState, "rollback_container_restored_") {
+		return false
+	}
+	if removed.RotationID != "" && removed.RotationID != rid {
+		return false // another (stale) rotation's container
+	}
+	listed := false
+	for _, ids := range [][]string{crashRec.CandidateContainerIDs, finalRec.CandidateContainerIDs} {
+		for _, id := range ids {
+			if id == removed.ID {
+				listed = true
+			}
+		}
+	}
+	if removed.RotationID != rid && !listed {
+		return false // not demonstrably this rotation's candidate
+	}
+	for _, recd := range []RotationRecord{crashRec, finalRec} {
+		for _, id := range recd.Originals() {
+			if id == removed.ID {
+				return false
+			}
+		}
+	}
+	orig, ok := final.byID()[w.OriginalID]
+	return ok && orig.Running && orig.Name == w.Service
+}
+
+// CheckManualRecovery asserts the documented outcome of a crash inside the rolling swap
+// (Point.DocumentedManual): recovery stays fail-closed. It does NOT replace any other
+// invariant; CheckRecovery still runs in full, so bystander, ownership, workload and
+// routing-consistency rules stay active.
+//
+//   - the interrupted rotation is reported as requiring manual recovery: status
+//     critical_error
+//   - recovery did not commit, roll back or finish the operation on the operator's
+//     behalf: the journal transition is exactly the one at the crash
+//   - nothing was deleted or moved aside: every container that existed at the crash
+//     (original, candidate, backup, bystanders) still exists with the same name
+//
+// A repeated recovery pass changing nothing is asserted separately by CheckSecondPass.
+func CheckManualRecovery(w World, p Point, crash, final Snapshot) []Violation {
+	if !p.DocumentedManual {
+		return nil
+	}
+	var vs []Violation
+	add := func(f string, a ...any) {
+		vs = append(vs, Violation{"manual-recovery-fail-closed", fmt.Sprintf(f, a...)})
+	}
+
+	crashRec, haveCrash := crash.RecordFor(w.Service)
+	finalRec, haveFinal := final.RecordFor(w.Service)
+	switch {
+	case !haveFinal:
+		add("%s: no journal record of the interrupted rotation after recovery", p.Name)
+	case finalRec.Status != "critical_error":
+		add("%s: the rotation is %q, not critical_error: a documented manual-recovery state must be reported as requiring an operator", p.Name, finalRec.Status)
+	case haveCrash && finalRec.Transition != crashRec.Transition:
+		add("%s: recovery moved the journal from %q to %q; it must not decide the operation on the operator's behalf", p.Name, crashRec.Transition, finalRec.Transition)
+	}
+	fin := final.byID()
+	for _, c := range crash.Containers {
+		after, ok := fin[c.ID]
+		switch {
+		case !ok:
+			add("%s: container %s (%q) was deleted by recovery in a state that must stay manual", p.Name, short(c.ID), c.Name)
+		case after.Name != c.Name:
+			add("%s: container %s was renamed %q -> %q (moved aside or retired) in a state that must stay manual", p.Name, short(c.ID), c.Name, after.Name)
+		}
+	}
+	return vs
 }
