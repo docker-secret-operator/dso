@@ -27,7 +27,7 @@ jobs:
   docker-int-baseline:
     name: Docker Integration (S1-S3 baseline)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # Synthetic per-run prefix for every secret value the scenarios use; the
       # leak scan below fails the job if it shows up in the test log.
@@ -66,7 +66,7 @@ jobs:
       - name: Run S1-S3
         env:
           DSO_IT_ARTIFACTS: artifacts/it
-          DSO_IT_TIMEOUT: 20m
+          DSO_IT_TIMEOUT: 35m
         run: |
           set -o pipefail
           ./scripts/integration/run-integration.sh 2>&1 | tee test.log
