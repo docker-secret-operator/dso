@@ -113,3 +113,49 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// --replace-config is the ONLY way to authorise replacing an existing DSO configuration.
+// It must not be implied by --non-interactive, and the same flag must exist on every entry
+// point that can write the configuration.
+func TestReplaceConfig_IsExplicitAndNotImpliedByNonInteractive(t *testing.T) {
+	origNI, origReplace := bootstrapNonInteractive, bootstrapReplaceConfig
+	t.Cleanup(func() { bootstrapNonInteractive, bootstrapReplaceConfig = origNI, origReplace })
+
+	bootstrapNonInteractive, bootstrapReplaceConfig = true, false
+	if opts := buildLocalBootstrapOptions(context.Background()); opts.ReplaceExistingConfig || opts.Force {
+		t.Fatalf("--non-interactive must not authorise replacing a configuration (replace=%v force=%v)", opts.ReplaceExistingConfig, opts.Force)
+	}
+	bootstrapReplaceConfig = true
+	if opts := buildLocalBootstrapOptions(context.Background()); !opts.ReplaceExistingConfig {
+		t.Fatal("--replace-config must reach BootstrapOptions.ReplaceExistingConfig")
+	}
+	if opts := buildLocalBootstrapOptions(context.Background()); opts.Force {
+		t.Fatal("--replace-config must not turn on Force (a separate, prompt-skipping option)")
+	}
+}
+
+func TestReplaceConfig_FlagExistsOnEveryEntryPointAndDefaultsOff(t *testing.T) {
+	// `bootstrap [local|agent]` is ONE command whose argument selects the mode, so its single
+	// flag serves both modes (bootstrapLocal and bootstrapAgent both read bootstrapReplaceConfig).
+	root := NewRootCmd()
+	for _, path := range [][]string{{"setup"}, {"bootstrap"}} {
+		cmd, _, err := root.Find(path)
+		if err != nil || cmd == nil || cmd.Name() != path[len(path)-1] {
+			t.Fatalf("command %v not found: %v", path, err)
+		}
+		f := cmd.Flags().Lookup("replace-config")
+		if f == nil {
+			f = cmd.InheritedFlags().Lookup("replace-config")
+		}
+		if f == nil {
+			t.Errorf("%v has no --replace-config flag", path)
+			continue
+		}
+		if f.DefValue != "false" {
+			t.Errorf("%v: --replace-config must default to false, got %q", path, f.DefValue)
+		}
+		if cmd.Flags().Lookup("force") != nil || cmd.InheritedFlags().Lookup("force") != nil {
+			t.Errorf("%v: no --force flag may exist as an alternative opt-in", path)
+		}
+	}
+}

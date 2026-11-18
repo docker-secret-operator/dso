@@ -139,3 +139,24 @@ func TestBackupExistingConfig_NeverOverwritesAnEarlierBackup(t *testing.T) {
 		t.Fatalf("no file means no backup and no error: %q %v", b, err)
 	}
 }
+
+// Force only skips prompts; the non-interactive paths even set it unconditionally. It must
+// never authorise replacing an existing configuration.
+func TestLocalBootstrap_ForceAndNonInteractive_DoNotAuthoriseReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dso.yaml")
+	if err := os.WriteFile(path, []byte(precious), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	isolateHome(t)
+	opts := &BootstrapOptions{
+		Mode: ModeLocal, Provider: "vault", NonInteractive: true, Force: true, VaultAddress: "https://vault.local",
+		Context: context.WithValue(context.Background(), ConfigPathContextKey, path),
+	}
+	_, err := NewLocalBootstrapper(&MockLogger{}, opts).Bootstrap(context.Background(), opts)
+	if !errors.Is(err, ErrExistingConfig) && (err == nil || !strings.Contains(err.Error(), "--replace-config")) {
+		t.Fatalf("Force + NonInteractive must still be refused, got: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != precious {
+		t.Fatalf("the existing configuration was modified despite Force:\n%s", got)
+	}
+}
