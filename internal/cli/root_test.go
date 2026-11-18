@@ -25,6 +25,13 @@ func TestNewRootCmd(t *testing.T) {
 func TestResolveConfig(t *testing.T) {
 	t.Cleanup(func() { CfgFile = ""; cfgFileExplicit = false })
 
+	// The default is resolved by probing the filesystem (./dso.yaml, then
+	// ~/.dso/dso.yaml), so run in an empty directory with an empty HOME. Without
+	// this the result depends on stray files of whoever runs the tests.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+
 	// Simple test, assumes dso.yaml is default
 	CfgFile = ""
 	cfgFileExplicit = false

@@ -19,6 +19,17 @@ func agentTestEnv(t *testing.T) (cfgPath, dir string) {
 	t.Setenv("HOME", dir)
 	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(dir, "no-docker.sock"))
 	t.Chdir(dir) // config paths outside DSO dirs must be relative
+	// The production trigger engine writes under /var/lib/dso, which exists only
+	// on a provisioned host. Give each test its own state and lock directories so
+	// the result does not depend on the machine the tests run on.
+	stateDir, lockDir := filepath.Join(dir, "state"), filepath.Join(dir, "locks")
+	testTriggerDirs = func() (string, string) { return stateDir, lockDir }
+	t.Cleanup(func() { testTriggerDirs = nil })
+	// Never manage the canonical /run/dso, even when the tests happen to run as
+	// root (a container, a developer shell): a custom --socket path is used.
+	origEUID := currentEUID
+	currentEUID = func() int { return 1000 }
+	t.Cleanup(func() { currentEUID = origEUID })
 	cfgPath = "dso.yaml"
 	if err := os.WriteFile(filepath.Join(dir, cfgPath), []byte("version: v1\nagent:\n  mode: local\nproviders:\n  vault:\n    type: vault\n    config:\n      address: http://127.0.0.1:1\nsecrets: []\n"), 0o600); err != nil {
 		t.Fatal(err)

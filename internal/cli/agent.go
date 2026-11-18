@@ -23,6 +23,13 @@ import (
 )
 
 // performPreflightChecks validates system health before marking agent as ready (Fix #5)
+// testTriggerDirs is set only by tests. When non-nil the agent builds its
+// trigger engine on these state and lock directories instead of the production
+// /var/lib/dso defaults, which an unprivileged process (CI, a developer
+// machine) cannot create. NewAgentCmd stays the only caller of
+// agent.NewTriggerEngine (TestAllAgentStartupPathsGoThroughTheEnforcement).
+var testTriggerDirs func() (stateDir, lockDir string)
+
 func performPreflightChecks(ctx context.Context, logger *zap.Logger,
 	storeManager *providers.SecretStoreManager, cache *agent.SecretCache) error {
 
@@ -150,7 +157,13 @@ func NewAgentCmd() *cobra.Command {
 			onFail = append(onFail, func() { _ = proxyManager.Stop(10 * time.Second) })
 
 			// Initialize Trigger Engine (owns the rotation journal).
-			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			var trigger *agent.TriggerEngine
+			if testTriggerDirs != nil {
+				stateDir, lockDir := testTriggerDirs()
+				trigger, err = agent.NewTriggerEngineWithDirs(cache, storeManager, reloader, logger, cfg, dockerCli, stateDir, lockDir)
+			} else {
+				trigger, err = agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
+			}
 			if err != nil {
 				return fail("failed to initialize trigger engine", err)
 			}
