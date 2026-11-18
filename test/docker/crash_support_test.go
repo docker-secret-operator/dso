@@ -457,24 +457,9 @@ func (c *crashCase) startAgent(point string, nth int) *crashAgent {
 // redacted; the journal holds identifiers and transitions only. Best effort: evidence
 // collection never changes a test's outcome.
 func saveFailureEvidence(t *testing.T, a *crashAgent, root harness.Root) {
-	dir := os.Getenv("DSO_IT_ARTIFACTS")
+	dir := evidenceDir()
 	if dir == "" {
 		return
-	}
-	if !filepath.IsAbs(dir) { // go test runs in the package directory; the script's path is repo-root relative
-		wd, err := os.Getwd()
-		if err != nil {
-			return
-		}
-		for r := wd; ; r = filepath.Dir(r) {
-			if _, err := os.Stat(filepath.Join(r, "go.mod")); err == nil {
-				dir = filepath.Join(r, dir)
-				break
-			}
-			if filepath.Dir(r) == r {
-				return
-			}
-		}
 	}
 	out := filepath.Join(dir, "crash", strings.NewReplacer("/", "_", "#", "_").Replace(t.Name()))
 	if err := os.MkdirAll(out, 0o750); err != nil {
@@ -636,4 +621,39 @@ func (c *crashCase) leakScan() []harness.Finding {
 		c.t.Errorf("leak scan could not read everything (unscanned is not clean): %v", err)
 	}
 	return f
+}
+
+// evidenceDir resolves $DSO_IT_ARTIFACTS to an absolute path (go test runs in the package
+// directory, the script's value is repo-root relative); "" when unset or unresolvable.
+func evidenceDir() string {
+	dir := os.Getenv("DSO_IT_ARTIFACTS")
+	if dir == "" || filepath.IsAbs(dir) {
+		return dir
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for r := wd; ; r = filepath.Dir(r) {
+		if _, err := os.Stat(filepath.Join(r, "go.mod")); err == nil {
+			return filepath.Join(r, dir)
+		}
+		if filepath.Dir(r) == r {
+			return ""
+		}
+	}
+}
+
+// saveCaseEvidence persists one matrix case's report the moment the case is final
+// (harness.WriteCaseReport: atomic, plus an index line), so a go test timeout cannot erase
+// the cases that had already completed. Best effort: it logs, never fails the case.
+func saveCaseEvidence(t *testing.T, cr harness.CaseReport) {
+	t.Helper()
+	dir := evidenceDir()
+	if dir == "" {
+		return
+	}
+	if err := harness.WriteCaseReport(filepath.Join(dir, "crash-report"), cr); err != nil {
+		t.Logf("could not save the case report: %v", err)
+	}
 }

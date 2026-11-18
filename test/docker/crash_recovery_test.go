@@ -80,6 +80,8 @@ func runMatrixCase(t *testing.T, sess *dockerguard.Session, arts crashArtifacts,
 	began := time.Now()
 	p := cs.Point
 	cr := harness.CaseReport{ID: cs.ID(), Strategy: cs.Strategy, Point: p.Name, Scenario: p.Scenario}
+	// Registered first so it runs LAST: after Duration is set and every field is final.
+	defer func() { saveCaseEvidence(t, cr) }()
 	defer func() { cr.Duration = time.Since(began) }()
 
 	c := newCrashCase(t, sess, arts, cs.Strategy, p.Scenario)

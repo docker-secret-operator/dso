@@ -49,6 +49,8 @@ pass=$(grep -c '"Action":"pass","Package":"[^"]*","Test":' "$ART/test.json" || t
 fail=$(grep -c '"Action":"fail","Package":"[^"]*","Test":' "$ART/test.json" || true)
 skip=$(grep -c '"Action":"skip","Package":"[^"]*","Test":' "$ART/test.json" || true)
 echo "passed=${pass} failed=${fail} skipped=${skip} go-test-exit=${rc}"
+# Per-test outcomes (and tests a timeout cut off) go to the job log, which is kept whatever happens.
+"$(dirname "$0")/summarize-results.sh" "$ART/test.json" || true
 [[ $rc -eq 0 ]] || { echo "go test failed (see $ART/test.err and test.json)" >&2; exit 1; }
 [[ "$skip" -eq 0 ]] || { echo "tests were skipped: an explicit integration run must not skip" >&2; exit 1; }
 [[ "$pass" -gt 0 ]] || { echo "no test passed: refusing to report success" >&2; exit 1; }
