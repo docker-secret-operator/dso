@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 )
 
+// lookupCurrentUser resolves the invoking user (and so their home directory).
+// It is replaced in tests: os/user ignores $HOME, so without it a test that
+// bootstraps with no explicit config path writes into the real home directory.
+var lookupCurrentUser = user.Current
+
 // LocalBootstrapper handles local mode (development) bootstrap
 type LocalBootstrapper struct {
 	logger     Logger
@@ -43,7 +48,7 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 
 	// Get current user (no special checks for local mode)
-	currentUser, err := user.Current()
+	currentUser, err := lookupCurrentUser()
 	if err != nil {
 		return nil, ErrUserValidation("bootstrap", "current")
 	}
@@ -280,7 +285,7 @@ func (lb *LocalBootstrapper) ValidateConfiguration(ctx context.Context, yamlCont
 
 // GetConfigurationDirectory returns the local configuration directory
 func (lb *LocalBootstrapper) GetConfigurationDirectory() (string, error) {
-	currentUser, err := user.Current()
+	currentUser, err := lookupCurrentUser()
 	if err != nil {
 		return "", ErrUserValidation("bootstrap", "current")
 	}
