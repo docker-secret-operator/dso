@@ -1835,25 +1835,29 @@ func (r *ReloaderController) TriggerReload(ctx context.Context, secretName strin
 				if useZeroDowntime {
 					// Proxy swap: new container gets all traffic immediately;
 					// old connections drain on old backend within 5 s.
-					newInspect, ierr := r.cli.ContainerInspect(ctx, created.ID)
-					if ierr == nil {
-						newIP := ""
-						for _, ep := range newInspect.NetworkSettings.Networks {
-							if ep.IPAddress != "" {
-								newIP = ep.IPAddress
-								break
-							}
+					//
+					// The original is the only workload serving until this swap has
+					// happened. If it did not (the replacement cannot be inspected or has
+					// no address, or the proxy refused it), stopping and removing the
+					// original below would leave no backend and no original while the
+					// rotation reported success. SwapBackend commits nothing when it
+					// returns an error, so the safe response is to roll the replacement
+					// back and leave the original in service.
+					if serr := r.swapRestartBackend(ctx, target.ID, created.ID, portsLabel); serr != nil {
+						r.Logger.Error("Proxy swap did not happen; rolling back and keeping the original in service (it is not stopped or removed)",
+							zap.String("original_id", util.ShortID(target.ID)),
+							zap.String("replacement_id", util.ShortID(created.ID)),
+							zap.Error(serr))
+						r.stopReplacement(ctx, created.ID, stopTimeout)
+						if r.executeRollback(ctx, created.ID, target.ID, originalName, serviceName) {
+							r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrRolledBack, CandidateIDs: []string{created.ID},
+								Detail: "proxy swap did not happen; replacement discarded, original restored and still serving"})
+						} else {
+							r.jAck(ctx, js, rotation.JournalEvent{Transition: rotation.TrFailed, CandidateIDs: []string{created.ID}, ManualRecovery: true,
+								Detail: "proxy swap did not happen and the rollback did not complete; the original was not removed, operator action required"})
 						}
-						if newIP != "" {
-							for _, pm := range dsoProxy.ParseHostPorts(portsLabel) {
-								if serr := r.ProxyManager.SwapBackend(
-									target.ID, created.ID, newIP,
-									pm.ContainerPort, pm.HostPort,
-								); serr != nil {
-									r.Logger.Warn("proxy swap failed, continuing", zap.Error(serr))
-								}
-							}
-						}
+						finish(fmt.Errorf("proxy swap for the restarted service did not happen: %w", serr))
+						return
 					}
 					// New connections now go to the replacement, but connections
 					// that selected the old backend moments before the swap are
@@ -2152,6 +2156,42 @@ func (r *ReloaderController) executeRollback(ctx context.Context, createdID, ori
 		zap.String("original_id", originalID),
 		zap.String("replacement_id", createdID))
 	return false
+}
+
+// swapRestartBackend hands the proxy's traffic from oldID to the started, verified
+// replacement newID. It performs ONE swap (the proxy registry is keyed by container ID, so
+// repeating it per port mapping can only fail with "already registered") and reports every
+// way the swap can fail to happen as an error: no usable port mapping, an uninspectable
+// replacement, a replacement without an address, or the proxy refusing it. A nil return
+// means the swap was committed.
+func (r *ReloaderController) swapRestartBackend(ctx context.Context, oldID, newID, portsLabel string) error {
+	if r.ProxyManager == nil {
+		return errors.New("no proxy manager")
+	}
+	portMaps := dsoProxy.ParseHostPorts(portsLabel)
+	if len(portMaps) == 0 {
+		return fmt.Errorf("no usable host port mapping in %q", portsLabel)
+	}
+	inspect, err := r.cli.ContainerInspect(ctx, newID)
+	if err != nil {
+		return fmt.Errorf("inspect replacement: %w", err)
+	}
+	newIP := ""
+	if inspect.NetworkSettings != nil {
+		for _, ep := range inspect.NetworkSettings.Networks {
+			if ep != nil && ep.IPAddress != "" {
+				newIP = ep.IPAddress
+				break
+			}
+		}
+	}
+	if newIP == "" {
+		return errors.New("the replacement has no network address to route to")
+	}
+	if err := r.ProxyManager.SwapBackend(oldID, newID, newIP, portMaps[0].ContainerPort, portMaps[0].HostPort); err != nil {
+		return fmt.Errorf("swap backend on port %d: %w", portMaps[0].HostPort, err)
+	}
+	return nil
 }
 
 // rollbackRetryUnit is the backoff unit between rollback attempts (1x, 2x, 3x).

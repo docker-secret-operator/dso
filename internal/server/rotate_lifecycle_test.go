@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	dsoProxy "github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
@@ -89,6 +90,22 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // target, and a REST server wrapped in a real HTTP server.
 func rotationFixture(t *testing.T, createMode string) (*RESTServer, *httptest.Server, *dockerCalls) {
 	t.Helper()
+	return rotationFixtureOpts(t, createMode, rotationOpts{})
+}
+
+// rotationOpts adjusts rotationFixture without touching its existing callers.
+type rotationOpts struct {
+	// hostPorts, when set, makes the target a proxy-managed service: the original carries
+	// the dso.host_ports label and the controller has a real proxy.Manager, so the restart
+	// strategy takes its zero-downtime (proxy swap) branch.
+	hostPorts string
+	// replacementIP, when set, gives the healthy replacement a network address, so a
+	// proxy swap to it can succeed (without it the replacement has nothing to route to).
+	replacementIP string
+}
+
+func rotationFixtureOpts(t *testing.T, createMode string, o rotationOpts) (*RESTServer, *httptest.Server, *dockerCalls) {
+	t.Helper()
 	const origID, newID, name = "orig-1", "new-1", "myapp"
 
 	inspect := container.InspectResponse{
@@ -96,11 +113,19 @@ func rotationFixture(t *testing.T, createMode string) (*RESTServer, *httptest.Se
 		Config:            &container.Config{Env: []string{"FOO=bar"}, Labels: map[string]string{}},
 		NetworkSettings:   &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{}},
 	}
+	if o.hostPorts != "" {
+		inspect.Config.Labels["dso.host_ports"] = o.hostPorts
+	}
 	inspectJSON, _ := json.Marshal(inspect)
 	healthy := inspect
 	healthy.ContainerJSONBase = &container.ContainerJSONBase{
 		ID: newID, Name: "/" + name, HostConfig: &container.HostConfig{},
 		State: &container.State{Running: true, Health: &container.Health{Status: "healthy"}},
+	}
+	if o.replacementIP != "" {
+		healthy.NetworkSettings = &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+			"bridge": {IPAddress: o.replacementIP},
+		}}
 	}
 	healthyJSON, _ := json.Marshal(healthy)
 	createJSON, _ := json.Marshal(container.CreateResponse{ID: newID})
@@ -182,6 +207,10 @@ func rotationFixture(t *testing.T, createMode string) (*RESTServer, *httptest.Se
 		}},
 	}
 	rc.Config = cfg
+	if o.hostPorts != "" {
+		rc.ProxyManager = dsoProxy.NewManager(zap.NewNop())
+		t.Cleanup(func() { _ = rc.ProxyManager.Stop(0) })
+	}
 	rc.Targets.Store(origID, &watcher.TargetContainer{ID: origID, Strategy: "restart", Secrets: []string{"db"}})
 
 	s := createTestRESTServer()
