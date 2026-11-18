@@ -112,7 +112,19 @@ func (s Snapshot) RecordFor(service string) (RotationRecord, bool) {
 		}
 		return best, found
 	}
-	if r, ok := pick(func(r RotationRecord) bool { return r.ServiceID == service }); ok {
+	// A record names its service by the identifier the strategy used: restart and rolling
+	// journal the container NAME, while the signal strategy journals whatever the controller
+	// derived (the compose service label, else the container ID). A container without a
+	// compose label therefore yields a record whose service_id is the container's ID, so also
+	// match the ID of the container carrying the service name. Without this a signal
+	// record was invisible to every journal-dependent invariant (they ran vacuously).
+	ids := map[string]bool{}
+	for _, c := range s.Containers {
+		if c.Name == service {
+			ids[c.ID] = true
+		}
+	}
+	if r, ok := pick(func(r RotationRecord) bool { return r.ServiceID == service || (r.ServiceID != "" && ids[r.ServiceID]) }); ok {
 		return r, true
 	}
 	return pick(func(r RotationRecord) bool { return r.ServiceID == "" })
