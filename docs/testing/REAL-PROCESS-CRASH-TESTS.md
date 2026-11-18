@@ -103,6 +103,7 @@ the **same point names** against a real process and a real daemon.
   | `DSO_FAULT_NTH` | die on the Nth hit of that point (default 1) |
   | `DSO_FAULT_MARKER` | file written (`point=`, `pid=`, `nth=`) immediately before dying |
   | `DSO_FAULT_STATE_DIR`, `DSO_FAULT_LOCK_DIR` | per-test state/lock directories (production uses fixed `/var/lib/dso/...`) |
+  | `DSO_FAULT_LEDGER_DIR` | per-test applied-version-ledger directory (production uses `/var/lib/dso/ledger`; without it an unprivileged agent has an unusable ledger and adopts a first observation without rotating, so no journal record is written) |
   | `DSO_FAULT_PLUGIN_DIR` | per-test provider-plugin directory (production allows only three system directories) |
 
   `Hit` fires only on **exact** equality (`"rolling:after_intent_swap"` does not match

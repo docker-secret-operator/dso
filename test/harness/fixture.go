@@ -11,13 +11,14 @@ import (
 // state, and nothing outside it (and nothing under /var/lib/dso or /run/dso) is
 // touched.
 type Root struct {
-	Dir   string // owns everything below; scanned for secrets
-	Cfg   string // the agent's working directory; holds dso.yaml
-	State string // journal (rotations.json)
-	Lock  string
-	Logs  string
-	Home  string
-	Sock  string // IPC and driver sockets (kept short: unix socket paths are limited to ~104 bytes)
+	Dir    string // owns everything below; scanned for secrets
+	Cfg    string // the agent's working directory; holds dso.yaml
+	State  string // journal (rotations.json)
+	Lock   string
+	Ledger string // applied-version ledger (key + records); the agent's default is /var/lib/dso/ledger
+	Logs   string
+	Home   string
+	Sock   string // IPC and driver sockets (kept short: unix socket paths are limited to ~104 bytes)
 }
 
 // maxSockPath leaves headroom under the 104/108-byte sockaddr_un limit.
@@ -30,10 +31,10 @@ func NewRoot(base string) (Root, error) {
 		return Root{}, err
 	}
 	r := Root{
-		Dir: dir, Cfg: filepath.Join(dir, "cfg"), State: filepath.Join(dir, "state"), Lock: filepath.Join(dir, "lock"),
+		Dir: dir, Cfg: filepath.Join(dir, "cfg"), State: filepath.Join(dir, "state"), Lock: filepath.Join(dir, "lock"), Ledger: filepath.Join(dir, "ledger"),
 		Logs: filepath.Join(dir, "logs"), Home: filepath.Join(dir, "home"), Sock: filepath.Join(dir, "s"),
 	}
-	for _, d := range []string{r.Cfg, r.State, r.Lock, r.Logs, r.Home, r.Sock} {
+	for _, d := range []string{r.Cfg, r.State, r.Lock, r.Ledger, r.Logs, r.Home, r.Sock} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return Root{}, err
 		}

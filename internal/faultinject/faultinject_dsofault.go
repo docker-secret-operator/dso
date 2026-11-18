@@ -21,15 +21,17 @@ const Enabled = true
 //	DSO_FAULT_NTH     die on the Nth hit of that point (default 1)
 //	DSO_FAULT_MARKER  file written (point, pid, nth) immediately before dying, so the
 //	                  harness can verify WHICH process died at WHICH point
-//	DSO_FAULT_STATE_DIR / DSO_FAULT_LOCK_DIR / DSO_FAULT_PLUGIN_DIR  per-test state,
-//	                  lock and provider-plugin directories (the production values are
-//	                  fixed system paths)
+//	DSO_FAULT_STATE_DIR / DSO_FAULT_LOCK_DIR / DSO_FAULT_LEDGER_DIR /
+//	DSO_FAULT_PLUGIN_DIR  per-test state, lock, applied-version-ledger and
+//	                  provider-plugin directories (the production values are fixed
+//	                  system paths)
 const (
 	envPoint    = "DSO_FAULT_POINT"
 	envNth      = "DSO_FAULT_NTH"
 	envMarker   = "DSO_FAULT_MARKER"
 	envStateDir = "DSO_FAULT_STATE_DIR"
 	envLockDir  = "DSO_FAULT_LOCK_DIR"
+	envLedgDir  = "DSO_FAULT_LEDGER_DIR"
 	envPlugDir  = "DSO_FAULT_PLUGIN_DIR"
 )
 
@@ -93,6 +95,8 @@ func Param(name string) (string, bool) {
 		key = envStateDir
 	case "lock_dir":
 		key = envLockDir
+	case "ledger_dir":
+		key = envLedgDir
 	case "plugin_dir":
 		key = envPlugDir
 	default:

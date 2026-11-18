@@ -412,6 +412,7 @@ func (c *crashCase) startAgent(point string, nth int) *crashAgent {
 		"DSO_FAULT_PLUGIN_DIR":     c.arts.pluginDir,
 		"DSO_FAULT_STATE_DIR":      c.root.State,
 		"DSO_FAULT_LOCK_DIR":       c.root.Lock,
+		"DSO_FAULT_LEDGER_DIR":     c.root.Ledger,
 		"DSO_AUTH_TOKEN":           "at-" + randHex(16),
 	}
 	env, err := harness.SanitizedEnv(os.Environ(), c.sess.Config.Host, extra)

@@ -53,7 +53,7 @@ func TestUntaggedBinaryHasNoFaultHookAndTaggedHasIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"DSO_FAULT_POINT", "DSO_FAULT_MARKER", "DSO_FAULT_STATE_DIR", "DSO_FAULT_LOCK_DIR", "DSO_FAULT_PLUGIN_DIR", "DSO_FAULT_NTH"} {
+	for _, s := range []string{"DSO_FAULT_POINT", "DSO_FAULT_MARKER", "DSO_FAULT_STATE_DIR", "DSO_FAULT_LOCK_DIR", "DSO_FAULT_LEDGER_DIR", "DSO_FAULT_PLUGIN_DIR", "DSO_FAULT_NTH"} {
 		if bytes.Contains(pb, []byte(s)) {
 			t.Errorf("the production binary contains %q", s)
 		}

@@ -9,6 +9,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/agent"
 )
 
 // No-Docker smoke test of the harness against the REAL dsofault-tagged agent and
@@ -17,12 +21,24 @@ import (
 // and the whole self-kill chain (armed point -> SIGKILL -> marker -> VerifyFault).
 // The agent is pointed at an unreachable TCP endpoint, so it can never reach any
 // Docker daemon: this proves the orchestration, not rotation behaviour.
+//
+// Without containers a first observation of a secret is adopted, never rotated (the
+// applied-version ledger, O-5), so a plain boot writes no rotation journal record
+// and reaches no persist/rotation fault point. The tests therefore seed one
+// unfinished rotation into the per-test state directory: startup recovery then
+// runs at boot and "recovery:start" is a fault point reachable without Docker.
 func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the agent and the vault plugin; run without -short")
 	}
 	const noDocker = "tcp://127.0.0.1:1" // nothing listens here
 	bin := t.TempDir()
+	// t.TempDir() honours the umask (0775 under umask 0002), and the plugin hash
+	// manifest is refused from a group- or world-writable directory. Do not let the
+	// result depend on the developer's umask.
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	dso, plugDir := filepath.Join(bin, "dso-fault"), filepath.Join(bin, "plugins")
 	if err := os.MkdirAll(plugDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -43,7 +59,7 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 	run := func(t *testing.T, n int, root Root, extra ...string) *Proc {
 		env, err := SanitizedEnv(os.Environ(), noDocker, map[string]string{
 			"HOME": root.Home, "DSO_PLUGIN_DIR": plugDir, "DSO_PLUGIN_HASH_MANIFEST": manifest, "DSO_FAULT_PLUGIN_DIR": plugDir,
-			"DSO_FAULT_STATE_DIR": root.State, "DSO_FAULT_LOCK_DIR": root.Lock, "DSO_AUTH_TOKEN": "at-0123456789abcdef0123456789abcdef",
+			"DSO_FAULT_STATE_DIR": root.State, "DSO_FAULT_LOCK_DIR": root.Lock, "DSO_FAULT_LEDGER_DIR": root.Ledger, "DSO_AUTH_TOKEN": "at-0123456789abcdef0123456789abcdef",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -56,7 +72,20 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 		t.Cleanup(func() { _ = p.TerminateGroup(5 * time.Second) })
 		return p
 	}
+	seedUnfinishedRotation := func(root Root) {
+		st, err := agent.NewStateTracker(root.State, zap.NewNop())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.StartRotation("local", "app_token", "orig-0123456789ab", "new-0123456789ab"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg := func(root Root) {
+		seedUnfinishedRotation(root)
 		if err := root.WriteConfig(AgentConfig{OwnerID: "dso-crash-0123abcd", VaultAddr: vault.Addr(), VaultToken: "tok",
 			Secrets: []SecretSpec{{Name: "app_token", Mode: "env", Strategy: Rolling, Mapping: map[string]string{"password": "APP_PASSWORD"}}}}); err != nil {
 			t.Fatal(err)
@@ -86,6 +115,11 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root.State, "rotations.json")); err != nil {
 			t.Errorf("the agent did not use the per-test state directory: %v", err)
 		}
+		// The applied-version ledger creates its key in its directory at boot; an
+		// empty per-test ledger directory means the agent used the production one.
+		if ents, err := os.ReadDir(root.Ledger); err != nil || len(ents) == 0 {
+			t.Errorf("the agent did not use the per-test ledger directory: %v (%d entries)", err, len(ents))
+		}
 		if err := p.Signal(syscall.SIGTERM); err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +133,7 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 	t.Run("armed point kills the agent by SIGKILL and the marker names its pid", func(t *testing.T) {
 		root := shortRoot(t)
 		cfg(root)
-		fe, err := FaultEnv("state:after_persist_rename", 1, root.MarkerPath(1))
+		fe, err := FaultEnv("recovery:start", 1, root.MarkerPath(1))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -112,7 +146,7 @@ func TestRealAgentBootAndSelfKillWithoutDocker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("no marker: %v (%s)", err, info)
 		}
-		if err := VerifyFault("state:after_persist_rename", p.PID(), info, marker); err != nil {
+		if err := VerifyFault("recovery:start", p.PID(), info, marker); err != nil {
 			t.Fatal(err)
 		}
 		_ = p.KillStragglers()

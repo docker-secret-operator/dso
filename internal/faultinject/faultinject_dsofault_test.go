@@ -64,12 +64,15 @@ func TestTaggedBuildNthHitAndMarker(t *testing.T) {
 }
 
 func TestTaggedParamIsWhitelisted(t *testing.T) {
-	withEnv(t, map[string]string{"DSO_FAULT_STATE_DIR": "/x/state", "DSO_FAULT_LOCK_DIR": "/x/lock", "DSO_FAULT_PLUGIN_DIR": "/x/plug", "DSO_FAULT_OTHER": "/x/o"})
+	withEnv(t, map[string]string{"DSO_FAULT_STATE_DIR": "/x/state", "DSO_FAULT_LOCK_DIR": "/x/lock", "DSO_FAULT_LEDGER_DIR": "/x/ledger", "DSO_FAULT_PLUGIN_DIR": "/x/plug", "DSO_FAULT_OTHER": "/x/o"})
 	if v, ok := Param("state_dir"); !ok || v != "/x/state" {
 		t.Fatalf("state_dir=%q %v", v, ok)
 	}
 	if v, ok := Param("lock_dir"); !ok || v != "/x/lock" {
 		t.Fatalf("lock_dir=%q %v", v, ok)
+	}
+	if v, ok := Param("ledger_dir"); !ok || v != "/x/ledger" {
+		t.Fatalf("ledger_dir=%q %v", v, ok)
 	}
 	if v, ok := Param("plugin_dir"); !ok || v != "/x/plug" {
 		t.Fatalf("plugin_dir=%q %v", v, ok)
