@@ -102,6 +102,10 @@ type rotationOpts struct {
 	// replacementIP, when set, gives the healthy replacement a network address, so a
 	// proxy swap to it can succeed (without it the replacement has nothing to route to).
 	replacementIP string
+	// failRollbackStart, when set, makes the daemon refuse the start of the ORIGINAL
+	// container (the only call that makes a rollback count as successful), so a failed
+	// proxy swap cannot be rolled back. No other request is affected.
+	failRollbackStart bool
 }
 
 func rotationFixtureOpts(t *testing.T, createMode string, o rotationOpts) (*RESTServer, *httptest.Server, *dockerCalls) {
@@ -183,6 +187,8 @@ func rotationFixtureOpts(t *testing.T, createMode string, o rotationOpts) (*REST
 				w.WriteHeader(http.StatusCreated)
 				_, _ = w.Write(createJSON)
 			}
+		case o.failRollbackStart && r.Method == http.MethodPost && strings.HasSuffix(p, "/containers/"+origID+"/start"):
+			http.Error(w, `{"message":"start refused"}`, http.StatusInternalServerError)
 		case strings.Contains(p, "/rename"), strings.Contains(p, "/stop"), strings.Contains(p, "/start"):
 			w.WriteHeader(http.StatusNoContent)
 		default:

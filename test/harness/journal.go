@@ -40,6 +40,28 @@ type RotationRecord struct {
 	StartTime             time.Time `json:"start_time"`
 	LastUpdate            time.Time `json:"last_update"`
 	ErrorMessage          string    `json:"error_message,omitempty"`
+
+	// Attempt model (additive; absent in records written before it).
+	JournalSchema int             `json:"journal_schema,omitempty"`
+	Attempts      []AttemptRecord `json:"attempts,omitempty"`
+}
+
+// AttemptRecord mirrors the persisted agent.AttemptState.
+type AttemptRecord struct {
+	Attempt          int    `json:"attempt"`
+	ParentAttempt    int    `json:"parent_attempt,omitempty"`
+	Strategy         string `json:"strategy"`
+	TargetOriginalID string `json:"target_original_id"`
+	ServiceName      string `json:"service_name,omitempty"`
+	State            string `json:"state"`
+	BeganSeq         int    `json:"began_seq"`
+	EndedSeq         int    `json:"ended_seq,omitempty"`
+	Detail           string `json:"detail,omitempty"`
+	RecoveryPass     int    `json:"recovery_pass,omitempty"`
+	RecoveryStep     string `json:"recovery_step,omitempty"`
+	ManualReason     string `json:"manual_reason,omitempty"`
+	ComposeProject   string `json:"compose_project,omitempty"`
+	ComposeService   string `json:"compose_service,omitempty"`
 }
 
 // Originals returns the original container IDs (structured field, else the legacy

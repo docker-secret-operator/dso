@@ -442,6 +442,7 @@ var lbTransitions = map[string]bool{
 	rotation.TrSignalReloadSent:     false,
 	rotation.TrSignalDone:           false, // signal evidence, not a verified candidate
 	rotation.TrSignalFailed:         false,
+	rotation.TrAttemptBegin:         false,
 }
 
 // rotationTransitionConstants parses internal/rotation/journal.go and returns

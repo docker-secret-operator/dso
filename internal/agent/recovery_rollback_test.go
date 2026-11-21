@@ -500,8 +500,8 @@ func TestN21Rollback_PreviousSecretUnavailable_ContainerRestoredApplicationNotCl
 			if rec.Status != "critical_error" || !rec.ManualRecovery || rec.OperationState != opStateRollbackPreviousUnavailable {
 				t.Fatalf("application rollback must not be claimed: %+v", rec)
 			}
-			if rec.Transition != rotation.TrRolledBack || !strings.Contains(rec.ErrorMessage, "application rollback is NOT claimed") {
-				t.Fatalf("%s / %q", rec.Transition, rec.ErrorMessage)
+			if rec.Transition != rotation.TrRolledBack || !strings.Contains(rec.Detail, "application rollback is NOT claimed") {
+				t.Fatalf("%s / %q", rec.Transition, rec.Detail)
 			}
 			if _, blocked := newJournalGuard(f.st).RotationBlocked("app"); !blocked {
 				t.Fatal("the service must stay blocked until an operator confirms")

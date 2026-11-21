@@ -64,6 +64,31 @@ const (
 	TrSignalReloadSent    = "signal_reload_sent"
 	TrSignalDone          = "signal_done"   // terminal: adoption still unverified
 	TrSignalFailed        = "signal_failed" // terminal; State names the precise condition
+
+	// Attempt model (A-02). Written only by StateTracker.BeginAttempt, never as an
+	// ordinary event; it is not delivery evidence by itself.
+	TrAttemptBegin = "attempt_begin"
+)
+
+// ManualReason codes name why an operator must act. They accompany an event with
+// ManualRecovery and are stored on the escalated attempt. The set is a vocabulary,
+// not a validation list: the journal stores any string, so records written with a
+// code this binary does not know stay readable. Each maps to a section of
+// docs/operations/MANUAL-RECOVERY-RUNBOOK.md (owner task before any release).
+const (
+	ManualReasonNoWorkload                      = "no_workload"
+	ManualReasonArtifactIdentity                = "artifact_identity"
+	ManualReasonUnresolvedIntent                = "unresolved_intent"
+	ManualReasonRollingBetweenRenames           = "rolling_between_renames"
+	ManualReasonRollingAfterSwapBeforeCommitAck = "rolling_after_swap_before_commit_ack"
+	ManualReasonRecoveryNotConverging           = "recovery_not_converging"
+	ManualReasonIdentityConflict                = "identity_conflict"
+	ManualReasonPlanRefused                     = "plan_refused"
+	ManualReasonLayoutInconsistent              = "layout_inconsistent"
+	ManualReasonRollbackFailed                  = "rollback_failed"
+	ManualReasonStateUnknown                    = "state_unknown"
+	// ManualReasonCandidateNotRemoved is approved vocabulary with no emitter yet.
+	ManualReasonCandidateNotRemoved = "candidate_not_removed"
 )
 
 // JournalEvent is one durable record. Zero-value fields mean "unchanged".
@@ -100,6 +125,14 @@ type JournalEvent struct {
 	// carries secret material.
 	State          string
 	ManualRecovery bool
+
+	// Attempt is the 1-based number of the attempt the event belongs to. Zero means
+	// the event is unattributed (every event written before the attempt model): it
+	// never changes the attempt list.
+	Attempt int
+	// ManualReason is one of the ManualReason* codes (free string, not validated),
+	// stored in the same durable write as the escalation it explains.
+	ManualReason string
 }
 
 // Journal persists JournalEvents. Record must be durable when it returns nil. When
