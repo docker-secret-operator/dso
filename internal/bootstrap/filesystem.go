@@ -354,18 +354,16 @@ func (b *BootstrapLockOps) Release(lock *BootstrapLock) error {
 // DirectoryValidator checks filesystem requirements
 type DirectoryValidator struct {
 	logger Logger
+	// dirs overrides the directory plan (tests only). Nil means the production
+	// plan, dsoDirectoryPlan, so this check can never disagree with bootstrap.
+	dirs []dsoDirSpec
 }
 
 // ValidateBootstrapDirectories checks that all required directories exist or can be created
 func (dv *DirectoryValidator) ValidateBootstrapDirectories(phase string) error {
-	dirs := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{"/etc/dso", 0775},
-		{"/var/lib/dso", 0750},
-		{"/var/run/dso", 0755},
-		{"/var/log/dso", 0750},
+	dirs := dv.dirs
+	if dirs == nil {
+		dirs = dsoDirectoryPlan()
 	}
 
 	for _, d := range dirs {

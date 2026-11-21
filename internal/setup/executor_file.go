@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 )
 
 // FileExecutor creates or modifies files declared in the InstallPlan.
@@ -59,6 +60,18 @@ func (e *FileExecutor) executeOne(_ context.Context, op *FileChange, tx *Transac
 	}
 	txOp.Before = before
 
+	// A replacement the operator opted into is backed up first; if the backup cannot be
+	// written the file is NOT replaced.
+	if op.BackupExisting && before.Existed {
+		backup, err := e.backupExisting(op.Path, before.Content)
+		if err != nil {
+			markFailed(txOp, err)
+			e.emitter.emit(EventOperationFailed, txOp, err)
+			return fmt.Errorf("%s: back up %s before replacing it: %w", op.ID, op.Path, err)
+		}
+		txOp.BackupPath = backup
+	}
+
 	if err := e.writeFile(op.Path, op.Content, op.Mode); err != nil {
 		markFailed(txOp, err)
 		e.emitter.emit(EventOperationFailed, txOp, err)
@@ -93,4 +106,28 @@ func (e *FileExecutor) executeOne(_ context.Context, op *FileChange, tx *Transac
 	markCompleted(txOp)
 	e.emitter.emit(EventOperationCompleted, txOp, nil)
 	return nil
+}
+
+// backupExisting writes content to a timestamped 0600 copy next to path
+// (<path>.bak-<UTC timestamp>, with a numeric suffix if that name is taken) and returns the
+// backup's path. The backup may hold credentials, so it is never more permissive than 0600.
+func (e *FileExecutor) backupExisting(path string, content []byte) (string, error) {
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	for n := 0; n < 100; n++ {
+		name := fmt.Sprintf("%s.bak-%s", path, stamp)
+		if n > 0 {
+			name = fmt.Sprintf("%s-%d", name, n)
+		}
+		if _, err := e.stat(name); err == nil {
+			continue // taken
+		}
+		if err := e.writeFile(name, content, 0o600); err != nil {
+			return "", err
+		}
+		if err := e.chmod(name, 0o600); err != nil {
+			return "", err
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("no free backup name next to %s", path)
 }

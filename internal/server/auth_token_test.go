@@ -13,7 +13,7 @@ import (
 func TestStartRESTServer_TokenTooShort(t *testing.T) {
 	t.Setenv("DSO_AUTH_TOKEN", "tooshort") // 8 bytes
 
-	_, err := StartRESTServer(context.Background(), "127.0.0.1:0", nil, nil, nil, zap.NewNop())
+	_, err := StartRESTServer(context.Background(), "127.0.0.1:0", nil, nil, nil, zap.NewNop(), nil)
 	if err == nil {
 		t.Fatal("expected error for short token, got nil")
 	}
@@ -27,7 +27,7 @@ func TestStartRESTServer_TokenTooShort(t *testing.T) {
 func TestStartRESTServer_TokenTooLong(t *testing.T) {
 	t.Setenv("DSO_AUTH_TOKEN", strings.Repeat("x", 513))
 
-	_, err := StartRESTServer(context.Background(), "127.0.0.1:0", nil, nil, nil, zap.NewNop())
+	_, err := StartRESTServer(context.Background(), "127.0.0.1:0", nil, nil, nil, zap.NewNop(), nil)
 	if err == nil {
 		t.Fatal("expected error for oversized token, got nil")
 	}
@@ -44,7 +44,7 @@ func TestStartRESTServer_TokenAccepted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := StartRESTServer(ctx, "127.0.0.1:0", nil, nil, nil, zap.NewNop())
+	_, err := StartRESTServer(ctx, "127.0.0.1:0", nil, nil, nil, zap.NewNop(), nil)
 	if err != nil && (strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "exceeds maximum")) {
 		t.Errorf("valid token was rejected: %v", err)
 	}

@@ -474,6 +474,23 @@ docker exec <container_name> env | grep DB_PASSWORD
 
 ---
 
+## Optional: Web UI
+
+DSO can also serve an optional browser dashboard alongside its REST API.
+It's **disabled by default** — nothing changes for existing deployments
+until you opt in via the `webui:` section of `dso.yaml`. Once enabled, it
+runs on the same agent/API listener (no separate process or port).
+
+The Web UI provides operational and observability views (dashboard,
+secrets metadata, containers, events, audit, drift, integrations) plus
+two supported operational actions: triggering a manual secret rotation
+and sending a test notification. It never exposes secret values.
+
+See [`docs/webui.md`](webui.md) for exact configuration, authentication
+setup, and access instructions.
+
+---
+
 ## All CLI Commands Reference
 
 ### Setup & Initialization
@@ -493,7 +510,7 @@ docker exec <container_name> env | grep DB_PASSWORD
 |---|---|
 | `docker dso secret set myapp/key` | Store a secret (interactive prompt) |
 | `echo "val" \| docker dso secret set myapp/key` | Store a secret from pipe |
-| `docker dso secret get myapp/key` | Retrieve a secret |
+| `docker dso secret get myapp/key --reveal` | Retrieve a secret (plaintext requires `--reveal`) |
 | `docker dso secret list [project]` | List all secrets in a project |
 | `docker dso env import file.env myapp` | Bulk import from `.env` file |
 
@@ -653,3 +670,27 @@ docker dso doctor --level full
 - **[Providers Guide](providers.md)** — AWS, Azure, Vault, Huawei auth details
 - **[Operational Guide](operational-guide.md)** — Day-2 operations, monitoring, backup
 - **[Quick Reference](QUICKREF.md)** — one-page cheat sheet
+
+## Verified installation
+
+`scripts/install.sh` verifies the release signature before installing anything:
+
+1. Install **cosign** from a source you trust (your package manager, or the official sigstore release with its published checksum verified). The installer never downloads a verifier itself.
+2. (Recommended) pin the release: `DSO_VERSION=3.6.0 bash install.sh`.
+3. The installer downloads the archive, `dso-<version>-checksums.txt`, its `.sig` and `.pem`, verifies the manifest signature for the identity `https://github.com/docker-secret-operator/dso/.github/workflows/release.yml@refs/tags/v<version>` issued by `https://token.actions.githubusercontent.com`, and only then compares the archive's SHA-256 with the signed manifest. Any failure aborts and leaves an existing installation untouched.
+
+Releases published without a signature cannot be installed with this script. For a private mirror or air-gapped build signed with your own key, set `DSO_COSIGN_PUBKEY=/path/to/cosign.pub` and publish a cosign bundle as `dso-<version>-checksums.txt.sigstore.json`; there is no option to skip verification. `DSO_RELEASE_BASE` changes only where files are fetched from; authenticity always comes from the signature.
+
+### Release signing and pins
+
+The release workflow (`.github/workflows/release.yml`) installs a pinned cosign (`sigstore/cosign-installer` at a full commit SHA, `cosign-release: v3.1.4`), signs the checksum manifest keylessly as `release.yml@refs/tags/<tag>` of this repository, and publishes detached `.sig` and `.pem` files (GoReleaser requests the legacy detached format explicitly; cosign 3 refuses `--output-signature` otherwise). All release actions are pinned by commit SHA. Release builds are built with no inherited Go flags and every produced binary is checked for the test-only `DSO_FAULT_` fault hook; a build that contains it fails.
+
+> Status: key-mode verification is exercised by the test suite with real cosign. A real keyless GitHub OIDC signature has not yet been produced and verified end to end; do that with a pre-release tag before relying on it (see `docs/audit/21-M0-INSTALLER-TRUST-CHAIN-REVIEW.md`).
+
+### Installation consistency
+
+The installer stages the core binary, the provider plugins and the `dso` symlink under temporary names next to their destinations, then publishes them with atomic renames (providers, core binary, symlink). If any step fails, or the installer receives SIGINT/SIGTERM/SIGHUP, everything already published is rolled back and the previous installation is left byte-identical. A verification failure never touches an existing installation. A SIGKILL or power loss in the few milliseconds between renames cannot be caught: re-run the installer, which is idempotent (leftover `*.dso-stage.*` / `*.dso-bak.*` files next to the targets can be deleted).
+
+### Windows
+
+DSO publishes signed release artifacts for linux and darwin (amd64, arm64) only. `scripts/install.ps1` therefore refuses to install (it no longer builds an unverified copy of the default branch). Use `scripts/install.sh` inside WSL2 or a Linux VM, or the container image.

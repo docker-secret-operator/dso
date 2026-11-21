@@ -1,11 +1,19 @@
 package core
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/docker-secret-operator/dso/internal/injector"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -113,7 +121,7 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	}
 
 	// Always load config (needed for label injection below, regardless of how secrets are fetched)
-	cfg, err := config.LoadConfig(targetConfig)
+	cfg, err := config.LoadConfigWithOwnerID(targetConfig)
 	if err != nil {
 		return fmt.Errorf("failed to load DSO config %s: %w", targetConfig, err)
 	}
@@ -204,7 +212,11 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 		// Strip host port bindings and record them in a label so the DSO agent
 		// proxy can own those ports and achieve zero-downtime rotation.
 		// Only managed services participate in the TCP proxy.
-		svc = stripAndLabelHostPorts(svc)
+		var portNotes []string
+		svc, portNotes = stripAndLabelHostPorts(svc)
+		for _, n := range portNotes {
+			fmt.Fprintf(os.Stderr, "DSO: service %q: %s\n", name, n)
+		}
 
 		if cfg != nil {
 			for _, sec := range cfg.Secrets {
@@ -219,6 +231,16 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 				}
 				labels["dso.reloader"] = "true"
 				labels["dso.compose.path"] = absPath
+				// SEC-P0: stamp this agent's ownership identity so discovery
+				// (internal/watcher.ReloaderController.checkOwnership) can
+				// tell this container apart from one created by a different,
+				// independently-configured DSO agent on the same host. A
+				// container created without this (e.g. by a pre-fix DSO
+				// version) is a "legacy" container: existing discovery code
+				// defaults-deny it rather than silently matching it.
+				if cfg.Agent.OwnerID != "" {
+					labels["dso.owner"] = cfg.Agent.OwnerID
+				}
 				// Propagate the rotation strategy from dso.yaml to the container label so
 				// the rotation agent uses the configured strategy (rolling/restart/signal)
 				// instead of always defaulting to restart.
@@ -340,57 +362,105 @@ func RunComposeUpWithEnv(filename string, extraArgs []string, configPath string,
 	return cmd.Run()
 }
 
-// stripAndLabelHostPorts removes host-side port bindings from a service map and
-// stores them in the "dso.host_ports" label (e.g. "3306:3306,8080:80") so the
-// DSO agent proxy can own those ports. Container-internal ports are preserved
-// via "expose:" so services remain reachable within the Docker network.
+// minProxyHostPort mirrors proxy.minUnprivilegedHostPort: the proxy refuses to
+// bind lower host ports, so a mapping below it can NOT be proxied.
+const minProxyHostPort = 1024
+
+// publishedPort is one Compose port mapping, normalised from short or long syntax.
+type publishedPort struct {
+	hostIP    string // literal IP, "" = all interfaces
+	host      string // published host port ("" when none / auto-assigned)
+	container string // target port
+	proto     string // "tcp", "udp", "sctp"
+	// proxiable is true only when the DSO TCP proxy can reproduce this mapping
+	// EXACTLY: one TCP port pair, a literal bind address, host port >= 1024.
+	proxiable bool
+	// why explains a non-proxiable mapping (empty when proxiable or unpublished).
+	why string
+}
+
+// stripAndLabelHostPorts lets the DSO proxy own a managed service's host ports so
+// rotation can swap backends without dropping the listener. It is deliberately
+// conservative:
 //
-// Formats handled: "3306:3306", "0.0.0.0:3306:3306", "127.0.0.1:3306:3306"
-// Ports without a host binding (e.g. just "3306") are left as expose-only and
-// NOT added to dso.host_ports because there is nothing to proxy.
-func stripAndLabelHostPorts(svc map[string]interface{}) map[string]interface{} {
-	rawPorts, ok := svc["ports"]
+//   - Exposure must never widen. A mapping with a host address
+//     ("127.0.0.1:5432:5432", "[::1]:8443:443", long-syntax host_ip) keeps that
+//     address in the dso.host_ports label ("ip:host:container", IPv6 in brackets)
+//     and the proxy binds exactly that address.
+//   - Nothing is silently dropped or reinterpreted. The proxy represents only
+//     single TCP pairs with host port >= 1024. If ANY published mapping of the
+//     service cannot be reproduced exactly (UDP/SCTP, port ranges, auto-assigned
+//     host ports, host ports < 1024, host-mode/unknown long-syntax options,
+//     two addresses for one host port), the service's `ports:` are left
+//     completely untouched and Docker publishes them directly. No label is
+//     added, so the service gets the non-proxy rotation path (stop, then start)
+//     rather than a proxy that would change what is exposed. A note is returned.
+//   - Container-internal ports of proxied services are kept via `expose:`.
+//
+// It returns the (possibly modified) service and human-readable notes.
+func stripAndLabelHostPorts(svc map[string]interface{}) (map[string]interface{}, []string) {
+	rawPorts, ok := svc["ports"].([]interface{})
 	if !ok {
-		return svc
+		return svc, nil
 	}
 
-	var hostPortPairs []string // "hostPort:containerPort" pairs for the label
-	var exposeOnly []string    // container ports with no host binding
-
-	addExpose := func(containerPort string) {
+	var published []publishedPort
+	var exposeOnly []string
+	addExpose := func(p string) {
 		for _, e := range exposeOnly {
-			if e == containerPort {
+			if e == p {
 				return
 			}
 		}
-		exposeOnly = append(exposeOnly, containerPort)
+		exposeOnly = append(exposeOnly, p)
+	}
+	for _, entry := range rawPorts {
+		pp, publishes := parsePortSpec(entry)
+		if !publishes {
+			if pp.container != "" {
+				addExpose(pp.container)
+			}
+			continue
+		}
+		published = append(published, pp)
+	}
+	if len(published) == 0 {
+		return svc, nil
 	}
 
-	switch v := rawPorts.(type) {
-	case []interface{}:
-		for _, entry := range v {
-			s := fmt.Sprintf("%v", entry)
-			hostPort, containerPort := parsePortEntry(s)
-			if hostPort != "" {
-				hostPortPairs = append(hostPortPairs, hostPort+":"+containerPort)
-				addExpose(containerPort)
-			} else if containerPort != "" {
-				addExpose(containerPort)
-			}
+	// One listener per host port: two different addresses for the same port are
+	// ambiguous for the proxy, so they are not proxied.
+	byPort := map[string]string{}
+	for i := range published {
+		pp := &published[i]
+		if !pp.proxiable {
+			continue
+		}
+		if prev, dup := byPort[pp.host]; dup && prev != pp.hostIP {
+			pp.proxiable, pp.why = false, "the same host port is published on two different addresses"
+		}
+		byPort[pp.host] = pp.hostIP
+	}
+	var notes []string
+	for _, pp := range published {
+		if !pp.proxiable {
+			notes = append(notes, fmt.Sprintf("port mapping %s is not proxiable (%s)", describePort(pp), pp.why))
 		}
 	}
-
-	if len(hostPortPairs) == 0 {
-		return svc
+	if len(notes) > 0 {
+		notes = append(notes, "ports for this service are left as published by Docker (no DSO proxy, no zero-downtime proxy swap)")
+		return svc, notes
 	}
 
-	// Remove the ports: key — DSO proxy owns the host binding now
-	delete(svc, "ports")
+	var labelEntries []string
+	for _, pp := range published {
+		labelEntries = append(labelEntries, labelEntry(pp))
+		addExpose(pp.container)
+	}
 
-	// Add expose: so intra-network connectivity is preserved
-	existing := svc["expose"]
+	delete(svc, "ports")
 	var exposeList []interface{}
-	if el, ok := existing.([]interface{}); ok {
+	if el, ok := svc["expose"].([]interface{}); ok {
 		exposeList = el
 	}
 	for _, p := range exposeOnly {
@@ -398,37 +468,181 @@ func stripAndLabelHostPorts(svc map[string]interface{}) map[string]interface{} {
 	}
 	svc["expose"] = exposeList
 
-	// Record host port mappings in label for the agent to read
 	labels := make(map[string]interface{})
 	if existingLabels, ok := svc["labels"].(map[string]interface{}); ok {
 		for k, v := range existingLabels {
 			labels[k] = v
 		}
 	}
-	labels["dso.host_ports"] = strings.Join(hostPortPairs, ",")
+	labels["dso.host_ports"] = strings.Join(labelEntries, ",")
 	svc["labels"] = labels
-
-	return svc
+	return svc, nil
 }
 
-// parsePortEntry splits a docker-compose port string into (hostPort, containerPort).
-// Returns ("", containerPort) for publish-less entries like "3306" or "3306/tcp".
-func parsePortEntry(s string) (hostPort, containerPort string) {
-	// Strip protocol suffix
-	s = strings.SplitN(s, "/", 2)[0]
-	parts := strings.Split(s, ":")
-	switch len(parts) {
-	case 1:
-		// "3306" — no host binding
-		return "", parts[0]
-	case 2:
-		// "3306:3306" — host:container
-		return parts[0], parts[1]
-	case 3:
-		// "0.0.0.0:3306:3306" or "127.0.0.1:3306:3306" — ip:host:container
-		return parts[1], parts[2]
+func describePort(pp publishedPort) string {
+	h := pp.host
+	if h == "" {
+		h = "<auto>"
 	}
-	return "", ""
+	ip := ""
+	if pp.hostIP != "" {
+		ip = pp.hostIP + ":"
+	}
+	return fmt.Sprintf("%s%s:%s/%s", ip, h, pp.container, pp.proto)
+}
+
+// labelEntry renders a proxiable mapping for the dso.host_ports label.
+func labelEntry(pp publishedPort) string {
+	switch {
+	case pp.hostIP == "":
+		return pp.host + ":" + pp.container
+	case strings.Contains(pp.hostIP, ":"):
+		return "[" + pp.hostIP + "]:" + pp.host + ":" + pp.container
+	default:
+		return pp.hostIP + ":" + pp.host + ":" + pp.container
+	}
+}
+
+// parsePortSpec normalises one `ports:` entry (short string/int or long map).
+// publishes is false for entries with no host publication at all (container
+// port only), which stay expose-only.
+func parsePortSpec(entry interface{}) (pp publishedPort, publishes bool) {
+	switch v := entry.(type) {
+	case map[string]interface{}:
+		return parseLongPort(v)
+	default:
+		return parseShortPort(fmt.Sprintf("%v", v))
+	}
+}
+
+func parseShortPort(s string) (pp publishedPort, publishes bool) {
+	pp.proto = "tcp"
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		pp.proto = strings.ToLower(s[i+1:])
+		s = s[:i]
+	}
+	var ip, rest string
+	if strings.HasPrefix(s, "[") {
+		end := strings.Index(s, "]")
+		if end < 0 || len(s) <= end+1 || s[end+1] != ':' {
+			pp.why = "malformed IPv6 address"
+			return pp, true
+		}
+		ip, rest = s[1:end], s[end+2:]
+		if !validBindIP(ip, true) {
+			pp.why = "invalid IPv6 address"
+			return pp, true
+		}
+	} else {
+		parts := strings.Split(s, ":")
+		switch len(parts) {
+		case 1: // container port only
+			pp.container = parts[0]
+			return pp, false
+		case 2:
+			rest = s
+		case 3:
+			ip, rest = parts[0], parts[1]+":"+parts[2]
+			if !validBindIP(ip, false) {
+				pp.why = "bind address must be a literal IPv4 address (use [addr] for IPv6)"
+				return pp, true
+			}
+		default:
+			pp.why = "unrecognised port syntax"
+			return pp, true
+		}
+	}
+	hc := strings.SplitN(rest, ":", 2)
+	if len(hc) != 2 {
+		pp.why = "unrecognised port syntax"
+		return pp, true
+	}
+	pp.hostIP = canonicalIP(ip)
+	pp.host, pp.container = hc[0], hc[1]
+	classifyPort(&pp)
+	return pp, true
+}
+
+func parseLongPort(m map[string]interface{}) (pp publishedPort, publishes bool) {
+	pp.proto = "tcp"
+	known := map[string]bool{"target": true, "published": true, "host_ip": true, "protocol": true, "mode": true, "name": true, "app_protocol": true}
+	str := func(k string) string {
+		if v, ok := m[k]; ok && v != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return ""
+	}
+	pp.container = str("target")
+	pp.host = str("published")
+	if p := str("protocol"); p != "" {
+		pp.proto = strings.ToLower(p)
+	}
+	ip := str("host_ip")
+	if pp.host == "" && ip == "" {
+		return pp, false // no publication requested
+	}
+	for k := range m {
+		if !known[k] {
+			pp.why = fmt.Sprintf("unsupported long-syntax option %q", k)
+			return pp, true
+		}
+	}
+	if mode := str("mode"); mode != "" && mode != "host" {
+		pp.why = fmt.Sprintf("unsupported mode %q", mode)
+		return pp, true
+	}
+	if ip != "" {
+		isV6 := strings.Contains(ip, ":")
+		if !validBindIP(ip, isV6) {
+			pp.why = "host_ip must be a literal IP address"
+			return pp, true
+		}
+		pp.hostIP = canonicalIP(ip)
+	}
+	classifyPort(&pp)
+	return pp, true
+}
+
+// classifyPort decides proxiability of a normalised mapping (set pp.why when not).
+func classifyPort(pp *publishedPort) {
+	switch {
+	case pp.proto != "tcp":
+		pp.why = pp.proto + " is not carried by the TCP proxy (never translated to TCP)"
+	case pp.host == "":
+		pp.why = "host port is auto-assigned by Docker"
+	case strings.ContainsAny(pp.host+pp.container, "-,"):
+		pp.why = "port ranges are not supported by the proxy"
+	default:
+		hp, e1 := strconv.Atoi(pp.host)
+		cp, e2 := strconv.Atoi(pp.container)
+		switch {
+		case e1 != nil || e2 != nil || hp < 1 || hp > 65535 || cp < 1 || cp > 65535:
+			pp.why = "not a plain numeric port pair"
+		case hp < minProxyHostPort:
+			pp.why = fmt.Sprintf("host ports below %d cannot be bound by the proxy", minProxyHostPort)
+		default:
+			pp.proxiable = true
+		}
+	}
+}
+
+func validBindIP(ip string, wantV6 bool) bool {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || a.Zone() != "" || a.Is4In6() {
+		return false
+	}
+	return a.Is6() == wantV6
+}
+
+func canonicalIP(ip string) string {
+	if ip == "" {
+		return ""
+	}
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	return a.String()
 }
 
 func PrintRedactedCompose(p *ComposeFile) {
@@ -470,4 +684,50 @@ func PrintRedactedCompose(p *ComposeFile) {
 		return
 	}
 	fmt.Println(string(d))
+}
+
+// ComposeStdinOptions configures RunComposeUpStdin.
+type ComposeStdinOptions struct {
+	ProjectName string
+	ProjectDir  string   // directory relative paths, .env and env_file resolve against
+	Args        []string // forwarded after `up`
+	Env         []string // nil = inherit the current environment
+	Stdout      io.Writer
+	Stderr      io.Writer
+	DockerBin   string // "" = "docker" resolved via PATH (tests substitute a fake)
+}
+
+// RunComposeUpStdin runs `docker compose -p NAME --project-directory DIR -f - up ARGS`
+// feeding yamlData (which may contain resolved plaintext secrets) on STDIN. The
+// resolved configuration therefore never touches the filesystem and never
+// appears in a process argument. Cancelling ctx sends SIGTERM to compose (and
+// SIGKILL after 30s) instead of orphaning it.
+//
+// Not covered, and documented in the CLI docs: the YAML exists in this process's
+// memory and in the pipe; environment-variable secrets become container
+// environment, which any principal with Docker daemon access can read via
+// `docker inspect`; a compose validation error may echo parts of the config on
+// stderr (passed through unchanged, never logged by DSO itself).
+func RunComposeUpStdin(ctx context.Context, yamlData []byte, o ComposeStdinOptions) error {
+	if o.ProjectName == "" {
+		return errors.New("compose: project name is required")
+	}
+	if o.ProjectDir == "" || !filepath.IsAbs(o.ProjectDir) {
+		return errors.New("compose: an absolute project directory is required")
+	}
+	bin := o.DockerBin
+	if bin == "" {
+		bin = "docker"
+	}
+	args := append([]string{"compose", "-p", o.ProjectName, "--project-directory", o.ProjectDir, "-f", "-", "up"}, o.Args...)
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- docker arguments are intentionally forwarded without shell expansion.
+	cmd.Stdin = bytes.NewReader(yamlData)
+	cmd.Stdout, cmd.Stderr = o.Stdout, o.Stderr
+	cmd.Dir = o.ProjectDir
+	if o.Env != nil {
+		cmd.Env = o.Env
+	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 30 * time.Second
+	return cmd.Run()
 }

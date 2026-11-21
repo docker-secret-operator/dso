@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -41,14 +42,26 @@ var doctorSections = []doctorSection{
 	},
 	{title: "Configuration", categories: map[setup.DoctorCategory]bool{setup.DoctorCatConfiguration: true}},
 	{title: "Provider", categories: map[setup.DoctorCategory]bool{setup.DoctorCatProvider: true}},
+	// Security covers DSO-DOCTOR-004/005 (Docker socket / config file
+	// world-readable) and DSO-DOCTOR-026..031 (central-store root-key and
+	// database custody). Without this entry those checks still count toward
+	// Failures/Warnings/OverallStatus (buildDoctorResult walks all checks
+	// regardless of section), but render nowhere in the default or --level
+	// full terminal view -- an operator sees only the error count, with no
+	// check name, detail, or Recovery text to act on.
+	{title: "Security", categories: map[setup.DoctorCategory]bool{setup.DoctorCatSecurity: true}},
+	{title: "Operations", categories: map[setup.DoctorCategory]bool{setup.DoctorCatRotation: true}},
 	{title: "Project", categories: map[setup.DoctorCategory]bool{doctorCatProject: true}},
 }
 
 // NewDoctorCmd creates the doctor diagnostics command.
 func NewDoctorCmd() *cobra.Command {
 	var (
-		levelFlag string
-		jsonFlag  bool
+		levelFlag              string
+		jsonFlag               bool
+		centralDBFlag          string
+		centralKeyFileFlag     string
+		centralKeyProviderFlag string
 	)
 
 	cmd := &cobra.Command{
@@ -64,22 +77,40 @@ plaintext .env file, and well-formed DSO secret references.
 Doctor never prints secret values, tokens, or credentials, and never
 modifies any files.
 
+The central secrets store (` + "`dso central`" + `) has no persisted configuration
+of its own, so its root-key/database custody checks are opt-in: pass
+--central-db and --central-key-file (the same paths given to ` + "`dso central`" + `)
+to include them.
+
 Examples:
   docker dso doctor              # Quick health check
   docker dso doctor --level full # Include recovery steps for failures
-  docker dso doctor --json       # Machine-readable output`,
+  docker dso doctor --json       # Machine-readable output
+  docker dso doctor --central-db ./central.db --central-key-file ./root.key --central-key-provider file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.Context(), levelFlag, jsonFlag)
+			return runDoctorTo(cmd.Context(), cmd.OutOrStdout(), levelFlag, jsonFlag, centralDBFlag, centralKeyFileFlag, centralKeyProviderFlag)
 		},
 	}
 
 	cmd.Flags().StringVar(&levelFlag, "level", "default", "Diagnostic level: default, full")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON")
+	cmd.Flags().StringVar(&centralDBFlag, "central-db", "", "path to a central store SQLite database to check custody of (opt-in; same path given to `dso central`)")
+	cmd.Flags().StringVar(&centralKeyFileFlag, "central-key-file", "", "path to the central store's root key (or KDF-parameter) file to check custody of (opt-in)")
+	cmd.Flags().StringVar(&centralKeyProviderFlag, "central-key-provider", "", "central store root key provider: file or passphrase (affects how --central-key-file is described, not how it is checked)")
 
 	return cmd
 }
 
 func runDoctor(ctx context.Context, level string, jsonOut bool) error {
+	return runDoctorTo(ctx, os.Stdout, level, jsonOut, "", "", "")
+}
+
+// runDoctorTo writes the report to w and returns write failures, so a closed
+// pipe is not reported as a successful run. centralDB/centralKeyFile/
+// centralKeyProvider are forwarded to setup.DoctorOptions for the opt-in
+// central-store custody checks (DSO-DOCTOR-026..031); empty values make
+// those checks report themselves skipped.
+func runDoctorTo(ctx context.Context, w io.Writer, level string, jsonOut bool, centralDB, centralKeyFile, centralKeyProvider string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -93,7 +124,7 @@ func runDoctor(ctx context.Context, level string, jsonOut bool) error {
 
 	providerNames := configuredProviderNames(cfgPath)
 
-	checks := runEnvironmentChecks(ctx, setupMode, cfgPath, providerNames)
+	checks := runEnvironmentChecks(ctx, setupMode, cfgPath, providerNames, centralDB, centralKeyFile, centralKeyProvider)
 	checks = append(checks, runProjectChecks()...)
 
 	result := buildDoctorResult(checks)
@@ -103,9 +134,11 @@ func runDoctor(ctx context.Context, level string, jsonOut bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(out)
-	} else {
-		fmt.Println(renderSectionedResult("DSO Doctor", result, doctorSections, level == "full"))
+		if _, err := fmt.Fprintln(w, out); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintln(w, renderSectionedResult("DSO Doctor", result, doctorSections, level == "full")); err != nil {
+		return err
 	}
 
 	if result.OverallStatus == setup.DoctorFail {
@@ -136,12 +169,28 @@ func configuredProviderNames(cfgPath string) []string {
 // runtime, permissions, configuration, service, provider) -- the same
 // engine internal/setup/repair.go uses. Reused wholesale rather than
 // reimplemented: this is a read-only diagnostic call, no state mutation.
-func runEnvironmentChecks(ctx context.Context, mode setup.SetupMode, cfgPath string, providerNames []string) []setup.DoctorCheck {
+// centralDB/centralKeyFile/centralKeyProvider are forwarded to
+// setup.DoctorOptions for the opt-in central-store custody checks; they are
+// only ever set once below (the multi-provider loop re-runs the doctor
+// engine per extra provider, and would otherwise duplicate the central
+// checks in the output).
+func runEnvironmentChecks(ctx context.Context, mode setup.SetupMode, cfgPath string, providerNames []string, centralDB, centralKeyFile, centralKeyProvider string) []setup.DoctorCheck {
+	// Matches internal/cli/status.go's own DSO_SOCKET_PATH override -- the
+	// Phase 7 rotation/degraded-service checks dial the same agent socket
+	// `docker dso status` already does.
+	socketPath := os.Getenv("DSO_SOCKET_PATH")
+
 	if len(providerNames) == 0 {
-		return setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath}).Run(ctx).Checks
+		return setup.NewDoctor(setup.DoctorOptions{
+			Mode: mode, ConfigPath: cfgPath, SocketPath: socketPath,
+			CentralDB: centralDB, CentralKeyFile: centralKeyFile, CentralKeyProvider: centralKeyProvider,
+		}).Run(ctx).Checks
 	}
 
-	base := setup.NewDoctor(setup.DoctorOptions{Mode: mode, ConfigPath: cfgPath, Provider: providerNames[0]}).Run(ctx)
+	base := setup.NewDoctor(setup.DoctorOptions{
+		Mode: mode, ConfigPath: cfgPath, Provider: providerNames[0], SocketPath: socketPath,
+		CentralDB: centralDB, CentralKeyFile: centralKeyFile, CentralKeyProvider: centralKeyProvider,
+	}).Run(ctx)
 	checks := base.Checks
 
 	// Multiple providers configured: the first run above already covers

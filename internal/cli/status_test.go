@@ -40,21 +40,6 @@ func TestStatusCmd_HelpText(t *testing.T) {
 	}
 }
 
-func TestStatusGatherRuntime(t *testing.T) {
-	status := &Status{}
-	runtime := status.gatherRuntime()
-
-	if runtime.Mode == "" {
-		t.Fatal("expected runtime mode")
-	}
-	if runtime.Version == "" {
-		t.Fatal("expected runtime version")
-	}
-	if runtime.Uptime == "" {
-		t.Fatal("expected runtime uptime")
-	}
-}
-
 // TestStatusGatherStatus_NoAgent_ReportsUnreachableNotFakeData proves
 // gatherStatus is honest when it can't reach an agent (the normal case in a
 // unit test environment with no socket listening): it must report
@@ -77,18 +62,5 @@ func TestStatusGatherStatus_NoAgent_ReportsUnreachableNotFakeData(t *testing.T) 
 	}
 	if result.Cache.Entries != 0 || result.Rotations.Pending != 0 {
 		t.Errorf("expected zero-value Cache/Rotations when agent is unreachable, got %+v / %+v", result.Cache, result.Rotations)
-	}
-}
-
-func TestFormatDuration(t *testing.T) {
-	tests := map[string]bool{
-		"0m":  true, // Valid
-		"1h":  true, // Valid
-		"30m": true, // Valid
-	}
-
-	for expected := range tests {
-		// We can't easily test without knowing input, so just verify function exists
-		_ = expected
 	}
 }

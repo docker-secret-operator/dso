@@ -91,6 +91,8 @@ type RepairOptions struct {
 	ConfigPath   string
 	RuntimeDir   string
 	DockerSocket string
+	// StateDir overrides the persistent-state directory (default /var/lib/dso).
+	StateDir string
 }
 
 // ConfirmFunc is called before executing actions that require confirmation.
@@ -114,6 +116,7 @@ type Repair struct {
 	runtime   *RepairRuntime
 	service   *RepairService
 	provider  *RepairProvider
+	state     *RepairState
 	runDoctor func(context.Context) *DoctorResult // injectable for tests
 }
 
@@ -143,6 +146,7 @@ func NewRepair(opts RepairOptions) *Repair {
 		runtime:  newRepairRuntime(opts.RuntimeDir),
 		service:  newRepairService(),
 		provider: newRepairProvider(opts.Provider),
+		state:    newRepairState(opts.StateDir),
 	}
 	r.runDoctor = func(ctx context.Context) *DoctorResult {
 		d := NewDoctor(DoctorOptions{
@@ -151,6 +155,7 @@ func NewRepair(opts RepairOptions) *Repair {
 			ConfigPath:   opts.ConfigPath,
 			RuntimeDir:   opts.RuntimeDir,
 			DockerSocket: opts.DockerSocket,
+			StateDir:     opts.StateDir,
 		})
 		return d.Run(ctx)
 	}
@@ -187,6 +192,8 @@ func (r *Repair) planAction(check DoctorCheck) *RepairAction {
 		return r.service.planForCheck(check)
 	case "DSO-DOCTOR-010", "DSO-DOCTOR-011":
 		return r.provider.planForCheck(check)
+	case "DSO-DOCTOR-025":
+		return r.state.planForCheck(check)
 	default:
 		// DSO-DOCTOR-001/002/003 (Docker infra), 006 (root INFO), 014 (binary missing):
 		// no automatic repair is safe or feasible.
@@ -233,6 +240,8 @@ func (r *Repair) executeAction(ctx context.Context, action *RepairAction) error 
 		return r.runtime.createRuntimeDir()
 	case "DSO-DOCTOR-013":
 		return r.runtime.removeStaleLocks()
+	case "DSO-DOCTOR-025":
+		return r.state.repairStateDir()
 	case "DSO-DOCTOR-015":
 		return r.service.writeUnitFile(ctx)
 	case "DSO-DOCTOR-016":

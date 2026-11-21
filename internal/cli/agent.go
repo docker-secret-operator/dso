@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/docker-secret-operator/dso/internal/audit"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,6 +23,13 @@ import (
 )
 
 // performPreflightChecks validates system health before marking agent as ready (Fix #5)
+// testTriggerDirs is set only by tests. When non-nil the agent builds its
+// trigger engine on these state and lock directories instead of the production
+// /var/lib/dso defaults, which an unprivileged process (CI, a developer
+// machine) cannot create. NewAgentCmd stays the only caller of
+// agent.NewTriggerEngine (TestAllAgentStartupPathsGoThroughTheEnforcement).
+var testTriggerDirs func() (stateDir, lockDir string)
+
 func performPreflightChecks(ctx context.Context, logger *zap.Logger,
 	storeManager *providers.SecretStoreManager, cache *agent.SecretCache) error {
 
@@ -66,11 +74,28 @@ func NewAgentCmd() *cobra.Command {
 		Use:   "agent",
 		Short: "Run the DSO background reconciliation engine",
 		Long:  `The agent command starts the DSO reconciliation loop, Unix socket server, and Docker Secret Driver interface.`,
-		Run: func(cmd *cobra.Command, args []string) {
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
+			}
 			// Register signal handlers before any blocking work so SIGTERM during
 			// startup is never silently dropped.
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+
+			// onFail holds teardown steps for everything started so far. A
+			// startup failure runs them in reverse and returns the error to the
+			// CLI entrypoint (which exits non-zero) instead of terminating the
+			// process from here, so servers and goroutines are not leaked.
+			var onFail []func()
+			fail := func(what string, err error) error {
+				for i := len(onFail) - 1; i >= 0; i-- {
+					onFail[i]()
+				}
+				return fmt.Errorf("%s: %w", what, err)
+			}
 
 			logger, _ := observability.NewLogger("info", "console", false)
 			defer func() {
@@ -78,11 +103,21 @@ func NewAgentCmd() *cobra.Command {
 			}()
 
 			cfgPath := ResolveConfig()
-			cfg, err := config.LoadConfig(cfgPath)
+			cfg, err := config.LoadConfigWithOwnerID(cfgPath)
 			if err != nil {
-				logger.Fatal("Agent failed to load configuration - check if path exists and is allowed",
-					zap.Error(err),
-					zap.String("config_path", cfgPath))
+				return fail("agent failed to load configuration "+cfgPath+" (check that the path exists and is allowed)", err)
+			}
+
+			if advisory := config.PermissionAdvisory(cfgPath); advisory != "" {
+				logger.Warn(advisory)
+			}
+
+			// Establish the runtime-directory security invariant (root:dso 0750,
+			// never a symlink) BEFORE anything is created in it: the trigger
+			// engine, IPC socket, driver socket and event store all come after
+			// this point. A root agent that cannot establish it does not start.
+			if err := establishAgentRuntimeDir(logger, currentEUID()); err != nil {
+				return fail("agent runtime directory is not safe", err)
 			}
 
 			// Initialize Cache & Store
@@ -94,39 +129,56 @@ func NewAgentCmd() *cobra.Command {
 			// Initialize Reloader (Watcher)
 			reloader, err := watcher.NewReloaderController(logger)
 			if err != nil {
-				logger.Fatal("Failed to initialize reloader controller", zap.Error(err))
+				return fail("failed to initialize reloader controller", err)
 			}
 
 			// Initialize Docker Client (for crash recovery and container management)
 			dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
-				logger.Fatal("Failed to initialize Docker client",
-					zap.Error(err))
+				return fail("failed to initialize Docker client", err)
 			}
+			onFail = append(onFail, func() { _ = dockerCli.Close() })
 
 			// Initialize DSO Proxy Manager — owns host port bindings for zero-downtime
 			// rotation on port-bound containers (MySQL, etc.). Scans existing containers
 			// with the dso.host_ports label and binds their ports immediately so traffic
 			// is never interrupted during secret rotation.
 			proxyManager := dsoProxy.NewManager(logger)
+			proxyManager.SetOwnerID(cfg.Agent.OwnerID)
 			if len(cfg.Proxy.AllowedHostPorts) > 0 {
 				// SEC-7 full fix: cross-check container-declared host ports
 				// against an operator-supplied allow-list before ScanAndRegister
 				// (and any later EnsurePort call) binds anything.
 				if err := proxyManager.SetAllowedHostPorts(cfg.Proxy.AllowedHostPorts); err != nil {
-					logger.Fatal("Invalid proxy.allowed_host_ports configuration", zap.Error(err))
+					return fail("invalid proxy.allowed_host_ports configuration", err)
 				}
 			}
-			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
-			proxyManager.ScanAndRegister(scanCtx, dockerCli)
-			scanCancel()
 			reloader.ProxyManager = proxyManager
+			onFail = append(onFail, func() { _ = proxyManager.Stop(10 * time.Second) })
 
-			// Initialize Trigger Engine
-			trigger, err := agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
-			if err != nil {
-				logger.Fatal("Failed to initialize trigger engine", zap.Error(err))
+			// Initialize Trigger Engine (owns the rotation journal).
+			var trigger *agent.TriggerEngine
+			if testTriggerDirs != nil {
+				stateDir, lockDir := testTriggerDirs()
+				trigger, err = agent.NewTriggerEngineWithDirs(cache, storeManager, reloader, logger, cfg, dockerCli, stateDir, lockDir)
+			} else {
+				trigger, err = agent.NewTriggerEngine(cache, storeManager, reloader, logger, cfg, dockerCli)
 			}
+			if err != nil {
+				return fail("failed to initialize trigger engine", err)
+			}
+			// No rotation may be dispatched, by any path, until startup recovery
+			// has settled (released by trigger.StartAll).
+			trigger.BeginStartup()
+
+			// Rebuild the proxy routing table from running containers. The scan is
+			// journal-gated (a candidate of an unsettled rotation is HELD, not
+			// routed) and runs before recovery, whose RoutingVerifier reads this
+			// same in-process table; held candidates are re-evaluated once
+			// recovery settled them (see agent/proxy_reconstruction.go).
+			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
+			trigger.AttachProxy(scanCtx, proxyManager)
+			scanCancel()
 
 			// Initialize rotation-event notifications (optional; disabled
 			// unless explicitly configured). Invalid destination config is
@@ -141,7 +193,7 @@ func NewAgentCmd() *cobra.Command {
 					if w.Timeout != "" {
 						d, perr := time.ParseDuration(w.Timeout)
 						if perr != nil {
-							logger.Fatal("Invalid notifications webhook timeout", zap.String("timeout", w.Timeout), zap.Error(perr))
+							return fail("invalid notifications webhook timeout "+w.Timeout, perr)
 						}
 						timeout = d
 					}
@@ -157,21 +209,23 @@ func NewAgentCmd() *cobra.Command {
 						AllowInsecureHTTP: w.AllowInsecureHTTP,
 					}, logger)
 					if nerr != nil {
-						logger.Fatal("Invalid notifications webhook configuration", zap.Error(nerr))
+						return fail("invalid notifications webhook configuration", nerr)
 					}
 					notifiers = append(notifiers, n)
 					logger.Info("Notification destination configured", zap.String("destination", n.SafeName()))
 				}
 				notifyDispatcher = notify.NewDispatcher(notifiers, logger)
 				trigger.Dispatcher = notifyDispatcher
+				onFail = append(onFail, func() { notifyDispatcher.Stop(10 * time.Second) })
 			}
 
 			// 1. Start Unix Socket Server (Internal IPC)
 			agentServer, socketShutdown, err := agent.StartSocketServer(ctx, socketPath, cache, storeManager, logger, cfg)
 			if err != nil {
-				logger.Fatal("Failed to start agent socket server", zap.Error(err))
+				return fail("failed to start agent socket server", err)
 			}
 			trigger.Server = agentServer
+			onFail = append(onFail, socketShutdown)
 			agentServer.Trigger = trigger
 			reloader.Server = agentServer
 
@@ -179,21 +233,34 @@ func NewAgentCmd() *cobra.Command {
 			// background internally; we keep the shutdown handle to drain it.
 			driverShutdown, err := agent.StartDriverServer(ctx, driverSocket, cache, storeManager, logger, cfg)
 			if err != nil {
-				logger.Fatal("Failed to start Docker Driver server", zap.Error(err))
+				return fail("failed to start Docker Driver server", err)
+			}
+			onFail = append(onFail, driverShutdown)
+
+			// 2b. Durable, hash-chained audit file (best effort: the agent keeps
+			// running with the in-memory/log audit stream if it cannot be opened,
+			// and says so loudly).
+			if closeAudit := startDurableAudit(logger, agent.DurableAuditPath()); closeAudit != nil {
+				onFail = append(onFail, closeAudit)
 			}
 
 			// 3. Start REST API Server (Health Checks & Monitoring). SEC-C1: this
 			// returns an error (and refuses to start) if bound to a non-loopback
 			// address without DSO_AUTH_TOKEN.
-			restShutdown, err := server.StartRESTServer(ctx, apiAddr, cache, trigger, cfg, logger)
+			// The API is mandatory (WebUI, `docker dso logs --api` and health probes
+			// depend on it): a bind failure aborts startup, and a later
+			// unexpected termination stops the agent (see restFailed below).
+			restShutdown, restFailed, err := server.StartRESTServerSupervised(ctx, apiAddr, cache, trigger, cfg, logger, reloader)
 			if err != nil {
-				logger.Fatal("Failed to start REST API server", zap.Error(err))
+				return fail("failed to start REST API server", err)
 			}
+			onFail = append(onFail, restShutdown)
 
 			// 3b. Start Prometheus metrics server (OPS-H1). Previously registered
 			// metrics were never exposed because StartMetricsServer had no caller.
 			// It now serves in the background and drains on ctx/SIGTERM.
 			metricsShutdown := observability.StartMetricsServer(ctx, metricsAddr, logger)
+			onFail = append(onFail, metricsShutdown)
 
 			// 4. Start Docker Event Loop for the Reloader — MUST run before StartAll so
 			// that populateInitialTargets completes before any polling goroutine fires
@@ -201,8 +268,9 @@ func NewAgentCmd() *cobra.Command {
 			reloader.StartEventLoop(ctx)
 
 			// 5. Start Reconciliation Loop (targets are now populated)
+			onFail = append(onFail, trigger.Stop)
 			if err := trigger.StartAll(); err != nil {
-				logger.Fatal("Failed to start trigger engine", zap.Error(err))
+				return fail("failed to start trigger engine", err)
 			}
 
 			// PREFLIGHT CHECKS: Verify system is healthy before marking ready (Fix #5)
@@ -217,7 +285,13 @@ func NewAgentCmd() *cobra.Command {
 				zap.String("driver_socket", driverSocket),
 				zap.String("api_addr", apiAddr))
 
-			<-ctx.Done()
+			var runErr error
+			select {
+			case <-ctx.Done():
+			case rerr := <-restFailed:
+				runErr = fmt.Errorf("REST API server terminated unexpectedly: %w", rerr)
+				logger.Error("Stopping agent because the REST API is no longer serving", zap.Error(rerr))
+			}
 			logger.Info("Shutting down DSO Agent gracefully...")
 
 			// GRACEFUL SHUTDOWN SEQUENCE (Fix #4)
@@ -274,7 +348,11 @@ func NewAgentCmd() *cobra.Command {
 			}
 
 			logger.Info("DSO Agent shutdown completed")
-			fmt.Println("DSO Agent stopped.")
+			if runErr != nil {
+				return runErr
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "DSO Agent stopped.")
+			return nil
 		},
 	}
 
@@ -284,4 +362,18 @@ func NewAgentCmd() *cobra.Command {
 	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", "127.0.0.1:9090", "Address to bind the Prometheus metrics server")
 
 	return cmd
+}
+
+// startDurableAudit opens the durable audit file and installs it as the audit
+// sink. It is best effort by policy: on any failure it logs a loud error and
+// returns nil, and the agent keeps running with audit events logged only. On
+// success it returns the teardown that detaches and closes the sink.
+func startDurableAudit(logger *zap.Logger, path string) func() {
+	sink, err := audit.OpenDurable(path)
+	if err != nil {
+		logger.Error("Durable audit file unavailable; audit events are NOT being persisted", zap.String("path", path), zap.Error(err))
+		return nil
+	}
+	audit.SetDurable(sink)
+	return func() { audit.SetDurable(nil); _ = sink.Close() }
 }

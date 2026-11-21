@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -12,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/backend/env"
 	"github.com/docker-secret-operator/dso/pkg/backend/file"
@@ -46,6 +46,11 @@ func validatePluginPath(path string) error {
 		"/var/lib/dso/plugins",
 		"/usr/local/lib/dso/plugins",
 		"/etc/dso/plugins",
+	}
+	// Test-only (-tags dsofault): the real-process crash harness installs the
+	// plugin under a per-test directory. A normal build never adds a directory.
+	if d, ok := faultinject.Param("plugin_dir"); ok {
+		allowedDirs = append(allowedDirs, d)
 	}
 
 	isAllowed := false
@@ -183,37 +188,9 @@ func verifyBinaryHash(manifestPath, pluginPath string) error {
 	defer func() { _ = f.Close() }()
 
 	pluginName := filepath.Base(pluginPath)
-	expectedHash := ""
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024), 1024)
-	seen := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		idx := strings.IndexByte(line, '=')
-		if idx < 0 {
-			continue
-		}
-		name := strings.TrimSpace(line[:idx])
-		hash := strings.TrimSpace(line[idx+1:])
-		if name != pluginName {
-			continue
-		}
-		if seen {
-			return fmt.Errorf("duplicate manifest entry for plugin %q", pluginName)
-		}
-		expectedHash = hash
-		seen = true
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading hash manifest: %w", err)
-	}
-
-	if !seen {
-		return fmt.Errorf("plugin %s not found in hash manifest %s", pluginName, manifestPath)
+	expectedHash, err := manifestHashFor(f, manifestPath, pluginName)
+	if err != nil {
+		return err
 	}
 
 	// #nosec G304 -- pluginPath already validated by validatePluginPath (see comment above)
@@ -311,16 +288,18 @@ func LoadProvider(providerName string, providerConfig map[string]string) (api.Se
 		return nil, nil, fmt.Errorf("security validation for plugin %s failed: %w", pluginName, err)
 	}
 
-	// Hash verification [SEC-2]: mandatory by default (fail closed). See
-	// enforceHashVerification for details.
-	if err := enforceHashVerification(pluginDir, providerName, pluginName, pluginPath); err != nil {
+	// Hash verification [SEC-2] + launch (G012): on Linux the verified bytes
+	// are what gets executed (sealed memfd), not the on-disk path.
+	target, err := prepareLaunch(pluginDir, providerName, pluginName, pluginPath)
+	if err != nil {
 		return nil, nil, err
 	}
+	defer target.cleanup()
 
-	// G702/G204: pluginPath is strictly validated above to be in allowed system directories.
-	// This is a plugin-based architecture where the command must be dynamic.
 	fmt.Printf("[DSO] Using %s provider plugin: %s\n", strings.ToUpper(providerName), pluginPath)
-	cmd := exec.Command(pluginPath) // #nosec G702 G204
+	cmd := exec.Command(target.path) // #nosec G702 G204 -- target is the verified plugin (allowed dirs + manifest hash, or the hashed memfd copy)
+	cmd.Args[0] = pluginPath
+	cmd.ExtraFiles = target.extraFiles
 	cmd.Env = sanitizeEnv(providerName)
 
 	client := plugin.NewClient(&plugin.ClientConfig{

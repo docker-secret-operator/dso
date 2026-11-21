@@ -6,6 +6,8 @@ DSO is designed around a single principle: **secrets must never touch disk in pl
 narrower guarantee — see [Secret Lifecycle → Local Mode](#local-mode-developmentci)
 below for the exact scope.
 
+> **Status note:** this is the intended guarantee. Runtime verification of managed file-mode delivery is open (finding N19); see the status note under [File Injection](#file-injection-recommended-for-production).
+
 ---
 
 ## Core Security Principles
@@ -45,23 +47,27 @@ Single-shot injection, no daemon:
 3. **Resolve Secrets** (in-memory) — mutate the parsed compose AST in place:
    - `dso://secret-name` → environment variable injection
    - `dsofile://secret-name` → tmpfs file injection (recommended)
-4. **Write & Execute** — the fully-resolved compose document, which at this
-   point contains plaintext secret values, is written to a restricted-permission
-   (`0600`) temporary file and passed to `docker compose up -f <tempfile>`
+4. **Pipe & Execute** — the fully-resolved compose document, which at this
+   point contains plaintext values for `dso://` environment secrets, is **piped
+   to `docker compose -f -` over standard input**; it is never written to a file
+   and never appears in a process argument. `-p` and `--project-directory` are
+   passed explicitly so relative paths, `.env` and `env_file` resolve against
+   the directory of your original compose file
 5. **Container Runtime** — Docker injects secrets into container process
-6. **Cleanup** — the temp file is removed once `docker compose up` returns, or
-   on `SIGINT`/`SIGTERM`; a stale-file sweep at the start of the next `dso up`
-   also removes any file older than an hour left behind by an abrupt
-   termination (`SIGKILL`, crash) that no in-process handler can catch
+6. **Cancellation** — `SIGINT`/`SIGTERM` send a graceful `SIGTERM` to the compose
+   child. A stale-file sweep still removes `docker-compose-dso-*.yaml` files older
+   than an hour that releases *before* this change may have left in the temp
+   directory
 
-**Local mode briefly writes plaintext-resolved secrets to a `0600` temp file
-in `/tmp` for the duration of the `docker compose up` call.** This is not a
-zero-persistence guarantee — same-user read access to that file is possible
-for that brief window, and an abrupt termination can leave the file behind
-until the next run's stale-file sweep. If you need the stronger,
-disk-never-touched guarantee, use **Cloud Mode** below, where secrets are
-streamed directly into the container over the Docker API and never written
-to a file on the host at all.
+**What this does and does not protect (M0-13).** No resolved compose file is
+written by `dso up` any more, so there is no temp file to be read, backed up or
+left behind after `SIGKILL`/power loss. The plaintext still exists in the `dso up`
+process memory and in the stdin pipe while compose runs, and **secrets injected
+as environment variables (`dso://`) become container environment, which anyone
+with Docker daemon access can read with `docker inspect`.** Use `dsofile://`
+(tmpfs file delivery) to avoid that. A `docker compose` validation error may
+echo parts of the configuration to stderr; DSO passes that stream through
+unchanged and does not log the resolved document.
 
 ### Cloud Mode (Production)
 
@@ -92,12 +98,14 @@ Continuous daemon with provider-based rotation:
 
 ### File Injection (Recommended for Production)
 
-When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` inside the container and streams the secret via an in-memory tar archive using the Docker API.
+When you use `dsofile://`, DSO mounts a `tmpfs` RAM disk at `/run/secrets/dso/` inside the container and delivers the secret into it through the hardened exec injector (stdin, atomic rename). For config-driven managed rotation the candidate is held behind a startup gate until delivery is verified; see the status note below.
 
 - Never writes to host disk (SSD or HDD)
 - Disappears if the container stops or the machine reboots
 - **Invisible to `docker inspect`**
 - File permissions: `0400` (read-only by owner, no group/world access)
+
+> **Status note (finding N19, open, NOT closed):** The description above is the intended design, not a verified property. Source analysis (not yet confirmed at runtime) showed that the previous config-driven path streamed a tar through the Docker archive endpoint into a created-but-not-started candidate, which may write into the container's persistent writable layer instead of the tmpfs. That path has been replaced: during rolling, restart and rolling-fallback rotation the candidate is created with a startup gate (a fixed shell wrapper around the original ENTRYPOINT; command, user and runtime settings preserved), started, verified (container identity, a declared tmpfs covering the destination, no bind mount or volume), and the files are delivered by the same hardened exec injector as local-mode `dsofile://` (tmpfs required, atomic, mode 0400). The gate is released only after every file was delivered and probed and the delivery evidence (keyed version identities, never values) is durable in the rotation journal. A rotation that cannot meet these conditions fails closed and keeps the original running; there is no plaintext fallback. Unsupported: images without `/bin/sh`, destinations not on a declared tmpfs, a numeric non-root container user that differs from `inject.uid`, containers with neither ENTRYPOINT nor CMD. The restart strategy is not zero-downtime without the DSO proxy, and an agent crash mid-rotation is not zero-downtime. All of this is implemented and tested without Docker only: **runtime verification is still open and DSO is not production-qualified for managed file delivery.** Do not rely on the zero-persistence guarantee until verification completes. Details: [docs/design/n19-managed-delivery.md](docs/design/n19-managed-delivery.md). The standalone `dso inject` command uses the same injector for a running container; see [docs/cli.md](docs/cli.md).
 
 ### Environment Variable Injection
 
@@ -130,6 +138,33 @@ DSO agent communicates via Unix domain socket (`/run/dso/dso.sock`). Socket perm
 - Add users to group: `sudo usermod -aG dso $USER`
 - Verify permissions: `ls -la /run/dso/dso.sock` (should show `root dso 0660`)
 - Monitor socket: `docker dso doctor` reports socket status
+
+### Runtime Directory (Cloud/Agent Mode)
+
+The runtime directory `/run/dso` (the same directory as `/var/run/dso`) holds the agent socket and the event log (`events.jsonl`). Anyone who can write to it can replace the socket or plant files that the root agent would open, so it is locked down:
+
+- **Owner/group/mode**: `root:dso` (or `root:root` if the `dso` group does not exist), mode exactly `0750`. Members of `dso` can traverse it to reach the socket (the socket itself stays `0660 root:dso`); nobody but root can create, rename or remove anything in it. `0750` replaces the previous `0775`; no DSO directory is group- or world-writable by this change. `/etc/dso` is likewise `root:dso` exactly `0750` in bootstrap, the setup planner and `docker dso repair permissions` (it was 0775: a group that can write the directory can rename a file of its own over `dso.yaml`, which the root agent then loads, so group membership would have been root-equivalent); installs already at 0775 are corrected only by `sudo docker dso repair permissions` (`--dry-run` first). `/var/log/dso` keeps 0770; `/var/lib/dso` is `root:dso` `0750` (was 0770 in earlier builds: the ledger key provider and the plugin trust checks refuse a group-writable ancestor, see the directory contract in `docs/design/m1-ledger-reconciliation.md`).
+- **Production agents run as root.** The agent establishes the invariant on every start, *before* it creates the trigger engine, the IPC socket, the driver socket or the event log: it creates the directory if missing, corrects the group and mode of a root-owned directory, and **refuses to start** if the path is a symlink, is not a directory, is owned by anyone but root, or cannot be corrected. The directory is opened once with `O_NOFOLLOW|O_DIRECTORY` and checked and corrected through that descriptor (`fstat`/`fchown`/`fchmod`), so there is no path-based check-then-use gap. Ownership is never changed, only group and mode of a root-owned directory.
+- **Bootstrap and units**: bootstrap applies the same `0750` and `VerifyPermissions` fails on any deviation of this directory (wrong owner, group, mode, or a symlink; other directories only warn). The systemd `RuntimeDirectory=`/`RuntimeDirectoryMode=0750` settings in the unit files are an extra, not a replacement for the agent's own enforcement.
+- **A non-root agent** (development with custom `--socket`/`--driver-socket` paths only) never modifies `/run/dso`.
+- **Scope**: this protects the directory. The event store in this release still opens `events.jsonl` by path; per-file validation (symlink/FIFO/hard-link refusal) is not part of this change, and the `0750` root-only directory is what keeps others from planting entries. The Unix socket is still created with path-based `chown`/`chmod` (separate socket-hardening work), and the directory ancestors (`/run`) are trusted as root-owned.
+
+**What survives what.** All three writers of `/etc/systemd/system/dso-agent.service` (bootstrap, setup planner, repair) now emit the same lines, from one shared definition (`runtimedir.UnitDirectives`): `RuntimeDirectory=dso`, `RuntimeDirectoryMode=0750`, `RuntimeDirectoryPreserve=restart`. The directory is kept across a restart (including `Restart=on-failure`), removed by systemd on an explicit `systemctl stop`, and never survives a reboot (`/run` is a tmpfs). The shipped unit no longer runs `ExecStartPre=install -d /run/dso`: systemd has already created the directory and the agent re-establishes the invariant before it creates anything in it.
+
+- **Nothing durable lives in `/run/dso`.** It holds the agent socket (recreated on every start; a stale socket is removed) and `events.jsonl`, the operational event log. That log is not an audit trail; if it is absent the event store starts empty and recreates it. The rotation journal and state (`/var/lib/dso/state`, `rotations.json`), the rotation locks (`/var/lib/dso/locks`), the vault and cache, and audit data are under `/var/lib/dso`, so crash recovery does not depend on `/run/dso` surviving a stop.
+- **Owner and group.** systemd creates the directory owned by the unit's `User=`/`Group=` (root:root in the shipped unit) with mode `0750`; the agent then sets the group to `dso` through its directory descriptor. Between those two moments the group is more restrictive than the final state, never less.
+- **Existing installs.** A unit change takes effect only on the next bootstrap or repair that rewrites the unit file; an already-installed unit keeps its previous behavior (the bootstrap unit removes `/run/dso` on stop, the planner/repair unit preserved it across stop). The agent's own enforcement is identical under all of them.
+- **A manually started agent** keeps the directory until the next reboot.
+- **Not yet verified on a real host:** the exact systemd semantics of `RuntimeDirectoryPreserve=restart` (including how it treats auto-restarts and how it re-applies owner and mode to a preserved directory) and `systemd-analyze security` scoring are deferred to a host test.
+
+### Service Hardening (systemd) and the Non-Root Question
+
+All three writers of `dso-agent.service` (bootstrap, setup planner, repair) embed one shared set of layout-independent sandbox directives (`runtimedir.HardeningDirectives`): `NoNewPrivileges=true`, `PrivateTmp=yes`, `ProtectClock/Hostname/KernelLogs/KernelModules/KernelTunables/ControlGroups=yes`, `RestrictNamespaces/RestrictRealtime/RestrictSUIDSGID=yes`, `LockPersonality=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `SystemCallArchitectures=native`. The shipped bootstrap unit additionally keeps its filesystem sandbox (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateDevices=yes`, `ReadWritePaths=/etc/dso /var/lib/dso /var/log/dso /run/dso /run/docker/plugins`); the planner/repair units do not get it, because it depends on directories only bootstrap creates. A consistency test asserts the three units carry identical hardening and that `User=`/`Group=` stay `root`.
+
+- **The agent stays root, and root is not the only issue.** Access to the Docker socket is root-equivalent on the host whatever UID holds it; running as a different user in the `docker` group would not make the agent unprivileged. Changing `User=` today would also break: the runtime directory (the agent enforces `root:dso 0750` and refuses a directory not owned by root), `fchown` of the socket/directories to group `dso`, plugin execution and plugin directory ownership verification (root-owned), host ports below 1024 for proxied services, `/var/lib/dso` state ownership and the `/run/docker/plugins` driver socket, and `dso up`/bootstrap/repair expectations.
+- **A future non-root design would need:** a dedicated user plus either group `docker` or a Docker socket proxy that narrows the API surface, `AmbientCapabilities=CAP_NET_BIND_SERVICE` for low proxy ports, a one-time ownership migration of `/var/lib/dso`, `/var/log/dso` and `/run/dso` (and a relaxed or reworked root-owner check in the runtime-directory code), and a driver-socket directory the user can create under `/run/docker/plugins`.
+- **Candidates deferred (need live systemd validation):** `CapabilityBoundingSet=` (a safe set, likely `CAP_NET_BIND_SERVICE CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETGID`, cannot be proven without a host because plugins run as children with the same set), `ProtectSystem`/`ProtectHome`/`PrivateDevices` for the planner and repair units, `UMask=` (the socket path uses a scoped umask plus explicit `chmod`), `SystemCallFilter=`, `ProtectProc=`. `MemoryDenyWriteExecute` is rejected (Go runtime and plugins).
+- **Not verified on a real host:** `systemd-analyze security` scoring and the interaction of these directives with Docker and plugins are deferred to a host test. Existing installs pick the directives up only when bootstrap or repair next rewrites the unit.
 
 ### Log Redaction
 

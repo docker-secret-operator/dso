@@ -1,0 +1,33 @@
+# Deny by default: the build context is an explicit allowlist. Only what
+# `go build` for ./cmd/dso and the provider plugins needs may enter the
+# context. Anything not listed (local-secrets/, data/, .git/, runtime
+# databases, agent state, audit scratch output, local binaries, docs) is
+# excluded. Dockerfile COPY steps are explicit to match this list.
+*
+
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!pkg/
+
+# Even inside the allowed directories, never ship runtime state or key
+# material. Test fixtures needed by `go build` do not exist (go:embed uses
+# internal/webui/assets and internal/store/sqlite/migrations only).
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+**/*.rvf
+**/*.rvf.lock
+**/.swarm
+**/.claude-flow
+**/.claude
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/.env
+**/.env.*
+**/*_test.go
+**/testdata

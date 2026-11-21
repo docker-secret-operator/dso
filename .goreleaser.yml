@@ -21,6 +21,11 @@ builds:
       - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
+    # [M0-05] Fail the release (before anything is published) if a binary carries the
+    # test-only fault-injection hook, i.e. was built with -tags=dsofault.
+    hooks:
+      post:
+        - sh scripts/check-no-fault-hook.sh "{{ .Path }}"
 
   - id: dso-provider-aws
     main: ./cmd/plugins/dso-provider-aws
@@ -40,6 +45,11 @@ builds:
       - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
+    # [M0-05] Fail the release (before anything is published) if a binary carries the
+    # test-only fault-injection hook, i.e. was built with -tags=dsofault.
+    hooks:
+      post:
+        - sh scripts/check-no-fault-hook.sh "{{ .Path }}"
 
   - id: dso-provider-azure
     main: ./cmd/plugins/dso-provider-azure
@@ -59,6 +69,11 @@ builds:
       - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
+    # [M0-05] Fail the release (before anything is published) if a binary carries the
+    # test-only fault-injection hook, i.e. was built with -tags=dsofault.
+    hooks:
+      post:
+        - sh scripts/check-no-fault-hook.sh "{{ .Path }}"
 
   - id: dso-provider-huawei
     main: ./cmd/plugins/dso-provider-huawei
@@ -78,6 +93,11 @@ builds:
       - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
+    # [M0-05] Fail the release (before anything is published) if a binary carries the
+    # test-only fault-injection hook, i.e. was built with -tags=dsofault.
+    hooks:
+      post:
+        - sh scripts/check-no-fault-hook.sh "{{ .Path }}"
 
   - id: dso-provider-vault
     main: ./cmd/plugins/dso-provider-vault
@@ -97,6 +117,11 @@ builds:
       - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
+    # [M0-05] Fail the release (before anything is published) if a binary carries the
+    # test-only fault-injection hook, i.e. was built with -tags=dsofault.
+    hooks:
+      post:
+        - sh scripts/check-no-fault-hook.sh "{{ .Path }}"
 
 archives:
   - id: default
@@ -119,6 +144,13 @@ checksum:
 
 # Sign the checksum file with cosign keyless signing (OIDC-based, no long-lived key).
 # Produces a .sig and .pem certificate alongside the checksum file.
+# [M0-05] cosign 3.x (pinned in release.yml) defaults to the new bundle format and
+# REFUSES --output-signature/--output-certificate with it ("must specify --bundle with
+# --new-bundle-format"; verified with cosign 3.1.4). scripts/install.sh verifies the
+# legacy detached signature + certificate, so signing must request that format:
+# --new-bundle-format=false and --use-signing-config=false (the latter is required
+# alongside the former; both are deprecated flags but are the supported way to get
+# detached files from cosign 3).
 signs:
   - cmd: cosign
     signature: "${artifact}.sig"
@@ -126,6 +158,8 @@ signs:
     args:
       - sign-blob
       - --yes
+      - --new-bundle-format=false
+      - --use-signing-config=false
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
       - "${artifact}"

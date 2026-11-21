@@ -2,10 +2,11 @@
 
 package agent
 
-// tightenUmask is a no-op on non-Linux platforms (macOS, Windows).
-// The production target is Linux; on other platforms the caller's existing
-// umask is used and os.Chmod still tightens permissions after Listen.
-func tightenUmask() int { return 0 }
+import "net"
 
-// restoreUmask is a no-op on non-Linux platforms.
-func restoreUmask(_ int) {}
+// listenUnixRestricted on non-Linux platforms (macOS, Windows) relies on the
+// caller's explicit os.Chmod after Listen; the production target is Linux, where
+// the file is additionally created under a 077 umask.
+func listenUnixRestricted(path string) (net.Listener, error) {
+	return net.Listen("unix", path)
+}

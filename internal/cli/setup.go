@@ -14,6 +14,7 @@ func NewSetupCmd() *cobra.Command {
 		provider   string
 		autoDetect bool
 		nonRoot    bool
+		replace    bool
 	)
 
 	cmd := &cobra.Command{
@@ -46,11 +47,15 @@ Examples:
 			})
 
 			opts := setup.SetupOptions{
-				Mode:        setup.SetupMode(mode),
-				Provider:    provider,
-				AutoDetect:  autoDetect,
-				NonRoot:     nonRoot,
-				Interactive: true,
+				Mode:       setup.SetupMode(mode),
+				Provider:   provider,
+				AutoDetect: autoDetect,
+				NonRoot:    nonRoot,
+				// Replacing an existing configuration is opt-in: setup writes a minimal
+				// generated file and would otherwise overwrite provider config, secret
+				// mappings and agent.owner_id.
+				ReplaceExistingConfig: replace,
+				Interactive:           true,
 			}
 
 			_, err := eng.Setup(cmd.Context(), opts)
@@ -62,6 +67,7 @@ Examples:
 	cmd.Flags().StringVar(&provider, "provider", "", "Cloud provider: aws, azure, vault, huawei")
 	cmd.Flags().BoolVar(&autoDetect, "auto-detect", false, "Auto-detect cloud provider from instance metadata")
 	cmd.Flags().BoolVar(&nonRoot, "enable-nonroot", false, "Enable non-root user access to DSO")
+	cmd.Flags().BoolVar(&replace, "replace-config", false, "Replace an existing DSO configuration with a freshly generated one (the existing file is backed up first); without this flag setup refuses to overwrite it")
 
 	return cmd
 }

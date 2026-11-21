@@ -3,20 +3,38 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 
 	"github.com/docker-secret-operator/dso/internal/util"
 )
 
+// DrainWindow is how long a backend stays in the registry as "draining"
+// after SwapBackend hands traffic to its replacement. It bounds two things
+// that must both hold for a rotation to be genuinely zero-downtime:
+//
+//   - a connection that selected the old backend just before the swap still
+//     has time to dial it and complete, and
+//   - the caller must not stop or remove the old CONTAINER until this has
+//     elapsed, or those in-flight connections are killed anyway and the
+//     drain is only nominal.
+//
+// Exported so the rotation path can honour the second requirement without
+// duplicating the constant.
+const DrainWindow = 5 * time.Second
+
 // PortMap is a single host-port → container-port mapping parsed from the
 // dso.host_ports label, e.g. "3306:3306".
 type PortMap struct {
+	// HostIP is the literal address the host port must be bound to; "" means all
+	// interfaces (a mapping that named no address). It is part of the exposure
+	// contract and must be carried through to Bind.
+	HostIP        string
 	HostPort      int
 	ContainerPort int
 }
@@ -40,6 +58,15 @@ type Manager struct {
 	// can look up a backend when we know only the container being replaced.
 	containerToBackendID sync.Map
 
+	// reverted records candidates whose SwapBackend was undone by RevertSwap. The deferred
+	// removal goroutine of that swap consults it, so it does not take the restored original
+	// back out of the registry after DrainWindow.
+	reverted sync.Map
+	// swapMu makes "was this swap reverted? then remove the old backend" (the deferred
+	// removal) and RevertSwap mutually exclusive: otherwise the goroutine could pass its
+	// check just before a revert restores the original and then remove it.
+	swapMu sync.Mutex
+
 	// ctx/cancel bound the lifetime of background goroutines spawned by
 	// SwapBackend (the deferred-removal drain wait) to the Manager's own
 	// lifetime, so Stop can guarantee none of them outlive it.
@@ -53,6 +80,40 @@ type Manager struct {
 	// deployments are unaffected until an operator opts in via
 	// SetAllowedHostPorts.
 	allowedHostPorts *portAllowList
+
+	// ownerID is this agent's dso.owner identity. When set, discovery paths
+	// that read container labels (ScanAndRegister) skip a container whose
+	// dso.owner names a DIFFERENT agent. "" disables the check.
+	ownerID string
+
+	// Startup reconstruction bookkeeping (see routing.go and eligibility.go).
+	// Guarded by rmu, never by mu, so the scan path can still call OwnerAllowed.
+	rmu         sync.Mutex
+	reconstruct reconstructionState
+	heldByScan  map[string]string // container ID -> why it is not eligible for traffic
+}
+
+// SetOwnerID sets this agent's dso.owner identity for ScanAndRegister's
+// ownership gate. Call before ScanAndRegister.
+func (m *Manager) SetOwnerID(id string) {
+	m.mu.Lock()
+	m.ownerID = id
+	m.mu.Unlock()
+}
+
+// OwnerAllowed reports whether labels may be registered by this agent: true
+// when no owner identity is configured, when the container carries no
+// dso.owner (unowned, kept for backward compatibility), or when it carries
+// this agent's own. A container owned by a different agent is never allowed.
+func (m *Manager) OwnerAllowed(labels map[string]string) bool {
+	m.mu.Lock()
+	self := m.ownerID
+	m.mu.Unlock()
+	if self == "" {
+		return true
+	}
+	owner := labels["dso.owner"]
+	return owner == "" || owner == self
 }
 
 // NewManager creates a Manager and starts the underlying TCP proxy server.
@@ -74,6 +135,13 @@ func NewManager(log *zap.Logger) *Manager {
 // EnsurePort opens a host-port listener if one is not already open. Rejects
 // hostPort if it falls outside an operator-configured allow-list (SEC-7).
 func (m *Manager) EnsurePort(hostPort, targetPort int) error {
+	return m.EnsurePortOn("", hostPort, targetPort)
+}
+
+// EnsurePortOn is EnsurePort bound to a specific host address ("" = all
+// interfaces). Callers holding a PortMap must use this with pm.HostIP so a
+// loopback-only mapping is never widened to a wildcard listener.
+func (m *Manager) EnsurePortOn(hostIP string, hostPort, targetPort int) error {
 	m.mu.Lock()
 	al := m.allowedHostPorts
 	m.mu.Unlock()
@@ -81,7 +149,7 @@ func (m *Manager) EnsurePort(hostPort, targetPort int) error {
 	if !al.allows(hostPort) {
 		return fmt.Errorf("proxy: host port %d is not permitted by the proxy.allowed_host_ports allow-list", hostPort)
 	}
-	return m.server.Bind(PortBinding{ListenPort: hostPort, TargetPort: targetPort})
+	return m.server.Bind(PortBinding{ListenIP: hostIP, ListenPort: hostPort, TargetPort: targetPort})
 }
 
 // SetAllowedHostPorts configures an optional allow-list of host ports the
@@ -158,10 +226,17 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 		// connections are not dropped; this just ensures we don't remove the backend
 		// entry while something is still dialing it.
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(DrainWindow):
 		case <-m.ctx.Done():
 			// Manager is shutting down; the whole registry is being torn down
 			// with it, so there is nothing useful left to remove.
+			return
+		}
+		m.swapMu.Lock()
+		if _, undone := m.reverted.LoadAndDelete(newContainerID); undone {
+			m.swapMu.Unlock()
+			m.log.Info("proxy: swap was reverted; keeping the restored original backend",
+				zap.String("old", util.ShortID(oldContainerID)))
 			return
 		}
 		if err := m.registry.Remove(oldContainerID); err != nil {
@@ -169,10 +244,52 @@ func (m *Manager) SwapBackend(oldContainerID, newContainerID, newContainerIP str
 				zap.String("old", util.ShortID(oldContainerID)))
 		}
 		m.containerToBackendID.Delete(oldContainerID)
+		m.swapMu.Unlock()
 		m.log.Info("proxy: old backend removed",
 			zap.String("old", util.ShortID(oldContainerID)))
 	}()
 
+	return nil
+}
+
+// RevertSwap undoes a SwapBackend(oldContainerID, newContainerID, ...) whose caller then
+// failed before its own commit point: the original becomes the active backend again and
+// the candidate's backend is removed.
+//
+// The original is restored FIRST. If it cannot be (no usable address and it is no longer
+// registered), the candidate is left routed and an error is returned: dropping the only
+// remaining backend would turn a failed rotation into an outage. The pending deferred
+// removal of the original is cancelled, so it cannot undo the restore after DrainWindow.
+// oldContainerIP/containerPort are used only when the original was already removed from
+// the registry.
+func (m *Manager) RevertSwap(oldContainerID, newContainerID, oldContainerIP string, containerPort int) error {
+	m.swapMu.Lock()
+	defer m.swapMu.Unlock()
+	if _, ok := m.registry.Get(oldContainerID); ok {
+		if err := m.registry.SetActive(oldContainerID); err != nil {
+			return fmt.Errorf("proxy: revert swap: re-activate original: %w", err)
+		}
+	} else {
+		if oldContainerIP == "" || containerPort <= 0 {
+			return fmt.Errorf("proxy: revert swap: original %s is no longer registered and has no usable address",
+				util.ShortID(oldContainerID))
+		}
+		addr := fmt.Sprintf("%s:%d", oldContainerIP, containerPort)
+		if err := m.registry.Add(Backend{ID: oldContainerID, Addr: addr}); err != nil {
+			return fmt.Errorf("proxy: revert swap: re-register original: %w", err)
+		}
+	}
+	m.containerToBackendID.Store(oldContainerID, oldContainerID)
+	// Cancel the deferred removal of the original.
+	m.reverted.Store(newContainerID, struct{}{})
+
+	// Retire the candidate's backend now that the original serves again.
+	_ = m.registry.SetDraining(newContainerID)
+	_ = m.registry.Remove(newContainerID)
+	m.containerToBackendID.Delete(newContainerID)
+	m.log.Info("proxy: swap reverted, original backend serving again",
+		zap.String("old", util.ShortID(oldContainerID)),
+		zap.String("new", util.ShortID(newContainerID)))
 	return nil
 }
 
@@ -204,35 +321,80 @@ func (m *Manager) Stop(drainTimeout time.Duration) error {
 // application services, so this floor does not restrict the intended use.
 const minUnprivilegedHostPort = 1024
 
-// ParseHostPorts parses a "dso.host_ports" label value like "3306:3306,8080:80"
-// into a slice of PortMap. Entries with a malformed pair, an out-of-range
-// port, or a host port below minUnprivilegedHostPort are silently skipped
-// (SEC-7), consistent with how malformed entries are already skipped here.
+// ParseHostPorts parses a "dso.host_ports" label value into PortMaps. Each
+// comma-separated entry is one of
+//
+//	hostPort:containerPort                 (all interfaces; the historical form)
+//	ip:hostPort:containerPort              (e.g. 127.0.0.1:5432:5432)
+//	[ipv6]:hostPort:containerPort          (e.g. [::1]:8443:443)
+//
+// ip must be a literal IP address (no hostnames, no zones). Entries with a
+// malformed pair or address, an out-of-range port, or a host port below
+// minUnprivilegedHostPort are skipped (SEC-7), as is a repeated host port with
+// a different address (one listener per host port: ambiguity is dropped, never
+// widened). Only TCP is represented: the proxy does not carry UDP.
 func ParseHostPorts(label string) []PortMap {
 	if label == "" {
 		return nil
 	}
 	var out []PortMap
+	seen := map[int]string{}
 	for _, part := range strings.Split(label, ",") {
-		part = strings.TrimSpace(part)
-		sides := strings.SplitN(part, ":", 2)
-		if len(sides) != 2 {
+		pm, ok := parseHostPortEntry(strings.TrimSpace(part))
+		if !ok {
 			continue
 		}
-		hp, e1 := strconv.Atoi(sides[0])
-		cp, e2 := strconv.Atoi(sides[1])
-		if e1 != nil || e2 != nil {
+		if _, dup := seen[pm.HostPort]; dup {
+			// Repeated host port: the first entry wins. A later entry with a
+			// different address is dropped, never merged into a wider one.
 			continue
 		}
-		if hp < minUnprivilegedHostPort || hp > 65535 {
-			continue
-		}
-		if cp < 1 || cp > 65535 {
-			continue
-		}
-		out = append(out, PortMap{HostPort: hp, ContainerPort: cp})
+		seen[pm.HostPort] = pm.HostIP
+		out = append(out, pm)
 	}
 	return out
+}
+
+func parseHostPortEntry(part string) (PortMap, bool) {
+	var ip, rest string
+	switch {
+	case strings.HasPrefix(part, "["):
+		end := strings.Index(part, "]")
+		if end < 0 || len(part) <= end+2 || part[end+1] != ':' {
+			return PortMap{}, false
+		}
+		ip, rest = part[1:end], part[end+2:]
+		a, err := netip.ParseAddr(ip)
+		if err != nil || a.Zone() != "" || !a.Is6() || a.Is4In6() {
+			return PortMap{}, false
+		}
+		ip = a.String()
+	default:
+		fields := strings.Split(part, ":")
+		switch len(fields) {
+		case 2:
+			rest = part
+		case 3:
+			ip, rest = fields[0], fields[1]+":"+fields[2]
+			a, err := netip.ParseAddr(ip)
+			if err != nil || a.Zone() != "" || !a.Is4() {
+				return PortMap{}, false
+			}
+			ip = a.String()
+		default:
+			return PortMap{}, false
+		}
+	}
+	sides := strings.SplitN(rest, ":", 2)
+	if len(sides) != 2 {
+		return PortMap{}, false
+	}
+	hp, e1 := strconv.Atoi(sides[0])
+	cp, e2 := strconv.Atoi(sides[1])
+	if e1 != nil || e2 != nil || hp < minUnprivilegedHostPort || hp > 65535 || cp < 1 || cp > 65535 {
+		return PortMap{}, false
+	}
+	return PortMap{HostIP: ip, HostPort: hp, ContainerPort: cp}, true
 }
 
 // portAllowList is an optional operator-supplied allow-list of host ports
@@ -292,45 +454,4 @@ func (al *portAllowList) allows(port int) bool {
 		}
 	}
 	return false
-}
-
-// ScanAndRegister scans running Docker containers for the dso.host_ports label
-// and registers them with the proxy. Called once at agent startup.
-func (m *Manager) ScanAndRegister(ctx context.Context, cli *client.Client) {
-	containers, err := cli.ContainerList(ctx, containerListOptions())
-	if err != nil {
-		m.log.Warn("proxy: failed to list containers for scan", zap.Error(err))
-		return
-	}
-
-	for _, c := range containers {
-		portsLabel := c.Labels["dso.host_ports"]
-		if portsLabel == "" {
-			continue
-		}
-		portMaps := ParseHostPorts(portsLabel)
-		if len(portMaps) == 0 {
-			continue
-		}
-		containerIP := extractContainerIP(c.NetworkSettings)
-		if containerIP == "" {
-			m.log.Warn("proxy: container has no IP, skipping",
-				zap.String("id", util.ShortID(c.ID)))
-			continue
-		}
-		for _, pm := range portMaps {
-			if err := m.EnsurePort(pm.HostPort, pm.ContainerPort); err != nil {
-				m.log.Warn("proxy: failed to bind port",
-					zap.Int("port", pm.HostPort), zap.Error(err))
-				continue
-			}
-			if err := m.RegisterContainer(c.ID, containerIP, pm.HostPort, pm.ContainerPort); err != nil {
-				m.log.Warn("proxy: failed to register container",
-					zap.String("id", util.ShortID(c.ID)), zap.Error(err))
-			}
-		}
-		m.log.Info("proxy: registered existing container",
-			zap.String("id", util.ShortID(c.ID)),
-			zap.String("ports", portsLabel))
-	}
 }

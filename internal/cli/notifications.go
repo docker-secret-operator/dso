@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/pkg/config"
@@ -67,34 +66,27 @@ func runNotificationsTest(ctx context.Context) error {
 		return nil
 	}
 
-	event := notify.NewEvent(notify.RotationSucceeded, "test-provider", "test-secret", []string{"test-container"}, 0, nil)
+	// Delegates to notify.RunTest -- the single implementation shared with
+	// the WebUI's POST /api/integrations/notifications/test
+	// (internal/server/rest.go) -- so CLI and REST can never drift on what
+	// "test notification delivery" actually does.
+	results, err := notify.RunTest(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	var failed int
-	for _, w := range cfg.Notifications.Webhooks {
-		n, err := notify.NewWebhookNotifier(notify.WebhookOptions{
-			URL:               w.URL,
-			MaxRetries:        w.MaxRetries,
-			AllowInsecureHTTP: w.AllowInsecureHTTP,
-		}, nil) // nil logger: this is a synchronous, human-observed command -- errors are printed directly below, not logged
-		if err != nil {
-			fmt.Printf("✗ %s: invalid configuration: %v\n", w.URL, err)
-			failed++
+	for _, res := range results {
+		if res.Success {
+			fmt.Printf("✓ %s: test event delivered\n", res.Destination)
 			continue
 		}
-
-		testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = n.Notify(testCtx, event)
-		cancel()
-		if err != nil {
-			fmt.Printf("✗ %s: %v\n", n.SafeName(), err)
-			failed++
-			continue
-		}
-		fmt.Printf("✓ %s: test event delivered\n", n.SafeName())
+		failed++
+		fmt.Printf("✗ %s: %s\n", res.Destination, res.Error)
 	}
 
 	if failed > 0 {
-		return fmt.Errorf("%d of %d destination(s) failed", failed, len(cfg.Notifications.Webhooks))
+		return fmt.Errorf("%d of %d destination(s) failed", failed, len(results))
 	}
 	return nil
 }

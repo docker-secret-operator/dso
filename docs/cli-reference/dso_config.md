@@ -26,13 +26,15 @@ dso config [flags]
 ### Options inherited from parent commands
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO
 
 * [dso](dso.md)	 - Docker Secret Operator (DSO) — Secret lifecycle runtime for Docker Compose
 * [dso config edit](dso_config_edit.md)	 - Edit DSO configuration in your default editor
+* [dso config path](dso_config_path.md)	 - Show which configuration file is in effect (never prints its contents)
 * [dso config show](dso_config_show.md)	 - Display current DSO configuration
 * [dso config validate](dso_config_validate.md)	 - Validate DSO configuration for errors
 

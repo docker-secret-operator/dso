@@ -2,12 +2,29 @@ package bootstrap
 
 import (
 	"context"
+	"os"
+	"os/user"
+	"path/filepath"
 	"testing"
 )
+
+// isolateHome makes the bootstrapper resolve a temporary directory as the
+// user's home, so a default-path bootstrap never touches the real ~/.dso.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	orig := lookupCurrentUser
+	lookupCurrentUser = func() (*user.User, error) {
+		return &user.User{Uid: "1000", Gid: "1000", Username: "testuser", HomeDir: home}, nil
+	}
+	t.Cleanup(func() { lookupCurrentUser = orig })
+	return home
+}
 
 // TestLocalBootstrapNilContextValueDoesNotPanic verifies the fix for the nil interface conversion
 // This is a regression test for the bug: panic: interface conversion: interface {} is nil, not string
 func TestLocalBootstrapNilContextValueDoesNotPanic(t *testing.T) {
+	home := isolateHome(t)
 	logger := &MockLogger{}
 	opts := &BootstrapOptions{
 		Mode:           ModeLocal,
@@ -37,6 +54,15 @@ func TestLocalBootstrapNilContextValueDoesNotPanic(t *testing.T) {
 
 	if len(logger.messages) == 0 {
 		t.Error("Expected some logger output, got none")
+	}
+
+	// Regression: with no config path in the context the default is
+	// <home>/.dso/dso.yaml. That must be the isolated home, never the real one
+	// (a leaked ~/.dso/dso.yaml changes which config other tests resolve).
+	if err == nil {
+		if _, statErr := os.Stat(filepath.Join(home, ".dso", "dso.yaml")); statErr != nil {
+			t.Errorf("bootstrap succeeded but the config is not under the isolated home: %v", statErr)
+		}
 	}
 }
 

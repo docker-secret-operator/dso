@@ -24,7 +24,10 @@ type EventReactorImpl struct {
 	lastSeenMu sync.RWMutex
 
 	// Batching (5s window)
-	batchTicker  *time.Ticker
+	batchTicker *time.Ticker
+	// dedupWindow suppresses a repeat event for the same secret within this window.
+	// Production value 1s (set in NewEventReactorImpl); tests inject a shorter one.
+	dedupWindow  time.Duration
 	batchTimeout time.Duration
 
 	// State management
@@ -96,6 +99,7 @@ func NewEventReactorImpl(rotationTrigger RotationTrigger) *EventReactorImpl {
 		queue:           make(PriorityQueue, 0),
 		lastSeen:        make(map[string]time.Time),
 		batchTimeout:    5 * time.Second,
+		dedupWindow:     1 * time.Second,
 		ctx:             ctx,
 		cancel:          cancel,
 		stopChan:        make(chan struct{}),
@@ -318,7 +322,7 @@ func (r *EventReactorImpl) deduplicateSecret(secretName string) bool {
 	now := time.Now()
 	lastSeen, exists := r.lastSeen[secretName]
 
-	if exists && now.Sub(lastSeen) < 1*time.Second {
+	if exists && now.Sub(lastSeen) < r.dedupWindow {
 		// This is a duplicate within the 1s window
 		r.logger.Debug("event deduplicated",
 			zap.String("secret_name", secretName),

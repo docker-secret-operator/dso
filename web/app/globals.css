@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   DSO Design System — real brand identity (mint/teal accent on near-black)
+   Source of truth: docker-secret-operator marketing site globals.css
+   ============================================================================ */
+
+@layer base {
+  :root {
+    --background: 216 33.3% 2.9%;      /* #05070A */
+    --foreground: 210 40% 98%;         /* #F8FAFC */
+    --card: 212.3 37.1% 6.9%;          /* #0B1118 (surface) */
+    --card-foreground: 210 40% 98%;
+    --popover: 212.7 40.7% 5.3%;       /* #080D13 (surface2) */
+    --popover-foreground: 210 40% 98%;
+    --primary: 170.1 100% 45.1%;       /* #00E6C0 mint accent */
+    --primary-foreground: 216 33.3% 2.9%;
+    --secondary: 212.7 40.7% 5.3%;     /* #080D13 (surface2) */
+    --secondary-foreground: 215 20.2% 65.1%;
+    --muted: 220.9 39.3% 11%;          /* #111827 (surface-hover) */
+    --muted-foreground: 215 20.2% 65.1%; /* #94A3B8 */
+    --accent: 220.9 39.3% 11%;         /* #111827 (surface-hover) */
+    --accent-foreground: 210 40% 98%;
+    --accent-secondary: 246.3 89.5% 66.5%; /* #6D5DF6 purple, used sparingly */
+    --accent-secondary-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 100% / 0.08;
+    --input: 212.7 40.7% 5.3%;
+    --ring: 170.1 100% 45.1%;
+    --radius: 0.5rem;
+
+    /* Literal (non-HSL-component) brand values, used directly as rgba fills */
+    --accent-dim: rgba(0, 230, 192, 0.1);
+    --border-soft: rgba(255, 255, 255, 0.04);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-[#00E6C0] ring-offset-2 ring-offset-[#05070A];
+  }
+
+  ::selection {
+    background: rgba(0, 230, 192, 0.25);
+    color: #f8fafc;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

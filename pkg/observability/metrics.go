@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -102,6 +103,61 @@ var (
 			Help: "Total number of Docker events processed",
 		},
 		[]string{"action"},
+	)
+
+	// RESTAuthFailuresTotal counts requests rejected by the REST gate. reason is
+	// a fixed set: "unauthenticated" (401) or "cross_origin" (403).
+	RESTAuthFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_auth_failures_total",
+			Help: "REST requests rejected by the authentication or CSRF gate",
+		},
+		[]string{"reason"},
+	)
+
+	// RESTLoginAttemptsTotal counts WebUI login attempts by result:
+	// "success", "failure" or "rate_limited". Never labelled by user or address.
+	RESTLoginAttemptsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_login_attempts_total",
+			Help: "WebUI login attempts by result",
+		},
+		[]string{"result"},
+	)
+
+	// RESTSessionsRevokedTotal counts sessions signed out by an operator action.
+	RESTSessionsRevokedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "dso_rest_sessions_revoked_total",
+			Help: "WebUI sessions revoked by revoke or revoke-others",
+		},
+	)
+
+	// RESTManualRotationRequestsTotal counts manual rotation requests by outcome
+	// ("success" or "failure"); the secret name is deliberately not a label.
+	RESTManualRotationRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dso_rest_manual_rotation_requests_total",
+			Help: "Manual rotation requests received over REST",
+		},
+		[]string{"status"},
+	)
+
+	// RESTWebSocketClients is the number of connected WebSocket event clients.
+	RESTWebSocketClients = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dso_rest_websocket_clients",
+			Help: "Currently connected WebSocket event clients",
+		},
+	)
+
+	// AuditDurableWriteFailuresTotal counts audit events the durable sink failed
+	// to persist (they were still emitted to the log stream).
+	AuditDurableWriteFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "dso_audit_durable_write_failures_total",
+			Help: "Audit events that could not be persisted to the durable audit file",
+		},
 	)
 
 	// ReconciliationDurationSeconds tracks reconciliation duration
@@ -216,3 +272,28 @@ func isLocalhostRequest(remoteAddr string) bool {
 	return remoteAddr == "127.0.0.1" || remoteAddr == "localhost" ||
 		remoteAddr == "::1" || remoteAddr == "[::1]"
 }
+
+var restSessionCount atomic.Pointer[func() int]
+
+// SetRESTActiveSessionsFunc sets the callback the dso_rest_active_sessions
+// gauge reads at scrape time. Pass nil to report zero.
+func SetRESTActiveSessionsFunc(f func() int) {
+	if f == nil {
+		restSessionCount.Store(nil)
+		return
+	}
+	restSessionCount.Store(&f)
+}
+
+var _ = promauto.NewGaugeFunc(
+	prometheus.GaugeOpts{
+		Name: "dso_rest_active_sessions",
+		Help: "WebUI sessions that are neither idle- nor absolute-expired",
+	},
+	func() float64 {
+		if f := restSessionCount.Load(); f != nil {
+			return float64((*f)())
+		}
+		return 0
+	},
+)

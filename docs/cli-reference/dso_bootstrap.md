@@ -30,13 +30,15 @@ dso bootstrap [local|agent] [flags]
       --huawei-region string       Huawei region for automated setup
       --non-interactive            Non-interactive mode (skip all prompts, use defaults)
       --provider string            Cloud provider: aws, azure, vault, huawei (skips provider selection)
+      --replace-config             Replace an existing DSO configuration with a freshly generated one (the existing file is backed up first); without this flag bootstrap refuses to overwrite it
       --vault-address string       HashiCorp Vault address for automated setup
 ```
 
 ### Options inherited from parent commands
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO

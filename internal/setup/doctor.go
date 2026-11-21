@@ -43,6 +43,12 @@ const (
 	DoctorCatProvider      DoctorCategory = "provider"
 	DoctorCatRuntime       DoctorCategory = "runtime"
 	DoctorCatService       DoctorCategory = "service"
+	// DoctorCatRotation covers Phase 7 / P2-5's operational-visibility
+	// checks: rotation state, degraded services, orphaned rotation
+	// containers, proxy host-port conflicts, and secret-destination
+	// reachability -- state a healthy-looking doctor run must not silently
+	// omit.
+	DoctorCatRotation DoctorCategory = "rotation"
 )
 
 // ─── Result model ─────────────────────────────────────────────────────────────
@@ -90,6 +96,37 @@ type DoctorOptions struct {
 	ConfigPath   string
 	RuntimeDir   string
 	DockerSocket string
+	// SocketPath is the DSO agent's own IPC Unix socket (distinct from
+	// DockerSocket, which is the Docker daemon's) -- used by the Phase 7
+	// rotation/degraded-service checks to query the live running agent.
+	SocketPath string
+	// StateDir overrides the persistent-state directory checked by
+	// DSO-DOCTOR-025 (default /var/lib/dso, agent mode only).
+	StateDir string
+
+	// CentralDB, CentralKeyFile and CentralKeyProvider drive DSO-DOCTOR-026
+	// through DSO-DOCTOR-031, the central-store root-key/database custody
+	// checks. The central store has no persisted configuration of its own --
+	// every `dso central` invocation takes --db/--key-file/--key-provider
+	// explicitly -- so these checks are opt-in (wired from `dso doctor`'s own
+	// --central-db/--central-key-file/--central-key-provider flags) and are
+	// skipped only when NEITHER CentralDB nor CentralKeyFile is set (a single
+	// informational "skipped, not configured" check is reported instead).
+	// CentralDB and CentralKeyFile are otherwise checked INDEPENDENTLY of each
+	// other: the key-file/key-dir checks run whenever CentralKeyFile != "",
+	// and the db-file/db-dir checks run whenever CentralDB != "", so
+	// configuring only one of the two still gets that one's checks (the
+	// co-location check is the only one that needs both). CentralKeyProvider
+	// is "file" or "passphrase" (see internal/cli/central.go's
+	// --key-provider); when "passphrase", the CentralKeyFile path is checked
+	// as the KDF-parameter file rather than a raw key file.
+	// AuditFile overrides the durable audit file path (tests); empty means the
+	// agent default.
+	AuditFile string
+
+	CentralDB          string
+	CentralKeyFile     string
+	CentralKeyProvider string
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
@@ -104,6 +141,10 @@ type Doctor struct {
 	provider *ProviderChecks
 	runtime  *RuntimeChecks
 	service  *ServiceChecks
+	rotation *RotationChecks
+	state    *StateDirChecks
+	central  *CentralChecks
+	auditf   *AuditFileChecks
 }
 
 // NewDoctor constructs a Doctor wired to real OS hooks.
@@ -125,6 +166,11 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 			opts.RuntimeDir = doctorExpandHome("~/.dso/run")
 		}
 	}
+	if opts.SocketPath == "" {
+		// Matches internal/cli/agent.go's --socket default and
+		// internal/cli/status.go's own fallback.
+		opts.SocketPath = "/run/dso/dso.sock"
+	}
 	return &Doctor{
 		opts:     opts,
 		docker:   newDockerChecks(opts.DockerSocket),
@@ -133,6 +179,10 @@ func NewDoctor(opts DoctorOptions) *Doctor {
 		provider: newProviderChecks(opts.Provider),
 		runtime:  newRuntimeChecks(opts.RuntimeDir),
 		service:  newServiceChecks(),
+		rotation: newRotationChecks(opts.SocketPath, opts.ConfigPath),
+		state:    newStateDirChecks(opts.Mode, opts.StateDir),
+		central:  newCentralChecks(opts),
+		auditf:   newAuditFileChecks(opts.Mode, opts.AuditFile),
 	}
 }
 
@@ -146,6 +196,10 @@ func (d *Doctor) Run(ctx context.Context) *DoctorResult {
 	checks = append(checks, d.provider.run(ctx)...)
 	checks = append(checks, d.runtime.run(ctx)...)
 	checks = append(checks, d.service.run(ctx)...)
+	checks = append(checks, d.rotation.run(ctx)...)
+	checks = append(checks, d.state.run(ctx)...)
+	checks = append(checks, d.central.run(ctx)...)
+	checks = append(checks, d.auditf.run(ctx)...)
 
 	return &DoctorResult{
 		OverallStatus: doctorComputeOverall(checks),

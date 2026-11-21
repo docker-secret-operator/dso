@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -49,220 +50,6 @@ func newRecoveryTestClient(t *testing.T, handler func(req *http.Request) (*http.
 	return cli
 }
 
-// TestRecoverSingleRotation_RenameGuard verifies that when the original
-// container survived a crash but was renamed mid-rotation (e.g.
-// "myapp_old_12345"), recoverSingleRotation refuses to auto-start it --
-// doing so could create a duplicate instance and a port conflict if a
-// replacement container already holds the real name -- and instead marks
-// the rotation critical_error for manual operator review.
-func TestRecoverSingleRotation_RenameGuard(t *testing.T) {
-	var startCalled bool
-
-	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
-		switch {
-		case req.Method == "GET" && req.URL.Path == "/v1.41/containers/orig-id/json":
-			return &http.Response{StatusCode: 200, Body: jsonBody(container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/myapp_old_12345",
-					State: &container.State{Running: false, Status: "exited"},
-				},
-			})}, nil
-		case req.Method == "POST" && req.URL.Path == "/v1.41/containers/orig-id/start":
-			startCalled = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		default:
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		}
-	})
-
-	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
-	if err != nil {
-		t.Fatalf("NewStateTracker: %v", err)
-	}
-	if err := st.StartRotation("aws", "db_pass", "orig-id", "new-id"); err != nil {
-		t.Fatalf("StartRotation: %v", err)
-	}
-
-	ar := NewAutomaticRecovery(cli, logger, st)
-	rotation := &RotationState{
-		ProviderName:        "aws",
-		SecretName:          "db_pass",
-		OriginalContainerID: "orig-id",
-	}
-
-	ar.recoverSingleRotation(context.Background(), map[string]string{}, rotation)
-
-	if startCalled {
-		t.Error("expected ContainerStart NOT to be called when the original container was renamed mid-rotation")
-	}
-
-	pending := st.GetPendingRotations()
-	if len(pending) != 1 || pending[0].Status != "critical_error" {
-		t.Fatalf("expected rotation to be marked critical_error for manual review, got pending=%+v", pending)
-	}
-}
-
-// TestRecoverSingleRotation_NormalRollback verifies the actual automatic
-// rollback path: original container survived the crash, is stopped, and
-// still owns its original (non-renamed) name -- recoverSingleRotation must
-// call ContainerStart to restore service, then mark the rotation recovered.
-func TestRecoverSingleRotation_NormalRollback(t *testing.T) {
-	var startCalled bool
-
-	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
-		switch {
-		case req.Method == "GET" && req.URL.Path == "/v1.41/containers/orig-id/json":
-			return &http.Response{StatusCode: 200, Body: jsonBody(container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/myapp",
-					State: &container.State{Running: false, Status: "exited"},
-				},
-			})}, nil
-		case req.Method == "POST" && req.URL.Path == "/v1.41/containers/orig-id/start":
-			startCalled = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		default:
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		}
-	})
-
-	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
-	if err != nil {
-		t.Fatalf("NewStateTracker: %v", err)
-	}
-	if err := st.StartRotation("aws", "db_pass", "orig-id", "new-id"); err != nil {
-		t.Fatalf("StartRotation: %v", err)
-	}
-
-	ar := NewAutomaticRecovery(cli, logger, st)
-	rotation := &RotationState{
-		ProviderName:        "aws",
-		SecretName:          "db_pass",
-		OriginalContainerID: "orig-id",
-	}
-
-	ar.recoverSingleRotation(context.Background(), map[string]string{}, rotation)
-
-	if !startCalled {
-		t.Error("expected ContainerStart to be called to complete automatic rollback")
-	}
-
-	// MarkRecovered sets Status to "recovered", which GetPendingRotations no
-	// longer returns -- so an empty pending list confirms recovery completed.
-	pending := st.GetPendingRotations()
-	if len(pending) != 0 {
-		t.Fatalf("expected rotation to be marked recovered (no longer pending), got pending=%+v", pending)
-	}
-}
-
-// TestRecoverSingleRotation_MissingOriginal verifies that when the original
-// container is gone entirely after a crash, recovery does not panic and
-// marks the rotation critical_error rather than silently dropping it.
-func TestRecoverSingleRotation_MissingOriginal(t *testing.T) {
-	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
-		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/orig-id/json" {
-			return &http.Response{StatusCode: 404, Body: jsonBody(map[string]string{
-				"message": "No such container: orig-id",
-			})}, nil
-		}
-		return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-	})
-
-	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
-	if err != nil {
-		t.Fatalf("NewStateTracker: %v", err)
-	}
-	if err := st.StartRotation("aws", "db_pass", "orig-id", "new-id"); err != nil {
-		t.Fatalf("StartRotation: %v", err)
-	}
-
-	ar := NewAutomaticRecovery(cli, logger, st)
-	rotation := &RotationState{
-		ProviderName:        "aws",
-		SecretName:          "db_pass",
-		OriginalContainerID: "orig-id",
-	}
-
-	// Must not panic.
-	ar.recoverSingleRotation(context.Background(), map[string]string{}, rotation)
-
-	pending := st.GetPendingRotations()
-	if len(pending) != 1 || pending[0].Status != "critical_error" {
-		t.Fatalf("expected rotation to be marked critical_error when original container is missing, got pending=%+v", pending)
-	}
-	if pending[0].ErrorMessage == "" {
-		t.Error("expected a non-empty ErrorMessage explaining the missing-original condition")
-	}
-}
-
-// TestRecoverSingleRotation_OrphanCleanup verifies that orphaned
-// "_dso_backup_"/"_dso_new_" containers are stopped and removed regardless
-// of the original container's own state -- this cleanup happens
-// unconditionally, before the original-container rollback logic runs.
-func TestRecoverSingleRotation_OrphanCleanup(t *testing.T) {
-	stopped := map[string]bool{}
-	removed := map[string]bool{}
-
-	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
-		switch {
-		case req.Method == "GET" && req.URL.Path == "/v1.41/containers/orig-id/json":
-			return &http.Response{StatusCode: 200, Body: jsonBody(container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/myapp",
-					State: &container.State{Running: true, Status: "running"},
-				},
-			})}, nil
-		case req.Method == "POST" && req.URL.Path == "/v1.41/containers/backup-id/stop":
-			stopped["backup-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/backup-id":
-			removed["backup-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		case req.Method == "POST" && req.URL.Path == "/v1.41/containers/new-id/stop":
-			stopped["new-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/new-id":
-			removed["new-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		default:
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		}
-	})
-
-	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
-	if err != nil {
-		t.Fatalf("NewStateTracker: %v", err)
-	}
-	if err := st.StartRotation("aws", "db_pass", "orig-id", ""); err != nil {
-		t.Fatalf("StartRotation: %v", err)
-	}
-
-	ar := NewAutomaticRecovery(cli, logger, st)
-	rotation := &RotationState{
-		ProviderName:        "aws",
-		SecretName:          "db_pass",
-		OriginalContainerID: "orig-id",
-	}
-
-	containersByName := map[string]string{
-		"myapp_dso_backup_1700000000": "backup-id",
-		"myapp_dso_new_1700000000":    "new-id",
-	}
-
-	ar.recoverSingleRotation(context.Background(), containersByName, rotation)
-
-	if !stopped["backup-id"] || !removed["backup-id"] {
-		t.Error("expected orphaned backup container to be stopped and removed")
-	}
-	if !stopped["new-id"] || !removed["new-id"] {
-		t.Error("expected orphaned new container to be stopped and removed")
-	}
-}
-
 // TestRecoverFromCrash_NoPendingRotations verifies the early-return path:
 // when there are no pending rotations, RecoverFromCrash must return
 // immediately without ever calling the Docker API (a nil cli would panic if
@@ -292,11 +79,11 @@ func TestRecoverFromCrash_NilStateTracker(t *testing.T) {
 	}
 }
 
-// TestValidateStateOnStartup_DiscardsStaleState verifies that a pending
-// rotation older than 24 hours is discarded (marked recovered) rather than
-// left to accumulate indefinitely, and that a fresh pending rotation is left
-// untouched.
-func TestValidateStateOnStartup_DiscardsStaleState(t *testing.T) {
+// TestValidateStateOnStartup_KeepsStaleRollbackRequired pins the invariant that age
+// never retires a rollback_required record: it stays unfinished (so RecoverFromCrash
+// examines it and the guard sees the outcome), however old it is. It replaces the
+// former 24h discard, which skipped recovery for the oldest records.
+func TestValidateStateOnStartup_KeepsStaleRollbackRequired(t *testing.T) {
 	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
 		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/json" {
 			return &http.Response{StatusCode: 200, Body: jsonBody([]container.Summary{})}, nil
@@ -305,34 +92,33 @@ func TestValidateStateOnStartup_DiscardsStaleState(t *testing.T) {
 	})
 
 	logger := zaptest.NewLogger(t)
-	st, err := NewStateTracker(t.TempDir(), logger)
+	dir := t.TempDir()
+	st, err := NewStateTracker(dir, logger)
 	if err != nil {
 		t.Fatalf("NewStateTracker: %v", err)
 	}
 	if err := st.StartRotation("aws", "stale_secret", "stale-id", ""); err != nil {
 		t.Fatalf("StartRotation: %v", err)
 	}
-	// Force this entry into the pending set via rollback_required, then
-	// backdate it past the 24h staleness threshold used by
-	// ValidateStateOnStartup.
 	if err := st.MarkRollback("aws", "stale_secret", "stale-id"); err != nil {
 		t.Fatalf("MarkRollback: %v", err)
 	}
-	pendingBefore := st.GetPendingRotations()
-	if len(pendingBefore) != 1 {
-		t.Fatalf("expected 1 pending rotation before backdating, got %d", len(pendingBefore))
+	st.mu.Lock()
+	for _, live := range st.states {
+		live.StartTime = live.StartTime.Add(-25 * time.Hour)
+		live.LastUpdate = live.LastUpdate.Add(-25 * time.Hour)
 	}
-	pendingBefore[0].StartTime = pendingBefore[0].StartTime.Add(-25 * time.Hour)
+	st.mu.Unlock()
 
 	ar := NewAutomaticRecovery(cli, logger, st)
-	ok := ar.ValidateStateOnStartup(context.Background())
-	if !ok {
-		t.Error("expected ValidateStateOnStartup to return true (stale state is discarded, not treated as corruption)")
+	if !ar.ValidateStateOnStartup(context.Background()) {
+		t.Error("expected ValidateStateOnStartup to return true")
 	}
-
-	pendingAfter := st.GetPendingRotations()
-	if len(pendingAfter) != 0 {
-		t.Fatalf("expected stale rotation to be discarded (marked recovered), still pending=%+v", pendingAfter)
+	if got := st.GetUnfinishedRotationsAtStartup(); len(got) != 1 || got[0].Status != "rollback_required" {
+		t.Fatalf("a >24h rollback_required record was expired by age; it must stay for recovery to examine: %+v", got)
+	}
+	if len(st.GetPendingRotations()) != 1 {
+		t.Fatal("stale rollback_required must still be reported as pending")
 	}
 }
 
@@ -363,44 +149,67 @@ func TestValidateStateOnStartup_DockerUnreachable(t *testing.T) {
 	}
 }
 
-// TestCleanupOrphanedContainers_RemovesMatchingNames verifies the broad
-// startup sweep stops and removes any container whose name matches DSO's
-// "_dso_backup_"/"_dso_new_" orphan patterns, and leaves unrelated
-// containers untouched.
-func TestCleanupOrphanedContainers_RemovesMatchingNames(t *testing.T) {
-	removed := map[string]bool{}
+// ============================================================================
+// Phase 7 / P2-1: restart-strategy "_old_<timestamp>" orphan naming gap.
+// ============================================================================
 
-	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
-		switch {
-		case req.Method == "GET" && req.URL.Path == "/v1.41/containers/json":
-			return &http.Response{StatusCode: 200, Body: jsonBody([]container.Summary{
-				{ID: "backup-id", Names: []string{"/myapp_dso_backup_1700000000"}},
-				{ID: "unrelated-id", Names: []string{"/unrelated-service"}},
-			})}, nil
-		case req.Method == "POST" && req.URL.Path == "/v1.41/containers/backup-id/stop":
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/backup-id":
-			removed["backup-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		case req.Method == "DELETE" && req.URL.Path == "/v1.41/containers/unrelated-id":
-			removed["unrelated-id"] = true
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
-		default:
-			return &http.Response{StatusCode: 204, Body: emptyBody()}, nil
+// TestIsDSORestartOldContainerName_MatchesRealNamingConvention verifies the
+// narrow, suffix-anchored regex matches exactly what
+// internal/watcher/controller.go's executeRollback/executeSimpleRestart
+// actually construct ("<originalName>_old_<unix timestamp>"), and does NOT
+// match operator-owned container names that merely contain "_old_"
+// somewhere -- this is the specific security requirement from the Phase 6
+// audit: never turn this into a broad substring deletion rule.
+func TestIsDSORestartOldContainerName_MatchesRealNamingConvention(t *testing.T) {
+	cases := []struct {
+		name    string
+		matches bool
+	}{
+		{"myapp_old_1700000000", true},
+		{"payments-api_old_1789104000", true},
+		{"my_old_database", false},             // unrelated operator container
+		{"legacy_old_service", false},          // unrelated operator container
+		{"old_backup_service", false},          // "_old_" not present at all
+		{"myapp_old_", false},                  // no digits after "_old_"
+		{"myapp_old_abc", false},               // non-numeric suffix
+		{"myapp_old_123_extra", false},         // "_old_<digits>" not at the end
+		{"myapp_dso_backup_1700000000", false}, // rolling-strategy pattern, not this one
+		{"myapp_dso_new_1700000000", false},    // rolling-strategy pattern, not this one
+	}
+	for _, c := range cases {
+		if got := isDSORestartOldContainerName(c.name); got != c.matches {
+			t.Errorf("isDSORestartOldContainerName(%q) = %v, want %v", c.name, got, c.matches)
 		}
+	}
+}
+
+// An inherited, stale rollback_required whose original workload cannot be found must
+// end up critical_error (blocking the guard) after the startup sequence, not silently
+// expired: this is the path that used to be skipped by the 24h discard.
+func TestStartupSequence_StaleRollbackRequiredWithMissingOriginalBlocks(t *testing.T) {
+	cli := newRecoveryTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == "GET" && req.URL.Path == "/v1.41/containers/json" {
+			return &http.Response{StatusCode: 200, Body: jsonBody([]container.Summary{})}, nil
+		}
+		return &http.Response{StatusCode: 404, Body: jsonBody(map[string]string{"message": "No such container"})}, nil
 	})
-
-	logger := zaptest.NewLogger(t)
-	ar := NewAutomaticRecovery(cli, logger, nil)
-
-	if err := ar.CleanupOrphanedContainers(context.Background()); err != nil {
-		t.Fatalf("CleanupOrphanedContainers: %v", err)
+	dir := t.TempDir()
+	prev, _ := NewStateTracker(dir, zap.NewNop())
+	_ = prev.StartRotationWithID("rot-9", "aws", "db", "gone-id", "")
+	_ = prev.MarkRollback("aws", "db", "gone-id")
+	prev.mu.Lock()
+	for _, l := range prev.states {
+		l.ServiceID = "svc"
+		l.StartTime = l.StartTime.Add(-72 * time.Hour)
 	}
+	_ = prev.persistState()
+	prev.mu.Unlock()
 
-	if !removed["backup-id"] {
-		t.Error("expected orphaned backup container to be removed")
-	}
-	if removed["unrelated-id"] {
-		t.Error("expected unrelated container to be left alone")
+	st, _ := NewStateTracker(dir, zap.NewNop()) // the next process
+	ar := NewAutomaticRecovery(cli, zap.NewNop(), st)
+	ar.ValidateStateOnStartup(context.Background())
+	_ = ar.RecoverFromCrash(context.Background())
+	if _, blocked := newJournalGuard(st).RotationBlocked("svc"); !blocked {
+		t.Fatal("a stale rollback_required with no verifiable workload must become an unresolved (blocking) record")
 	}
 }

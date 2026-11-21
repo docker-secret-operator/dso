@@ -294,7 +294,7 @@ Topics:
 ```bash
 docker dso secret set <name>        # Create/update
 docker dso secret list [project]    # View all
-docker dso secret get <name>        # Retrieve (local mode only)
+docker dso secret get <name> --reveal  # Retrieve (local mode only; plaintext requires --reveal)
 docker dso secret delete <name>     # Remove
 docker dso env import <file> <proj> # Bulk import
 ```

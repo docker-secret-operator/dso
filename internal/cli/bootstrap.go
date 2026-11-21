@@ -48,6 +48,7 @@ var (
 	enableNonRootAccess      bool
 	bootstrapProvider        string
 	bootstrapNonInteractive  bool
+	bootstrapReplaceConfig   bool
 	bootstrapAWSRegion       string
 	bootstrapAzureVaultURL   string
 	bootstrapHuaweiRegion    string
@@ -92,6 +93,7 @@ Examples:
 	// Add flags for automated/non-interactive setup
 	cmd.Flags().StringVar(&bootstrapProvider, "provider", "", "Cloud provider: aws, azure, vault, huawei (skips provider selection)")
 	cmd.Flags().BoolVar(&bootstrapNonInteractive, "non-interactive", false, "Non-interactive mode (skip all prompts, use defaults)")
+	cmd.Flags().BoolVar(&bootstrapReplaceConfig, "replace-config", false, "Replace an existing DSO configuration with a freshly generated one (the existing file is backed up first); without this flag bootstrap refuses to overwrite it")
 	cmd.Flags().StringVar(&bootstrapAWSRegion, "aws-region", "", "AWS region for automated setup (default: us-east-1)")
 	cmd.Flags().StringVar(&bootstrapAzureVaultURL, "azure-vault-url", "", "Azure Key Vault URL for automated setup")
 	cmd.Flags().StringVar(&bootstrapHuaweiRegion, "huawei-region", "", "Huawei region for automated setup")
@@ -105,6 +107,34 @@ Examples:
 // LOCAL MODE BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════════
 
+// buildLocalBootstrapOptions constructs the BootstrapOptions for `bootstrap
+// local` from the parsed CLI flags. Split out from bootstrapLocal() so the
+// flag-to-option wiring (in particular the provider-specific fields) can be
+// unit tested without exercising the full bootstrap manager.
+func buildLocalBootstrapOptions(ctx context.Context) *bootstrap.BootstrapOptions {
+	return &bootstrap.BootstrapOptions{
+		Mode:           bootstrap.ModeLocal,
+		Provider:       bootstrapProvider, // From --provider flag, or "" to prompt user
+		NonInteractive: bootstrapNonInteractive,
+		Force:          false,
+		DryRun:         false,
+		// Explicit opt-in only: --non-interactive does not imply it.
+		ReplaceExistingConfig: bootstrapReplaceConfig,
+		Timeout:               30 * 60,
+		Context:               ctx,
+		// Cloud-specific configuration options. Without these, --non-interactive
+		// with a provider that needs one of them (every provider except the
+		// no-config default) always fails validation in internal/bootstrap/local.go
+		// as if the flag had never been passed, because NonInteractive is true
+		// and the corresponding opts.* field was left at its zero value here.
+		AWSRegion:       bootstrapAWSRegion,
+		AzureVaultURL:   bootstrapAzureVaultURL,
+		HuaweiRegion:    bootstrapHuaweiRegion,
+		HuaweiProjectID: bootstrapHuaweiProjectID,
+		VaultAddress:    bootstrapVaultAddress,
+	}
+}
+
 func bootstrapLocal() error {
 	fmt.Println()
 	fmt.Println("Initializing DSO Local Runtime...")
@@ -116,15 +146,7 @@ func bootstrapLocal() error {
 
 	// Create bootstrap options for local mode
 	ctx := context.Background()
-	opts := &bootstrap.BootstrapOptions{
-		Mode:           bootstrap.ModeLocal,
-		Provider:       bootstrapProvider, // From --provider flag, or "" to prompt user
-		NonInteractive: bootstrapNonInteractive,
-		Force:          false,
-		DryRun:         false,
-		Timeout:        30 * 60,
-		Context:        ctx,
-	}
+	opts := buildLocalBootstrapOptions(ctx)
 
 	// Execute with progress reporting
 	result, err := manager.BootstrapWithProgress(ctx, opts, func(phase bootstrap.BootstrapPhase, msg string, progress int) {
@@ -162,14 +184,15 @@ func bootstrapAgent() error {
 	// Create bootstrap options for agent mode
 	ctx := context.Background()
 	opts := &bootstrap.BootstrapOptions{
-		Mode:                bootstrap.ModeAgent,
-		Provider:            bootstrapProvider, // From --provider flag, or "" to prompt/detect
-		NonInteractive:      bootstrapNonInteractive,
-		Force:               false,
-		DryRun:              false,
-		EnableNonRootAccess: enableNonRootAccess,
-		Timeout:             30 * 60,
-		Context:             ctx,
+		Mode:                  bootstrap.ModeAgent,
+		Provider:              bootstrapProvider, // From --provider flag, or "" to prompt/detect
+		NonInteractive:        bootstrapNonInteractive,
+		Force:                 false,
+		DryRun:                false,
+		ReplaceExistingConfig: bootstrapReplaceConfig,
+		EnableNonRootAccess:   enableNonRootAccess,
+		Timeout:               30 * 60,
+		Context:               ctx,
 		// Cloud-specific configuration options
 		AWSRegion:       bootstrapAWSRegion,
 		AzureVaultURL:   bootstrapAzureVaultURL,

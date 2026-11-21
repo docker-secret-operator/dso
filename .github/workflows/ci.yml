@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -58,8 +58,13 @@ jobs:
         # -short skips the long-running stability tests in internal/testing
         # (those tests run 90s–3m each and would exceed the runner timeout).
         # Run them explicitly in a dedicated stability job instead.
+        # The -timeout applies PER PACKAGE test binary. Measured with -race -short
+        # -count=1 (12-core dev host, unstressed): internal/webuiauth 278.6 s (366.7 s
+        # in the contended full-tree run), internal/server 102.8 s (204.5 s full-tree),
+        # internal/cli ~135 s, pkg/vault ~157 s; a 4-core hosted runner is slower, and
+        # bcrypt under the race detector dominates. 300 s left under 7% margin.
         run: |
-          go test -race -short -count=1 -timeout 300s ./...
+          go test -race -short -count=1 -timeout 15m ./...
           echo "✅ Tests passed"
 
   # ── Stability Tests (long-running, separate job with extended timeout) ────
@@ -70,10 +75,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -93,16 +98,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           # Pin to a release built with Go ≥ 1.25 to match go.mod.
           # v2.x dropped the --exclude-dirs CLI flag; use run.exclude-dirs in
@@ -116,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validate CLI usage
         run: |
@@ -129,10 +134,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -159,7 +164,7 @@ jobs:
         # GO-2026-5668 in docker/docker, Fixed in: N/A) -- anything fixable should be
         # resolved by upgrading the dependency, not allowlisted.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           GOVULNCHECK=$(go env GOPATH)/bin/govulncheck
 
           "$GOVULNCHECK" -format json ./... > govulncheck-report.json || true
@@ -185,13 +190,70 @@ jobs:
           echo "✅ govulncheck: no unlisted reachable vulnerabilities"
 
   # ── DCO Check ─────────────────────────────────────────────────────────────
+  webui:
+    name: Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # Single source of truth for the supported Node major (see web/package.json engines).
+          node-version-file: web/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # Non-interactive (eslint.config.mjs) and zero-warning: --max-warnings=0
+        # is part of the npm script, so any warning fails the job.
+        working-directory: web
+        run: npm run lint
+
+      - name: Dependency audit (critical blocks)
+        # Ratchet: the tree currently has 0 advisories at any severity
+        # (npm audit, prod and dev). The gate stays at critical so a newly
+        # published advisory against a pinned dependency does not red-light
+        # unrelated PRs; tighten to --audit-level=high if desired.
+        working-directory: web
+        run: npm audit --audit-level=critical
+
+      - name: Test
+        working-directory: web
+        run: npm test
+
+      - name: Regenerate internal/webui/assets from web/ source
+        # Reuses the same build script as `make webui-build` and
+        # scripts/build-release.sh (single source of truth), so this job
+        # exercises the exact commands a contributor is expected to run.
+        run: ./scripts/build-webui.sh
+
+      - name: Verify committed assets match the regenerated build
+        # Not `git status`: that cannot see git-ignored files. The script
+        # builds a fresh tree into a scratch dir and compares file-by-file
+        # (sha256) against the committed set, the files actually on disk
+        # (ignored ones included), and every /_next/static reference.
+        # The selftest proves the hidden-file case is detected.
+        run: |
+          ./scripts/check-webui-assets.selftest.sh
+          ./scripts/check-webui-assets.sh
+
   dco:
     name: DCO Sign-off
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 

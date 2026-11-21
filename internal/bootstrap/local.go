@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 )
 
+// lookupCurrentUser resolves the invoking user (and so their home directory).
+// It is replaced in tests: os/user ignores $HOME, so without it a test that
+// bootstraps with no explicit config path writes into the real home directory.
+var lookupCurrentUser = user.Current
+
 // LocalBootstrapper handles local mode (development) bootstrap
 type LocalBootstrapper struct {
 	logger     Logger
@@ -43,7 +48,7 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	}
 
 	// Get current user (no special checks for local mode)
-	currentUser, err := user.Current()
+	currentUser, err := lookupCurrentUser()
 	if err != nil {
 		return nil, ErrUserValidation("bootstrap", "current")
 	}
@@ -68,6 +73,11 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	// Validate config path
 	if err := lb.validator.ValidateConfigPath(configPath); err != nil {
 		return nil, err
+	}
+
+	// Never silently replace an existing configuration (checked before any prompt).
+	if err := refuseExistingConfig(configPath, opts.ReplaceExistingConfig); err != nil {
+		return nil, ErrPathValidation("bootstrap", configPath, err.Error())
 	}
 
 	// Collect configuration from user
@@ -102,6 +112,13 @@ func (lb *LocalBootstrapper) Bootstrap(ctx context.Context, opts *BootstrapOptio
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return nil, ErrPathValidation("bootstrap", configDir, fmt.Sprintf("failed to create directory: %v", err))
+	}
+
+	// An opted-in replacement keeps the previous file as a backup; no backup, no replace.
+	if backup, err := backupExistingConfig(configPath); err != nil {
+		return nil, ErrFileWrite("bootstrap", configPath, err)
+	} else if backup != "" {
+		lb.logger.Info("Existing configuration backed up", "backup", backup)
 	}
 
 	// Write config file
@@ -280,7 +297,7 @@ func (lb *LocalBootstrapper) ValidateConfiguration(ctx context.Context, yamlCont
 
 // GetConfigurationDirectory returns the local configuration directory
 func (lb *LocalBootstrapper) GetConfigurationDirectory() (string, error) {
-	currentUser, err := user.Current()
+	currentUser, err := lookupCurrentUser()
 	if err != nil {
 		return "", ErrUserValidation("bootstrap", "current")
 	}

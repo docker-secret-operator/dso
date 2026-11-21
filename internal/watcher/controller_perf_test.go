@@ -17,7 +17,7 @@ import (
 // N tracked containers that was N round-trips per cycle. It must now use a
 // single batched list call regardless of how many targets are tracked.
 func TestReconcileRuntimeState_UsesSingleBatchedList(t *testing.T) {
-	var inspectCalls, listCalls int32
+	var inspectCalls, listCalls, gateListCalls int32
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -25,7 +25,16 @@ func TestReconcileRuntimeState_UsesSingleBatchedList(t *testing.T) {
 		// INSPECT is /containers/<id>/json, so the list must be matched first
 		// or it is miscounted as an inspect.
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
-			atomic.AddInt32(&listCalls, 1)
+			// The N19 gate pass (RequestGateReconcile) is a separate, bounded,
+			// coalesced goroutine that reconcileRuntimeState starts and does not wait
+			// for. Its single dso.gate list may or may not have arrived by the time
+			// the assertions run (it usually has under load), so it is counted
+			// separately; it must not be mistaken for a per-target or reconcile list.
+			if strings.Contains(r.URL.RawQuery, "dso.gate") {
+				atomic.AddInt32(&gateListCalls, 1)
+			} else {
+				atomic.AddInt32(&listCalls, 1)
+			}
 			w.WriteHeader(http.StatusOK)
 			// Report all three tracked containers as still existing.
 			_, _ = w.Write([]byte(`[{"Id":"container-1"},{"Id":"container-2"},{"Id":"container-3"}]`))
@@ -54,6 +63,11 @@ func TestReconcileRuntimeState_UsesSingleBatchedList(t *testing.T) {
 	// Pass 1 (existence) + pass 2 (label re-registration) each list once.
 	if got := atomic.LoadInt32(&listCalls); got > 2 {
 		t.Errorf("reconciliation made %d list calls; expected at most 2 regardless of target count", got)
+	}
+
+	// The coalesced async gate pass issues at most one list for this reconcile.
+	if got := atomic.LoadInt32(&gateListCalls); got > 1 {
+		t.Errorf("gate pass made %d list calls; expected at most 1", got)
 	}
 
 	// All three were reported alive, so none should have been dropped.
@@ -124,13 +138,13 @@ func TestReconcileRuntimeState_ListFailureDoesNotWipeTracking(t *testing.T) {
 // "stopped but present" as existing. A default running-only list would
 // reclassify every stopped container as orphaned and untrack it.
 func TestReconcileRuntimeState_StoppedContainerIsNotOrphaned(t *testing.T) {
-	var sawAllFlag bool
+	var sawAllFlag atomic.Bool
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/containers/json") {
 			// Docker encodes ListOptions{All:true} as ?all=1.
 			if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
-				sawAllFlag = true
+				sawAllFlag.Store(true)
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`[{"Id":"stopped-but-present","State":"exited"}]`))
 				return
@@ -149,7 +163,7 @@ func TestReconcileRuntimeState_StoppedContainerIsNotOrphaned(t *testing.T) {
 
 	rc.reconcileRuntimeState(context.Background())
 
-	if !sawAllFlag {
+	if !sawAllFlag.Load() {
 		t.Error("reconciliation did not request all containers; stopped containers would be wrongly orphaned")
 	}
 	if _, ok := rc.Targets.Load("stopped-but-present"); !ok {

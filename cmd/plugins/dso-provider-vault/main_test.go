@@ -129,3 +129,15 @@ func TestInit_RequiresToken(t *testing.T) {
 		t.Errorf("expected a token-related error, got: %v", err)
 	}
 }
+
+// G013: the Vault client retries 5xx/connection errors twice by default.
+// Retries are owned by the daemon-side wrapper, so Init must disable them.
+func TestInitDisablesSDKRetries(t *testing.T) {
+	p := &VaultProvider{}
+	if err := p.Init(map[string]string{"address": "http://127.0.0.1:8200", "token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.client.MaxRetries(); got != 0 {
+		t.Fatalf("MaxRetries = %d, want 0", got)
+	}
+}

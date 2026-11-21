@@ -2,20 +2,104 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
+
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 )
+
+// ErrHandoffNotReverted reports that a step after the proxy handoff failed and the handoff
+// could not be undone. The candidate was PRESERVED (it may be the only backend the proxy
+// routes to) and the rotation was journalled for manual recovery; the caller must not run a
+// fallback restart on the original.
+var ErrHandoffNotReverted = errors.New("the proxy handoff could not be reverted after a later failure; the candidate was preserved and manual recovery is required")
 
 // RollingStrategy coordinates the zero-downtime rotation lifecycle with atomic guarantees
 type RollingStrategy struct {
 	cli           *client.Client
 	logger        *zap.Logger
 	renameTimeout time.Duration
+
+	// Journal, when set, receives the durable transition journal (see journal.go):
+	// intent before every destructive step, acknowledgement after. A failure to
+	// persist an INTENT aborts the rotation before the guarded action (fail
+	// closed); a failure to persist an acknowledgement is logged only, because the
+	// recovery rule treats an unacknowledged intent as "may have happened".
+	Journal Journal
+	// OwnerID is recorded in the journal (this agent's dso.owner identity).
+	OwnerID string
+	// FaultHook is a TEST-ONLY hook called at every named transition point; tests
+	// panic from it to model the process dying at exactly that point (no deferred
+	// cleanup runs, no later step executes). It is nil in production.
+	FaultHook func(point string)
+
+	rid string // rotation ID of the current Execute (one RollingStrategy per rotation)
+
+	// OnShadowCreated, if set, is called synchronously immediately after the
+	// shadow container is created and BEFORE it is started. It exists so the
+	// caller can suppress the proxy registration that would otherwise happen
+	// when Docker emits this container's "start" event -- an unready shadow
+	// must never be selected by the router. Called at most once per Execute.
+	OnShadowCreated func(newContainerID string)
+
+	// OnReady, if set, is called after the shadow has passed every readiness
+	// gate (health check plus any file-secret probes) and BEFORE the atomic
+	// rename swap or any change to the old container. This is where a caller
+	// performs the proxy handoff. Returning an error aborts the rotation:
+	// the shadow is torn down and the old container is left untouched and
+	// still serving.
+	OnReady func(ctx context.Context, newContainerID string) error
+
+	// OnRevert, if set, undoes what OnReady did. It is called when a step AFTER a
+	// successful handoff fails (the intent_swap write, a rename, swap verification), before
+	// the candidate is discarded, so the caller can put the original back in service. It is
+	// not called for failures before the handoff, nor on success. If it returns an error, or
+	// is nil although OnReady is set, the candidate is preserved and the rotation is
+	// journalled for manual recovery (ErrHandoffNotReverted): the candidate may be the only
+	// backend the proxy still routes to.
+	OnRevert func(ctx context.Context, newContainerID string) error
+
+	// PreCleanupDelay is how long to leave the OLD container running and
+	// reachable after traffic has been handed to the replacement, before
+	// stopping and removing it. It exists because marking a proxy backend
+	// "draining" only stops NEW connections being routed there -- connections
+	// that selected it moments earlier are still dialing or mid-response, and
+	// killing the container out from under them is a client-visible failure.
+	//
+	// Callers performing a proxy handoff should set this to the proxy's drain
+	// window. Zero (the default) preserves the previous behaviour for
+	// rotations with no proxy involvement, where the old container holds no
+	// traffic and can be reclaimed immediately.
+	PreCleanupDelay time.Duration
+
+	// DeliveryOps, when set, replaces the real delivery operations (hardened exec
+	// injector, probe, inspect) used for gated file delivery. TEST-ONLY seam; nil in
+	// production (DefaultDeliveryOps over the strategy's client).
+	DeliveryOps *DeliveryOps
+	// GateTimeout bounds the candidate's startup gate (DefaultGateTimeout when zero).
+	GateTimeout time.Duration
+}
+
+// delivery builds the managed-delivery runner for the candidate id of this operation.
+func (rs *RollingStrategy) delivery() *Delivery {
+	ops := DefaultDeliveryOps(rs.cli)
+	if rs.DeliveryOps != nil {
+		ops = *rs.DeliveryOps
+	}
+	return &Delivery{
+		Ops:        ops,
+		RotationID: rs.rid,
+		Intent:     func(ctx context.Context, e JournalEvent) error { return rs.intent(ctx, e) },
+		Ack:        func(ctx context.Context, e JournalEvent) { rs.ack(ctx, e) },
+		Fault:      rs.fault,
+	}
 }
 
 func NewRollingStrategy(cli *client.Client) *RollingStrategy {
@@ -35,12 +119,112 @@ func NewRollingStrategyWithLogger(cli *client.Client, logger *zap.Logger) *Rolli
 	}
 }
 
+func (rs *RollingStrategy) fault(point string) {
+	// Real-process crash harness: a no-op unless built with -tags dsofault.
+	_ = faultinject.Hit("rolling:" + point)
+	if rs.FaultHook != nil {
+		rs.FaultHook(point)
+	}
+}
+
+// intent persists a transition INTENT; an error means the caller must not perform
+// the guarded action.
+func (rs *RollingStrategy) intent(ctx context.Context, e JournalEvent) error {
+	if rs.Journal == nil {
+		return nil
+	}
+	e.RotationID, e.OwnerID, e.Strategy = rs.rid, rs.OwnerID, "rolling"
+	if err := rs.Journal.Record(ctx, e); err != nil {
+		return fmt.Errorf("rotation journal could not record %q, refusing the next step: %w", e.Transition, err)
+	}
+	return nil
+}
+
+// ack persists an acknowledgement or informational transition; failure is logged
+// only (the matching intent is already durable).
+func (rs *RollingStrategy) ack(ctx context.Context, e JournalEvent) {
+	if rs.Journal == nil {
+		return
+	}
+	e.RotationID, e.OwnerID, e.Strategy = rs.rid, rs.OwnerID, "rolling"
+	if err := rs.Journal.Record(ctx, e); err != nil {
+		rs.logger.Warn("rotation journal could not record an acknowledgement; the intent remains durable",
+			zap.String("transition", e.Transition), zap.Error(err))
+	}
+}
+
 // renameWithTimeout executes a container rename with a timeout to prevent indefinite hangs
 func (rs *RollingStrategy) renameWithTimeout(ctx context.Context, containerID, newName string) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, rs.renameTimeout)
 	defer cancel()
 
 	return rs.cli.ContainerRename(timeoutCtx, containerID, newName)
+}
+
+// abortAfterHandoff is the failure path for every step after the proxy handoff. Before the
+// handoff the candidate was never routed to, so discarding it is enough. After it the proxy
+// may route only to the candidate (the original was marked draining and is removed from the
+// registry after the drain window), so discarding the candidate alone would leave the
+// service with no backend.
+//
+//   - handoff reverted (OnRevert succeeded): the original serves again; the candidate is
+//     discarded as before and cause is returned unchanged.
+//   - handoff NOT reverted (no OnRevert, or it failed): the candidate is PRESERVED, the
+//     rotation is journalled for manual recovery, and the returned error wraps both
+//     ErrHandoffNotReverted and cause.
+func (rs *RollingStrategy) abortAfterHandoff(ctx context.Context, newID, tempName string, handedOff bool, cause error) error {
+	if handedOff {
+		if rerr := rs.revertHandoff(ctx, newID); rerr != nil {
+			cctx, cancel := CleanupContext(ctx)
+			defer cancel()
+			rs.logger.Error("CRITICAL: a step after the proxy handoff failed and the handoff could not be reverted; "+
+				"the candidate is preserved because it may be the only backend. Manual recovery required",
+				zap.String("candidate_id", newID), zap.NamedError("revert_error", rerr), zap.NamedError("cause", cause))
+			rs.ack(cctx, JournalEvent{
+				Transition: TrFailed, CandidateIDs: []string{newID}, ManualRecovery: true,
+				Detail: "a step after the proxy handoff failed and the handoff could not be reverted; the candidate was preserved and the service may be routed only to it: operator action required",
+			})
+			return fmt.Errorf("%w: %v: %w", ErrHandoffNotReverted, rerr, cause)
+		}
+	}
+	rs.discardShadow(ctx, newID, tempName, true)
+	return cause
+}
+
+// revertHandoff undoes OnReady on a bounded cleanup context (it must work after the
+// rotation context ended). With OnReady set but no OnRevert there is no way to undo it.
+func (rs *RollingStrategy) revertHandoff(ctx context.Context, newID string) error {
+	if rs.OnRevert == nil {
+		return errors.New("no handoff revert is configured")
+	}
+	cctx, cancel := CleanupContext(ctx)
+	defer cancel()
+	return rs.OnRevert(cctx, newID)
+}
+
+// discardShadow removes the not-yet-promoted replacement ("shadow") container
+// after a failed or abandoned rotation. It runs on a bounded cleanup context
+// that survives cancellation of the rotation context (see CleanupContext), so a
+// timeout or daemon shutdown still removes the shadow. The original container
+// is never touched here. A failure is logged as an error with the manual
+// recovery command, because a leaked shadow keeps running with the new secrets.
+func (rs *RollingStrategy) discardShadow(ctx context.Context, shadowID, shadowName string, stop bool) {
+	cctx, cancel := CleanupContext(ctx)
+	defer cancel()
+	rs.ack(cctx, JournalEvent{Transition: TrIntentRollback, CandidateIDs: []string{shadowID}, Detail: "discarding the not-yet-promoted candidate; the original is untouched"})
+	rs.fault("after_intent_rollback")
+	defer rs.ack(cctx, JournalEvent{Transition: TrRolledBack, CandidateIDs: []string{shadowID}})
+	if stop {
+		if err := rs.cli.ContainerStop(cctx, shadowID, container.StopOptions{}); err != nil {
+			rs.logger.Warn("Could not stop shadow container during rollback (removal is forced)",
+				zap.String("shadow_id", shadowID), zap.Error(err))
+		}
+	}
+	if err := rs.cli.ContainerRemove(cctx, shadowID, container.RemoveOptions{Force: true}); err != nil {
+		rs.logger.Error("ROLLBACK INCOMPLETE: could not remove the replacement container; it may still be running with the new secrets. "+
+			"The original container was not modified. Recover with: docker rm -f "+shadowID,
+			zap.String("shadow_id", shadowID), zap.String("shadow_name", shadowName), zap.Error(err))
+	}
 }
 
 // cleanupContainerWithRetry attempts to stop and remove a container with exponential backoff retry.
@@ -114,12 +298,29 @@ func (rs *RollingStrategy) cleanupContainerWithRetry(ctx context.Context, contai
 // The rotation follows these atomic steps:
 // 1. Prepare new container config (no state changes)
 // 2. Create new container with temporary name
-// 3. Start new container
-// 4. Verify health with timeout
-// 5. Rename old -> backup, new -> original (atomic swap point)
-// 6. Cleanup backup container
+// 3. (file secrets) arm the startup gate on the candidate; no secret is written yet
+// 4. Start new container (gated: the application has not run)
+// 4.5 Verify identity + tmpfs, deliver files (exec injector), probe, journal the
+//
+//	delivery evidence, release the gate (N19; docs/design/n19-managed-delivery.md)
+//
+// 5. Verify health with timeout
+// 6. Verify file-mode secrets are still present (exec probe)
+// 7. Rename old -> backup, new -> original (atomic swap point)
+// 8. Cleanup backup container
 // If any step fails before the swap, full rollback occurs with no state changes.
-func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, timeout time.Duration) error {
+//
+// newEnvs must contain ONLY secrets configured for env-mode injection
+// (SecretMapping.Inject.Type == "env", DSO's documented, intentionally-visible
+// mode). Secrets configured for file-mode injection belong in fileSecrets
+// instead -- PrepareShadowConfig merges newEnvs directly into Config.Env, so
+// a file-mode secret placed there would leak into `docker inspect` output.
+// See internal/watcher/controller.go's callers, which build these two maps
+// by checking Inject.Type.
+// managedEnvNames (SEC-P0-3) is every env var name this container's config
+// maps ANY of its secrets to, independent of each secret's current inject
+// type -- see the doc comment on PrepareShadowConfig for why it's required.
+func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newEnvs map[string]string, fileSecrets []FileSecretSpec, managedEnvNames map[string]bool, timeout time.Duration) error {
 	rs.logger.Info("Starting rotation",
 		zap.String("container_id", containerID),
 		zap.Duration("health_timeout", timeout))
@@ -141,6 +342,11 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		return fmt.Errorf("container %s returned empty name, refusing rotation", containerID)
 	}
 
+	rs.rid = RotationIDFrom(ctx)
+	if rs.rid == "" {
+		rs.rid = NewRotationID()
+	}
+
 	originalName := strings.TrimPrefix(inspect.Name, "/")
 	tempNewName := originalName + "_dso_new_" + fmt.Sprintf("%d", time.Now().Unix())
 	backupName := originalName + "_dso_backup_" + fmt.Sprintf("%d", time.Now().Unix())
@@ -151,7 +357,7 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		zap.String("backup_name", backupName))
 
 	// Step 2: Prepare new container config
-	config, hostConfig, networkingConfig, _, err := cloner.PrepareShadowConfig(ctx, containerID, newEnvs)
+	config, hostConfig, networkingConfig, _, err := cloner.PrepareShadowConfig(ctx, containerID, newEnvs, managedEnvNames)
 	if err != nil {
 		rs.logger.Error("Failed to prepare shadow config",
 			zap.String("container_id", containerID),
@@ -159,41 +365,154 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		return fmt.Errorf("failed to prepare shadow config: %w", err)
 	}
 
+	// N19: a candidate that must receive file secrets is created with a startup gate
+	// (the original ENTRYPOINT/CMD/user/workdir are preserved) and never receives the
+	// secret through the archive endpoint. Deterministic refusals (no tmpfs at the
+	// destination, unsafe path, no ENTRYPOINT/CMD, owner mismatch) happen here, before
+	// any container exists and before the journal records anything.
+	gated := len(fileSecrets) > 0
+	if gated {
+		if err := PrepareGatedCandidate(config, hostConfig, fileSecrets, rs.GateTimeout); err != nil {
+			rs.logger.Error("Managed file delivery refused before any change", zap.String("container_id", containerID), zap.Error(err))
+			return err
+		}
+	}
+
 	// Step 3: Create new container with temporary name
+	// Operation identity that exists even if we crash before the candidate's
+	// container ID is journalled: recovery finds the candidate by this label.
+	if config.Labels == nil {
+		config.Labels = map[string]string{}
+	}
+	config.Labels[LabelRotationID] = rs.rid
+
+	if err := rs.intent(ctx, JournalEvent{
+		Transition: TrIntentCreateCandidate, ServiceID: originalName,
+		OriginalIDs: []string{containerID}, Detail: "candidate " + tempNewName,
+	}); err != nil {
+		return err
+	}
+	rs.fault("after_intent_create_candidate")
+
 	rs.logger.Info("Creating new container", zap.String("temp_name", tempNewName))
 	createResp, err := rs.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, tempNewName)
 	if err != nil {
 		rs.logger.Error("Failed to create new container",
 			zap.String("temp_name", tempNewName),
 			zap.Error(err))
+		rs.ack(ctx, JournalEvent{Transition: TrFailed, Detail: "candidate creation failed: nothing was created"})
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 	newContainerID := createResp.ID
+	rs.fault("after_candidate_create_before_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrCandidateCreated, CandidateIDs: []string{newContainerID}, Gated: gated})
 
+	// Suppress proxy registration for this shadow before it is ever started.
+	// Docker emits "start" the moment ContainerStart returns, and the
+	// watcher's start handler would otherwise register it as an ACTIVE
+	// backend while the application inside is still booting -- routing real
+	// client traffic at a container that is not listening yet.
+	if rs.OnShadowCreated != nil {
+		rs.OnShadowCreated(newContainerID)
+	}
+
+	// Step 3.5 (N19): file-mode secrets are NOT written before start. The candidate was
+	// created with a startup gate; delivery happens after start, through the hardened
+	// exec injector into the verified tmpfs, and releases the gate last (step 4.5).
 	// Step 4: Start new container
+	rs.fault("after_secret_delivery")
 	rs.logger.Info("Starting new container", zap.String("new_container_id", newContainerID))
 	if err := rs.cli.ContainerStart(ctx, newContainerID, container.StartOptions{}); err != nil {
 		// Rollback: remove the new container
 		rs.logger.Warn("Failed to start new container, rolling back",
 			zap.String("new_container_id", newContainerID),
 			zap.Error(err))
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, false)
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
+	// Step 4.5 (N19): verify the running candidate's identity and tmpfs, deliver every
+	// file, probe them, record delivery evidence (keyed versions) durably, and only then
+	// release the gate so the application starts. Any failure leaves the gate closed or
+	// the candidate discarded; the original is untouched.
+	if gated {
+		if _, derr := rs.delivery().Execute(ctx, newContainerID, fileSecrets); derr != nil {
+			rs.logger.Error("Managed file delivery failed, rolling back",
+				zap.String("new_container_id", newContainerID), zap.Error(derr))
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return fmt.Errorf("managed file delivery to the candidate failed: %w", derr)
+		}
+	}
+
 	// Step 5: Verify health
+	rs.fault("after_start_before_verify")
 	rs.logger.Info("Waiting for health verification",
 		zap.String("new_container_id", newContainerID),
 		zap.Duration("timeout", timeout))
 
-	if err := WaitHealthy(ctx, rs.cli, newContainerID, timeout); err != nil {
+	readiness, err := WaitReady(ctx, rs.cli, newContainerID, timeout)
+	if err == nil && readiness == ReadinessProcessStable {
+		// Honest reporting: without a HEALTHCHECK only "process stayed running" is
+		// known; application readiness (and thus zero downtime) is NOT established.
+		rs.logger.Warn("Replacement has no HEALTHCHECK: readiness limited to process-running evidence",
+			zap.String("new_container_id", newContainerID))
+	}
+	if err != nil {
 		// Rollback: remove the unhealthy container
 		rs.logger.Warn("Health check failed, rolling back",
 			zap.String("new_container_id", newContainerID),
 			zap.Error(err))
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
+		rs.discardShadow(ctx, newContainerID, tempNewName, true)
 		return fmt.Errorf("health verification failed: %w", err)
+	}
+
+	// Step 5.5: Verify file-mode secrets actually landed on disk before we
+	// commit to the swap -- catches a partially-completed injection (e.g. the
+	// stream succeeded but something removed/overwrote the file) rather than
+	// swapping traffic onto a container missing a secret it needs.
+	probeOps := rs.delivery().Ops
+	for _, fs := range fileSecrets {
+		if err := probeOps.Probe(ctx, newContainerID, fs); err != nil {
+			rs.logger.Warn("File-mode secret probe failed, rolling back",
+				zap.String("new_container_id", newContainerID),
+				zap.String("path", fs.Path),
+				zap.Error(err))
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return fmt.Errorf("file-mode secret probe failed for %s: %w", fs.Path, err)
+		}
+	}
+
+	// Step 6: Proxy handoff. The shadow has now passed every readiness gate,
+	// so it is finally safe for it to receive production traffic. This runs
+	// BEFORE the renames and before the old container is touched, so a failed
+	// handoff costs nothing: we tear down the shadow and the old container is
+	// still named correctly, still running, and still the only active backend.
+	rs.fault("after_candidate_verified")
+	rs.ack(ctx, JournalEvent{Transition: TrCandidateReady, CandidateIDs: []string{newContainerID}})
+
+	// handedOff is true once OnReady has succeeded: from then on the proxy may route to the
+	// candidate, so every failure path below must revert the handoff (abortAfterHandoff)
+	// instead of simply discarding the candidate.
+	handedOff := false
+	if rs.OnReady != nil {
+		if err := rs.intent(ctx, JournalEvent{
+			Transition: TrIntentHandoff, CandidateIDs: []string{newContainerID},
+			ExpectedProxyTarget: newContainerID,
+		}); err != nil {
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return err
+		}
+		rs.fault("after_intent_handoff")
+		if err := rs.OnReady(ctx, newContainerID); err != nil {
+			rs.logger.Error("Proxy handoff failed, rolling back (old container keeps serving)",
+				zap.String("new_container_id", newContainerID),
+				zap.Error(err))
+			rs.discardShadow(ctx, newContainerID, tempNewName, true)
+			return fmt.Errorf("proxy handoff failed: %w", err)
+		}
+		handedOff = true
+		rs.fault("after_handoff_before_ack")
+		rs.ack(ctx, JournalEvent{Transition: TrHandoffDone, ObservedProxyTarget: newContainerID, CandidateIDs: []string{newContainerID}})
 	}
 
 	// ATOMIC SWAP POINT: All previous steps are reversible. After this point,
@@ -204,6 +523,14 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 	swapCtx := context.Background()
 
 	// Step 6: Rename original container to backup
+	if err := rs.intent(ctx, JournalEvent{
+		Transition: TrIntentSwap, OriginalIDs: []string{containerID}, CandidateIDs: []string{newContainerID},
+		Detail: "rename " + originalName + " -> " + backupName + ", candidate -> " + originalName,
+	}); err != nil {
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff, err)
+	}
+	rs.fault("after_intent_swap")
+
 	rs.logger.Info("Renaming original container to backup",
 		zap.String("original_id", containerID),
 		zap.String("backup_name", backupName))
@@ -216,12 +543,13 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		// At this point, the original container is still active with its original name,
 		// and the new container is running under the temp name. This is a recoverable state.
 		// The operator must manually fix this by removing the new container.
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		return fmt.Errorf("FATAL: Failed to rename original container to backup: %w", err)
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("FATAL: Failed to rename original container to backup: %w", err))
 	}
 
 	// Step 7: Rename new container to original name
+	rs.fault("between_renames")
+
 	rs.logger.Info("Renaming new container to original name",
 		zap.String("new_container_id", newContainerID),
 		zap.String("original_name", originalName))
@@ -259,9 +587,8 @@ func (rs *RollingStrategy) Execute(ctx context.Context, containerID string, newE
 		}
 
 		// Restore succeeded, cleanup the new container
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		return fmt.Errorf("failed to finalize swap: %w", err)
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("failed to finalize swap: %w", err))
 	}
 
 verifySwap:
@@ -285,24 +612,52 @@ verifySwap:
 
 		// If we got here, managed to restore original container to original name
 		// Remove the new container that's stuck with temp/wrong name
-		_ = rs.cli.ContainerStop(ctx, newContainerID, container.StopOptions{})
-		_ = rs.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-
-		return fmt.Errorf("atomic swap verification failed, rolled back to original state")
+		return rs.abortAfterHandoff(ctx, newContainerID, tempNewName, handedOff,
+			fmt.Errorf("atomic swap verification failed, rolled back to original state"))
 	}
 
 	// Success! The new container is now the active one
+	rs.fault("after_swap_before_commit_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrSwapCommitted, OriginalIDs: []string{containerID}, CandidateIDs: []string{newContainerID}})
+	rs.fault("after_swap_committed")
+
 	rs.logger.Info("Rotation complete, new container is active",
 		zap.String("original_name", originalName),
 		zap.String("backup_name", backupName))
 
+	// Let connections that selected the old backend just before the handoff
+	// finish against a container that is still alive. Without this the drain
+	// is only nominal: the registry entry drains, but the process serving
+	// those connections is killed immediately below.
+	if rs.PreCleanupDelay > 0 {
+		rs.logger.Info("Holding old container for connection drain before cleanup",
+			zap.String("backup_name", backupName),
+			zap.Duration("drain", rs.PreCleanupDelay))
+		select {
+		case <-time.After(rs.PreCleanupDelay):
+		case <-ctx.Done():
+			// Shutting down: fall through and reclaim the container anyway
+			// rather than leaking it.
+		}
+	}
+
 	// Step 8: Cleanup backup container with retry
+	if err := rs.intent(ctx, JournalEvent{Transition: TrIntentCleanup, OriginalIDs: []string{containerID}, Detail: "retiring " + backupName}); err != nil {
+		// The swap is already committed and the new container serves. Leave the
+		// backup in place for recovery rather than delete without a durable intent.
+		rs.logger.Warn("Not removing the old container: the cleanup intent could not be journalled", zap.Error(err))
+		return nil
+	}
+	rs.fault("after_intent_cleanup")
+
 	rs.logger.Info("Cleaning up backup container with retry",
 		zap.String("backup_name", backupName),
 		zap.String("original_id", containerID))
 
 	stopTimeout := int(timeout.Seconds())
 	rs.cleanupContainerWithRetry(ctx, containerID, backupName, stopTimeout)
+	rs.fault("after_cleanup_before_ack")
+	rs.ack(ctx, JournalEvent{Transition: TrCompleted})
 
 	rs.logger.Info("Rotation finished successfully",
 		zap.String("original_name", originalName))
@@ -358,4 +713,14 @@ func (rs *RollingStrategy) verifyAtomicSwap(ctx context.Context,
 		zap.String("active_name", originalName))
 
 	return nil
+}
+
+// secretFileNames returns the file names delivered for a FileSecretSpec.
+func secretFileNames(data map[string]string) []string {
+	names := make([]string, 0, len(data))
+	for n := range data {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -7,35 +7,6 @@ import (
 	"testing"
 )
 
-func TestBuildInjectCmd(t *testing.T) {
-	cmd := buildInjectCmd("/run/secrets/dso/test", 1000, 2000)
-
-	if !strings.Contains(cmd, "mkdir -p /run/secrets/dso") {
-		t.Errorf("cmd missing mkdir")
-	}
-	if !strings.Contains(cmd, "base64 -d") {
-		t.Errorf("cmd missing base64 decode")
-	}
-	if !strings.Contains(cmd, "chown 1000:2000 /run/secrets/dso/test") {
-		t.Errorf("cmd missing chown")
-	}
-	if !strings.Contains(cmd, "chmod 0400") {
-		t.Errorf("cmd missing chmod")
-	}
-	// Secret must never be embedded in the command — delivered via stdin only.
-	if strings.Contains(cmd, "printf") || strings.Contains(cmd, "echo") {
-		t.Errorf("cmd must not embed secret content — use stdin delivery")
-	}
-}
-
-func TestBuildInjectCmdNoChown(t *testing.T) {
-	cmd := buildInjectCmd("/run/secrets/dso/test", 0, 0)
-
-	if strings.Contains(cmd, "chown") {
-		t.Errorf("cmd should not contain chown when uid/gid are 0")
-	}
-}
-
 func TestInjectFiles_Empty(t *testing.T) {
 	err := InjectFiles(context.Background(), nil, "cid", nil, 0, 0)
 	if err != nil {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
 // ServiceFilePath is the systemd unit file DSO installs. Exported so
@@ -29,7 +31,7 @@ func NewSystemdManager(logger Logger, dryRun bool) *SystemdManager {
 
 // GenerateServiceFile generates a hardened systemd service file for DSO agent
 func (sm *SystemdManager) GenerateServiceFile() string {
-	return `[Unit]
+	unit := `[Unit]
 Description=DSO Secret Injection Runtime Agent
 Documentation=https://github.com/docker-secret-operator/dso
 After=docker.service network-online.target
@@ -45,10 +47,7 @@ WorkingDirectory=/var/lib/dso
 StateDirectory=dso
 CacheDirectory=dso
 LogsDirectory=dso
-RuntimeDirectory=dso
-RuntimeDirectoryMode=0750
-
-ExecStartPre=/usr/bin/install -d -m 0750 /run/dso
+{{RUNTIME_DIRECTORY}}
 ExecStartPre=/usr/bin/install -d -m 0755 /run/docker/plugins
 ExecStart=/usr/local/bin/dso --config /etc/dso/dso.yaml agent --socket /run/dso/dso.sock --driver-socket /run/docker/plugins/dso.sock
 Restart=on-failure
@@ -58,22 +57,12 @@ StartLimitBurst=3
 
 SyslogIdentifier=dso-agent
 
-# Security Hardening
-NoNewPrivileges=true
-PrivateTmp=yes
+# Security Hardening (shared sandbox directives: runtimedir.HardeningDirectives)
+{{HARDENING}}
+# Filesystem sandbox (bootstrap-only: depends on the directories bootstrap creates)
 ProtectSystem=strict
 ProtectHome=yes
-ProtectClock=yes
-ProtectHostname=yes
-ProtectKernelLogs=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictNamespaces=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/etc/dso /var/lib/dso /var/log/dso /run/dso /run/docker/plugins
 
 # Resource Limits
@@ -88,6 +77,10 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 `
+	// The runtime-directory lines are shared with the setup planner and repair
+	// units (see runtimedir.UnitDirectives for the lifecycle rationale).
+	unit = strings.Replace(unit, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1)
+	return strings.Replace(unit, "{{HARDENING}}\n", runtimedir.HardeningDirectives, 1)
 }
 
 // InstallServiceFile writes the systemd service file

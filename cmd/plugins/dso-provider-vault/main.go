@@ -50,6 +50,10 @@ func (p *VaultProvider) Init(config map[string]string) error {
 
 	cfg := vault.DefaultConfig()
 	cfg.Address = vaultAddr
+	// The Vault client retries 5xx/connection errors twice by default.
+	// Retries are owned by provider.Resilient in the daemon (G013); keeping
+	// these would multiply attempts during an outage.
+	cfg.MaxRetries = 0
 
 	client, err := vault.NewClient(cfg)
 	if err != nil {

@@ -355,10 +355,11 @@ export HUAWEI_PROJECT_ID="project-id"
 
 ```bash
 # Directory permissions
-/etc/dso/               → root:dso, 0755 (readable by all)
-/var/lib/dso/          → root:dso, 0770 (read/write by group)
+/etc/dso/               → root:dso, 0750 (group read/traverse only; editing config needs sudo; fix old 0775 installs with `sudo docker dso repair permissions`)
+/var/lib/dso/          → root:dso, 0750 (group read-only; only the agent writes)
+/var/lib/dso/ledger/   → root, 0700 (created by the agent's ledger key provider; ledger.key 0400)
 /var/log/dso/          → root:dso, 0770 (read/write by group)
-/run/dso/              → root:dso, 0775 (sockets)
+/run/dso/              → root:dso, 0750 (sockets; group may traverse, never write)
 
 # Non-root access setup
 sudo usermod -aG dso $USER

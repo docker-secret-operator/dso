@@ -394,3 +394,17 @@ Return StrategyDecision
 - `internal/analyzer/`: Container analysis engine
 - Rotation executor documentation (rolling and restart strategies)
 - Secret management workflow documentation
+
+## Signal strategy (`strategy: signal`) — what it does and does not guarantee
+
+Signal rotation is for **file-mode** secrets (`inject.type: file`) in a *running* container whose application reloads them on a signal.
+
+Lifecycle, in this order, under the service lock: verify the container is running and owned by this agent → resolve the new value from the agent cache (missing value = fail, nothing changes) → deliver each file atomically (`mktemp` in the same directory under umask 077, SHA-256 check, owner + `0400` set before the rename; tmpfs required) → verify the delivered files with an exec probe → send the configured reload signal (`rotation.signal`; only `SIGHUP`, `SIGUSR1`, `SIGUSR2` are allowed, default `SIGHUP`) → check readiness. The signal is **never** sent unless every file was delivered and verified.
+
+* **Environment-variable secrets are rejected.** A signal cannot change the environment of a running process. Use `restart` or `rolling` for env-mode secrets; a container mapped to any env-mode secret is refused before anything is changed.
+* **Success means "delivered and reload requested", not "adopted".** DSO has no application-level acknowledgement. An application that already holds the old file open keeps reading the old inode until it reopens the file, and not every application implements the reload signal. Readiness is reported as Docker HEALTHCHECK `healthy` when the image defines one, otherwise only "process still running".
+* **Failures end in a precise, named state** (`SignalRotationError.State`), never a vague "irrecoverable": `nothing_published` (delivery failed before any file was replaced; previous value intact), `partially_published` (some files of the set were replaced), `published_verification_failed`, `published_signal_not_sent`, `signal_sent_outcome_unknown` (readiness failed after the signal), and on success `reload_requested_adoption_unverified`. Every state except `nothing_published` flags the service degraded.
+* **No rollback is performed and none is claimed.** DSO keeps no plaintext backup of the previous value, does not re-fetch or re-apply an older version automatically (a provider may not retain it, and it may already have been revoked), and cannot see the application's state. The supported path is manual: re-deliver the secret (`sync`) or restart the container.
+* The degraded flag is **in memory** and is lost on agent restart; the audit log (`failed` / `reload_requested`) is the durable record until the rotation journal (M0-04) covers signal rotations.
+* A *set* of files is not replaced atomically as a group; each file is replaced atomically on its own.
+* The applied version is not durably recorded by this strategy (the committed state model does not track per-secret applied versions yet); the audit log records `reload_requested` or `failed`.

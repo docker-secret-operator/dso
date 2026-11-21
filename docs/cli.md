@@ -26,6 +26,10 @@ docker dso
 ├── doctor                 # Check environment health and connectivity (Phase 2)
 │   ├── --level [default|full]  # Detail level
 │   └── --json             # Machine-readable output
+├── repair                 # Explicit, narrowly scoped repairs
+│   └── permissions        # Inspect/repair the directory permission contract
+│       ├── --dry-run      # Show current vs expected; change nothing (no root)
+│       └── --json         # Machine-readable output
 ├── status                 # View real-time system metrics (Phase 3)
 │   ├── --watch            # Auto-refresh every 2 seconds
 │   └── --json             # Machine-readable output
@@ -175,6 +179,73 @@ docker dso doctor --json
 ```
 
 Returns JSON with all diagnostic data for integration with monitoring systems.
+
+---
+
+### Repair Directory Permissions
+
+`docker dso repair permissions` is the dedicated entry point for the permission repair that `docker dso doctor` recommends (`DSO-DOCTOR-025` and the directory checks). It is **not** run automatically.
+
+```bash
+docker dso repair permissions --dry-run   # current vs expected, changes nothing, no root needed
+sudo docker dso repair permissions        # apply the directory-level corrections
+```
+
+Checked paths, and only these:
+
+| Path | Expected |
+|------|----------|
+| `/etc/dso` | `root:dso` `0750` |
+| `/var/lib/dso` | `root:dso` `0750` |
+| `/var/run/dso` (`/run/dso`) | `root:dso` `0750` (exact) |
+| `/var/lib/dso/ledger` | `root` `0700` |
+| `/var/lib/dso/ledger/ledger.key` | `root` `0400` (`0600` accepted) |
+| `/usr/local/lib/dso/plugins` | root-owned, no group/world write |
+
+`root:root` replaces `root:dso` when the host has no `dso` group. `/var/log/dso` (`0770`) is outside this command.
+
+Example dry-run output (before `sudo` is used; nothing is modified):
+
+```
+DSO permission contract (dry run: nothing is modified)
+
+PATH                              CURRENT         EXPECTED                                STATUS
+/etc/dso                          root:dso 0775   root:dso 0750                           change
+/var/lib/dso                      root:dso 0770   root:dso 0750                           change
+/var/run/dso                      root:dso 0750   root:dso 0750                           ok
+/var/lib/dso/ledger               root:root 0700  root 0700                               ok
+/var/lib/dso/ledger/ledger.key    root:root 0400  root 0400 (0600 accepted)               ok
+/usr/local/lib/dso/plugins        root:root 0755  root-owned, no group/world write (0755) ok
+
+Changes required: 2
+
+Details:
+  /etc/dso: mode 0775, expected 0750
+  /var/lib/dso: mode 0770, expected 0750
+
+Configuration files will not be rewritten
+Ledger keys will not be regenerated
+No recursive permission changes will be performed
+```
+
+What it does: sets the owner and mode of the directories above, one directory at a time, through a descriptor opened with `O_NOFOLLOW|O_DIRECTORY` (`fchown`/`fchmod`). A symlink, or a regular file where a directory is expected, is refused and reported as `manual`. A path that already conforms is not touched, so a second run changes nothing. A directory that is *stricter* than the contract (except `/var/run/dso`, which is exact) is never loosened.
+
+What it never does: recursive chmod/chown; read, rewrite or replace `dso.yaml` or any configuration file; create, regenerate, rename or remove the ledger key; reset authentication state; restart the agent (restart the `dso-agent` service yourself afterwards); modify unrelated files; print key material.
+
+The ledger key is only ever *inspected*. A missing key beside existing ledger state, a key owned by someone other than root, a hard-linked or symlinked key, or a file that is not a ledger key (wrong size or header) is reported as `manual` with a diagnostic and left untouched. Only the mode of a key that is verifiably a ledger key owned by root is tightened (to `0400`). The plugin directory is only repaired when it is root-owned, and only its group/world write bits are removed.
+
+Existing installs created by earlier builds have `/etc/dso` at `0775`; this command is how they are corrected (upgrading the binary does not change them).
+
+Applying requires root: a non-root `docker dso repair permissions` (without `--dry-run`) is refused before anything changes, with a message saying to use `sudo`.
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | Every path conforms, or every required correction was applied and nothing needs manual action (also what a second run returns) |
+| `1` | Not root (apply), one or more corrections failed (the table shows which paths changed and which failed), or another error |
+| `12` | `--dry-run` only: corrections are required (nothing was changed) |
+| `13` | A path needs manual action (symlink, wrong owner, missing/corrupt/unsafe key) that this command never performs |
+
+Precedence when several apply: `1`, then `12`, then `13`. `--json` prints the same report as JSON (paths, owners, modes, statuses; never file contents).
 
 ---
 
@@ -575,7 +646,9 @@ docker dso secret set api_key
 
 **Retrieve a secret from the Local Vault.**
 
-Prints the raw secret value to stdout. No trailing newline by default (for safe piping).
+Prints the raw secret value to stdout **only when `--reveal` is given**. Without it the command exits non-zero and prints nothing sensitive (and does not read the vault), so plaintext cannot end up in terminal scrollback or CI logs by accident. No trailing newline by default (for safe piping).
+
+> **Breaking change:** earlier releases printed the value without any flag. Add `--reveal` to existing scripts: `MY_SECRET=$(docker dso secret get myapp/db_password --reveal)`. Scripts that are not updated now fail with a non-zero exit instead of capturing a value.
 
 #### Usage
 
@@ -587,19 +660,20 @@ docker dso secret get <project>/<path> [flags]
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
+| `--reveal` | | `false` | Print the plaintext value (required) |
 | `--newline` | `-n` | `false` | Append a newline character to the output |
 
 #### Examples
 
 ```bash
 # Print secret (no trailing newline)
-docker dso secret get myapp/db_password
+docker dso secret get myapp/db_password --reveal
 
 # Print with trailing newline
-docker dso secret get myapp/db_password -n
+docker dso secret get myapp/db_password --reveal -n
 
 # Capture in a variable
-MY_SECRET=$(docker dso secret get myapp/db_password)
+MY_SECRET=$(docker dso secret get myapp/db_password --reveal)
 ```
 
 #### Mode Compatibility
@@ -1204,6 +1278,106 @@ docker dso completion zsh >> ~/.zshrc
 
 ---
 
+### `docker dso inject`
+
+**Inject one secret file into a running container's tmpfs (administrative command).**
+
+Writes a single secret as a file into a directory that is already a `tmpfs` mount of the **running** target container. It does not touch the vault or any configuration; use configuration for persistent changes. Delivery uses `docker exec` plus an atomic rename (the older tar/archive upload is no longer used).
+
+> **Verification status:** implemented and unit-tested; guarded runtime scenarios exist but have not been executed. Managed zero-persistence delivery is not runtime-verified (finding N19 is open; managed config-driven rotation now reuses this injector behind a startup gate, see [design note](design/n19-managed-delivery.md), but that is also runtime-unverified). Do not treat this command as evidence that the managed path is verified.
+
+#### Usage
+
+```bash
+docker dso inject --container <id|name> --secret <file-name> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--container` | (required) | Target container ID or name |
+| `--secret` | (required) | Secret file name: letters, digits, `.`, `_`, `-`; no path separators |
+| `--value` | | **Unsafe for real secrets**: visible in shell history, process lists and CI logs. A warning is printed. Mutually exclusive with `--value-stdin` |
+| `--value-stdin` | `false` | Read the exact bytes from stdin (nothing trimmed) |
+| `--trim-newline` | `false` | Remove one trailing newline from stdin input (nothing else is trimmed) |
+| `--mount` | `/run/secrets/dso` | Absolute, clean, non-root directory inside the container; must lie inside a declared tmpfs mount |
+
+With no value flag, the value is read from a hidden prompt on a terminal, or from piped stdin.
+
+#### Authorization boundary
+
+This is an administrative command. It acts on whichever container you name through the Docker endpoint in your environment (`DOCKER_HOST`, default `/var/run/docker.sock`). Access to that endpoint is the authority; the container does not need a DSO owner label and does not need to be DSO-managed.
+
+#### Requirements
+
+- The target must be **running**. Stopped, paused and restarting containers are refused.
+- The destination directory must lie inside a tmpfs mount **declared in the container configuration** (`HostConfig.Tmpfs` or `Mounts`). The deepest declared mount covering the directory decides, so a bind mount or volume nested under a tmpfs refuses.
+- The image must provide `sh`, `mktemp`, `base64` and `sha256sum`. Images lacking them (for example distroless or scratch images) are **not supported** by this command.
+- `--container` must resolve to exactly one container (name, full ID or unique ID prefix). An ambiguous reference is refused; the first match is never chosen.
+
+#### Supported and refused configurations
+
+| Configuration | Result |
+|---|---|
+| Running container with a declared tmpfs covering the destination | Supported |
+| Stopped, paused or restarting container | Refused |
+| No tmpfs declared at the destination | Refused |
+| Destination on a bind mount or volume (including nested under a tmpfs) | Refused |
+| Ambiguous or unknown container reference | Refused |
+| Invalid `--secret` name or `--mount` directory | Refused before any Docker call |
+
+#### File ownership and mode
+
+The file is currently written as owner `root:root`, mode `0400`. A non-root application process therefore cannot read it. This behaviour is under review (finding N16); do not rely on the file being readable by the application's user.
+
+#### Failure behaviour
+
+On any refusal or failure the command exits non-zero. When refused, nothing is written. The injector removes its temporary file on failure, and a previously existing file at the destination is left intact (the final step is an atomic rename).
+
+#### Security limitations
+
+- A tmpfs removes **host-disk persistence only**. Host root, anyone with access to the Docker socket, swap and core dumps can still expose the value.
+- With `--value`, the secret appears in the command's argument list. Prefer the prompt or `--value-stdin`.
+- A container whose filesystem an adversary controls can race the destination directory. The in-container `/proc/mounts` check performed by the injector is the authority; the pre-check against the container configuration only fails early.
+
+#### Examples (synthetic values)
+
+```bash
+# Hidden prompt
+docker dso inject --container my-app --secret api_key
+
+# From stdin, exact bytes
+printf %s "example-value-123" | docker dso inject --container my-app --secret api_key --value-stdin
+
+# From a file, into a custom tmpfs directory
+docker dso inject --container my-app --secret tls_key --value-stdin --mount /run/tls < example-key.pem
+
+# Throwaway test value only (unsafe)
+docker dso inject --container my-app --secret scratch --value "test-only-value"
+```
+
+The container must declare the tmpfs, for example in Compose:
+
+```yaml
+services:
+  my-app:
+    tmpfs:
+      - /run/secrets/dso
+```
+
+#### Mode Compatibility
+
+| Cloud Mode | Local Mode | Requires Root | Requires Config |
+|---|---|---|---|
+| Not verified | Not verified | Not verified (the command needs access to the Docker endpoint) | Not verified |
+
+The command reads no DSO configuration or vault in the code path reviewed (`internal/cli/inject.go`), and
+needs only Docker access, but its behaviour in each mode has not been tested; this table will be filled in
+after the guarded runtime scenarios have been executed.
+
+---
+
 ## Hidden / Internal Commands
 
 These commands are not shown in `--help` output.
@@ -1239,7 +1413,6 @@ The following commands exist in the CLI tree and are registered, but return `not
 | Command | Description |
 |---|---|
 | `docker dso apply` | Apply a DSO configuration file |
-| `docker dso inject` | Inject secrets directly into a specific running container |
 | `docker dso sync` | Synchronize secrets manually against cloud providers |
 
 ---

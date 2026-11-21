@@ -18,6 +18,16 @@ fi
 # Remove 'v' prefix if present
 VERSION_NUM="${VERSION#v}"
 
+# ── [M0-05] Refuse to build a release with inherited Go flags ──────────────
+# `-tags=dsofault` (the test-only crash hook) can arrive through GOFLAGS or the
+# `go env -w` file. Reset the variable, then ASSERT that nothing else supplies flags.
+if [ -n "${GOFLAGS-}" ]; then
+    echo "Error: GOFLAGS is set ('${GOFLAGS}'); a release must not inherit build flags." >&2
+    exit 1
+fi
+unset GOFLAGS
+"$(dirname "${BASH_SOURCE[0]}")/check-release-env.sh"
+
 # ── Setup ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -56,6 +66,15 @@ esac
 
 echo "Target: ${GOOS}/${GOARCH}"
 
+# ── Regenerate Web UI assets ────────────────────────────────────────────────
+# internal/webui/assets/ (embedded via //go:embed) must always reflect the
+# current web/ source for a release build -- never trust whatever happens to
+# be checked in. See scripts/build-webui.sh for details.
+echo ""
+echo "Regenerating Web UI assets..."
+"${SCRIPT_DIR}/build-webui.sh"
+echo "✓ Web UI assets regenerated"
+
 # ── Build main binary ──────────────────────────────────────────────────────
 echo ""
 echo "Building DSO binary..."
@@ -77,6 +96,11 @@ for provider in "${PROVIDERS[@]}"; do
     chmod +x "$RELEASE_DIR/dso-provider-${provider}"
 done
 echo "✓ All provider plugins built"
+
+# ── [M0-05] No release artifact may contain the fault-injection hook ───────
+echo ""
+echo "Checking artifacts for the test-only fault hook..."
+"${SCRIPT_DIR}/check-no-fault-hook.sh" "$RELEASE_DIR"/dso "$RELEASE_DIR"/dso-provider-*
 
 # ── Create tarball ────────────────────────────────────────────────────────
 echo ""

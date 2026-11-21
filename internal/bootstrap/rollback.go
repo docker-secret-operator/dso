@@ -180,7 +180,7 @@ func NewBootstrapOperations(logger Logger, fsOps *FilesystemOps, svc *SystemdMan
 // CreateDirectoriesOp creates bootstrap directories with rollback
 func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFunc) {
 	op := NewSimpleOperation("create-directories", func(ctx context.Context) error {
-		return bo.fsOps.SafeCreateDirectory(ctx, "/etc/dso", 0775, -1, -1)
+		return bo.fsOps.SafeCreateDirectory(ctx, EtcDirPath, EtcDirMode, -1, -1)
 	})
 
 	rollback := func(ctx context.Context) error {
@@ -200,19 +200,30 @@ func (bo *BootstrapOperations) CreateDirectoriesOp(_ int) (Operation, RollbackFu
 // operation in the same transaction fails.
 func (bo *BootstrapOperations) WriteConfigOp(configPath string, content []byte) (Operation, RollbackFunc) {
 	var previousContent []byte
+	var previousMode = dsoConfigFileMode
 	var previouslyExisted bool
 
 	op := NewSimpleOperation("write-config", func(ctx context.Context) error {
 		if existing, err := os.ReadFile(configPath); err == nil { // #nosec G304 -- configPath is DSO's own fixed config location, not user input
 			previouslyExisted = true
 			previousContent = existing
+			if info, statErr := os.Stat(configPath); statErr == nil {
+				previousMode = info.Mode().Perm()
+			}
 		}
-		return bo.fsOps.SafeWriteFile(ctx, configPath, content, 0664)
+		// The config can contain credentials: never create it more permissive
+		// than dsoConfigFileMode. (SafeWriteFile writes a temp file with this
+		// mode and renames it into place, so there is no window where the new
+		// content is visible with a looser mode.)
+		return bo.fsOps.SafeWriteFile(ctx, configPath, content, dsoConfigFileMode)
 	})
 
 	rollback := func(ctx context.Context) error {
 		if previouslyExisted {
-			return bo.fsOps.SafeWriteFile(ctx, configPath, previousContent, 0664)
+			// Restore the prior content with the prior mode, but never looser
+			// than dsoConfigFileMode: rolling back must not re-expose a file
+			// that holds credentials.
+			return bo.fsOps.SafeWriteFile(ctx, configPath, previousContent, tightenMode(previousMode, dsoConfigFileMode))
 		}
 		return bo.fsOps.SafeRemove(ctx, configPath)
 	}

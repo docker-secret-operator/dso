@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/docker-secret-operator/dso/internal/bootstrap"
+	"github.com/docker-secret-operator/dso/internal/runtimedir"
 )
 
 // Planner generates an InstallPlan from environment facts, validation results,
@@ -43,7 +46,9 @@ func (p *Planner) Plan(_ context.Context, env *Environment, vr *ValidationResult
 	ctr := &opCounter{}
 
 	p.planDirectories(plan, env, mode, ctr)
-	p.planConfigFile(plan, env, mode, provider, vr, ctr)
+	if err := p.planConfigFile(plan, env, mode, provider, vr, ctr, opts.ReplaceExistingConfig); err != nil {
+		return nil, err
+	}
 
 	if mode == ModeAgent {
 		p.planService(plan, ctr)
@@ -77,13 +82,23 @@ func (p *Planner) planConfigFile(
 	provider string,
 	vr *ValidationResult,
 	ctr *opCounter,
-) {
+	replaceExisting bool,
+) error {
 	configDir := configDirectory(env, mode)
 	configPath := filepath.Join(configDir, "dso.yaml")
 
 	operation := "create"
 	if isUpgrade(vr, configPath) {
 		operation = "modify"
+		// The generated file is a minimal stub (mode and provider only). Writing it over an
+		// existing configuration silently destroys provider settings, secret mappings and
+		// agent.owner_id, and losing the owner id orphans every container the agent created.
+		// Replace only on the operator's explicit opt-in, and back the old file up first.
+		if !replaceExisting {
+			return fmt.Errorf("a DSO configuration already exists at %s and setup will not replace it: "+
+				"re-run with --replace-config to replace it (the existing file is backed up first), "+
+				"or edit it in place", configPath)
+		}
 	}
 
 	yaml := renderConfigYAML(mode, provider)
@@ -96,7 +111,10 @@ func (p *Planner) planConfigFile(
 		Mode:      configFileMode(mode),
 		Owner:     configDirOwner(mode),
 		Operation: operation,
+		// Only a replacement of an existing file (which needed the opt-in) is backed up.
+		BackupExisting: operation == "modify",
 	})
+	return nil
 }
 
 // ─── Service planning ─────────────────────────────────────────────────────────
@@ -106,7 +124,7 @@ const (
 	dsoServicePath = "/etc/systemd/system/" + dsoServiceName
 )
 
-var dsoServiceUnit = []byte(`[Unit]
+var dsoServiceUnit = []byte(strings.Replace(strings.Replace(`[Unit]
 Description=Docker Secret Operator Agent
 Documentation=https://github.com/docker-secret-operator/dso
 After=network.target docker.service
@@ -115,12 +133,18 @@ Requires=docker.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/dso agent
+# /run/dso is root:dso 0750. The agent also enforces this itself on every start;
+# these directives only make systemd create it with the right mode first
+# (shared with the bootstrap and repair units: runtimedir.UnitDirectives).
+{{RUNTIME_DIRECTORY}}
 Restart=on-failure
 RestartSec=5s
+# Shared sandbox directives (runtimedir.HardeningDirectives).
+{{HARDENING}}
 
 [Install]
 WantedBy=multi-user.target
-`)
+`, "{{RUNTIME_DIRECTORY}}\n", runtimedir.UnitDirectives, 1), "{{HARDENING}}\n", runtimedir.HardeningDirectives, 1))
 
 func (p *Planner) planService(plan *InstallPlan, ctr *opCounter) {
 	plan.Files = append(plan.Files, FileChange{
@@ -214,7 +238,7 @@ func configDirectory(env *Environment, mode SetupMode) string {
 
 func configDirMode(mode SetupMode) os.FileMode {
 	if mode == ModeAgent {
-		return 0750
+		return bootstrap.EtcDirMode // the one contract: root:dso 0750 (bootstrap and repair agree)
 	}
 	return 0700
 }

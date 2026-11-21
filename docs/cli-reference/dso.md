@@ -19,28 +19,36 @@ Advanced Usage (Manual Bootstrapping):
 
 Quick reference:
   docker dso doctor                 # Validate environment
+  docker dso repair permissions     # Inspect/repair directory permissions (--dry-run first)
   docker dso status                 # Check operational status
   docker dso config show            # View configuration
 
 DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault.
 
+```
+dso [flags]
+```
+
 ### Options
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
   -h, --help            help for dso
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO
 
 * [dso agent](dso_agent.md)	 - Run the DSO background reconciliation engine
 * [dso apply](dso_apply.md)	 - Apply declarative secret configuration
+* [dso audit](dso_audit.md)	 - Inspect the agent's durable audit file
 * [dso bootstrap](dso_bootstrap.md)	 - Initialize DSO runtime environment
+* [dso central](dso_central.md)	 - Local administration of the central secrets store (experimental, local-only, no authentication)
 * [dso compose](dso_compose.md)	 - Wrapper around docker compose that injects secrets
 * [dso config](dso_config.md)	 - Manage DSO configuration
-* [dso diff](dso_diff.md)	 - Show what changed between local configuration and deployed stack
+* [dso diff](dso_diff.md)	 - Not implemented: compare local configuration with a deployed stack
 * [dso doctor](dso_doctor.md)	 - Diagnose the local DSO environment and current project
-* [dso down](dso_down.md)	 - Stop and remove containers, networks, images, and volumes
+* [dso down](dso_down.md)	 - Stop and remove the stack's containers and networks (volumes and images are kept by default)
 * [dso env](dso_env.md)	 - Manage .env file operations
 * [dso export](dso_export.md)	 - Export injected secrets for local CI or testing
 * [dso fetch](dso_fetch.md)	 - Manually fetch a secret and display it
@@ -50,6 +58,7 @@ DSO supports multiple secret backends: local vault, HashiCorp Vault, AWS Secrets
 * [dso logs](dso_logs.md)	 - View DSO agent logs
 * [dso migrate](dso_migrate.md)	 - Migrate an existing .env + Compose project to DSO-managed secrets
 * [dso notifications](dso_notifications.md)	 - Manage rotation-event notification destinations
+* [dso repair](dso_repair.md)	 - Repair DSO host state that diagnostics reported as wrong
 * [dso secret](dso_secret.md)	 - Manage DSO Native Vault secrets
 * [dso setup](dso_setup.md)	 - Simple setup wizard for DSO
 * [dso status](dso_status.md)	 - Show DSO runtime operational status

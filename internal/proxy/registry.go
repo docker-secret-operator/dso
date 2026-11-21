@@ -117,6 +117,20 @@ func (r *Registry) SetDraining(id string) error {
 	return nil
 }
 
+// SetActive clears the draining mark of a backend, so the router sends it new connections
+// again. Returns an error if the ID is not found.
+func (r *Registry) SetActive(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, exists := r.store[id]
+	if !exists {
+		return fmt.Errorf("registry: backend %q not found", id)
+	}
+	b.Draining = false
+	return nil
+}
+
 // Get returns a copy of the backend with the given ID.
 func (r *Registry) Get(id string) (Backend, bool) {
 	r.mu.RLock()

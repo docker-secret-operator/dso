@@ -56,10 +56,52 @@ type ProviderStatusInfo struct {
 	Message string
 }
 
+// DegradedServiceInfo mirrors watcher.DegradedService's wire shape --
+// service identifier and safe reason text only, never a secret value.
+type DegradedServiceInfo struct {
+	Service string
+	Reason  string
+}
+
 type StatusResponse struct {
 	CacheEntries     int
 	PendingRotations int
 	Providers        []ProviderStatusInfo
+	// DegradedServices lists services the running agent's ReloaderController
+	// currently considers degraded (Phase 7 / P2-5, for `dso doctor`'s
+	// operational-visibility check). Empty when nothing is degraded or when
+	// no Reloader is wired (e.g. an older/minimal agent build).
+	DegradedServices []DegradedServiceInfo
+	// Ledger reports the applied-version ledger's availability (additive: an
+	// older agent leaves it zero, State == ""). See LedgerStatusInfo.
+	Ledger LedgerStatusInfo
+}
+
+// Ledger availability states for LedgerStatusInfo.State.
+const (
+	LedgerActive        = "active"
+	LedgerDisabled      = "disabled"
+	LedgerNotConfigured = "not_configured"
+)
+
+// LedgerStatusInfo is the applied-version ledger's availability as the running
+// agent sees it. It never carries key material, secret values or version
+// identities: only a state, a cause code and operator guidance.
+type LedgerStatusInfo struct {
+	// State is LedgerActive, LedgerDisabled or LedgerNotConfigured ("" when the
+	// agent predates this field).
+	State string
+	// Code is the cause: "active", "not_configured", or for a disabled ledger one
+	// of unsafe_permissions, key_lost, corrupt_state, unsupported_schema,
+	// lock_held, unsupported_platform, invalid_directory, unavailable.
+	Code string
+	// Message names the cause (the unsafe path with actual and expected owner/mode
+	// when permissions are the cause).
+	Message string
+	// Remediation is the supported fix (disabled only).
+	Remediation string
+	// Degraded states the behaviour that applies while it is disabled.
+	Degraded string
 }
 
 // ProviderCheckRequest carries the exact provider configuration to test —

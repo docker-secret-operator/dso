@@ -1,0 +1,89 @@
+openapi: 3.0.3
+info:
+  title: DSO agent REST API
+  version: 3.6.0
+  description: |
+    The agent's local control-plane API (the same API the embedded Web UI uses).
+    This is NOT the central vault: `dso central` has no network API (ADR-010/011).
+    Schemas are intentionally minimal; this document is the route/method/auth
+    contract and is checked against the live router by
+    internal/server/openapi_contract_test.go.
+
+    Authentication: `Authorization: Bearer <DSO_AUTH_TOKEN>` or the WebUI session
+    cookie. Cookie-authenticated state-changing requests must send an allowed
+    `Origin` (CSRF check). `HEAD` is accepted wherever `GET` is.
+servers:
+  - url: http://127.0.0.1:8080
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+    cookieAuth: {type: apiKey, in: cookie, name: dso_session}
+  responses:
+    Unauthorized: {description: Missing or invalid credentials}
+    Forbidden: {description: Cross-origin request rejected}
+    TooManyRequests: {description: Rate limited}
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+paths:
+  /health:
+    get: {summary: Liveness, security: [], responses: {"200": {description: OK}}}
+  /api/auth/login:
+    post:
+      summary: WebUI operator login (sets an HttpOnly session cookie; audited as auth_login)
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {username: {type: string}, password: {type: string}}}}}}
+      responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}, "429": {$ref: '#/components/responses/TooManyRequests'}}
+  /api/auth/logout:
+    post: {summary: End the caller's session (audited as auth_logout), security: [], responses: {"200": {description: OK}}}
+  /api/auth/session:
+    get: {summary: Is the session cookie valid, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/discovery:
+    get: {summary: Discovery, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/config/raw:
+    get: {summary: Redacted effective configuration, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/secrets:
+    get: {summary: Secret metadata (never values), responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/secrets/{name}/rotate:
+    post:
+      summary: Trigger a manual rotation (audited as manual_rotation_triggered)
+      parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Accepted}, "401": {$ref: '#/components/responses/Unauthorized'}, "403": {$ref: '#/components/responses/Forbidden'}}
+  /api/events:
+    get: {summary: Recent events, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/events/ws:
+    get: {summary: WebSocket event stream (re-validated for the connection lifetime), responses: {"101": {description: Switching Protocols}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/events/secret-update:
+    post:
+      summary: Inbound secret-update webhook (authenticates with its own HMAC credential, not the bearer token)
+      security: []
+      responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}
+  /api/logs:
+    get: {summary: Agent logs, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/containers:
+    get: {summary: Managed containers, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/audit:
+    get: {summary: Audit events (in-memory view; the durable record is /api/audit/export), responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/audit/status:
+    get: {summary: "Durable audit file state without verifying the chain (durable_enabled, write_failures)", responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/audit/export:
+    get: {summary: "Durable hash-chained audit records as NDJSON (503 when the durable sink is off, 500 if the chain fails verification)", responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}, "503": {description: Durable audit not enabled}, "500": {description: Chain verification failed}}}
+  /api/sessions:
+    get: {summary: Active WebUI sessions with stable opaque ids, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/sessions/revoke:
+    post:
+      summary: Sign out one other session by id (audited as session_revoke; 409 for the caller's own)
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {id: {type: string}}}}}}
+      responses: {"200": {description: OK}, "404": {description: Unknown session id}, "409": {description: Current session}}
+  /api/sessions/revoke-others:
+    post: {summary: Sign out every other session (audited as sessions_revoke_others), responses: {"200": {description: OK}}}
+  /api/integrations:
+    get: {summary: Configured integrations (no credentials), responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/integrations/notifications/test:
+    post: {summary: Send a test notification (audited as test_notification_sent), responses: {"200": {description: OK}}}
+  /api/drift:
+    get: {summary: Drift report, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/analytics:
+    get: {summary: Analytics, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}
+  /api/alerts:
+    get: {summary: Alerts, responses: {"200": {description: OK}, "401": {$ref: '#/components/responses/Unauthorized'}}}

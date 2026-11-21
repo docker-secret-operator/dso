@@ -278,13 +278,53 @@ func TestRenderDoctorSections_NoPanicAllStatuses(t *testing.T) {
 		{ID: "2", Category: setup.DoctorCatConfiguration, Status: setup.DoctorWarn, Name: "b", Detail: "warn", RootCause: "rc", Recovery: []string{"fix"}},
 		{ID: "3", Category: setup.DoctorCatProvider, Status: setup.DoctorFail, Name: "c", Detail: "fail", RootCause: "rc2", Recovery: []string{"fix2"}},
 		{ID: "4", Category: doctorCatProject, Status: setup.DoctorInfo, Name: "d", Detail: "info"},
+		{ID: "5", Category: setup.DoctorCatRotation, Status: setup.DoctorPass, Name: "e", Detail: "no pending rotations"},
+		{ID: "DSO-DOCTOR-027", Category: setup.DoctorCatSecurity, Status: setup.DoctorFail, Name: "Root key file custody",
+			Detail: "mode 0644, expected 0400", RootCause: "modified since installation", Recovery: []string{"chmod 0400 /path"}},
 	}
 	result := buildDoctorResult(checks)
 
 	out := renderSectionedResult("DSO Doctor", result, doctorSections, true)
-	for _, want := range []string{"Environment", "Configuration", "Provider", "Project", "Result"} {
+	for _, want := range []string{"Environment", "Configuration", "Provider", "Security", "Operations", "Project", "Result"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected rendered output to contain section %q", want)
+		}
+	}
+	// Review finding: a DoctorCatSecurity check (e.g. the Task 8 central-store
+	// custody checks) must actually render its name and Recovery text, not
+	// just count toward the summary.
+	for _, want := range []string{"Root key file custody", "chmod 0400 /path"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected verbose output to show the Security check's detail: missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestDoctorSections_EveryCategoryIsRendered is a Phase 7 regression guard:
+// a category that runs as part of setup.NewDoctor's checks but has no
+// entry in doctorSections is silently dropped from the default terminal
+// view (still present in JSON/Summary, just invisible by default) -- this
+// is exactly the bug the Phase 7 P2-5 rotation checks' Operations section
+// was added to fix, and the same bug DoctorCatSecurity's Security section
+// fixed for DSO-DOCTOR-004/005 and the Task 8 central-store custody checks
+// (DSO-DOCTOR-026..031) -- see doctorSections above. This test fails loudly
+// if a future category is added to setup.go without a corresponding
+// section here.
+func TestDoctorSections_EveryCategoryIsRendered(t *testing.T) {
+	allCategories := []setup.DoctorCategory{
+		setup.DoctorCatDocker, setup.DoctorCatPermissions, setup.DoctorCatSecurity,
+		setup.DoctorCatConfiguration, setup.DoctorCatProvider, setup.DoctorCatRuntime,
+		setup.DoctorCatService, setup.DoctorCatRotation,
+	}
+	sectioned := make(map[setup.DoctorCategory]bool)
+	for _, s := range doctorSections {
+		for cat := range s.categories {
+			sectioned[cat] = true
+		}
+	}
+	for _, cat := range allCategories {
+		if !sectioned[cat] {
+			t.Errorf("category %q has no doctorSections entry -- its checks would be silently dropped from terminal output", cat)
 		}
 	}
 }

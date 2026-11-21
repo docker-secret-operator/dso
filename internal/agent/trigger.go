@@ -2,18 +2,23 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/docker-secret-operator/dso/internal/faultinject"
 	"github.com/docker-secret-operator/dso/internal/notify"
 	"github.com/docker-secret-operator/dso/internal/providers"
+	"github.com/docker-secret-operator/dso/internal/proxy"
 	"github.com/docker-secret-operator/dso/internal/rotation"
 	"github.com/docker-secret-operator/dso/internal/watcher"
 	"github.com/docker-secret-operator/dso/pkg/api"
 	"github.com/docker-secret-operator/dso/pkg/config"
 	"github.com/docker-secret-operator/dso/pkg/observability"
+	pkgprovider "github.com/docker-secret-operator/dso/pkg/provider"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
 )
@@ -28,6 +33,7 @@ type TriggerEngine struct {
 	events            sync.Map
 	secretHashes      sync.Map
 	lastRotations     sync.Map
+	observeLocks      sync.Map // map[string]*sync.Mutex, key provider:secret (PE-31)
 	Server            *AgentServer
 	Config            *config.Config
 	ctx               context.Context
@@ -37,28 +43,160 @@ type TriggerEngine struct {
 	TimeoutController *TimeoutController
 	DockerClient      *client.Client // For crash recovery
 
+	// Routing lets startup recovery verify LIVE proxy routing (M0-04 3.1). It is
+	// set by AttachProxy to a verifier over this process's own embedded proxy.
+	// Nil means routing is unknown and recovery fails closed.
+	Routing RoutingVerifier
+
+	proxyMgr *proxy.Manager // embedded proxy (AttachProxy); nil when none
+	guard    *journalGuard  // durable competing-mutation guard (M0-04 3.3)
+
 	// Dispatcher is the optional notification sink for rotation/recovery
 	// outcome events (internal/notify). Nil when notifications are not
 	// configured. Strictly an observer: emitted-to AFTER the authoritative
 	// StateTracker transition, via a non-blocking Dispatch that cannot
 	// fail, block, or otherwise influence rotation state.
 	Dispatcher *notify.Dispatcher
+
+	// ledger is the S6 applied-version ledger wiring (ledger_wiring.go). nil
+	// means "not configured": engines built without NewTriggerEngine (unit tests,
+	// NewTriggerEngineWithDirs) keep the legacy behaviour in which a first
+	// observation dispatches. NewTriggerEngine always configures it, enabled or
+	// disabled for the process.
+	ledger *ledgerWiring
+	// baselined holds the provider:secret keys observed at least once by this
+	// process. With a configured but unusable ledger, a key's first observation
+	// is adopted without rotating (design 8.2, O-5: no mass rotation).
+	baselined sync.Map
+
+	// Test seams; zero means the production defaults
+	// (defaultSecretLockTimeout, defaultRotationCooldown, Reloader.TriggerReload).
+	secretLockTimeout time.Duration
+	rotationCooldown  time.Duration
+	reloadFn          func(ctx context.Context, secretName string, onComplete func(error)) error
 }
 
-// emitEvent dispatches a rotation/recovery outcome event when a Dispatcher
-// is configured. containerIDs is the comma-joined form StateTracker uses.
+// RotationDecision is what ExecuteRotationDecision did with one observation
+// (design 8.3, BQ-3 option b).
+type RotationDecision string
+
+const (
+	// RotationDispatched: a rotation dispatch was started for the value.
+	RotationDispatched RotationDecision = "dispatched"
+	// RotationAdopted: first observation without a baseline (ledger adoption,
+	// or no live target to record): the value is the baseline, nothing rotated.
+	RotationAdopted RotationDecision = "adopted"
+	// RotationUnchanged: the value equals the last one this process handled, or
+	// the ledger records it as already wanted/applied: nothing rotated.
+	RotationUnchanged RotationDecision = "unchanged"
+	// RotationDeferred: a change was seen but not dispatched now (cooldown, cache
+	// limits); the next observation retries.
+	RotationDeferred RotationDecision = "deferred"
+	// RotationLedgerDegraded: first observation in this process while the ledger
+	// is disabled or unusable: adopted in memory only, nothing rotated.
+	RotationLedgerDegraded RotationDecision = "ledger_degraded"
+)
+
+// emitEvent records a rotation outcome onto observability.EventStream,
+// unconditionally -- this is what makes rotation outcomes visible via
+// /api/audit and /api/events, which previously only ever saw SIGHUP signal
+// outcomes (see internal/injector/docker.go's LogInjectionEvent). Metadata
+// only: secret/provider/container identifiers, status, and a redacted
+// error string -- never a secret value. containerIDs is the comma-joined
+// form StateTracker uses.
+//
+// Phase 4.1: this no longer calls t.Dispatcher.Dispatch directly.
+// internal/alert.Evaluator now owns the sole decision of whether a
+// rotation_failed/rotation_succeeded notification is actually sent
+// (deduplicated and cooldown-gated) -- it subscribes to the same
+// EventStream this function pushes to, from internal/server.
+// StartRESTServer's single consumer loop. t.Dispatcher is still wired at
+// startup (internal/cli/agent.go) and handed to that same Evaluator; this
+// function keeps the field only because internal/agent/recovery.go's
+// crash-recovery events (RecoverySucceeded/RecoveryFailed -- a distinct,
+// narrower signal than rotation_failed, out of Phase 4.1's alert scope)
+// still dispatch directly.
 func (t *TriggerEngine) emitEvent(eventType notify.EventType, providerName, secretName, containerIDs string, duration time.Duration, err error) {
-	if t.Dispatcher == nil {
-		return
-	}
 	var containers []string
 	if containerIDs != "" {
 		containers = strings.Split(containerIDs, ",")
 	}
-	t.Dispatcher.Dispatch(notify.NewEvent(eventType, providerName, secretName, containers, duration, err))
+	ev := notify.NewEvent(eventType, providerName, secretName, containers, duration, err)
+
+	status := "success"
+	if eventType == notify.RotationFailed || eventType == notify.RecoveryFailed {
+		status = "failure"
+	}
+
+	// Phase 3 Analytics Overview counters -- process-lifetime-only, reset
+	// on restart (see pkg/observability/counters.go). Only rotation
+	// outcomes are counted here; recovery outcomes (RecoverySucceeded/
+	// RecoveryFailed) are a distinct signal and deliberately left uncounted
+	// for this MVP rather than conflated with rotation counts.
+	switch eventType {
+	case notify.RotationSucceeded:
+		observability.RotationSuccessTotal.Add(1)
+	case notify.RotationFailed:
+		observability.RotationFailureTotal.Add(1)
+	}
+
+	streamEvent := map[string]interface{}{
+		"timestamp":  ev.Timestamp.Format(time.RFC3339),
+		"secret":     ev.SecretName,
+		"container":  strings.Join(ev.Containers, ","),
+		"event_type": string(ev.Type),
+		"status":     status,
+	}
+	if ev.Provider != "" {
+		streamEvent["provider"] = ev.Provider
+	}
+	if ev.ErrorMessage != "" {
+		streamEvent["error"] = ev.ErrorMessage
+	}
+	select {
+	case observability.EventStream <- streamEvent:
+	default:
+	}
 }
 
+// Production state and lock directories. Pinned by TestTriggerEngine_DefaultDirsPinned.
+const (
+	defaultTriggerStateDir = "/var/lib/dso/state"
+	defaultTriggerLockDir  = "/var/lib/dso/locks"
+)
+
+// DurableAuditPath is where the agent keeps its append-only audit file.
+func DurableAuditPath() string { return filepath.Join(defaultTriggerStateDir, "audit.jsonl") }
+
 func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client) (*TriggerEngine, error) {
+	stateDir, lockDir := defaultTriggerStateDir, defaultTriggerLockDir
+	// Test-only (-tags dsofault): per-test directories for the real-process crash
+	// harness. In a normal build Param never overrides anything.
+	if v, ok := faultinject.Param("state_dir"); ok {
+		stateDir = v
+	}
+	if v, ok := faultinject.Param("lock_dir"); ok {
+		lockDir = v
+	}
+	ledgerDir := defaultLedgerDir
+	if v, ok := faultinject.Param("ledger_dir"); ok {
+		ledgerDir = v
+	}
+	t, err := NewTriggerEngineWithDirs(cache, storeManager, rw, logger, cfg, dockerCli, stateDir, lockDir)
+	if err != nil {
+		return nil, err
+	}
+	// Design 5 step 1: open the applied-version ledger. Any failure disables it
+	// for this process (operator-visible warning); it is never fatal (X6).
+	t.openLedger(ledgerDir)
+	return t, nil
+}
+
+// NewTriggerEngineWithDirs is NewTriggerEngine with explicit state and lock
+// directories. Production uses the /var/lib/dso defaults through
+// NewTriggerEngine; out-of-package integration tests (which cannot reach the
+// engine's unexported context) pass per-test temporary directories.
+func NewTriggerEngineWithDirs(cache *SecretCache, storeManager *providers.SecretStoreManager, rw *watcher.ReloaderController, logger *zap.Logger, cfg *config.Config, dockerCli *client.Client, stateDir, lockDir string) (*TriggerEngine, error) {
 	if rw != nil {
 		rw.Cache = cache
 		rw.Config = cfg
@@ -67,7 +205,7 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// Initialize state tracker and lock manager for crash recovery and synchronization
 	// Note: StateTracker is best-effort (optional), but LockManager is CRITICAL for rotation safety
-	stateTracker, err := NewStateTracker("/var/lib/dso/state", logger)
+	stateTracker, err := NewStateTracker(stateDir, logger)
 	if err != nil {
 		logger.Warn("Failed to initialize state tracker - rotation recovery disabled",
 			zap.Error(err))
@@ -77,19 +215,54 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 
 	// CRITICAL: Lock manager must be initialized. Rotation safety depends on it.
 	// Fail fast if lock manager initialization fails to prevent data corruption.
-	lockManager, err := rotation.NewLockManager("/var/lib/dso/locks", logger)
+	lockManager, err := rotation.NewLockManager(lockDir, logger)
 	if err != nil {
 		logger.Error("CRITICAL: Failed to initialize rotation lock manager - refusing to start",
 			zap.Error(err))
 		logger.Error("Lock manager is REQUIRED for rotation safety. Cannot proceed without it.",
-			zap.String("path", "/var/lib/dso/locks"))
+			zap.String("path", lockDir))
 		cancel()
 		return nil, fmt.Errorf("rotation lock manager initialization failed: %w", err)
 	}
 
 	timeoutController := NewTimeoutController(logger)
 
+	// The rotation transition journal is the StateTracker. Without it a crash in
+	// the middle of a rolling rotation cannot be reconciled safely, so rolling
+	// rotation is refused (RequireJournal) rather than run unjournalled.
+	if rw != nil {
+		rw.RequireJournal = true
+		if stateTracker != nil {
+			rw.Journal = stateTracker
+		}
+	}
+
+	// D: tell the journal which secrets are file-delivered today, so an unresolved
+	// pre-N19 (ungated) restart/rolling record of such a secret is never accepted as
+	// delivery evidence (recordCandidateVerified). Configuration is read per call.
+	if stateTracker != nil && cfg != nil {
+		stateTracker.FileModeSecret = func(provider, secret string) bool {
+			for _, sec := range cfg.Secrets {
+				if sec.Name != secret || (sec.Provider != "" && provider != "" && sec.Provider != provider) {
+					continue
+				}
+				typ := sec.Inject.Type
+				if typ == "" {
+					typ = cfg.Defaults.Inject.Type
+				}
+				return typ == "file"
+			}
+			return false
+		}
+	}
+
+	guard := newJournalGuard(stateTracker)
+	if rw != nil {
+		rw.Guard = guard
+	}
+
 	return &TriggerEngine{
+		guard:             guard,
 		Cache:             cache,
 		Store:             storeManager,
 		Reloader:          rw,
@@ -110,6 +283,11 @@ func NewTriggerEngine(cache *SecretCache, storeManager *providers.SecretStoreMan
 // This is CRITICAL for preventing orphaned containers and ensuring deterministic
 // recovery from agent failures without operator intervention.
 func (t *TriggerEngine) performAutomaticRecovery() {
+	// Held proxy candidates are re-evaluated whatever the outcome, and rotation
+	// dispatch is released (the guard still refuses any service that recovery left
+	// unresolved).
+	defer t.settleStartup()
+
 	if t.DockerClient == nil {
 		t.Logger.Warn("Docker client not available, skipping automatic recovery")
 		return
@@ -118,6 +296,16 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 	// Create a recovery handler
 	ar := NewAutomaticRecovery(t.DockerClient, t.Logger, t.StateTracker)
 	ar.Dispatcher = t.Dispatcher
+	ar.Routing = t.Routing
+	// N21: controlled automatic rollback (recovery_rollback.go); every safety
+	// condition must still be positively established per operation.
+	ar.AutomaticRollback = true
+	if t.ledger.enabled() {
+		ar.PreviousVersion = ledgerPreviousSource{lw: t.ledger}
+	}
+	if t.Config != nil {
+		ar.OwnerID = t.Config.Agent.OwnerID
+	}
 
 	// Validate state file integrity and cleanup stale state
 	ar.ValidateStateOnStartup(t.ctx)
@@ -129,12 +317,49 @@ func (t *TriggerEngine) performAutomaticRecovery() {
 		// Don't fail startup; recovery is best-effort
 	}
 
+	// A restart must not make an uncertain or manual-recovery rotation look healthy:
+	// re-flag the affected services from the durable journal.
+	if t.Reloader != nil && t.StateTracker != nil {
+		for _, rec := range t.StateTracker.snapshotRecords() {
+			if rec.Status == "critical_error" && rec.ServiceID != "" {
+				t.Reloader.MarkDegradedFromJournal(rec.ServiceID, "interrupted rotation ("+rec.Strategy+", "+rec.Transition+"): "+rec.ErrorMessage)
+			}
+		}
+	}
+
 	// Perform a broad cleanup of any orphaned DSO containers
 	// This catches containers that might not be tracked in state
 	if err := ar.CleanupOrphanedContainers(t.ctx); err != nil {
 		t.Logger.Warn("Failed to cleanup orphaned containers",
 			zap.Error(err))
 		// Don't fail startup; cleanup is best-effort
+	}
+
+	// Design 5 step 5: converge the applied-version ledger with the journal M0
+	// recovery has just settled. It is the LAST step before the deferred
+	// settleStartup (the guard still refuses every dispatch) and before
+	// CleanupOldStates prunes journal records (StartAll). Read-only with respect
+	// to Docker and the journal; it cannot unblock anything.
+	t.reconcileLedgerAtStartup()
+}
+
+// BeginStartup arms startup gating: until StartAll has finished automatic recovery,
+// NO dispatch path (first poll, scheduled poll, webhook, IPC reconcile, REST manual
+// rotate, watcher) may mutate a workload. The agent calls it right after
+// constructing the engine, before any server that can trigger a rotation starts.
+// Without it (unit tests that never call StartAll) nothing is gated by startup.
+func (t *TriggerEngine) BeginStartup() {
+	if t.guard != nil {
+		t.guard.armed.Store(true)
+	}
+}
+
+// settleStartup marks startup recovery as finished and admits settled proxy
+// candidates.
+func (t *TriggerEngine) settleStartup() {
+	t.settleProxy()
+	if t.guard != nil {
+		t.guard.settled.Store(true)
 	}
 }
 
@@ -159,6 +384,7 @@ func (t *TriggerEngine) Stop() {
 	if t.StateTracker != nil {
 		_ = t.StateTracker.Close()
 	}
+	t.closeLedger()
 	t.Logger.Info("Trigger engine stopped")
 }
 
@@ -166,6 +392,14 @@ func (t *TriggerEngine) StartAll() error {
 	// CRITICAL: Perform automatic recovery from any crashed rotations before starting normal operations
 	// This ensures orphaned containers are cleaned up and state is consistent.
 	t.performAutomaticRecovery()
+
+	// N19: recovery has settled (the operation guard now only refuses services with an
+	// unresolved operation): serve containers that are already waiting at their startup
+	// gate, once values are available. One coalesced, bounded pass; cache values arriving
+	// later trigger further passes (writeCache -> NotifyCacheWarm).
+	if t.Reloader != nil {
+		t.Reloader.RequestGateReconcile(t.ctx)
+	}
 
 	// Clean up old completed/recovered rotations from state file
 	if t.StateTracker != nil {
@@ -202,9 +436,62 @@ func (t *TriggerEngine) StartAll() error {
 	return nil
 }
 
-func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) {
-	cacheKey := fmt.Sprintf("%s:%s", providerName, secretName)
-	newHash := ComputeHash(secretData)
+// Defaults for the per-secret rotation guards. Overridable per engine (via
+// the unexported fields below) only so tests do not have to wait them out.
+const (
+	defaultSecretLockTimeout = 5 * time.Second
+	defaultRotationCooldown  = 30 * time.Second
+)
+
+func (t *TriggerEngine) secretLockWait() time.Duration {
+	if t.secretLockTimeout > 0 {
+		return t.secretLockTimeout
+	}
+	return defaultSecretLockTimeout
+}
+
+func (t *TriggerEngine) cooldown() time.Duration {
+	if t.rotationCooldown > 0 {
+		return t.rotationCooldown
+	}
+	return defaultRotationCooldown
+}
+
+// keyMutex returns the mutex serialising observe-check-store for one
+// provider:secret key (PE-31).
+func (t *TriggerEngine) keyMutex(cacheKey string) *sync.Mutex {
+	m, _ := t.observeLocks.LoadOrStore(cacheKey, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// rollbackHash forgets newHash as the "last seen" value for cacheKey so the
+// next poll (or webhook / IPC reconcile) re-dispatches it. It only removes
+// the entry if it still holds newHash: a newer value observed concurrently by
+// another caller is never discarded by an older attempt's rollback (PE-31).
+func (t *TriggerEngine) rollbackHash(cacheKey, newHash string) {
+	t.secretHashes.CompareAndDelete(cacheKey, newHash)
+}
+
+// commitObservation is the atomic observe-check-store step of
+// ExecuteRotation. Under the per-key mutex it compares the new value against
+// the last dispatched one, applies the cooldown, records the new hash and
+// writes the cache, so poll, webhook and IPC reconcile callers can neither
+// dispatch the same value twice nor leave the stored hash describing a
+// different value than the cache (PE-31). It returns the decision and, for a
+// dispatch with a usable ledger, the ledger plan the dispatch correlates.
+//
+// S6 (design 3 and 8.2): when the value differs from the last one handled,
+// the ledger observes it under this same mutex, BEFORE the cooldown check, so
+// the ledger's desired version sees values in the same order as secretHashes.
+// The ledger then decides whether the value must be delivered (NeedsRotation):
+// a first observation without a baseline is adopted, never rotated (O-5). When
+// the ledger is configured but unusable, a key's first observation in this
+// process is adopted in memory and later changes dispatch as before (the
+// ledger is advisory, O-3). secretHashes stays the in-process dedupe layer.
+func (t *TriggerEngine) commitObservation(cacheKey, providerName, secretName, newHash string, secretData map[string]string, sec config.SecretMapping) (RotationDecision, *ledgerPlan) {
+	mu := t.keyMutex(cacheKey)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// 1. Smart Optimization: Avoid unnecessary restarts
 	var oldHash string
@@ -218,34 +505,116 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 		if t.Server != nil {
 			t.Server.Emit(msg)
 		}
-		return
+		return RotationUnchanged, nil
 	}
 
-	// 2. Add cooldown window (30s)
+	// 2. Ledger observation and decision (S6). Not configured: legacy dispatch.
+	var plan *ledgerPlan
+	if t.ledger != nil {
+		_, seen := t.baselined.Load(cacheKey)
+		lv := t.ledgerObserve(providerName, secretName, secretData, sec)
+		hold := RotationDecision("")
+		switch {
+		case lv.usable && lv.rotate:
+			plan = lv.plan
+		case lv.usable && lv.adopted:
+			hold = RotationAdopted
+		case lv.usable:
+			hold = RotationUnchanged
+		case !seen && lv.noTargets:
+			hold = RotationAdopted
+		case !seen:
+			hold = RotationLedgerDegraded
+		}
+		if hold != "" {
+			// Not a change to deliver: keep the value as the in-process baseline
+			// and write the cache exactly as a dispatch would (PE-03: the compose
+			// restart path pre-injects from the cache).
+			t.secretHashes.Store(cacheKey, newHash)
+			t.baselined.Store(cacheKey, true)
+			if !t.writeCache(cacheKey, secretName, newHash, secretData) {
+				return RotationDeferred, nil
+			}
+			t.Logger.Info("Secret observed; no rotation dispatched",
+				zap.String("provider", providerName), zap.String("secret", secretName), zap.String("decision", string(hold)))
+			return hold, nil
+		}
+	}
+
+	// 3. Add cooldown window. Returns BEFORE storing the hash, so the next
+	// poll retries.
 	if lastRot, ok := t.lastRotations.Load(cacheKey); ok {
-		if time.Since(lastRot.(time.Time)) < 30*time.Second {
+		if time.Since(lastRot.(time.Time)) < t.cooldown() {
 			t.Logger.Debug("Cooldown active, skipping rotation", zap.String("secret", secretName))
-			return
+			return RotationDeferred, nil
 		}
 	}
 
 	t.secretHashes.Store(cacheKey, newHash)
 	t.lastRotations.Store(cacheKey, time.Now())
+	t.baselined.Store(cacheKey, true)
 
-	// Route cache writes through LimitEnforcingCache when available so that
-	// per-secret size checks and total capacity limits are enforced. Fall back
-	// to direct SecretCache.Set only when no limiter is configured.
+	if !t.writeCache(cacheKey, secretName, newHash, secretData) {
+		return RotationDeferred, nil
+	}
+	return RotationDispatched, plan
+}
+
+// writeCache stores the observed value in the cache. Writes go through
+// LimitEnforcingCache when available so that per-secret size checks and total
+// capacity limits are enforced; direct SecretCache.Set is used only when no
+// limiter is configured. On a limit refusal the hash is rolled back so the
+// next poll retries instead of skipping, and false is returned.
+func (t *TriggerEngine) writeCache(cacheKey, secretName, newHash string, secretData map[string]string) bool {
 	if t.LimitCache != nil {
 		if err := t.LimitCache.SetWithLimits(cacheKey, secretData); err != nil {
 			t.Logger.Error("Secret exceeds cache limits, rotation aborted",
 				zap.String("secret", secretName),
 				zap.Error(err))
-			// Roll back the hash so the next poll retries instead of skipping.
-			t.secretHashes.Delete(cacheKey)
-			return
+			t.rollbackHash(cacheKey, newHash)
+			return false
 		}
-	} else {
-		t.Cache.Set(cacheKey, secretData)
+		t.notifyCacheWarm()
+		return true
+	}
+	t.Cache.Set(cacheKey, secretData)
+	t.notifyCacheWarm()
+	return true
+}
+
+// notifyCacheWarm lets the reloader serve running gated containers that wait for a value
+// (no-op when none waits).
+func (t *TriggerEngine) notifyCacheWarm() {
+	if t.Reloader != nil {
+		t.Reloader.NotifyCacheWarm(t.ctx)
+	}
+}
+
+// triggerReload is Reloader.TriggerReload, or the test seam.
+func (t *TriggerEngine) triggerReload(ctx context.Context, secretName string, onComplete func(error)) error {
+	if t.reloadFn != nil {
+		return t.reloadFn(ctx, secretName, onComplete)
+	}
+	return t.Reloader.TriggerReload(ctx, secretName, onComplete)
+}
+
+// ExecuteRotation observes one provider value and dispatches a rotation when
+// it must be delivered. It is ExecuteRotationDecision without the decision,
+// kept so existing callers are unchanged.
+func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) {
+	_ = t.ExecuteRotationDecision(providerName, secretName, secretData, sec)
+}
+
+// ExecuteRotationDecision is ExecuteRotation returning what it decided (design
+// 8.3, BQ-3 option b). RotationDispatched means a dispatch was started (its
+// outcome is asynchronous); every other decision means nothing was rotated.
+func (t *TriggerEngine) ExecuteRotationDecision(providerName, secretName string, secretData map[string]string, sec config.SecretMapping) RotationDecision {
+	cacheKey := fmt.Sprintf("%s:%s", providerName, secretName)
+	newHash := ComputeHash(secretData)
+
+	decision, plan := t.commitObservation(cacheKey, providerName, secretName, newHash, secretData, sec)
+	if decision != RotationDispatched {
+		return decision
 	}
 
 	t.Logger.Debug("Diagnostic: Rotation triggered for secret label", zap.String("sec_name", secretName))
@@ -284,69 +653,376 @@ func (t *TriggerEngine) ExecuteRotation(providerName, secretName string, secretD
 
 		// Use distributed lock to prevent concurrent rotations of same secret
 		if t.LockManager != nil {
-			if err := t.LockManager.AcquireLock(secretName, 5*time.Second); err != nil {
-				t.Logger.Warn("Failed to acquire rotation lock", zap.String("secret", secretName), zap.Error(err))
+			if err := t.LockManager.AcquireLock(secretName, t.secretLockWait()); err != nil {
+				// PE-01 (D1): nothing was applied. Forget the hash so the next
+				// poll retries this value instead of treating it as delivered.
+				t.Logger.Warn("Failed to acquire rotation lock; rotation not applied, will retry on next poll",
+					zap.String("secret", secretName), zap.Error(err))
+				t.rollbackHash(cacheKey, newHash)
+				if t.Server != nil {
+					t.Server.Emit(fmt.Sprintf("Rotation of %s deferred (secret busy); will retry", secretName))
+				}
 				return
 			}
 			defer t.LockManager.ReleaseLock(secretName)
 		}
 
-		// Collect the IDs of containers that will be rotated for this secret (H3).
-		// The Reloader's Targets map contains one entry per managed container.
-		// We join multiple IDs with a comma so a single StateTracker entry covers all
-		// containers rotating the same secret simultaneously.
-		originalContainerIDs := t.collectContainerIDsForSecret(secretName)
-
-		// Record rotation start for crash recovery
-		if t.StateTracker != nil {
-			if err := t.StateTracker.StartRotation(providerName, secretName, originalContainerIDs, ""); err != nil {
-				t.Logger.Warn("Failed to record rotation state", zap.Error(err))
-			}
+		// The shared managed-operation boundary: journal start (with the delivered
+		// version, O-2), ledger correlation, dispatch through the reloader (the
+		// operation guard is asked per target) and finishRotation. A manual
+		// rotation (RotateSecretManually) runs the very same three steps.
+		ctx, outcome, err := t.startManagedOperation(ctx, managedOp{
+			origin: originAutomatic, providerName: providerName, secretName: secretName,
+			cacheKey: cacheKey, newHash: newHash, plan: plan,
+		})
+		if err != nil {
+			return
 		}
-
-		// Wall-clock start for the notification event's duration field.
-		// Measured here (not at poll time): this is where the reload
-		// actually begins.
-		rotationStart := time.Now()
-
 		// Note: The Reloader internally handles the strategy logic (restart/signal).
 		// Some strategies rotate containers in detached goroutines that outlive
 		// TriggerReload's return, so rotation state is only marked complete/failed
 		// once onComplete fires with the real, final outcome (REL-1 fix) rather
 		// than immediately after TriggerReload returns.
-		onComplete := func(asyncErr error) {
-			if asyncErr != nil {
-				t.Logger.Warn("Rotation failed after async completion", zap.String("secret", secretName), zap.Error(asyncErr))
-				t.secretHashes.Delete(cacheKey)
-				if t.StateTracker != nil {
-					_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
-				}
-				// Notification is emitted AFTER the authoritative state
-				// transition above, and via a non-blocking dispatch --
-				// delivery outcome can never feed back into rotation state.
-				t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), asyncErr)
-				return
-			}
-			if t.StateTracker != nil {
-				if err := t.StateTracker.CompleteRotation(providerName, secretName, originalContainerIDs); err != nil {
-					t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
-				}
-			}
-			t.emitEvent(notify.RotationSucceeded, providerName, secretName, originalContainerIDs, time.Since(rotationStart), nil)
-		}
-
-		if err := t.Reloader.TriggerReload(ctx, secretName, onComplete); err != nil {
-			t.Logger.Warn("Reload trigger failed", zap.String("secret", secretName), zap.Error(err))
-			// Remove the cached hash so the next poll retries the rotation instead
-			// of treating this failed attempt as a successful "no change" baseline.
-			t.secretHashes.Delete(cacheKey)
-			if t.StateTracker != nil {
-				_ = t.StateTracker.MarkRollback(providerName, secretName, originalContainerIDs)
-			}
-			t.emitEvent(notify.RotationFailed, providerName, secretName, originalContainerIDs, time.Since(rotationStart), err)
-			return
-		}
+		_ = t.dispatchManagedOperation(ctx, outcome, nil)
 	}()
+	return RotationDispatched
+}
+
+// rotationOutcome carries what finishRotation needs about one dispatch.
+type rotationOutcome struct {
+	providerName string
+	secretName   string
+	cacheKey     string
+	newHash      string
+	containerIDs string
+	start        time.Time
+	rotationID   string
+	// plan is the ledger plan of the dispatch (nil without a usable ledger).
+	plan *ledgerPlan
+	// origin says which entry point started the operation. Only a manual one is
+	// special: it never forgets an observed hash (it made no observation).
+	origin rotationOrigin
+	// delivered is the hash of the value a manual rotation delivers (the cached
+	// one at dispatch); "" for an automatic dispatch.
+	deliveredHash string
+}
+
+// retryHash makes the next poll re-dispatch the value of a failed or deferred
+// AUTOMATIC dispatch. A manual rotation never touched the observation state, so
+// its failure leaves it alone.
+func (t *TriggerEngine) retryHash(o rotationOutcome) {
+	if o.origin != originManual {
+		t.rollbackHash(o.cacheKey, o.newHash)
+	}
+}
+
+// finishRotation records the final outcome of one TriggerReload dispatch.
+//
+// PE-01: success is emitted only when the reloader reports that targets were
+// actually rotated without error. A deferred outcome (a target's service was
+// busy) is "not applied": the hash is rolled back so the value is retried,
+// and no success event is emitted. A reload that rotated nothing by
+// configuration is likewise never reported as a success.
+func (t *TriggerEngine) finishRotation(o rotationOutcome, asyncErr error) {
+	switch {
+	case errors.Is(asyncErr, watcher.ErrRotationDeferred):
+		msg := "Rotation not applied to every target (service busy); will retry on next poll"
+		if errors.Is(asyncErr, watcher.ErrRotationBlocked) {
+			msg = "Rotation not applied: a target has an unresolved operation (or startup recovery has not settled); it is retried on the next poll once reconciled"
+		}
+		t.Logger.Warn(msg,
+			zap.String("secret", o.secretName), zap.Error(asyncErr))
+		t.retryHash(o)
+		if t.StateTracker != nil {
+			// Nothing to recover: the busy targets were never touched and any
+			// others finished their own rotation. Leaving "in_progress" would
+			// make crash recovery treat this as an interrupted rotation.
+			_ = t.StateTracker.DeleteStateID(o.rotationID)
+		}
+		t.ledgerTerminal(o.plan, o.rotationID)
+		if t.Server != nil {
+			t.Server.Emit(fmt.Sprintf("Rotation of %s deferred: %v", o.secretName, asyncErr))
+		}
+		return
+	case errors.Is(asyncErr, watcher.ErrNoTargetsRotated):
+		// Retrying cannot change a configuration-driven no-op, so the hash
+		// is kept; but it is not a success either.
+		t.Logger.Warn("No matched container was rotated (no rotating strategy); not reporting success",
+			zap.String("secret", o.secretName))
+		if t.StateTracker != nil {
+			_ = t.StateTracker.DeleteStateID(o.rotationID)
+		}
+		t.ledgerTerminal(o.plan, o.rotationID)
+		return
+	case asyncErr != nil:
+		t.Logger.Warn("Rotation failed after async completion", zap.String("secret", o.secretName), zap.Error(asyncErr))
+		t.retryHash(o)
+		if t.StateTracker != nil {
+			_ = t.StateTracker.MarkRollbackID(o.rotationID)
+		}
+		t.ledgerTerminal(o.plan, o.rotationID)
+		// Notification is emitted AFTER the authoritative state
+		// transition above, and via a non-blocking dispatch --
+		// delivery outcome can never feed back into rotation state.
+		t.emitEvent(notify.RotationFailed, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), asyncErr)
+		return
+	}
+	if t.StateTracker != nil {
+		if err := t.StateTracker.CompleteRotationID(o.rotationID); err != nil {
+			t.Logger.Warn("Failed to complete rotation state", zap.Error(err))
+		}
+	}
+	// Design 3 step 5: the ledger records the outcome the journal now states.
+	t.ledgerTerminal(o.plan, o.rotationID)
+	t.settleManualHash(o)
+	t.emitEvent(notify.RotationSucceeded, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), nil)
+}
+
+// rotationOrigin names the entry point of a managed rotation operation.
+type rotationOrigin string
+
+const (
+	// originAutomatic: provider polling, webhook and IPC reconcile (all reach the
+	// engine through ExecuteRotationDecision).
+	originAutomatic rotationOrigin = "automatic"
+	// originManual: an operator asked for the rotation (REST, Web UI) through
+	// RotateSecretManually.
+	originManual rotationOrigin = "manual"
+)
+
+// managedOp is one managed rotation operation entering the shared lifecycle.
+type managedOp struct {
+	origin       rotationOrigin
+	providerName string
+	secretName   string
+	// cacheKey/newHash: the observation an automatic dispatch retries on failure
+	// (empty for a manual rotation).
+	cacheKey string
+	newHash  string
+	plan     *ledgerPlan
+	actor    string
+	// deliveredHash is the hash of the value a manual rotation delivers.
+	deliveredHash string
+}
+
+// errManagedNotStarted: the journal could not record the operation durably, so
+// it was not run (W14, O-7).
+var errManagedNotStarted = errors.New("the rotation was not started: the journal could not record it")
+
+// startManagedOperation is the first half of the shared managed-operation
+// boundary. It collects the targets, mints the operation's identity, records the
+// operation in the journal with the version the operation delivers (the keyed
+// HMAC identity of the value at dispatch, O-2) and the number of targets, and
+// then, only when the journal recorded it durably, writes the ledger's delivery
+// request. The journal stays the authority on the operation's lifecycle; the
+// ledger only consumes its verified outcome (ledgerTerminal, from finishRotation).
+func (t *TriggerEngine) startManagedOperation(ctx context.Context, op managedOp) (context.Context, rotationOutcome, error) {
+	// Collect the IDs of containers that will be rotated for this secret (H3).
+	// The Reloader's Targets map contains one entry per managed container.
+	// We join multiple IDs with a comma so a single StateTracker entry covers all
+	// containers rotating the same secret simultaneously.
+	originalContainerIDs := t.collectContainerIDsForSecret(op.secretName)
+
+	// One identity for this rotation: the state record created below and the
+	// transition journal written by the strategies are the same record.
+	rotationID := rotation.NewRotationID()
+	ctx = rotation.WithRotationID(ctx, rotationID)
+
+	// Record rotation start for crash recovery, with the target version
+	// (O-2) when the ledger supplied one.
+	if t.StateTracker != nil {
+		targets := len(splitContainerIDs(originalContainerIDs))
+		if err := t.StateTracker.StartRotationForDispatch(rotationID, op.providerName, op.secretName, originalContainerIDs, "", op.plan.journalVersion(), targets); err != nil {
+			t.Logger.Warn("Failed to record rotation state", zap.Error(err))
+			if t.ledger != nil {
+				// W14 / O-7: with the ledger wired, a dispatch the journal did
+				// not record durably is not run (no journal intent, no ledger
+				// citation). The value is retried on the next poll. The
+				// non-durable record is dropped from memory (F-B3).
+				if op.origin == originAutomatic {
+					t.rollbackHash(op.cacheKey, op.newHash)
+				}
+				_ = t.StateTracker.DeleteStateID(rotationID)
+				t.emitEvent(notify.RotationFailed, op.providerName, op.secretName, originalContainerIDs, 0, fmt.Errorf("rotation not started: the journal could not record it: %w", err))
+				return ctx, rotationOutcome{}, fmt.Errorf("%w: %w", errManagedNotStarted, err)
+			}
+		} else {
+			// Design 3 step 4: delivery requested, after the journal start and
+			// before TriggerReload. A failure is logged and ignored.
+			t.ledgerCorrelate(op.plan, rotationID)
+		}
+	}
+	t.Logger.Info("Managed rotation operation started",
+		zap.String("origin", string(op.origin)), zap.String("actor", op.actor),
+		zap.String("secret", op.secretName), zap.String("rotation_id", rotationID))
+
+	// Wall-clock start for the notification event's duration field.
+	// Measured here (not at poll time): this is where the reload
+	// actually begins.
+	return ctx, rotationOutcome{
+		providerName:  op.providerName,
+		secretName:    op.secretName,
+		cacheKey:      op.cacheKey,
+		newHash:       op.newHash,
+		containerIDs:  originalContainerIDs,
+		start:         time.Now(),
+		rotationID:    rotationID,
+		plan:          op.plan,
+		origin:        op.origin,
+		deliveredHash: op.deliveredHash,
+	}, nil
+}
+
+// dispatchManagedOperation is the second half of the boundary: it hands the
+// operation to the reloader (where the operation guard is asked for every
+// target) and arranges for finishRotation to record the real, final outcome.
+// done, when non-nil, is called once with that outcome after finishRotation
+// (a caller's own observer, e.g. the REST handler releasing its context). When
+// the reloader refuses synchronously nothing was started, done never runs, and
+// the error is returned after the operation was closed out as a failed attempt.
+func (t *TriggerEngine) dispatchManagedOperation(ctx context.Context, o rotationOutcome, done func(error)) error {
+	onComplete := func(asyncErr error) {
+		t.finishRotation(o, asyncErr)
+		if done != nil {
+			done(asyncErr)
+		}
+	}
+	if err := t.triggerReload(ctx, o.secretName, onComplete); err != nil {
+		t.Logger.Warn("Reload trigger failed", zap.String("secret", o.secretName), zap.Error(err))
+		// Remove the cached hash so the next poll retries the rotation instead
+		// of treating this failed attempt as a successful "no change" baseline.
+		t.retryHash(o)
+		if t.StateTracker != nil {
+			_ = t.StateTracker.MarkRollbackID(o.rotationID)
+		}
+		t.ledgerTerminal(o.plan, o.rotationID)
+		t.emitEvent(notify.RotationFailed, o.providerName, o.secretName, o.containerIDs, time.Since(o.start), err)
+		return err
+	}
+	return nil
+}
+
+var (
+	// ErrManualUnknownSecret: the name is not a configured secret.
+	ErrManualUnknownSecret = errors.New("unknown secret")
+	// ErrManualNoTargets: no managed container uses the secret; nothing started.
+	ErrManualNoTargets = errors.New("no managed containers use this secret")
+	// ErrManualBusy: another rotation of the secret holds its dispatch lock.
+	ErrManualBusy = errors.New("another rotation of this secret is being dispatched")
+)
+
+// resolveSecretProvider names the provider whose cache entry a manual rotation of
+// sec delivers: the secret's own provider, else the only configured one. "" means
+// it cannot be resolved (several providers and none named): such a rotation runs
+// without a ledger identity.
+func (t *TriggerEngine) resolveSecretProvider(sec config.SecretMapping) string {
+	if sec.Provider != "" {
+		return sec.Provider
+	}
+	if t.Config != nil && len(t.Config.Providers) == 1 {
+		for name := range t.Config.Providers {
+			return name
+		}
+	}
+	return ""
+}
+
+// RotateSecretManually is the managed entry point of an operator-requested
+// rotation (REST, Web UI): the same journal, operation guard, finishRotation and
+// ledger reconciliation as an automatic dispatch (startManagedOperation,
+// dispatchManagedOperation), with the manual semantics kept:
+//
+//   - it rotates when asked, even when the cached value equals the last one
+//     delivered (the ledger is advisory, O-3, and the hash/cooldown dedupe of
+//     the poller does not apply);
+//   - it delivers what the strategies read from the cache; the version it records
+//     is the keyed identity of the cached value at dispatch (never a provider
+//     re-fetch), and is correlated only with ledger entries whose desired
+//     version it is;
+//   - ctx is the caller's operation context (daemon-bound, bounded); it is passed
+//     on unchanged, with the operation's identity added;
+//   - the error is synchronous only for "nothing started" (ErrManualNoTargets,
+//     ErrManualBusy, ErrManualUnknownSecret, journal failure); the outcome is
+//     asynchronous and is reported to onComplete after the journal and the
+//     ledger recorded it.
+//
+// actor is the audit actor the caller derived (internal/server/audit_actor.go);
+// it is only logged here.
+func (t *TriggerEngine) RotateSecretManually(ctx context.Context, secretName, actor string, onComplete func(error)) error {
+	var sec *config.SecretMapping
+	if t.Config != nil {
+		for i := range t.Config.Secrets {
+			if t.Config.Secrets[i].Name == secretName {
+				sec = &t.Config.Secrets[i]
+				break
+			}
+		}
+	}
+	if sec == nil {
+		return ErrManualUnknownSecret
+	}
+	if t.collectContainerIDsForSecret(secretName) == "" {
+		return ErrManualNoTargets
+	}
+
+	op := managedOp{origin: originManual, secretName: secretName, actor: actor}
+	if pName := t.resolveSecretProvider(*sec); pName != "" {
+		op.providerName = pName
+		cacheKey := fmt.Sprintf("%s:%s", pName, secretName)
+		// Snapshot of the value this rotation delivers, under the same per-key
+		// mutex as the observation that wrote it.
+		mu := t.keyMutex(cacheKey)
+		mu.Lock()
+		if cached, ok := t.Cache.Get(cacheKey); ok {
+			op.deliveredHash = ComputeHash(cached)
+			op.plan = t.ledgerManualPlan(pName, secretName, cached, *sec)
+		}
+		mu.Unlock()
+	}
+
+	// Same per-secret dispatch lock as an automatic dispatch (held while the
+	// reloader selects and starts the targets).
+	if t.LockManager != nil {
+		if err := t.LockManager.AcquireLock(secretName, t.secretLockWait()); err != nil {
+			t.Logger.Warn("Manual rotation not started: the secret's dispatch lock is busy",
+				zap.String("secret", secretName), zap.Error(err))
+			return ErrManualBusy
+		}
+		defer t.LockManager.ReleaseLock(secretName)
+	}
+
+	ctx, outcome, err := t.startManagedOperation(ctx, op)
+	if err != nil {
+		return err
+	}
+	if err := t.dispatchManagedOperation(ctx, outcome, onComplete); err != nil {
+		// The only synchronous refusal of the reloader: no managed container.
+		return fmt.Errorf("%w: %v", ErrManualNoTargets, err)
+	}
+	return nil
+}
+
+// settleManualHash makes a SUCCESSFUL manual rotation count as the delivery of the
+// value it delivered for the poller's dedupe: when the engine's observation of
+// that value was forgotten (an earlier automatic attempt failed or was deferred)
+// and the cache still holds the delivered value, the next poll of the same value
+// is "unchanged" instead of a second rotation of the same version. It never
+// overwrites a newer observation.
+func (t *TriggerEngine) settleManualHash(o rotationOutcome) {
+	if o.origin != originManual || o.deliveredHash == "" || o.providerName == "" {
+		return
+	}
+	cacheKey := fmt.Sprintf("%s:%s", o.providerName, o.secretName)
+	mu := t.keyMutex(cacheKey)
+	mu.Lock()
+	defer mu.Unlock()
+	if _, seen := t.secretHashes.Load(cacheKey); seen {
+		return
+	}
+	if cached, ok := t.Cache.Get(cacheKey); ok && ComputeHash(cached) == o.deliveredHash {
+		t.secretHashes.Store(cacheKey, o.deliveredHash)
+		t.baselined.Store(cacheKey, true)
+	}
 }
 
 func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderConfig, sec config.SecretMapping, baseInterval time.Duration) error {
@@ -401,7 +1077,12 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 			}
 
 			if err != nil {
-				t.Store.MarkProviderFailure(providerName)
+				// A breaker short-circuit is not evidence the plugin is bad:
+				// counting it would hit the store's failure threshold, kill and
+				// respawn the plugin, and reset the breaker mid-outage (G013).
+				if !errors.Is(err, pkgprovider.ErrCircuitOpen) {
+					t.Store.MarkProviderFailure(providerName)
+				}
 				observability.SecretRequestsTotal.WithLabelValues(providerName, "error").Inc()
 				t.Logger.Error("Secret fetch failed, will retry", zap.String("secret", sec.Name), zap.Error(err))
 				timer.Reset(baseBackoff)
@@ -413,8 +1094,11 @@ func (t *TriggerEngine) StartPolling(providerName string, pCfg config.ProviderCo
 
 			// Adaptive back-off: if data unchanged, slowly increase poll interval
 			// (up to 4x base). Reset to base the moment a change is detected.
+			// A rolled-back (deferred or failed) rotation leaves no stored
+			// hash; keep the base interval so it is retried promptly (PE-01).
 			oldData, exists := t.Cache.Get(cacheKey)
-			if !exists || ComputeHash(oldData) != ComputeHash(data) {
+			_, dispatched := t.secretHashes.Load(cacheKey)
+			if !exists || !dispatched || ComputeHash(oldData) != ComputeHash(data) {
 				currentInterval = baseInterval
 			} else if currentInterval < maxInterval {
 				currentInterval = time.Duration(float64(currentInterval) * 1.5)

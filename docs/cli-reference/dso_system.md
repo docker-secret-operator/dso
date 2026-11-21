@@ -28,13 +28,15 @@ dso system [flags]
 ### Options inherited from parent commands
 
 ```
-  -c, --config string   config file (searches: /etc/dso/dso.yaml, ./dso.yaml, dso.yaml) (default "dso.yaml")
+  -c, --config string   config file (default search order: /etc/dso/dso.yaml, ./dso.yaml, ~/.dso/dso.yaml; see 'dso config path') (default "dso.yaml")
+      --no-color        Disable ANSI colour in output (also honours NO_COLOR)
 ```
 
 ### SEE ALSO
 
 * [dso](dso.md)	 - Docker Secret Operator (DSO) — Secret lifecycle runtime for Docker Compose
 * [dso system disable](dso_system_disable.md)	 - Disable DSO agent service
+* [dso system doctor](dso_system_doctor.md)	 - Diagnose the local DSO environment and current project
 * [dso system enable](dso_system_enable.md)	 - Enable DSO agent service
 * [dso system logs](dso_system_logs.md)	 - View DSO agent service logs
 * [dso system restart](dso_system_restart.md)	 - Restart DSO agent service

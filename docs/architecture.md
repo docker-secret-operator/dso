@@ -105,6 +105,8 @@ graph TB
     Engine -->|Orchestrates container launch| ContainerSpace
 ```
 
+> **Status note (finding N19, open):** the tmpfs delivery shown in this diagram (tmpfs mount in the container sandbox) is the intended design, not a verified property. Source analysis distinguishes local-mode `dsofile://` (exec injector into a running container, tmpfs required, start gate) from config-driven `inject.type: file` rotation (implemented as a gated candidate start followed by the same exec injector, no archive endpoint; Docker-free tested, **runtime-unverified**, see [design note](design/n19-managed-delivery.md)). Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
+
 ### Key Security Controls
 1. **No Disk Persistence for Secrets**: Under no circumstances are plaintext secret values written to physical host disks. They live exclusively in the `mlock`-guarded memory space of the agent and inside RAM-based `tmpfs` mounts.
 2. **Docker Inspect Guard**: Traditional Docker secrets or environment variables injected via compose are visible via `docker inspect <container>`. DSO injects secrets at the process boundary (for environment variables) or via memory-mapped files (for file-based injection), ensuring `docker inspect` only reveals the dummy `dso://` or `dsofile://` reference URIs.
@@ -213,6 +215,8 @@ sequenceDiagram
     Agent->>Engine: Stop container
     Engine->>HostRAM: Unmount tmpfs partition (data instantly lost from memory)
 ```
+
+> **Status note (finding N19, open):** the tmpfs delivery shown in this section is the intended design, not a verified property. Source analysis distinguishes local-mode `dsofile://` (exec injector into a running container, tmpfs required, start gate) from config-driven `inject.type: file` rotation (implemented as a gated candidate start followed by the same exec injector, no archive endpoint; Docker-free tested, **runtime-unverified**, see [design note](design/n19-managed-delivery.md)). Runtime verification is deferred (no approved isolated Docker environment). See [SECURITY.md](../SECURITY.md).
 
 ---
 

@@ -383,3 +383,56 @@ func TestManager_Stop_NoPendingSwap(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestSwapBackend_IsSingleEntryPerContainer documents the registry keying
+// that the rotation handoff depends on, and guards a regression that caused
+// a total traffic black hole.
+//
+// The registry is keyed by container ID and holds ONE Addr per backend, so
+// only the first SwapBackend for a given container can succeed. A caller that
+// loops SwapBackend over a multi-port container's ports and aborts on the
+// second (failing) call has ALREADY committed the first swap -- the new
+// backend is registered ACTIVE. If that caller then tears down the new
+// container on the error, every subsequent connection is routed at a
+// destroyed container while the old backend sits DRAINING and unselectable.
+//
+// internal/watcher/controller.go's rolling handoff therefore performs exactly
+// one swap. This test pins the behaviour that requirement rests on.
+func TestSwapBackend_IsSingleEntryPerContainer(t *testing.T) {
+	m := NewManager(testLogger(t))
+	defer func() { _ = m.Stop(0) }()
+
+	if err := m.RegisterContainer("old", "10.0.0.1", 8080, 80); err != nil {
+		t.Fatalf("registering the original backend should succeed: %v", err)
+	}
+
+	if err := m.SwapBackend("old", "new", "10.0.0.2", 80, 8080); err != nil {
+		t.Fatalf("first swap should succeed: %v", err)
+	}
+
+	// A second swap for the SAME new container -- what a per-port loop would
+	// do -- must be understood as already-done, not as a fresh failure the
+	// caller can safely roll back from.
+	if err := m.SwapBackend("old", "new", "10.0.0.2", 90, 9090); err == nil {
+		t.Fatal("expected the second swap for the same container to be rejected; " +
+			"if this now succeeds the registry gained per-port backends and " +
+			"controller.go's single-swap handoff should be revisited")
+	}
+
+	// After one swap the state must be exactly: new active, old draining.
+	var sawNewActive, sawOldDraining bool
+	for _, b := range m.registry.Backends() {
+		switch b.ID {
+		case "new":
+			sawNewActive = !b.Draining
+		case "old":
+			sawOldDraining = b.Draining
+		}
+	}
+	if !sawNewActive {
+		t.Error("new backend should be registered and active after the swap")
+	}
+	if !sawOldDraining {
+		t.Error("old backend should be draining after the swap")
+	}
+}

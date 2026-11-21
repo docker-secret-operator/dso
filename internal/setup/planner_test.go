@@ -476,10 +476,16 @@ func TestPlanner_ExistingInstallationProducesModifyOperation(t *testing.T) {
 		},
 	}
 
-	plan, _ := p.Plan(context.Background(), env, vr, SetupOptions{
-		Mode:     ModeLocal,
-		Provider: "local",
+	// Replacing an existing configuration needs the explicit opt-in (without it Plan
+	// refuses: TestPlanner_ExistingConfig_IsNotReplacedWithoutTheExplicitOptIn).
+	plan, err := p.Plan(context.Background(), env, vr, SetupOptions{
+		Mode:                  ModeLocal,
+		Provider:              "local",
+		ReplaceExistingConfig: true,
 	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
 
 	if plan.Files[0].Operation != "modify" {
 		t.Errorf("want 'modify' for existing install, got %q", plan.Files[0].Operation)

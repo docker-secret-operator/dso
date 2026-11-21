@@ -1,5 +1,11 @@
 # Build Stage
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
+
+# [M0-05] A shipped image must never contain the test-only `dsofault` crash hook.
+# Reset every source of inherited Go build flags (an undeclared --build-arg cannot
+# reach the environment; ENV also overrides one that is declared) and ignore any
+# `go env -w` file. The RUN check below inspects the built binaries.
+ENV GOFLAGS="" GOENV=off
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
@@ -11,7 +17,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+# NOTE: this must pick up internal/webui/assets/ (the committed, pre-built
+# Next.js static export embedded via go:embed in internal/webui/embed.go).
+# There is no Node toolchain in this image and no `npm run build` step here
+# -- the image relies entirely on assets/ already being in sync with web/
+# source. CI (.github/workflows/ci.yml "webui" job) enforces that sync by
+# regenerating assets/ and diffing against git. Do not add
+# internal/webui/assets/ to .gitignore or exclude it via .dockerignore.
+# [M0-09] The build context is allowlisted by .dockerignore (deny by default);
+# keep these COPY lines and that allowlist in sync.
+COPY cmd ./cmd
+COPY internal ./internal
+COPY pkg ./pkg
 
 # Build DSO Core
 # Use -ldflags to reduce binary size and remove symbol tables
@@ -23,6 +40,15 @@ RUN cd cmd/plugins/dso-provider-vault && CGO_ENABLED=0 go build -ldflags="-s -w"
 RUN cd cmd/plugins/dso-provider-aws && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-aws main.go
 RUN cd cmd/plugins/dso-provider-azure && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-azure main.go
 RUN cd cmd/plugins/dso-provider-huawei && CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/plugins/dso-provider-huawei main.go
+
+# [M0-05] Fail the build if any binary contains the fault-injection hook's variable
+# names (they exist only in -tags=dsofault builds). `grep -q` matches binary files in
+# both GNU and busybox grep. (Also asserts the flag sources are empty.)
+RUN test -z "$(go env GOFLAGS)" && \
+    for f in /app/docker-dso /app/plugins/dso-provider-*; do \
+        test -f "$f" || { echo "missing $f" >&2; exit 1; }; \
+        if grep -q 'DSO_FAULT_' "$f"; then echo "error: $f contains the test-only fault hook" >&2; exit 1; fi; \
+    done
 
 # Final Stage
 FROM alpine:3.20

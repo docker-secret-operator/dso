@@ -37,7 +37,12 @@ type BootstrapOptions struct {
 	Provider       string
 	NonInteractive bool
 	Force          bool
-	DryRun         bool
+	// ReplaceExistingConfig is the explicit opt-in (--replace-config) to replace a DSO
+	// configuration that already exists. Force is NOT that opt-in: it only skips prompts and
+	// the non-interactive paths set it unconditionally. Without this, bootstrap refuses to
+	// overwrite an existing configuration; with it the old file is backed up first.
+	ReplaceExistingConfig bool
+	DryRun                bool
 
 	// Provider-specific
 	AWSRegion       string
